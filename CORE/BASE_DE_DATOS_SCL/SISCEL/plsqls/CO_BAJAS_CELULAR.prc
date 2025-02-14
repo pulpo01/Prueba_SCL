@@ -66,7 +66,9 @@ CURSOR ccp(v_desde date, v_hasta date) IS SELECT
     AND A.NUM_ABONADO = D.NUM_ABONADO
 	AND A.NUM_SERIE = D.NUM_SERIE AND
     D.FEC_ALTA IN(SELECT MAX(FEC_ALTA) FROM GA_EQUIPABOSER Z WHERE Z.NUM_ABONADO = A.NUM_ABONADO);
-/*----------------------------------------------------------------------------------------*/
+/*--------------------------------------------------------PRUEBA GIT--------------------------------*/
+
+
 BEGIN
     v_cuenta:=0;
     pp:=SALIDA;

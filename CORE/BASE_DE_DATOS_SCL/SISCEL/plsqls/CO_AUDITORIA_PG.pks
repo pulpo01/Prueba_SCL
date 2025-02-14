@@ -1,5 +1,6 @@
 CREATE OR REPLACE PACKAGE CO_AUDITORIA_PG AS
 /*
+prueba GIT
 <Documentación TipoDoc="Paquete">
 <Elemento Nombre="CO_AUDITORIA_PG"
  Lenguaje="PL/SQL" Fecha="22-11-2005"
