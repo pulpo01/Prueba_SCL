@@ -1,0 +1,849 @@
+/*****************************************************************************/
+/* Fichero    : precuota.pc                                                  */
+/* Descripcion: funciones para el Interface de Facturacion de Cuotas         */
+/* Autor      : Javier Garcia Paredes                                        */
+/* Fecha      : 05-04-1997                                                   */
+/*****************************************************************************/
+
+#define _PRECUOTA_PC_
+
+#include <precuo.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                            funcion : bIFPagare                            */
+/* -Funcion que carga los Pagare de un Cliente o un Abonado a la estructura  */
+/*  de clientes stCliente.                                                   */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bIFPagares (long lCodCliente, 
+                 long lNumAbonado,
+                 int  iIndFactur ,
+                 int  iTipoFact)
+{
+ int  iCab          = 0    ;
+ int  iNCuotas      = 0    ;
+ int  iTotNumCuotas = 0    ;
+ int  iInd1         = 0    ;
+ int  iInd2         = 0    ;
+ BOOL bAddReg       = FALSE;
+
+
+ strncpy (stAnomProceso.szDesProceso,"Carga Pagare",
+          strlen(stAnomProceso.szDesProceso)); 
+
+ vDTrazasLog (szExeName,"\n\t\t* Carga Pagare"
+                        "\n\t\t=> Cod.Cliente [%ld]"
+                        "\n\t\t=> Num.Abonado [%ld]",
+                        LOG03,lCodCliente,lNumAbonado);
+ if(lNumAbonado == ORA_NULL)
+ {
+    /* Pagare de Cliente */
+   for(iInd1=0;iInd1<NUM_CABCUOTAS;iInd1++)
+   {
+       if (pstCabCuotas[iInd1].lCodCliente == lCodCliente &&
+           pstCabCuotas[iInd1].lNumPagare  >  0           &&
+           pstCabCuotas[iInd1].iIndPagada  == 0           )
+       {
+           iCab = stCliente.iNumCabCuotas;
+
+           if ((stCliente.pCabCuotas =
+               (CABCUOTAS *)realloc((CABCUOTAS *)stCliente.pCabCuotas,
+               sizeof(CABCUOTAS)*(iCab+1)))==(CABCUOTAS *)NULL)
+           {
+               iDError (szExeName,ERR005,vInsertarIncidencia,
+                        "stCliente.pCabCuotas");
+               return FALSE;
+           }
+           memset (&stCliente.pCabCuotas[iCab],0,sizeof(CABCUOTAS));
+           memcpy (&stCliente.pCabCuotas[iCab],&pstCabCuotas[iInd1],
+                   sizeof(CABCUOTAS));
+
+           for(iInd2=0;iInd2<NUM_CUOTAS;iInd2++)
+           {
+               if (iTipoFact == FACT_CICLO)
+               {
+                   if (pstCuotas   [iInd2].lSeqCuotas == 
+                       pstCabCuotas[iInd1].lSeqCuotas              &&
+                       pstCuotas   [iInd2].iIndFacturado      == 0 &&
+                       strcmp (stCiclo.szFecDesdeOCargos,
+                               pstCuotas[iInd2].szFecEmision) <= 0 &&
+                       strcmp (stCiclo.szFecHastaOCargos,
+                               pstCuotas[iInd2].szFecEmision) >= 0)
+                       bAddReg = TRUE ;
+                   else
+                       bAddReg = FALSE;
+               }
+               else if (iTipoFact == FACT_BAJA)
+               {
+                   if (pstCuotas    [iInd2].lSeqCuotas    ==
+                       pstCabCuotas [iInd1].lSeqCuotas    &&
+                       pstCuotas    [iInd2].iIndFacturado ==0)
+                       bAddReg = TRUE ;
+                   else
+                       bAddReg = FALSE;
+               }
+               if(bAddReg)
+               {
+                 iNCuotas = stCliente.pCabCuotas[iCab].iNCuotas;
+
+                 if ((stCliente.pCabCuotas[iCab].pCuotas = 
+                 (CUOTAS *)realloc((CUOTAS *)stCliente.pCabCuotas[iCab].pCuotas,
+                          sizeof(CUOTAS)*(iNCuotas+1)))==(CUOTAS *)NULL)
+                 {
+                       iDError(szExeName,ERR005,vInsertarIncidencia,
+                               "stCliente.pCabCuotas[%d].pCuotas",
+                               iNCuotas);
+                          return FALSE;
+                  }
+                  memset (&stCliente.pCabCuotas[iCab].pCuotas[iNCuotas],0,
+                          sizeof(CUOTAS))                   ;
+                  memcpy (&stCliente.pCabCuotas[iCab].pCuotas[iNCuotas],
+                          &pstCuotas [iInd2],sizeof(CUOTAS));
+
+                  stCliente.pCabCuotas [iCab].pCuotas [iNCuotas].iIndFactur =
+                                                                 iIndFactur ;
+
+                  if (!bValidacionCuota (&stCliente.pCabCuotas[iCab],
+                                &stCliente.pCabCuotas[iCab].pCuotas[iNCuotas]))
+                       return FALSE;
+                  if ( (pstCabCuotas[iInd1].lSeqCuotas    ==
+                        pstCuotas   [iInd2].lSeqCuotas          &&
+                        pstCabCuotas[iInd1].iNumCuotas    ==
+                        pstCuotas   [iInd2].iOrdCuota           &&
+                        pstCabCuotas[iInd1].iIndPagada    == 0  &&
+                        pstCuotas   [iInd2].iIndFacturado == 0) ||
+                        iTipoFact == FACT_BAJA )
+                  {
+                        pstCabCuotas [iInd1].iIndPagada = 1;
+
+                        if (!bUpdateCabCuotas (pstCabCuotas[iInd1].szRowid))
+                             return FALSE;
+                        if (!bUpdateIndCuotasInfa(lCodCliente,lNumAbonado,
+                                             pstCabCuotas[iInd1].iCodProducto))
+                             return FALSE;
+                   }
+                   pstCuotas [iInd2].iIndFacturado = 1;
+                   if (!bUpdateCuotas (pstCuotas[iInd2].szRowid))
+                        return FALSE;
+
+                   iTotNumCuotas++                      ;
+                   stCliente.pCabCuotas[iCab].iNCuotas++;
+       
+                 }/* fin AddReg */ 
+
+           }/* fin for iInd2 ... */
+
+           stCliente.iNumCabCuotas++;
+
+       }/* fin if CabCuotas ... */
+
+    }/* fin for iInd1 ... */
+    if (!bUpdateIndPagare (lCodCliente))
+         return FALSE;
+
+  }/* fin Pagare de Cliente */
+  else
+  {
+    for(iInd1=0;iInd1<NUM_CABCUOTAS;iInd1++)
+    {
+        if (pstCabCuotas[iInd1].lCodCliente == lCodCliente &&
+            pstCabCuotas[iInd1].lNumAbonado == lNumAbonado &&
+            pstCabCuotas[iInd1].lNumPagare  >  0           &&
+            pstCabCuotas[iInd1].iIndPagada  == 0           )
+        {
+            iCab = stCliente.iNumCabCuotas;
+
+            if ((stCliente.pCabCuotas =
+                (CABCUOTAS *)realloc((CABCUOTAS *)stCliente.pCabCuotas,
+                 sizeof(CABCUOTAS)*(iCab+1)))==(CABCUOTAS *)NULL)
+            {
+                 iDError (szExeName,ERR005,vInsertarIncidencia,
+                          "stCliente.pCabCuotas");
+                 return FALSE;
+            }
+            memset (&stCliente.pCabCuotas[iCab],0,sizeof(CABCUOTAS));
+            memcpy (&stCliente.pCabCuotas[iCab],&pstCabCuotas[iInd1],
+                    sizeof (CABCUOTAS));
+
+            for(iInd2=0;iInd2<NUM_CUOTAS;iInd2++)
+            {
+                if (iTipoFact == FACT_CICLO)
+                {
+                    if (pstCuotas   [iInd2].lSeqCuotas ==
+                        pstCabCuotas[iInd1].lSeqCuotas              &&
+                        pstCuotas   [iInd2].iIndFacturado      == 0 &&
+                        strcmp (stCiclo.szFecDesdeOCargos,
+                                pstCuotas[iInd2].szFecEmision) <= 0 &&
+                        strcmp (stCiclo.szFecHastaOCargos,
+                                pstCuotas[iInd2].szFecEmision) >= 0)
+                        bAddReg = TRUE ;
+                    else
+                        bAddReg = FALSE;
+                 }
+                 else if (iTipoFact == FACT_BAJA)
+                 {
+                     if (pstCuotas   [iInd2].lSeqCuotas ==
+                         pstCabCuotas[iInd1].lSeqCuotas              &&
+                         pstCuotas   [iInd2].iIndFacturado == 0 )
+                         bAddReg = TRUE ;
+                     else
+                         bAddReg = FALSE; 
+                 }
+                 if(bAddReg)
+                 {
+                    iNCuotas = stCliente.pCabCuotas[iCab].iNCuotas;
+ 
+                    if ((stCliente.pCabCuotas[iCab].pCuotas = (CUOTAS *)
+                        realloc ((CUOTAS *)stCliente.pCabCuotas[iCab].pCuotas,
+                        sizeof(CUOTAS)*(iNCuotas+1)))==(CUOTAS *)NULL)
+                    {
+                        iDError(szExeName,ERR005,vInsertarIncidencia,
+                                "stCliente.pCabCuotas[%d].pCuotas",
+                                iNCuotas);
+                        return  FALSE    ;
+                    }
+                    memset (&stCliente.pCabCuotas[iCab].pCuotas[iNCuotas],0,
+                            sizeof(CUOTAS))                   ;
+                    memcpy (&stCliente.pCabCuotas[iCab].pCuotas[iNCuotas],
+                            &pstCuotas [iInd2],sizeof(CUOTAS)); 
+
+                    if(!bValidacionCuota (&stCliente.pCabCuotas[iCab],
+                              &stCliente.pCabCuotas[iCab].pCuotas[iNCuotas]))
+                        return FALSE;
+                    if ( (pstCabCuotas[iInd1].lSeqCuotas    ==
+                          pstCuotas   [iInd2].lSeqCuotas          &&
+                          pstCabCuotas[iInd1].iNumCuotas    ==
+                          pstCuotas   [iInd2].iOrdCuota           &&
+                          pstCabCuotas[iInd1].iIndPagada    == 0  &&
+                          pstCuotas   [iInd2].iIndFacturado == 0) ||
+                          iTipoFact == FACT_BAJA )
+                     {
+                        pstCabCuotas [iInd1].iIndPagada = 1;
+
+                        if(!bUpdateCabCuotas (pstCabCuotas[iInd1].szRowid))
+                            return FALSE;
+                        if (!bUpdateIndCuotasInfa(lCodCliente,
+                                lNumAbonado,pstCabCuotas[iInd1].iCodProducto))
+                             return FALSE;
+                        if(!bUpdateEquipaBoser(pstCabCuotas[iInd1].lNumAbonado))
+                            return FALSE;
+                      }
+                      pstCuotas [iInd2].iIndFacturado = 1;
+
+                      if (!bUpdateCuotas (pstCuotas[iInd2].szRowid))
+                           return FALSE;
+
+                      stCliente.pCabCuotas[iCab].iNCuotas++;
+                      iTotNumCuotas++                      ;
+
+                 }/* fin AddReg */
+
+               }/* fin for iInd2 ... */
+
+               stCliente.iNumCabCuotas++;
+
+           }/* fin if CabCuotas ... */
+
+      }/* fin for iInd1 ... */
+  }
+  vDTrazasLog (szExeName,"\n\t\t* Numero de Cabeceras de Cuotas Cargadas [%d]"
+                         "\n\t\t* Numero de Cuotas Cargadas              [%d]",
+                         LOG03,stCliente.iNumCabCuotas,iTotNumCuotas);
+  return TRUE;
+}/*************************** Final bIFPagare ********************************/
+
+/*****************************************************************************/
+/*                           funcion : bIFCuotas                             */
+/* -Funcion que Carga las Cuotas de un Cliente y Abonado en la estructura ge-*/
+/*  neral de Cliente (stCliente).                                            */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bIFCuotas (long lCodCliente,
+                long lNumAbonado,
+                int  iIndFactur ,
+                int  iTipoFact)
+{
+ int  iCab          = 0    ;
+ int  iNCuotas      = 0    ;
+ int  iTotNumCuotas = 0    ;
+ int  iInd1         = 0    ;/* iIndice Registros Fa_CabCuotas */
+ int  iInd2         = 0    ;/* iIndice Registros Fa_Cuotas    */
+ BOOL bAddReg       = FALSE;
+
+ strncpy (stAnomProceso.szDesProceso,"Carga Cuotas",
+          strlen(stAnomProceso.szDesProceso))   ;
+
+ vDTrazasLog (szExeName,"\n\t\t* Carga CUOTAS\n"
+                        "\t\t=> Cliente   [%ld]\n"
+                        "\t\t=> Abonado   [%ld]\n",LOG04,
+                        lCodCliente,lNumAbonado);
+
+ for(iInd1=0;iInd1<NUM_CABCUOTAS;iInd1++)
+ {
+   if (pstCabCuotas[iInd1].lCodCliente == lCodCliente &&
+       pstCabCuotas[iInd1].lNumAbonado == lNumAbonado &&
+       pstCabCuotas[iInd1].lNumPagare  <= 0           && 
+       pstCabCuotas[iInd1].iIndPagada  == 0)
+   {
+       iCab = stCliente.iNumCabCuotas;
+
+       if ((stCliente.pCabCuotas =
+           (CABCUOTAS *)realloc((CABCUOTAS *)stCliente.pCabCuotas,
+           sizeof(CABCUOTAS)*(iCab+1)))==(CABCUOTAS *)NULL)
+       {
+           iDError (szExeName,ERR005,vInsertarIncidencia,
+                    "stCliente.pCabCuotas");
+           return FALSE;
+       }
+       memset (&stCliente.pCabCuotas[iCab],0,sizeof(CABCUOTAS));
+       memcpy (&stCliente.pCabCuotas[iCab],&pstCabCuotas[iInd1],
+               sizeof(CABCUOTAS));
+
+       for(iInd2=0;iInd2<NUM_CUOTAS;iInd2++)
+       {
+          if(iTipoFact == FACT_CICLO)
+          {
+             if(pstCuotas   [iInd2].lSeqCuotas == 
+                pstCabCuotas[iInd1].lSeqCuotas             &&
+                pstCuotas   [iInd2].iIndFacturado     == 0 &&
+                strcmp (stCiclo.szFecDesdeOCargos,
+                        pstCuotas[iInd2].szFecEmision)<= 0 &&
+                strcmp (stCiclo.szFecHastaOCargos,
+                        pstCuotas[iInd2].szFecEmision)>= 0)
+                bAddReg = TRUE ;
+             else
+                bAddReg = FALSE;
+         }
+         else if(iTipoFact == FACT_BAJA)
+         {
+            if (pstCuotas   [iInd2].lSeqCuotas == 
+                pstCabCuotas[iInd1].lSeqCuotas        &&
+                pstCuotas   [iInd2].iIndFacturado == 0  )
+                bAddReg = TRUE ;
+            else
+                bAddReg = FALSE; 
+         }
+         if(bAddReg)
+         {
+            iNCuotas = stCliente.pCabCuotas[iCab].iNCuotas;
+
+            if ((stCliente.pCabCuotas[iCab].pCuotas =
+                (CUOTAS *)realloc((CUOTAS *)stCliente.pCabCuotas[iCab].pCuotas,
+                sizeof(CUOTAS)*(iNCuotas+1)))==(CUOTAS *)NULL)
+            {
+                iDError (szExeName,ERR005,vInsertarIncidencia,
+                         "stCliente.pCabCuotas.pCuotas");
+                return  FALSE                           ;
+            }
+            memset (&stCliente.pCabCuotas[iCab].pCuotas[iNCuotas],0,
+                    sizeof(CUOTAS))                     ;
+            memcpy (&stCliente.pCabCuotas[iCab].pCuotas[iNCuotas],
+                    &pstCuotas[iInd2],sizeof (CUOTAS))  ;
+
+            stCliente.pCabCuotas[iCab].pCuotas[iNCuotas].iIndFactur=iIndFactur;
+
+            if (!bValidacionCuota(&stCliente.pCabCuotas[iCab],
+                             &stCliente.pCabCuotas[iCab].pCuotas[iNCuotas]))
+                 return FALSE;
+            if ((pstCabCuotas[iInd1].lSeqCuotas    ==
+                 pstCuotas   [iInd2].lSeqCuotas          &&
+                 pstCabCuotas[iInd1].iNumCuotas    ==
+                 pstCuotas   [iInd2].iOrdCuota           &&
+                 pstCabCuotas[iInd1].iIndPagada    == 0  &&
+                 pstCuotas   [iInd2].iIndFacturado == 0 )||
+                 iTipoFact == FACT_BAJA )
+            {
+
+                 if (!bUpdateCabCuotas (pstCabCuotas[iInd1].szRowid))
+                      return FALSE;
+                 if (!bUpdateIndCuotasInfa(lCodCliente,
+                                           lNumAbonado,
+                                           pstCabCuotas[iInd1].iCodProducto))
+                      return FALSE;
+                 pstCabCuotas [iInd1].iIndPagada = 1;
+
+            }
+
+            if (!bUpdateCuotas (pstCuotas[iInd2].szRowid))
+                 return FALSE;
+
+            pstCuotas [iInd2].iIndFacturado = 1    ;
+
+            stCliente.pCabCuotas[iCab].iNCuotas++; 
+            iTotNumCuotas++                      ;
+       }/* fin AddReg */
+
+     }/* fin for iInd2 ... */
+
+     stCliente.iNumCabCuotas++;
+
+   }/* fin if CabCuotas ... */
+
+ }/* fin for iInd1 ... */
+
+ vDTrazasLog (szExeName,"\n\t\t* Numero de Cabeceras de Cuotas Cargadas [%d]"
+                        "\n\t\t* Numero de Cuotas                       [%d]",
+                        LOG03,stCliente.iNumCabCuotas,iTotNumCuotas);
+                       
+ return TRUE;
+}/*************************** Final bIFCuotas ********************************/
+
+
+/*****************************************************************************/
+/*                           funcion bEMCuotas                               */
+/* -Funcion que introduce en Fa_PreFactura las Pagares (de un Cliente o un A-*/
+/*  bonado) y las Cuotas de un Cliente.                                      */ 
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+BOOL bEMCuotas (void)
+{
+ int  iInd1  = 0    ;
+ int  iInd2  = 0    ;
+ int  i      = 0    ;
+ BOOL bError = FALSE;
+ double dImpConceptoAux;
+
+ CABCUOTAS *pTmpCab   = (CABCUOTAS *)NULL;
+ CUOTAS    *pTmpCuotas= (CUOTAS    *)NULL;
+
+ vDTrazasLog (szExeName,"\n\t\t* Paso a PreFactura de Cuotas y Pagares"
+                        "\n\t\t=>Cliente        [%ld]"
+                        "\n\t\t=>Num.Cabeceras  [%d] ",LOG04,
+                        stCliente.lCodCliente,stCliente.iNumCabCuotas);
+
+ 
+ if (pTmpCab != (CABCUOTAS *)NULL)
+ {
+     free (pTmpCab)             ;
+     pTmpCab = (CABCUOTAS *)NULL;
+ }
+ pTmpCab = (CABCUOTAS *)stCliente.pCabCuotas;
+
+ for (iInd1=0;iInd1<stCliente.iNumCabCuotas;iInd1++)
+ {
+      for (iInd2=0;iInd2<pTmpCab[iInd1].iNCuotas;iInd2++)
+      {
+           if (pTmpCab[iInd1].lNumAbonado != ORA_NULL)
+               vDTrazasLog (szExeName,"\t\t=>Num.Abonado [%ld]\n",LOG04,
+                            pTmpCab[iInd1].lNumAbonado);
+           if (pTmpCuotas != (CUOTAS *)NULL)
+           {
+               free (pTmpCuotas)          ;
+               pTmpCuotas = (CUOTAS *)NULL;
+           }
+           pTmpCuotas = (CUOTAS *)pTmpCab[iInd1].pCuotas;
+           if (pTmpCuotas[iInd2].dImpCuota >= 0.01)
+           {
+               i = stPreFactura.iNumRegistros;
+               
+               /*if (stPreFactura.iNumRegistros >= MAX_CONCFACTUR)
+               {
+                   iDError (szExeName,ERR035,vInsertarIncidencia);
+                   return FALSE;
+               }*/
+
+               stPreFactura.A_PFactura[i].bOptCuotas   = TRUE                 ;
+               stPreFactura.A_PFactura[i].lNumProceso  = stStatus.IdPro       ;
+               stPreFactura.A_PFactura[i].lCodCliente  = stCliente.lCodCliente;
+               stPreFactura.A_PFactura[i].iCodConcepto = 
+                                                   pTmpCab[iInd1].iCodConcepto;
+               strcpy (stPreFactura.A_PFactura[i].szDesConcepto,
+                       pTmpCab[iInd1].szDesConcepto)                          ;
+
+               if (!bGetMaxColPreFa (stPreFactura.A_PFactura[i].iCodConcepto,
+                                     &stPreFactura.A_PFactura[i].lColumna))
+                    return FALSE;
+               stPreFactura.A_PFactura[i].lSeqCuotas   =
+                                                   pTmpCab[iInd1].lSeqCuotas  ;
+               stPreFactura.A_PFactura[i].iCodProducto = 
+                                                   pTmpCab[iInd1].iCodProducto;
+               strcpy (stPreFactura.A_PFactura[i].szCodMoneda     ,
+                       pTmpCab[iInd1].szCodMoneda)    ;
+               strcpy (stPreFactura.A_PFactura[i].szFecValor      ,
+                       pTmpCuotas[iInd2].szFecEmision);
+               strcpy (stPreFactura.A_PFactura[i].szFecEfectividad,
+                       szSysDate)                     ;
+
+               stPreFactura.A_PFactura[i].dImpConcepto   =
+                                       pTmpCuotas [iInd2].dImpCuota;
+               stPreFactura.A_PFactura[i].dImpFacturable =
+                                       pTmpCuotas [iInd2].dImpCuota;
+                                       
+               dImpConceptoAux = stPreFactura.A_PFactura[i].dImpFacturable;
+
+               if (!bConversionMoneda (stCliente.lCodCliente                    ,
+                                       stPreFactura.A_PFactura[i].szCodMoneda   ,
+                                       stDatosGener.szCodMoneFact               ,
+                                       stCiclo.szFecEmision                     ,
+                                      &stPreFactura.A_PFactura[i].dImpFacturable))
+                    return FALSE; /* P-MIX-09003 4 */
+               /* Inc 176702 PPV 18/10/2011 Se deja en moneda local porque importe ya se cambio */
+               strcpy (stPreFactura.A_PFactura[i].szCodMoneda,stDatosGener.szCodMoneFact);				
+               
+               stPreFactura.A_PFactura[i].dImpFacturable =
+                         fnCnvDouble( stPreFactura.A_PFactura[i].dImpFacturable,
+                                      0);
+
+               if (stPreFactura.A_PFactura[i].dImpFacturable == 0) /* P-MIX-09003 134206 */
+               {
+                   stPreFactura.A_PFactura[i].dImpMontoBase = 0;
+               }
+               else
+               {
+                   if (dImpConceptoAux != stPreFactura.A_PFactura[i].dImpFacturable)
+                   {
+                       stPreFactura.A_PFactura[i].dImpMontoBase = fnCnvDouble( stPreFactura.A_PFactura[i].dImpFacturable,0) / 
+                                                                  fnCnvDouble(dImpConceptoAux, 0);
+                   }
+                   else
+                   {
+                       stPreFactura.A_PFactura[i].dImpMontoBase = 0;
+                   }
+               } /* P-MIX-09003 134206 */
+               
+
+               strcpy (stPreFactura.A_PFactura[i].szCodRegion   ,
+                       stCliente.szCodRegion   )  ;
+               strcpy (stPreFactura.A_PFactura[i].szCodProvincia,
+                       stCliente.szCodProvincia)  ;
+               strcpy (stPreFactura.A_PFactura[i].szCodCiudad   ,
+                       stCliente.szCodCiudad   )  ;
+               strcpy (stPreFactura.A_PFactura[i].szCodModulo   ,
+                       pTmpCab[iInd1].szCodModulo);
+
+               stPreFactura.A_PFactura[i].lCodPlanCom = stCliente.lCodPlanCom ;
+               stPreFactura.A_PFactura[i].lNumUnidades= 1                     ;
+               stPreFactura.A_PFactura[i].iIndFactur  =
+                       pTmpCab[iInd1].pCuotas [iInd2].iIndFactur              ;
+               stPreFactura.A_PFactura[i].iCodCatImpos= stCliente.iCodCatImpos;
+               stPreFactura.A_PFactura[i].iCodTipConce= ARTICULO              ; 
+               stPreFactura.A_PFactura[i].iIndEstado  = EST_NORMAL            ; 
+               stPreFactura.A_PFactura[i].lCodCiclFact= stCiclo.lCodCiclFact  ; 
+               stPreFactura.A_PFactura[i].lColumnaRel = 0                     ; 
+               stPreFactura.A_PFactura[i].iCodConceRel= 0                     ; 
+               stPreFactura.A_PFactura[i].lNumAbonado = 
+                                                    pTmpCab[iInd1].lNumAbonado;
+
+               stPreFactura.A_PFactura[i].szNumTerminal[0] = 0;
+               stPreFactura.A_PFactura[i].szNumSerieMec[0] = 0;
+               stPreFactura.A_PFactura[i].szNumSerieLe [0] = 0;
+
+               stPreFactura.A_PFactura[i].lCapCode        = ORA_NULL;
+               stPreFactura.A_PFactura[i].iFlagImpues     = 0       ;
+               stPreFactura.A_PFactura[i].iFlagDto        = 0       ;
+               stPreFactura.A_PFactura[i].fPrcImpuesto    = 0.0     ;
+               stPreFactura.A_PFactura[i].dValDto         = 0.0     ;
+               stPreFactura.A_PFactura[i].iTipDto         = 0       ;
+               stPreFactura.A_PFactura[i].lNumVenta       = 0       ;
+               stPreFactura.A_PFactura[i].lNumTransaccion = 0       ;
+               stPreFactura.A_PFactura[i].iMesGarantia    = 0       ;
+               stPreFactura.A_PFactura[i].iIndAlta        = 0       ;
+               stPreFactura.A_PFactura[i].iIndSuperTel    = 0       ;
+               stPreFactura.A_PFactura[i].iNumPaquete     = 0       ;
+               stPreFactura.A_PFactura[i].iIndCuota       = 0       ;
+               stPreFactura.A_PFactura[i].iNumCuotas      = 0       ;
+               stPreFactura.A_PFactura[i].iOrdCuota       = 0       ;
+
+               vPrintRegInsert (i,"Cuotas",bError);
+               i++                                ;
+                if(bfnIncrementarIndicePreFactura()==FALSE) 
+		{
+		    vDTrazasLog  (szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+		    vDTrazasError(szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+		    return FALSE;
+		}
+
+
+           }/* fin dImpCuota >= 0.01 ... */
+
+      }/* fin for iInd2 ... */
+
+ }/* fin for iInd1 ... */
+
+ 
+ return TRUE;
+}/************************** Final bEMCuotas *********************************/
+
+/*****************************************************************************/
+/*                           funcion : bValidacionCuota                      */
+/* -Funcion que valida los Conceptos de Pagare y de Cuota                    */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bValidacionCuota (CABCUOTAS *pCabCuota,CUOTAS *pCuota)
+{
+   int iRes = 0;
+   CONCEPTO stConcepto;
+
+   memset (&stConcepto,0,sizeof(CONCEPTO));
+
+   vDTrazasLog (szExeName,"\n\t\t* Validacion de Cuotas\n",LOG05);
+
+   if (!bFindConcepto (pCabCuota->iCodConcepto,&stConcepto))
+   {
+        iDError (szExeName,ERR021,vInsertarIncidencia,"pstConcepto");
+        iRes = ERR021;
+   }
+   else 
+   {
+		strcpy (pCabCuota->szCodModulo  ,stConcepto.szCodModulo)  ;
+       	strcpy (pCabCuota->szDesConcepto,stConcepto.szDesConcepto);
+	   	if (stConcepto.iIndActivo == 0)
+	   	{
+	    	sprintf (stAnomProceso.szObsAnomalia,"%s %d","Ind.Activo Cero",
+	                stConcepto.iIndActivo);
+	       	iRes = ERR001;
+	   	}
+		else 
+		{
+			if (pCuota->dImpCuota < 0)
+	   		{
+	       		sprintf (stAnomProceso.szObsAnomalia,
+	            		"%s %lf","Importe menor que Cero",pCuota->dImpCuota);
+	       		iRes = ERR001;
+	   		}
+	   		else 
+	   		{
+				if ((stConcepto.iCodTipConce == IMPUESTO ||
+	        		 stConcepto.iCodTipConce == DESCUENTO) )
+	   			{
+			        sprintf (stAnomProceso.szObsAnomalia,"%s %d",
+			                 "Tipo de Concepto (Descuento o Impuesto)",
+			                 stConcepto.iCodTipConce);
+			        iRes == ERR001;
+	
+	    		}
+	    	}
+		}
+	}
+
+    if (iRes != 0)
+    {
+        stAnomProceso.iCodConcepto = pCabCuota->iCodConcepto   ;
+        stAnomProceso.iCodProducto = pCabCuota->iCodProducto   ;
+        strcpy (stAnomProceso.szDesProceso,"Validacion Cuotas");
+        stAnomProceso.lNumAbonado  = pCabCuota->lNumAbonado    ;
+
+        stEstCuotas.iNumAnomalias++;
+        if (iRes == ERR001)
+        {
+            iDError (szExeName,ERR001,vInsertarIncidencia,
+                     stConcepto.iIndActivo  ,
+                     stConcepto.iCodTipConce,
+                     pCuota->dImpCuota);
+        }
+    }
+    else
+        stEstCuotas.iNumCorrectos++;
+    stEstCuotas.iNumProcesad++;
+
+    return (iRes == 0)?TRUE:FALSE;
+}/************************* Final bValidacionCuota ***************************/
+
+/*****************************************************************************/
+/*                          funcion : vInitEstCuotas                         */
+/*****************************************************************************/
+static void vInitEstCuotas (void)
+{
+  stEstCuotas.iNumProcesad = 0;
+  stEstCuotas.iNumCorrectos= 0;
+  stEstCuotas.iNumAnomalias= 0;
+}/************************** Final vInitEstCuotas ****************************/
+
+
+/*****************************************************************************/
+/*                          funcion : bUpdateCuotas                          */
+/*****************************************************************************/
+static BOOL bUpdateCuotas (char *szRowid)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static char *szhRowid   ; EXEC SQL VAR szhRowid    IS STRING(19);
+  static int  iUno=1;
+  EXEC SQL END DECLARE SECTION  ;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada Update Cuotas\n"
+                         "\t\t=> Rowid de Fa_Cuotas     [%s]\n",LOG05,
+                         szRowid);
+  szhRowid = szRowid;
+ 
+  EXEC SQL UPDATE /*+ Rowid (FA_CUOTAS PK_FA_CUOTAS) */
+                  FA_CUOTAS
+           SET   IND_FACTURADO = :iUno
+           WHERE ROWID = :szRowid;
+  if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,
+               "Update->Fa_Cuotas\n\t",szfnORAerror());
+      return FALSE;
+  }
+  return TRUE; 
+}/************************* bUpdateCuotas ***********************************/
+
+/*****************************************************************************/
+/*                          funcion : bUpdateCabCuotas                       */
+/*****************************************************************************/
+static BOOL bUpdateCabCuotas (char *szRowid)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static char *szhRowid   ; EXEC SQL VAR szhRowid    IS STRING(19);
+  static int  iUno=1;
+  EXEC SQL END DECLARE SECTION  ;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada Update Cab.Cuotas\n"
+                         "\t\t=> Rowid de Fa_CabCuotas     [%s]\n",LOG05,
+                         szRowid);
+  szhRowid = szRowid;
+
+  EXEC SQL UPDATE /*+ Rowid (FA_CABCUOTAS PK_FA_CABCUOTAS) */
+                  FA_CABCUOTAS
+           SET   IND_PAGADA = :iUno
+           WHERE ROWID = :szRowid;
+  if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,
+               "Update->Fa_Cuotas\n\t",szfnORAerror());
+      return FALSE;
+  }
+  return TRUE; 
+}/************************* bUpdateCabCuotas ********************************/
+
+
+/*****************************************************************************/
+/*                         funcion : vFreeCuotas                             */
+/* -Funcion que libera stCliente.pCabCuotas                                  */
+/*****************************************************************************/
+void vfnFreeCuotas (void)
+{
+  int iInd = 0;
+
+  if (stCliente.pCabCuotas != (CABCUOTAS *)NULL)
+  {
+      for (iInd=0;iInd<stCliente.iNumCabCuotas;iInd++)
+      {
+           free (stCliente.pCabCuotas[iInd].pCuotas)          ;
+           stCliente.pCabCuotas[iInd].pCuotas = (CUOTAS *)NULL;
+           stCliente.pCabCuotas[iInd].iNCuotas = 0            ;
+      }
+      free (stCliente.pCabCuotas)             ;
+      stCliente.pCabCuotas = (CABCUOTAS *)NULL;
+  }
+  stCliente.iNumCabCuotas = 0;
+}/*************************** Final vFreeCuotas ******************************/
+
+/*****************************************************************************/
+/*                           funcion : bUpdateEquipaBoser                    */
+/*****************************************************************************/
+static BOOL bUpdateEquipaBoser (long lNumAbonado)
+{
+   EXEC SQL BEGIN DECLARE SECTION;
+     static char szPropiedad[2]   ; EXEC SQL VAR szPropiedad    IS STRING(2);
+  EXEC SQL END DECLARE SECTION  ;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada Ga_EquipAboSer"
+                         "\n\t\t=> Num.Abonado  [%ld]",LOG04,lNumAbonado);
+
+  strcpy(szPropiedad,"C");
+  EXEC SQL UPDATE /*+ index (GA_EQUIPABOSER PK_GA_EQUIPABOSER) */
+                  GA_EQUIPABOSER
+           SET    IND_PROPIEDAD = :szPropiedad
+           WHERE  NUM_ABONADO = :lNumAbonado;
+
+  if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,"Update->Ga_EquipaBoser\n",
+               szfnORAerror());
+      return FALSE;
+  }
+  return TRUE;
+}/*************************** Final bUpdateEquipaBoser ***********************/
+
+
+/*****************************************************************************/
+/*                            funcion : bUpdateIndCuotasInfa                 */
+/*****************************************************************************/
+static BOOL bUpdateIndCuotasInfa   (long lCodCliente,long lNumAbonado,
+                                    int  iCodProducto)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+       static int  iCero=0;
+  EXEC SQL END DECLARE SECTION  ;
+  
+  char szFuncion [20] ="";
+
+  	vDTrazasLog (szExeName,
+               "\n\t\t* Parametos de Entrada Update Ga_Infac% (IndCuotas = 0)"
+               "\n\t\t=> Cod.Cliente  [%ld]"
+               "\n\t\t=> Num.Abonado  [%ld]"
+               "\n\t\t=> Cod.Producto [%d] ",LOG05,
+               lCodCliente,lNumAbonado,iCodProducto);
+
+	strcpy (szFuncion,"Ga_InfacCel");
+    EXEC SQL UPDATE /*+ index (GA_INFACCEL PK_GA_INFACCEL) */
+                      GA_INFACCEL
+               SET    IND_CUOTAS = :iCero
+               WHERE  COD_CLIENTE = :lCodCliente
+                 AND  NUM_ABONADO = :lNumAbonado
+                 AND  COD_CICLFACT= :stCiclo.lCodCiclFact;
+
+  	if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+  	{
+    	iDError (szExeName,ERR000,vInsertarIncidencia,szFuncion,
+               szfnORAerror());
+      	return FALSE;
+  	}
+  	return TRUE;
+}/*************************** Final bUpdateIndCuotasInfa *********************/
+
+/*****************************************************************************/
+/*                            funcion : bUpdateIndPagare                     */
+/*****************************************************************************/
+static BOOL bUpdateIndPagare (long lCodCliente)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+       static int  iCero=0;
+  EXEC SQL END DECLARE SECTION  ;
+
+  if(strcmp (stFactCli.szFecUltPagare,stCiclo.szFecHastaCFijos) <= 0)
+  {
+     vDTrazasLog(szExeName,
+                 "\n\t\t* Parametros de Entrada Update Fa_FactCli(IndPagare=0)"
+                 "\n\t\t=> Cod.Cliente [%ld]",LOG05,lCodCliente);
+
+      EXEC SQL UPDATE /*+ index (FA_FACTCLI PK_FA_FACTCLI) */
+                      FA_FACTCLI
+               SET    IND_PAGARE = :iCero
+               WHERE  COD_CLIENTE = :lCodCliente;
+      if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+      {
+          iDError (szExeName,ERR000,vInsertarIncidencia,"Update->Fa_FactCli",
+                   szfnORAerror());
+          return FALSE;
+      }
+
+  }
+  return TRUE;
+}/*************************** Final bUpdateIndPagare *************************/
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

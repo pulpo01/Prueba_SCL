@@ -1,0 +1,21 @@
+CREATE OR REPLACE TRIGGER ICG_AFDE_MENSAJE
+AFTER DELETE
+ON ICG_MENSAJE
+FOR EACH ROW
+
+DECLARE
+   V_TABLA VARCHAR2(35):=NULL;
+BEGIN
+  V_TABLA := 'ICG_AFDE_MENSAJE';
+
+  DELETE FROM ge_multiidioma
+  WHERE nom_tabla = 'ICG_MENSAJE'
+  AND nom_campo = 'COD_MENSAJE'
+  AND cod_producto = :old.cod_producto
+  AND cod_concepto = :old.cod_mensaje;
+
+  EXCEPTION
+    WHEN OTHERS THEN NULL;
+END;
+/
+SHOW ERRORS

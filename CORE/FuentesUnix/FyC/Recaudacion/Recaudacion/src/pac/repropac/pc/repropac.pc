@@ -1,0 +1,1319 @@
+/*=============================================================================
+   Nombre         : repropac.pc
+   Programa       : Reproceso de archivo Pac
+   Autor          : L.B.H. Indra
+   Fecha Creacion : 06 - Mayo - 2005
+   Modificado     : 03-10-2005 Proyecto ECU-05012 Modificacion Reportes PAC  G.A.C.
+==============================================================================*/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <pasoc.h>
+#include <unistd.h>
+#include "repropac.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	int   ihDecimal            ;
+	char  szHoraIni        [11]; EXEC SQL VAR szHoraIni IS STRING(11);
+	char  szhCod_Portadora [6] ; EXEC SQL VAR szhCod_Portadora IS STRING(6);
+	char  szhhhmiss        [11];
+	char szhFecha_ddmmyyyy [11];
+	char szhdd_mm_yyyy     [11];
+	int   ihCiclo              ;
+	char  szhCod_moneda     [4];
+   char szFechayyyymmdd    [9]; EXEC SQL VAR szFechayyyymmdd          IS STRING(9);
+   char szhYYYYMMDD        [9];
+   char szhHH24miss       [11];
+   char szhyyyymm          [7];
+   char szhAAA             [4];
+   char szhFiller          [2];
+   char szhZero		      [2];
+   char szhZeroUno         [3];
+   int  ihValor_Veinte     ;
+   int  ihValor_Dos        ;
+   int  ihValor_Cero       ;
+   int  ihValor_uno        ;
+   int  ihValor_tres       ;
+   int  ihValor_cuatro     ;
+EXEC SQL END DECLARE SECTION;
+int   iDiffSeg = 0;
+char  szHoraFin[9];
+char  szTmpProc[9];
+int   iTotalReg;
+char szFileDat  [128]   ="";
+int iResultado, iFinProc=TRUE;
+
+Lista_Pasoc pLista_Aux=NULL;
+Lista_Pasoc stListaAux=NULL;
+
+char szUsage[] = "\n\tUso : \n\trepropac -u [Usuario]/[Password]\n\t\t -l [Nivel de log. Por default es 3]\n\t\t -c [Ciclo de Facturacion]\n\n ";
+ 
+int main( int argc, char* argv[] )
+{
+char modulo[]="main";
+
+   strcpy(szhZero,"0");
+   strcpy(szhFiller," ");	
+   strcpy(szhyyyymm,"yyyymm");
+   strcpy(szhZeroUno,"01");
+   strcpy(szhAAA,"AAA");
+   strcpy(szhdd_mm_yyyy,"dd-mm-yyyy");
+   ihValor_Veinte  = 20;
+   ihValor_Dos     = 2;
+   ihValor_Cero    = 0;
+   ihValor_uno     = 1;
+   ihValor_tres    = 3;
+   ihValor_cuatro  = 4;
+   lNumOperaciones  = 0;
+   lContRegPac   = 0;
+   memset (&stConfig,0,sizeof (CONFIGLOCAL));
+	memset( szHoraIni, '\0', sizeof( szHoraIni ) );
+	strcpy(szhhhmiss,"HH24:MI:SS");
+
+   if (argc < 3) {
+   	fprintf (stdout,"\n\tFaltan parametros.\n%s",szUsage);
+      fflush  (stdout);
+      exit(1);
+   }
+    
+   /*- Validacion de parametros de entrada -*/
+   memset(&stConfig,0,sizeof(CONFIGLOCAL));
+   if (ifnValidaParametros(argc,argv,&stConfig) != 0)  {
+        fprintf (stdout,"\n\tError >> Fallo en la Validacion de Parametros \n");
+        fflush  (stdout);
+
+   } else {
+
+		if (ifnInicio(stConfig) != 0 ) {
+		    fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+		    fflush  (stdout);
+		}
+		else
+		{
+			if (ifnReproceso() != 0) {
+		   	fprintf (stdout,"\n\tError >> Fallo Funcion Principal \n");
+		   	fflush  (stdout);
+		   	iFinProc=FALSE;
+		   	if (!bfnOraRollBack()) return FALSE; 		
+			}else {
+	   	   if (!bfnOraCommit())	return FALSE; 
+	      }
+			
+		}
+		
+		if (iFinProc)  {
+	      fprintf(stdout,	"================================================\n");									 
+	      fprintf(stdout, "Estadistica del proceso\n");								 
+	      fprintf(stdout,	"================================================\n");									 
+	      fprintf(stdout, "Cantidad de Registros del Universo [%ld]\n",iTotalReg);			       
+	      fprintf(stdout, "Cantidad de Registros Procesados   [%ld]\n",lContRegPac);			       	           
+	      fprintf(stdout, "Proceso [%s] finalizado OK.\n\n\n", LOGNAME);
+
+			if (lContRegPac >0  ) {
+				iResultado = ifnOrdenaArchivo();
+				if (iResultado != 0) exit(1);
+			}
+
+      } else  {
+	      fprintf(stdout,"\n\t* Proceso genero Anomalias. Favor Revisar. *\n\n");
+	      
+	   }
+      /*---------------------------------------------------------------------------*/
+      /* Cierre de Archivo Banco   					             */
+      /*---------------------------------------------------------------------------*/		    	
+	   fclose(FichBancos);   
+	   /*---------------------------------------------------------------------------*/
+		/* Ordena Archivo Banco   					             */
+		/*---------------------------------------------------------------------------*/		    
+	      	
+		if( ifnExitReproceso() != 0 ) {
+			fprintf (stdout,"\n\tError >> Fallo Funcion de estadistica \n");
+			fflush  (stdout);
+		}	
+	}
+	return 0;
+
+}/* Fin main */
+
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], CONFIGLOCAL *pstLC )
+{
+char modulo[]="ifnValidaParametros";
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+extern char  *optarg;
+extern int  optind, opterr, optopt;
+int    iOpt=0;
+char   opt[] = ":u:l:c:";
+
+char szUsuario[61] = "";
+char *pszTmp       = "";
+
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+int  Userflag=0;
+int  Logflag=0;
+
+/*-- Seteo de Valores Iniciales y por defecto -------------------------------------*/
+    opterr=0;
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF)
+    {
+          switch (iOpt)
+             {
+                 case 'u':
+                   if ( strlen (optarg) )
+                   {
+                        strcpy (szUsuario,optarg)  ;
+                        stConfig.bOptUsuario = TRUE; 
+                   }
+                   break;
+                 case 'c':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptCodCicloFact= TRUE         ;
+                        stConfig.lCodCicloFact  = atol(optarg); 
+                   }
+                   break;   
+                 case 'l':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptNivelLog = TRUE;
+                        stConfig.iNivelLog    = atoi(optarg);
+                   }
+                   break;   
+
+             }/* fin switch */
+    }/* fin While de Opciones */
+    if (!stConfig.bOptUsuario)
+    {
+         fprintf(stderr,"\n\tError Falta Usuario en Parametros de Entrada: \n%s\n", szUsage);
+         return (1);
+    }
+    else
+    {
+       if ( (pszTmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+       {
+             fprintf (stderr,"\n\tFormato Usuario Oracle Incorrecto:\n%s\n", szUsage);
+             return (1);
+       }
+       else
+       {
+          strncpy (stConfig.szUsuario ,szUsuario,pszTmp-szUsuario);
+          strcpy  (stConfig.szPassWord, pszTmp+1);
+       }
+    }
+
+    if( !stConfig.bOptCodCicloFact )
+    {
+           fprintf (stderr, "\n\tError.Falta parametros de Ciclo : %s\n",szUsage);
+           return (1);
+    }
+
+
+    if( !stConfig.bOptNivelLog )
+         stConfig.iNivelLog = iNIVEL_DEF;
+
+    stStatus.LogNivel = stConfig.iNivelLog;
+    
+    return 0;
+
+} /* ifnValidaParametros */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB( CONFIGLOCAL pstLC)
+{
+char modulo[]="ifnConexionDB";
+
+   if( !bfnConnectORA( pstLC.szUsuario, pstLC.szPassWord ) )   {
+       fprintf (stderr,"\nNo hay conexion a ORACLE \n");
+       fflush  (stderr);
+       return -1;
+    }
+
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* Funcion : ifnInicio										                     */
+/* ============================================================================= */
+int ifnInicio (CONFIGLOCAL pstConfig)
+{
+char modulo[]="ifnInicio";
+
+	if (ifnConexionDB(pstConfig) != 0)   {
+		fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+                fflush  (stdout);
+                return -1;
+	}
+       /*-----------------------------------------------------------------------*/
+	/* Obtencion y tratamiento de Fecha para ser utilizada en archivos       */
+	/*-----------------------------------------------------------------------*/	
+	strcpy( szTime, cfnGetTimePac() );
+	
+	strcpy(szhYYYYMMDD,"YYYYMMDD");
+	strcpy(szhHH24miss,"hh24:mi:ss");
+
+	
+	
+	EXEC SQL EXECUTE
+		BEGIN
+			:szHoraIni := TO_CHAR(SYSDATE,:szhHH24miss);
+        	:szFechayyyymmdd  :=TO_CHAR(SYSDATE	 ,:szhYYYYMMDD)  ;
+        	:szhFecha_ddmmyyyy:=TO_CHAR(SYSDATE	,:szhdd_mm_yyyy);
+			
+		END;
+	END-EXEC;
+
+	/*-----------------------------------------------------------------------*/
+  	/* Inicializacion de Archivos LOG										 */
+	/*-----------------------------------------------------------------------*/
+  	if (ifnAbreArchivosLog(0)!=0) return -1;
+  	
+	fprintf(stdout, "\nProcesando ...\n");                                        
+       vDTrazasLog( modulo, "%s"      ,LOG03 , szRaya);                    
+       vDTrazasLog( modulo, "FECHA            [%s]",LOG03 , szhFecha_ddmmyyyy);
+       vDTrazasLog( modulo, "PROGRAMA         [%s]",LOG03 , LOGNAME    );                
+       vDTrazasLog( modulo, "%s"                   ,LOG03 , GLOSA_PROG );                
+       vDTrazasLog( modulo, "VERSION          [%s]",LOG03 , szhVersion );      
+       vDTrazasLog( modulo, "%s\n"    ,LOG03, szRaya); 
+
+       fprintf( stdout, "%s\n"      , szRaya);                    
+       fprintf( stdout, "FECHA            [%s]\n", szhFecha_ddmmyyyy);
+       fprintf( stdout, "PROGRAMA         [%s]\n", LOGNAME    );                
+       fprintf( stdout, "%s\n"                   , GLOSA_PROG );                
+       fprintf( stdout, "VERSION          [%s]\n", szhVersion );      
+       fprintf( stdout, "%s\n"    , szRaya); 
+
+  	
+	vDTrazasError( modulo, "\n\t***************************************************************"
+					 	  "\n\t%s  Reproceso Clientes PAC Rechazados      Hora : %s      "
+						  "\n\t***************************************************************\n\n",LOG03,szhVersion,szHoraIni);	
+       /* Valida Parametro del Ciclo de Facturacion */
+       if (ifnValidaCicloFact()!=0) return -1;
+
+	return 0;
+}/* fin a ifnInicio */
+
+/*===========================================================================*/
+/* Funcion que abre los archivos de log y de error                           */
+/*===========================================================================*/
+int ifnAbreArchivosLog(int iTipfile)
+{
+char modulo[]="ifnAbreArchivosLog";
+char *pathDir               ;
+char szComando  [128]   ="" ;
+char szPathLog  [128]   ="" ;
+/*char szFileDat  [128]   ="" ;*/
+char szFileBanco[60] = "";
+   /*-----------------------------------------------------------------------*/
+   /* Inicializacion de estructura	de archivo								*/
+   /*-----------------------------------------------------------------------*/
+	memset(szArchivo,'\0',sizeof(szArchivo));
+
+	sprintf(szArchivo,"repropac%s",szTime);
+	pathDir =(char *)malloc(228);
+	pathDir =szGetEnv("HOME");
+
+	if (iTipfile == 0) {
+		sprintf(szPathLog  ,"%s/LOG/Recaudacion/Reproceso/%s",pathDir,szFechayyyymmdd);
+		free(pathDir);
+		sprintf(szComando,"/usr/bin/mkdir -p %s", szPathLog);
+		system (szComando);
+	
+		sprintf(stStatus.ErrName,"%s/%s.err",szPathLog,szArchivo);
+		if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+		    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		    return -1;
+		}
+	
+		sprintf(stStatus.LogName,"%s/%s.log",szPathLog,szArchivo);
+		if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+		    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+	    	return -1;
+	   }
+    
+	} else {
+		sprintf( szFileBanco, "repropac%s.dat", szTime);
+		sprintf(szPathDat  ,"%s/DAT/Recaudacion/%s",pathDir,szFechayyyymmdd);
+		free(pathDir);
+		sprintf(szComando,"/usr/bin/mkdir -p %s", szPathDat);
+		system (szComando);
+	
+		sprintf(szFileDat,"%s/%s\0",szPathDat,szFileBanco);
+		vDTrazasLog( modulo, "\n\t Archivo REPROPAC : %s\n\n\n", LOG07, szFileDat);
+		if( ( FichBancos = fopen( szFileDat,"a" ) ) == (FILE*)NULL )  {
+		    vDTrazasError(modulo, "\t\t### Error: No puede abrirse el Archivo para enviar al Banco\n\n\t [%s]\n", LOG01, szFilePac );
+			return -1;
+		}
+	}
+	
+   return 0;
+}/* ifnAbreArchivosLog */
+
+/* ============================================================================= */
+/* ifnValidaCicloFact(): Valida ciclo de facturacion y obtiene codigo de ciclo   */
+/* ============================================================================= */
+int ifnValidaCicloFact()
+{
+char modulo[]="ifnValidaCicloFact";
+EXEC SQL BEGIN DECLARE SECTION;
+	long  lhCicloFact ;
+EXEC SQL END DECLARE SECTION;
+
+	lhCicloFact=stConfig.lCodCicloFact;
+	
+	EXEC SQL
+	SELECT COD_CICLO
+	INTO   :ihCiclo
+	FROM   FA_CICLFACT
+	WHERE  COD_CICLFACT = :lhCicloFact;
+
+	if( SQLCODE!=SQLOK ) {
+		vDTrazasLog( modulo, "\tSELECT FA_CICLFACT - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	if (ihCiclo > 0) {
+		fprintf(stderr, "==> Codigo de Ciclo : [%d]\n", ihCiclo );
+		return 0;
+	}
+	else
+		return -1;
+	
+}
+
+/* ============================================================================= */
+/* Funcion ifnExitReproceso: finaliza proceso    				                     */
+/* ============================================================================= */
+int ifnExitReproceso (void)
+{
+char modulo[]="ifnExitReproceso";
+
+	/* Datos Fin de Tiempo */
+	EXEC SQL EXECUTE
+		BEGIN
+			:szHoraFin := TO_CHAR(SYSDATE,:szhhhmiss);
+		END;
+	END-EXEC;
+
+	iDiffSeg = ifnRestaHoras(szHoraIni,szHoraFin,szTmpProc);
+
+   vDTrazasLog(modulo,"\n\t         HORA INICIO  : %s "
+                       "\n\t         HORA TERMINO : %s "
+                       "\n\t         TIEMPO TOTAL : %s  (%d segs)"
+                       "\n\t REGISTROS PROCESADOS : %d"
+                       "\n\t PROMEDIO  x  REGISTRO: %.5f segs "
+                       "\n\n\n",LOG03,szHoraIni,szHoraFin,szTmpProc,iDiffSeg,iTotalReg,(float)((float)iDiffSeg/(float)iTotalReg) );
+
+	if ( fclose(stStatus.LogFile) != 0 )    {
+	    fprintf (stderr,"Error al cerrar archivo de Log\n");
+	    fflush  (stderr);
+	}
+
+	if ( fclose(stStatus.ErrFile) != 0 )    {
+	    fprintf (stderr,"Error al cerrar archivo de Errores\n");
+	    fflush  (stderr);
+	}
+
+	return 0;
+}/* fin a ifnExitReproceso */
+
+
+/* ============================================================================= */
+/* ============================================================================= */
+/* Inserta el elemento e en la lista ant */
+/* Devuelve -1 si no hay memoria suficiente para la inserción. */
+int ifnInsertaPasoc(Lista_Pasoc *ant)
+{
+	Lista_Pasoc p;
+	if ((p=(struct REPROCESO *) malloc(sizeof(struct REPROCESO))) == NULL)
+		return -1;
+	p->sig=*ant;
+	*ant=p;
+	return 0;
+}
+
+/* Destruye la lista totalmente, liberando toda la memoria. */
+/* Tras esto ES necesario Inicializar la lista para reusarla. */
+void vfnBorraListaPasoc(Lista_Pasoc *list)
+{
+	Lista_Pasoc L = NULL;
+	if ((*list) != NULL)
+	  L = (*list)->sig;
+
+	while (L != NULL){
+	   ifnBorraPasoc(&L);
+	}
+	free((*list)); /* Liberar la cabecera */
+	(*list)=NULL;
+}
+
+/* Borra el elemento en la posición pos de la lista ant. */
+int ifnBorraPasoc(Lista_Pasoc *ant)
+{
+	Lista_Pasoc aux ;
+	if ((*ant) == NULL)
+	   return -1; /* Lista Vacia */
+	else{
+		/* Borrar elemento apuntado por aux, teniendo un puntero al siguiente */
+		aux = (*ant);
+		(*ant)=aux->sig;
+		free(aux);
+		return 0;
+	} /* end if */
+}
+/* ============================================================================= */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* Genera listas enlazadas,                                                      */
+/* ============================================================================= */
+int ifnReproceso()
+{
+char modulo[]="ifnReproceso";
+EXEC SQL BEGIN DECLARE SECTION;
+	long   lhCod_cliente     ;
+	long   lhNumFolio ;        
+	char   szhNum_decimal  [12];
+	int    ihValor_cero    = 0 ;
+	int    ihValor_uno     = 1 ;
+	long   lhSecu_transac      ;
+EXEC SQL END DECLARE SECTION;
+
+	vDTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);
+	
+	strcpy(szhNum_decimal,"num_decimal");
+        
+	EXEC SQL EXECUTE
+		BEGIN
+			:ihDecimal := GE_PAC_GENERAL.PARAM_GENERAL( :szhNum_decimal );
+		END;
+	END-EXEC;
+
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tGE_PAC_GENERAL.PARAM_GENERAL( 'num_decimal' ) - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	if (ifnCargaListaQuery()!=0) return -1;
+	
+	if (iTotalReg > 0 )
+	{
+		stListaAux=pLista_Aux;
+		/*-----------------------------------------------------------------------*/
+	   /* Inicializacion de Archivos Bancos										 */
+	   /*-----------------------------------------------------------------------*/
+      if (ifnAbreArchivosLog(1)!=0) return -1;
+  		
+     	while (stListaAux!= NULL)
+	   {
+			lhCod_cliente = stListaAux->lCod_cliente ;
+			lhNumFolio    = stListaAux->lNum_folio ;		 
+			vDTrazasLog( modulo, "\n\t Cliente [%08ld]   Folio [%010ld]  Respubanco [%d] \n\n", LOG07,lhCod_cliente,lhNumFolio,stListaAux->iRespubanco);	
+			
+			lContRegPac++  ;
+			if (ifnFormatoUnico()!=0) return -1;
+			if (!bfnDBUpdatePagospac( ) )	return -1;
+			
+			stListaAux=stListaAux->sig;
+		}
+	}
+	else
+	{
+		vDTrazasLog( modulo, "\tNo existen Pagos Rechazados", LOG02);
+	}
+
+	vDTrazasLog( modulo, "\tFin a funcion %s", LOG03, modulo );
+	vfnBorraListaPasoc( &pLista_Aux );
+
+	return 0;
+
+}/* Fin ifnReproceso */
+
+
+/* ============================================================================= */
+/* Genera listas enlazadas con clientes rechazados                               */
+/* ============================================================================= */
+int ifnCargaListaQuery() 
+{
+char modulo[]="ifnCargaListaQuery";
+long lRowsCiclo=0, lTotalRows=0,lRowsProcesadas=0;
+int  iSalir=FALSE, j=0;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	long  lhCod_cliente   [MAX_ARRAY];
+	char  szhCodBanco     [MAX_ARRAY][16];
+	char  szhCodTipDocum  [MAX_ARRAY][3];
+	long  lhNumFolio      [MAX_ARRAY];
+	double dhImpDebe      [MAX_ARRAY];	
+	int   ihRespubanco    [MAX_ARRAY];
+	char  szhFec_emision  [MAX_ARRAY][11];
+	double dhTot_factura  [MAX_ARRAY];
+	long  ihCod_Ciclfact             ;
+	char  szhCO_RESPUBANCO       [14];
+	char  szhCOD_RESPUBANCO      [15];
+	char  szhLetra_I              [2];
+	long  lhCodcliente               ;
+	long  lhNum_Folio                ;
+	char  szFecProyyyymmdd  [9]      ; EXEC SQL VAR szFecProyyyymmdd   IS STRING(9);
+   char  szFecEfeyyyymmdd  [9]      ; EXEC SQL VAR szFecEfeyyyymmdd   IS STRING(9);
+EXEC SQL END DECLARE SECTION;
+
+	vDTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);
+	
+   strcpy(szhCO_RESPUBANCO,"CO_RESPUBANCO");
+   strcpy(szhCOD_RESPUBANCO,"COD_RESPUBANCO");
+   strcpy(szhLetra_I,"I");
+        
+	ihCod_Ciclfact=stConfig.lCodCicloFact;
+	
+	vDTrazasLog( modulo, "\n\tCiclo  %ld\n", LOG03,ihCod_Ciclfact);
+	/************************************************************************/
+	/* Toma el Universo de clientes pac rechazados por ciclo                */
+	/************************************************************************/	
+	EXEC SQL DECLARE Cur_PagosRech CURSOR FOR
+	SELECT UNIQUE B.COD_CLIENTE, 
+	              B.COD_BANCO ,                       
+	              NVL(B.NUM_FOLIO,:ihValor_Cero),
+	              TO_CHAR(B.COD_TIPDOCUM),
+	              B.IMPORTE_DEBE,                       
+	              NVL(B.COD_RESPUBANCO,:ihValor_Cero),
+	              TO_CHAR(A.FEC_EMISION,:szhdd_mm_yyyy),
+	              A.TOT_FACTURA
+	FROM   FA_HISTDOCU A, CO_PAGOSPAC B
+	WHERE  B.COD_CLIENTE  = A.COD_CLIENTE
+	AND    A.NUM_FOLIO    = B.NUM_FOLIO
+	AND    A.COD_TIPDOCUM IN (SELECT COD_TIPDOCUM
+	                	 FROM 	FA_TIPMOVIMIEN
+	                    WHERE	COD_TIPMOVIMIEN = :ihValor_Dos	)                    	                         
+	AND    A.COD_CICLFACT    = :ihCod_Ciclfact
+	AND    A.COD_OPERADORA   = B.COD_OPERADORA
+	AND	 A.LETRA           = :szhLetra_I
+	AND	 A.IND_SUPERTEL    = :ihValor_Cero
+	AND    B.COD_RESPUBANCO  IN (SELECT COD_RESPUBANCO FROM CO_RESPUBANCO
+	            					  WHERE COD_RESPUBANCO IN (SELECT COD_VALOR FROM CO_CODIGOS
+	                                                      WHERE NOM_TABLA = :szhCO_RESPUBANCO
+	                                                      AND NOM_COLUMNA = :szhCOD_RESPUBANCO
+	                                                      AND COD_VALOR   = B.COD_RESPUBANCO));
+	if( SQLCODE != SQLOK )	{
+		vDTrazasLog( modulo, "\tDECLARE Cur_PagosRech - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	EXEC SQL OPEN Cur_PagosRech;
+	if( SQLCODE != SQLOK )	{
+		vDTrazasLog( modulo, "\tOPEN Cur_PagosRech - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	iSalir=FALSE;
+	while(!iSalir)
+	{
+		EXEC SQL
+		FETCH Cur_PagosRech
+		INTO :lhCod_cliente,
+		     :szhCodBanco,		     
+		     :lhNumFolio,
+		     :szhCodTipDocum,
+		     :dhImpDebe,		     
+		     :ihRespubanco,
+		     :szhFec_emision,
+		     :dhTot_factura;
+		     
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+			vDTrazasLog( modulo, "\tFETCH Cur_PagosRech - %s", LOG00,SQLERRM );
+			break;
+		}
+
+		if( SQLCODE == SQLNOTFOUND )  iSalir = TRUE;
+
+      lTotalRows = SQLROWS;
+      lRowsCiclo = ( lTotalRows - lRowsProcesadas );
+		vDTrazasLog( modulo, "\tlTotalRows[%ld]", LOG03,lTotalRows);
+		vDTrazasLog( modulo, "\tlRowsCiclo[%ld]", LOG03,lRowsCiclo);
+
+		/* traspasamos los datos desde el host array a la lista de trabajo */
+		for( j = 0; j < lRowsCiclo; j++ )	{
+
+			lhCodcliente  = lhCod_cliente [j];
+         lhNum_Folio   = lhNumFolio [j];
+         /* Validacion Registro no ha sido pagado */
+         EXEC SQL
+		   SELECT TO_CHAR(A.FEC_EFECTIVIDAD,:szhYYYYMMDD), 
+		   		 TO_CHAR(B.FEC_PROCESO,:szhYYYYMMDD)		             
+	      INTO   :szFecEfeyyyymmdd , :szFecProyyyymmdd
+   	   FROM   CO_PAGOS A, CO_PAGOSPAC B
+   	   WHERE  A.COD_CLIENTE  = :lhCodcliente
+	      AND    B.NUM_FOLIO    = :lhNum_Folio
+	      AND    A.COD_CLIENTE  = B.COD_CLIENTE	                 
+	      AND    A.FEC_EFECTIVIDAD > B.FEC_PROCESO ;
+
+ 	      if (SQLCODE!=SQLOK && SQLCODE!=NOTFOUND )  {
+		   	vDTrazasLog( modulo, "\tSELECT CO_PAGOS CO_PAGOSPAC - %s", LOG00,SQLERRM );
+		      return -1;
+	      }
+	                
+	      if (SQLCODE==NOTFOUND )  {	  
+	      	/* Insertamos un nodo para el codigo de cliente */
+		      if (ifnInsertaPasoc(&pLista_Aux)!=0) {
+					vDTrazasLog( modulo, "\tError al Insertar Nodo en pLista_Aux.", LOG00);
+		   	   return -1;
+		      }     	
+	                	
+	         /* Asigna valor del arreglo al campo de la lista */
+			   pLista_Aux->lCod_cliente  = lhCod_cliente [j];
+			   strcpy(pLista_Aux->szCodBanco,szhCodBanco[j]);
+            strcpy(pLista_Aux->szCod_TipDocum,szhCodTipDocum[j]);                            
+            strcpy(pLista_Aux->szFec_Emision,szhFec_emision [j]);                            
+            pLista_Aux->lNum_folio    = lhNumFolio[j];
+            pLista_Aux->dMonto_pagar  = dhImpDebe [j];                            
+            pLista_Aux->iRespubanco   = ihRespubanco [j];
+            pLista_Aux->dTot_Factura  = dhTot_factura[j];
+                            
+         }    
+			vDTrazasLog( modulo, "\n\t[%06d] ",LOG05, j+1);
+			vDTrazasLog( modulo, "\tlCod_cliente  ======>  [%ld]",LOG05, pLista_Aux->lCod_cliente);
+			iTotalReg++;
+
+		}
+
+		lRowsProcesadas = lRowsProcesadas + lRowsCiclo; /* Resetea Contador, ya que las filas recuperadas se han procesado */
+		if( iSalir )	vDTrazasLog( modulo, "\tAlcanzando Fin de Datos Cur_PagosRech.\n", LOG03);
+
+	} /* fin while cursor Cur_PagosRech */
+
+	EXEC SQL
+	CLOSE Cur_PagosRech;
+	if( SQLCODE != SQLOK )  {
+		vDTrazasLog( modulo, "\tCLOSE Cur_PagosRech - %s", LOG00, SQLERRM );
+	}
+	
+	return 0;
+		
+}
+
+/*===========================================================================*/
+/* Funcion ifnFormatoUnico : Imprime en archivo plano, con formato Unico     */
+/*===========================================================================*/
+int ifnFormatoUnico()
+{
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables.                         		         		 */
+/*---------------------------------------------------------------------------*/	    
+char   modulo[]="ifnFormatoUnico";
+char   szNombreCliente [51];
+int	 iCon     = 0;
+char   szMontoFin      [18];
+char   szOperadora      [6] ;
+double dValor_Iva     ;  
+double dValor_Ice     ;
+double dValorSinIvaIce;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/	    
+EXEC SQL BEGIN DECLARE SECTION;
+   long   lhCodCliente          ; 
+	char   szhCodBanco       [16]; EXEC SQL VAR szhCodBanco       IS STRING(16);			
+   char   szhNombreCliente  [51]; EXEC SQL VAR szhNombreCliente    IS STRING(51) ;
+	long   lhCodCuenta       [9] ;
+	long   lhCod_Cliente         ;
+	char   szhOperadora      [6] ; EXEC SQL VAR szhOperadora      IS STRING(6) ;	
+   char   szhNombreUsuario  [41]; EXEC SQL VAR szhNombreUsuario  IS STRING(41);
+   char   szhNumRFC         [21]; EXEC SQL VAR szhNumRFC         IS STRING(21);
+   char   szhTipIdent       [3] ; EXEC SQL VAR szhTipIdent       IS STRING(3);  /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+   char   szhNum_ctacorr    [19]; EXEC SQL VAR szhNum_ctacorr    IS STRING(19);
+   char   szhNum_Tarjeta    [19]; EXEC SQL VAR szhNum_Tarjeta    IS STRING(19);
+   char   szTip_Cuenta       [2];
+   int    ihCod_sispago         ;
+   long   lhNumCelular          ;
+   char   szhNumContrato    [22]; EXEC SQL VAR szhNumContrato  IS STRING(22);
+   char   szhFecVenTarj     [07]; EXEC SQL VAR szhFecVenTarj   IS STRING(07);
+   char   szhCodRegion      [04]; EXEC SQL VAR szhCodRegion    IS STRING(04);
+   char   szhTipoDocIdent   [02]; EXEC SQL VAR szhTipoDocIdent     IS STRING(02);
+   char   szhTipTarjeta     [04]; EXEC SQL VAR szhTipTarjeta     IS STRING(04);
+   long   lhFecVenTarj          ;
+   char   szhTipTarj        [04]; EXEC SQL VAR szhTipTarj     IS STRING(04);
+   char   szhFec_emision    [11];
+	double dhTotFactura          ;
+   long   lhCod_ciclfact        ;
+   int    ihIndicadorSaldo      ; 
+
+	char   szhDDMMYYYY       [11];
+	char   szhFec_DDMMYYYY   [11]; 
+	char   szhINDICADOR_SALDO[16];
+	char   szhModulo          [3];  
+	char   szhZero            [2];
+EXEC SQL END DECLARE SECTION;
+
+	vDTrazasLog(modulo,"\n\tEn Funcion ifnFormatoUnico()",LOG03);
+	lCuentaRegUnico++;
+	lhCod_Cliente = stListaAux->lCod_cliente;
+	strcpy(szhDDMMYYYY,"dd-mm-yyyy");
+	strcpy(szhINDICADOR_SALDO,"INDICADOR_SALDO");
+	strcpy(szhModulo,"RE");
+	strcpy(szhZero,"0");
+	
+	/*strcpy(szhOperadora, pszOperadora);*/
+	
+   memset(&szhNombreCliente,'\0',sizeof(szhNombreCliente));        
+   memset(&szhNumRFC,'\0',sizeof(szhNumRFC));
+   memset(&szhTipIdent,'\0',sizeof(szhTipIdent)); /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+   memset(&szhNum_ctacorr,'\0',sizeof(szhNum_ctacorr));
+   memset(&szTip_Cuenta,'\0',sizeof(szTip_Cuenta));
+   memset(&szhFecVenTarj,'\0',sizeof(szhFecVenTarj));
+   memset(&szhCodBanco,'\0',sizeof(szhCodBanco));
+   memset(&szhNum_Tarjeta,'\0',sizeof(szhNum_Tarjeta));
+   memset(&szhNumContrato,'\0',sizeof(szhNumContrato));
+   memset(&szhCodRegion,'\0',sizeof(szhCodRegion));
+   memset(&szhTipTarjeta,'\0',sizeof(szhTipTarjeta));
+   memset(&szhOperadora,'\0',sizeof(szhOperadora));
+   lhNumCelular=0;
+   vDTrazasLog(modulo,"\n\t lhCod_Cliente  [%ld]",LOG07,lhCod_Cliente);
+        
+	EXEC SQL EXECUTE
+		BEGIN
+        	:szhFec_DDMMYYYY:=TO_CHAR(SYSDATE	,:szhDDMMYYYY);
+		END;
+	END-EXEC;
+
+   sqlca.sqlcode = 0;
+	EXEC SQL
+	SELECT NVL(A.NOM_CLIENTE||:szhFiller||A.NOM_APECLIEN1||:szhFiller||A.NOM_APECLIEN2,:szhFiller), 			 
+		   A.COD_CLIENTE    , 
+		   A.NUM_IDENT      ,
+		   A.COD_TIPIDENT   , /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+		   NVL(A.NUM_CTACORR,:szhFiller),
+		   NVL(A.NUM_TARJETA,:szhFiller),
+		   NVL(A.COD_SISPAGO,:ihValor_Cero),
+		   NVL(A.IND_TIPCUENTA,:szhFiller),
+		   NVL(TO_CHAR(A.FEC_VENCITARJ,:szhyyyymm),:szhFiller),
+		   DECODE(A.COD_SISPAGO,:ihValor_tres,A.COD_BANCO,:ihValor_cuatro,A.COD_BANCOTARJ,:szhFiller) AS COD_BANCO_SIS,
+		   NVL(A.COD_TIPTARJETA,:szhFiller),
+		   A.COD_OPERADORA
+	INTO  :szhNombreCliente,  		   
+		   :lhCodCliente    ,
+		   :szhNumRFC	     ,
+		   :szhTipIdent     , /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+		   :szhNum_ctacorr  ,
+		   :szhNum_Tarjeta  ,
+		   :ihCod_sispago   ,
+		   :szTip_Cuenta    ,
+		   :szhFecVenTarj   ,
+		   :szhCodBanco     ,
+		   :szhTipTarjeta   ,
+		   :szhOperadora                   
+	FROM  GE_CLIENTES A
+   WHERE A.COD_CLIENTE  = :lhCod_Cliente
+  	AND   A.FEC_BAJA    IS NULL ; /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+	/*AND   A.COD_TIPIDENT = :szhZeroUno;	*/
+	
+	if( SQLCODE != SQLOK  )  	{ 
+		vDTrazasLog( modulo,	"\n\n\tError en SELECT Ge_Clientes Unico : \n\t%s", LOG01, SQLERRM);
+		vDTrazasLog( modulo,	"\t No se genera registro para Codigo Cliente : %ld", LOG01, lhCod_Cliente);		
+		return 0;
+	}
+	
+  	sqlca.sqlcode = 0;
+	EXEC SQL
+	SELECT NVL(A.NUM_CELULAR,:ihValor_Cero),
+	       NVL(A.NUM_CONTRATO,:szhFiller),
+	       NVL(A.COD_REGION,:szhFiller)               
+	INTO  :lhNumCelular, :szhNumContrato,
+	      :szhCodRegion
+	FROM  GA_ABOCEL A , (SELECT MAX(GA.FEC_ALTA) AS FEC_ALTA
+	                     FROM GA_ABOCEL GA
+	                     WHERE GA.COD_CLIENTE  = :lhCod_Cliente
+	                     AND GA.COD_SITUACION = :szhAAA) B
+	WHERE A.COD_CLIENTE = :lhCod_Cliente
+	AND   A.COD_SITUACION = :szhAAA
+	AND   A.COD_PRODUCTO  = :ihValor_uno
+	AND   A.FEC_ALTA      = B.FEC_ALTA;        
+	
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  	{
+		vDTrazasLog( modulo,	"\n\n\tError en SELECT Ga_Abocel Unico : \n\t%s", LOG01, SQLERRM);
+		return -1;
+	}   	
+   	
+   	
+   	
+	EXEC SQL
+	SELECT NVL(IND_PERTRIB,:szhFiller)               
+	INTO  :szhTipoDocIdent
+	FROM  GE_TIPIDENT
+	WHERE COD_TIPIDENT  = :szhTipIdent; /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+   if( SQLCODE != SQLOK)  	{	
+    	vDTrazasLog( modulo,	"\n\n\tError en SELECT Ge_Tipident Unico : \n\t%s", LOG01, SQLERRM);
+    	return -1;
+   }
+        
+	memset(&szNombreCliente,'\0',sizeof(szNombreCliente));
+   strncpy(szNombreCliente,&szhNombreCliente[0],50);
+   szNombreCliente[strlen(szNombreCliente)]='\0';
+	
+	if (ihCod_sispago==ihValor_cuatro){ 
+		strcpy(szTip_Cuenta,"T");
+		strcpy(szhNum_ctacorr," ");
+
+	}	else {
+		strcpy(szhTipTarjeta," ");
+		strcpy(szhNum_Tarjeta," ");
+		strcpy(szhFecVenTarj," ");
+
+	}
+	
+  	EXEC SQL
+  	SELECT TO_NUMBER(NVL(VAL_PARAMETRO, :szhZero))  
+  	INTO   :ihIndicadorSaldo
+  	FROM   GED_PARAMETROS
+	WHERE  NOM_PARAMETRO = :szhINDICADOR_SALDO
+	AND    COD_MODULO    = :szhModulo;  
+
+  	if (SQLCODE==SQLNOTFOUND )  {
+			vDTrazasLog( modulo,	"\tIndicador de Saldo No existe. Asumira 0", LOG02);
+			ihIndicadorSaldo=0;
+	}       
+
+	lhCod_ciclfact = stConfig.lCodCicloFact;
+	if (ihIndicadorSaldo == 1) {
+		/* si es saldo es de la cartera sacamos el valor iva e ice de la misma*/
+		/*--------------------------------------------------------------------*/
+		if (ifnValores_Iva_Ice(lhCod_Cliente, &dValor_Iva, &dValor_Ice, lhCod_ciclfact, ihIndicadorSaldo)!=0) return -1;
+		/*si retorna -1 significa que no estan definidos los parametros de IVA e ICE en la ged_parametros*/
+
+	} else {
+		/* si es saldo es de la fa_histdocu sacamos el valor iva e ice de un chimichurri..*/
+		/*--------------------------------------------------------------------------------*/
+		if (ifnValores_Iva_Ice(lhCod_Cliente, &dValor_Iva, &dValor_Ice, lhCod_ciclfact, ihIndicadorSaldo)!=0) return -1;
+		/*si retorna -1 significa que no estan definidos los parametros de IVA e ICE en la ged_parametros*/
+	}
+	
+	/* Valor del saldo menos el valor de los conceptos de iva e ice*/
+	/* Aqui el dmontopago ya viene con el valor correspondiente a la cartera o la fa_histdocu*/
+	dValorSinIvaIce = stListaAux->dMonto_pagar - dValor_Iva - dValor_Ice;
+  
+	strncpy(szOperadora ,&szhOperadora[0],5);
+	vDTrazasLog(modulo,  "\t szhOperadora         [%s]  ",LOG05,szhOperadora);   
+	vDTrazasLog(modulo,  "\t szhFec_DDMMYYYY      [%s]  ",LOG03,szhFec_DDMMYYYY);   
+	vDTrazasLog(modulo,  "\t szCodBanco           [%s]  ",LOG03,szhCodBanco);   
+	vDTrazasLog(modulo,  "\t lhCod_Cliente        [%ld]  ",LOG03,lhCod_Cliente);   
+	vDTrazasLog(modulo,  "\t szNombreCliente      [%s]  ",LOG04,szNombreCliente);   
+	vDTrazasLog(modulo,  "\t szhNumRFC            [%s]  ",LOG05,szhNumRFC);   
+	vDTrazasLog(modulo,  "\t lhNumCelular         [%ld]  ",LOG07,lhNumCelular);   
+	vDTrazasLog(modulo,  "\t szhNumContrato       [%s]  ",LOG07,szhNumContrato);   
+	vDTrazasLog(modulo,  "\t szTip_Cuenta         [%s]  ",LOG07,szTip_Cuenta  );   
+	vDTrazasLog(modulo,  "\t szhTipTarjeta        [%s]  ",LOG07,szhTipTarjeta );   
+	vDTrazasLog(modulo,  "\t szhNum_ctacorr       [%s]  ",LOG07,szhNum_ctacorr);   
+	vDTrazasLog(modulo,  "\t szhNum_Tarjeta       [%s]  ",LOG07,szhNum_Tarjeta);   
+	vDTrazasLog(modulo,  "\t szhFecVenTarj        [%s]  ",LOG07,szhFecVenTarj	);   
+	vDTrazasLog(modulo,  "\t szhCodRegion         [%s]  ",LOG07,szhCodRegion   );   
+	vDTrazasLog(modulo,  "\t szhTipoDocIdent      [%s]  ",LOG07,szhTipoDocIdent);   
+	vDTrazasLog(modulo,  "\t szCod_TipDocum       [%s]  ",LOG05,stListaAux->szCod_TipDocum);   
+	vDTrazasLog(modulo,  "\t dValor_Ice           [%f]  ",LOG04,dValor_Ice);   
+	vDTrazasLog(modulo,  "\t dValor_Iva           [%f]  ",LOG04,dValor_Iva);   
+	vDTrazasLog(modulo,  "\t dValorSinIvaIce      [%f]  ",LOG04,dValorSinIvaIce);   
+	vDTrazasLog(modulo,  "\t dTot_Factura         [%f]  ",LOG04,stListaAux->dTot_Factura);   
+	vDTrazasLog(modulo,  "\t dMonto_pagar         [%f]  ",LOG04,stListaAux->dMonto_pagar);   
+	vDTrazasLog(modulo,  "\t szhTipIdent          [%s]  ",LOG07,szhTipIdent);   
+	vDTrazasLog(modulo,  "\t dValorSinIvaIce      [%.0f]  ",LOG04,dValorSinIvaIce);   
+	vDTrazasLog(modulo,  "\t szFec_Emision        [%s]  ",LOG03,stListaAux->szFec_Emision);   
+
+  
+	/* registro detalle */	
+   if( (fprintf( FichBancos, "%-5.5s%10sN%15s%08ld%-50.50s%-20.20s%015ld%21s%1s%-3.3s%18s%11s%18s%6s%6s%03s%01s%02ldUSD%09ld%015.04f%015.04f%015.04f%015.04f%015.04f%015.04f%2s%010.0f%10s\n"
+    				 ,szhOperadora
+    				 ,szhFec_DDMMYYYY
+    				 ,szhCodBanco
+    				 ,lhCod_Cliente 								 	 
+				 	 ,szNombreCliente
+				 	 ,szhNumRFC 
+				 	 ,lhNumCelular
+				    ,szhNumContrato
+				    ,szTip_Cuenta
+				    ,szhTipTarjeta
+				    ,szhNum_ctacorr
+				    ,szhFiller
+				    ,szhNum_Tarjeta
+				    ,szhFiller
+			       ,szhFecVenTarj	 
+			       ,szhCodRegion
+			       ,szhTipoDocIdent
+			       ,atol(stListaAux->szCod_TipDocum)
+			       ,stListaAux->lNum_folio
+				    ,dValor_Ice
+				    ,dValor_Iva
+				    ,dValor_Iva + dValor_Ice
+				    ,dValorSinIvaIce
+				    ,stListaAux->dTot_Factura
+          		 ,stListaAux->dMonto_pagar					 
+           		 ,szhTipIdent		
+           		 ,dValorSinIvaIce
+           		 ,stListaAux->szFec_Emision
+          		 )   ) == -1 )
+	{	
+			vDTrazasError(modulo,"Error al Escribir en Archivo con Banco [%d]",LOG01,atoi(stListaAux->szCodBanco));
+			return -1; 
+	}
+	lNumOperaciones++;
+	vDTrazasLog(modulo,"\n\t%ld Registro generado.",LOG03,lNumOperaciones);
+	fflush(FichBancos); /* XO-200509300770 Soporte RyC 30-09-2005 capc */
+	return 0;
+
+}/*ifnFormatoUnico*/
+
+/*==================================================================================*/
+/* Funcion que selecciona los montos por concepto IVA e ICE                         */
+/* Si el indicador de saldo es 1 rescatamos los montos de la cartera						*/
+/* Si el indicador de saldo es 0 rescatamos la suma del imp_facturable de la tabla  */
+/* fa_factconc_ciclo efectuando la busqueda en la fa_histdocu y la fa_factcobr      */
+/*==================================================================================*/
+int ifnValores_Iva_Ice(long plCod_cliente, double *pdValor_Iva, double *pdValor_Ice, long plCod_Ciclfact, int piFlag)
+{
+char modulo[]="ifnValores_Iva_Ice";
+EXEC SQL BEGIN DECLARE SECTION;
+	long   lhCod_cliente   ;
+	int    ihCod_Concepto  ;
+	double dhValor_concepto;
+	long   lhCod_Ciclfact  ;
+	char   szhQuery  [1048]; EXEC SQL VAR szhQuery IS STRING(1048); 
+				
+	int    iCont      = 0;
+	int    iValorCero = 0;
+	int    iValorUno  = 1;
+	char   szhCartera  [11];
+	char   szhTipDocum [13];
+	char   szhValor_IVA[18];
+	char   szhValor_ICE[18];
+	char   szhCod_Modulo[3];
+EXEC SQL END DECLARE SECTION;
+
+   vDTrazasLog( modulo, "\t En funcion [%s]   <====>  Cliente [%ld]   Ciclo [%ld]  Flag [%d] ", LOG05,modulo,plCod_cliente,plCod_Ciclfact, piFlag);
+	strcpy(szhCartera,"CO_CARTERA");
+	strcpy(szhTipDocum,"COD_TIPDOCUM");
+	strcpy(szhValor_IVA,"VALOR_IVA_ECU_COL");
+	strcpy(szhValor_ICE,"VALOR_ICE_ECU_COL");
+	strcpy(szhCod_Modulo,"CO");
+   lhCod_cliente = plCod_cliente;
+	lhCod_Ciclfact = plCod_Ciclfact;
+
+	/* Seleccionamos el parametro para el valor_iva*/
+	EXEC SQL
+	SELECT UNIQUE VAL_PARAMETRO 
+	INTO   :ihCod_Concepto
+	FROM   GED_PARAMETROS 
+	WHERE  NOM_PARAMETRO = :szhValor_IVA
+	AND    COD_MODULO    = :szhCod_Modulo;
+
+	if (SQLCODE == SQLNOTFOUND)	{
+		iDError(modulo,ERR000,vInsertarIncidencia,"Parametro [VALOR_IVA_ECU_COL] no esta definido",SQLERRM);
+		return -1;
+	}
+	if (SQLCODE != SQLOK ) {
+		iDError(modulo,ERR000,vInsertarIncidencia,"Select Parametro [VALOR_IVA_ECU_COL]",SQLERRM);
+		return -1;
+	}
+	
+	/* Atento en este ciclo a un posible brain damage... */
+	iCont=0;
+	while (1) {
+
+		if (piFlag==1) {
+			/* Seleccionamos datos de la Co_Cartera*/
+		   EXEC SQL
+		   SELECT NVL(SUM(A.IMPORTE_DEBE - A.IMPORTE_HABER),:iValorCero)
+		   INTO   :dhValor_concepto
+		   FROM   CO_CARTERA A
+		   WHERE  A.COD_CLIENTE   = :lhCod_cliente
+		   AND    A.COD_CONCEPTO  = :ihCod_Concepto
+		   AND    A.FEC_VENCIMIE < SYSDATE-:iValorUno
+		   AND    A.COD_PRODUCTO  = :iValorUno
+			AND    A.IND_FACTURADO = :iValorUno
+			AND NOT EXISTS (SELECT :iValorUno 
+			                FROM  CO_CODIGOS COD
+		  			  	       WHERE TO_NUMBER (COD.COD_VALOR) = A.COD_TIPDOCUM 
+		  			  	       AND   COD.NOM_COLUMNA = :szhTipDocum AND COD.NOM_TABLA = :szhCartera);
+		
+			if( (SQLCODE != SQLOK ) && (SQLCODE != SQLNOTFOUND))	{
+				iDError(modulo,ERR000,vInsertarIncidencia,"Select Valor Iva-Ice ",SQLERRM);
+				return -1;
+			}
+
+		} else  {
+			memset( szhQuery, '\0', sizeof( szhQuery ) );
+			/* Seleccionamos datos de la facturacion facturizable facturada facturablemente*/
+			
+			/* que raro !! la query dinamica alega por las varibles bind....plop...*/
+			/*sprintf( szhQuery,"\tSELECT NVL(SUM(IMP_FACTURABLE),:v1) \n""\tFROM   FA_FACTCONC_:v2  \n""\tWHERE  IND_ORDENTOTAL IN (SELECT UNIQUE IND_ORDENTOTAL FROM FA_HISTDOCU WHERE COD_CLIENTE = :v3) \n" "\tAND    COD_CONCEPTO   IN (SELECT COD_CONCFACT FROM FA_FACTCOBR WHERE COD_CONCCOBR  = :v4)\n");*/
+			sprintf( szhQuery,
+			"\tSELECT NVL(SUM(IMP_FACTURABLE),%d) \n"
+			"\tFROM   FA_FACTCONC_%ld  \n"
+			"\tWHERE  IND_ORDENTOTAL IN (SELECT UNIQUE IND_ORDENTOTAL FROM FA_HISTDOCU WHERE COD_CLIENTE = %ld) \n" 
+			"\tAND    COD_CONCEPTO   IN (SELECT COD_CONCFACT FROM FA_FACTCOBR WHERE COD_CONCCOBR  = %d)\n",iValorCero, lhCod_Ciclfact, lhCod_cliente , ihCod_Concepto);
+			
+			vDTrazasLog( modulo, "\tszhQuery de Iva e Ice\n\t [%s]", LOG09,szhQuery);
+			EXEC SQL PREPARE SqlDinamico FROM :szhQuery;
+			if( SQLCODE != SQLOK ) {
+				iDError( modulo, ERR000, vInsertarIncidencia, "PREPARE CURSOR_DINAMICO\n", SQLERRM );
+				return -1;
+
+			} else {
+
+				/* declara el cursor dinamico a partir del sql válido */
+				EXEC SQL DECLARE cursor_dinamico CURSOR FOR SqlDinamico;
+				if( SQLCODE != SQLOK )    {
+					iDError( modulo, ERR000, vInsertarIncidencia, "DECLARE CURSOR_DINAMICO\n", SQLERRM );
+					return -1;
+
+				} else {
+					
+					/* que raro !! la query dinamica alega por las varibles bind....plop...*/
+					/* abre el cursor dinamico */
+					/*EXEC SQL OPEN cursor_dinamico USING :iValorCero, :lhCod_Ciclfact, :lhCod_cliente , :ihCod_Concepto;*/
+					EXEC SQL OPEN cursor_dinamico;
+					if( SQLCODE != SQLOK )  {
+						iDError( modulo, ERR000, vInsertarIncidencia, "OPEN CURSOR_DINAMICO\n", SQLERRM );
+						return -1;
+					
+					} else {
+						/* no se efectua un while para el fetch puesto que este deberia traer un solo registro */
+						/* en caso contrario denunciar el hecho al 7310000*/
+						EXEC SQL 
+						FETCH cursor_dinamico
+						INTO :dhValor_concepto;
+						if( SQLCODE != SQLOK && SQLCODE != NOTFOUND )    {
+							iDError( modulo, ERR000, vInsertarIncidencia, "FETCH CURSOR_DINAMICO\n", SQLERRM );
+							return -1;
+						
+						} /* endif FETCH*/
+					} /* endif OPEN*/
+				} /* endif DECLARE*/
+			} /* endif PREPARE*/
+		} /* endif if (piFlag==1)*/
+		
+	
+	   if (iCont > 0) break;
+	   *pdValor_Iva=dhValor_concepto;
+	   iCont++; /*Se incrementa para salir de bucle*/
+
+		/* Seleccionamos el parametro para el valor_ice*/
+		EXEC SQL
+		SELECT UNIQUE VAL_PARAMETRO 
+		INTO   :ihCod_Concepto
+		FROM   GED_PARAMETROS 
+		WHERE  NOM_PARAMETRO = :szhValor_ICE
+		AND    COD_MODULO    = :szhCod_Modulo;
+	
+		if (SQLCODE == SQLNOTFOUND)	{
+			iDError(modulo,ERR000,vInsertarIncidencia,"Parametro [VALOR_ICE_ECU_COL] no esta definido",SQLERRM);
+			return -1;
+		}
+		if (SQLCODE != SQLOK ) {
+			iDError(modulo,ERR000,vInsertarIncidencia,"Select Parametro [VALOR_ICE_ECU_COL]",SQLERRM);
+			return -1;
+		}
+		
+	}/* Fin while (1)*/
+   
+   *pdValor_Ice=dhValor_concepto;
+   vDTrazasLog( modulo, "\t\t dValor_Iva  [%f]", LOG05,*pdValor_Iva);
+   vDTrazasLog( modulo, "\t\t pdValor_Ice [%f]\n", LOG05,*pdValor_Ice);
+
+	return 0;
+}
+/*===========================================================================*/
+/* Ordenamiento x banco Archivo Salida		     	 */
+/*===========================================================================*/
+int ifnOrdenaArchivo(void)
+{
+char modulo[]="ifnOrdenaArchivo";
+char 	szComando      [500]; 
+vDTrazasLog(modulo,"\t=> Ordenando Archivo [%s].\n",LOG03,szFileDat);
+   memset(&szComando,'\0',sizeof(szComando));
+   strcpy(szComando,"sort -o ");
+   strcat(szComando,szFileDat);
+   strcat(szComando,"-tmp");   /* Salida */
+   strcat(szComando," +0.0 -0.31 +0.145 +0.146 -0.148 ");
+   strcat(szComando,szFileDat);  /* Entrada */
+   vDTrazasLog(modulo,"\t=> Ordenando [%s] .\n\n\n",LOG07, szComando);
+   system(szComando);
+   
+   memset(&szComando,'\0',sizeof(szComando));
+   strcpy(szComando,"mv ");
+   strcat(szComando,szFileDat);
+   strcat(szComando,"-tmp  ");
+   strcat(szComando,szFileDat);
+   system(szComando);
+   return (0);
+}
+
+
+
+/*===========================================================================*/
+/* Funcion RighTrim : Limpia blancos a la derecha                            */
+/*===========================================================================*/
+int RighTrim (char *szVar)
+{
+int  iLenVar = 0;
+int  i       = 0;
+
+   iLenVar = strlen(szVar);
+   for (i=iLenVar-1;i>-1;i--) {
+        if (szVar[i]==' ') {
+            szVar[i]='\0';
+        } else break;
+   }
+   return (0);        
+} /* RighTrim */
+
+/* ============================================================================= */
+/* Copia un substr de un char a otro                                             */
+/* ============================================================================= */
+void Strcpysub(char *str1, int Largo, char *str2)
+{
+   int i;
+   str2[0]='\0';
+   for(i=0;i<=Largo-1;str2[i]=str1[i],i++);
+   str2[i]='\0';
+}
+
+/* ============================================================================= */
+/* Lleva una Hora dada a un valor equivalente en segundos                        */
+/* ============================================================================= */
+int HoraToSegs(char *HoraFmto)
+{
+  char *Hora,HH[3],MI[3],SS[3];
+  int iHH,iMI,iSS;
+  Hora=HoraFmto;
+  Strcpysub(Hora,2,HH); Hora=Hora+3; /*HH:*/ iHH=atoi(HH); if (iHH<00||iHH>23) return -1;
+  Strcpysub(Hora,2,MI); Hora=Hora+3; /*MI:*/ iMI=atoi(MI); if (iMI<00||iMI>59) return -1;
+  Strcpysub(Hora,2,SS);              /*SS */ iSS=atoi(SS); if (iSS<00||iSS>59) return -1;
+  return (iHH*3600+iMI*60+iSS);
+}
+
+/* ============================================================================= */
+/* Resta dos string en fmto hora y retorna la diferencia en fmto hora y segundos */
+/* ============================================================================= */
+int ifnRestaHoras( char *h1, char *h2, char *hh)
+{
+  int ih1,ih2,ih;
+  div_t hmsH,hmsMS;
+  if ((ih1=HoraToSegs(h1))<0) return -1;
+  if ((ih2=HoraToSegs(h2))<0) return -1;
+  ih=(ih2>=ih1)?(ih2-ih1):(((24*3600)-ih1)+ih2); /* restando horas en segundos , considerando cambio de dia */
+  hmsH=div(ih,3600);
+  hmsMS=div(hmsH.rem,60);
+  sprintf(hh,"%02d:%02d:%02d\0",hmsH.quot,hmsMS.quot,hmsMS.rem);
+  return ih;
+}
+
+/*===========================================================================*/
+/* Tratamiento de Fecha para ser utilizada en nombre de archivos             */
+/*===========================================================================*/
+char* cfnGetTimePac()
+{
+	int i;
+	char c[255] = "";
+	char a[255] = "";
+	time_t ltime;
+	
+	time(&ltime);
+	
+	strcpy(c,ctime(&ltime));
+	
+	for( i = 22; i < 24; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i =  4; i <  7; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i =  8; i < 10; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	strcat(a,"_");
+	
+	for( i = 11; i < 13; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i = 14; i < 16; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i = 17; i < 19; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	return (char*)a;
+} /* cfnGetTimePac */
+/*===========================================================================*/
+/* Funcion: BOOL bfnDBUpdatePagospac(Lista_Pasoc  *pstPagos)                     */
+/* Actualizamos la Tabla CO_PAGOSPAC IND_PROCESADO = 0 y COD_RESPUBANCO = NULL. */
+/*===========================================================================*/
+BOOL bfnDBUpdatePagospac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente     ; 	
+    long lhNumFolio       ;
+    int  ihRespubanco     ;
+    int  ihValor_Cero  = 0;
+    int  ihValor_Uno   = 1;
+EXEC SQL END DECLARE SECTION;
+	
+char modulo[]="bfnDBUpdatePagospac";
+    lhCodCliente = stListaAux->lCod_cliente;
+    lhNumFolio   = stListaAux->lNum_folio;
+    ihRespubanco = stListaAux->iRespubanco;
+    
+    vDTrazasLog( modulo, "\n\t Inicio bfnDBUpdatePagospac()",LOG03);
+    vDTrazasLog( modulo, "\t stListaAux->lCod_cliente  [%ld]",LOG03,stListaAux->lCod_cliente);
+    vDTrazasLog( modulo, "\t stListaAux->lNum_folio    [%ld]",LOG03,stListaAux->lNum_folio);
+    vDTrazasLog( modulo, "\t stListaAux->iRespubanco   [%ld]",LOG03,stListaAux->iRespubanco);
+    
+	EXEC SQL 
+	UPDATE CO_PAGOSPAC SET	
+	       IND_PROCESADO  = :ihValor_Cero,	
+          COD_RESPUBANCO = NULL
+	WHERE  COD_CLIENTE    = :lhCodCliente
+	AND    NUM_FOLIO      = :lhNumFolio
+	AND    COD_RESPUBANCO = :ihRespubanco
+	AND    IND_PROCESADO  = :ihValor_Uno
+	AND    IND_CANCELADO  = :ihValor_Cero;
+	
+   vDTrazasLog( modulo, "\n\t Paso Update CO_PAGOSPAC",LOG03);
+	if (SQLCODE)  {
+		iDError(modulo,ERR000,vInsertarIncidencia,"\t Al Hacer Update en CO_PAGOSPAC.\n\t\t\t\t ",SQLERRM);
+		return FALSE;
+	}
+	else
+		vDTrazasLog(modulo,"\t*Actualizacion de IND_PROCESADO y COD_RESPUBANCO en CO_PAGOSPAC",LOG05);
+	return TRUE;
+}/* bfnDBUpdatePagospac */
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

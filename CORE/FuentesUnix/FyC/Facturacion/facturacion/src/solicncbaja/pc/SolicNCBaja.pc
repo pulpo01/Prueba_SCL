@@ -1,0 +1,753 @@
+/************************************************************************/
+/* Programa encargado de seleccionar las habilitaciones del producto    */
+/* para luego pasar a la etapa de valoración.                           */ 
+/*----------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                             */
+/* Inicio: Lunes 24 de Octubre del 2001.                                */
+/* Fin:                                                                 */
+/* Autor : Fabian Aedo Ramirez                                          */
+/************************************************************************/
+/*---------------------------------------------------------------------------*/
+/* Inclusion de librería para definiciones generales del programa.           */
+/*---------------------------------------------------------------------------*/
+#include <SolicNCBaja.h>
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+char	szhUser[30]="";
+char	szhPass[30]="";
+char	szhSysDate [15]="";
+EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------*/
+/* -- Muestra el contenido de un nodo de la lista de universo...             */
+/*---------------------------------------------------------------------------*/
+void	vMuestraRegistro(stUniverso * paux,int pLOG,char * pszFuncName,int iTraza)
+{
+	if (iTraza == 0)
+	{
+		vDTrazasLog(szFuncName, "\n\n\tProceso : %s"
+									"\n\tCliente          :[%d]"
+									"\n\tAbonado          :[%d]"
+									"\n\tCiclo            :[%d]"
+									"\n\tFecha Baja       :[%s]"
+									"\n\tFecha Solicitud  :[%s]"
+									"\n\tNumProceso       :[%d]"
+									"\n\tFecha Proceso    :[%s]"
+									"\n\tFlg.Emision      :[%d]"
+									"\n\tGls.Emision      :[%s]"
+									"\n\tUsuario Solic    :[%s]"
+									"\n\tFecha Ult.Mod.   :[%s]",
+									pLOG,
+									pszFuncName,
+									paux->lCodCliente,
+									paux->lNumAbonado,
+									paux->iCodCiclFact,
+									paux->szFecBaja,
+									paux->szFecSolicitud,
+									paux->lNumProceso,
+									paux->szFecProceso,
+									paux->iFlagEmision,
+									paux->szGlsEmision,
+									paux->szNomUsuarioSolic,
+									paux->szFecUltMod);
+	}
+	else
+	{
+		vDTrazasError(szFuncName, "\n\n\tProceso : %s"
+									"\n\tCliente          :[%d]"
+									"\n\tAbonado          :[%d]"
+									"\n\tCiclo            :[%d]"
+									"\n\tFecha Baja       :[%s]"
+									"\n\tFecha Solicitud  :[%s]"
+									"\n\tNumProceso       :[%d]"
+									"\n\tFecha Proceso    :[%s]"
+									"\n\tFlg.Emision      :[%d]"
+									"\n\tGls.Emision      :[%s]"
+									"\n\tUsuario Solic    :[%s]"
+									"\n\tFecha Ult.Mod.   :[%s]",
+									pLOG,
+									pszFuncName,
+									paux->lCodCliente,
+									paux->lNumAbonado,
+									paux->iCodCiclFact,
+									paux->szFecBaja,
+									paux->szFecSolicitud,
+									paux->lNumProceso,
+									paux->szFecProceso,
+									paux->iFlagEmision,
+									paux->szGlsEmision,
+									paux->szNomUsuarioSolic,
+									paux->szFecUltMod);
+
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Se extrae el universo inicial de registros a considerar para Comisiones.  */
+/*---------------------------------------------------------------------------*/
+void vCreaUniverso()
+{
+	stUniverso 	* paux;
+	long		lCantSolic=0;
+	int			i;
+	long 		iLastRows    = 0;
+	int   		iFetchedRows = MAXFETCH;
+	int   		iRetrievRows = MAXFETCH;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	lMaxFetch;
+		int		ihCodCiclFact;
+		
+		char	szhRowId[MAXFETCH][20];
+		long	lhCodCliente[MAXFETCH];
+		long	lhNumAbonado[MAXFETCH];
+		char	szhFecSolicitud[MAXFETCH][22];
+		char	szhFecBaja[MAXFETCH][9];
+		int		ihFlagEmision[MAXFETCH];
+		char	szhNomUsuarioSolic[MAXFETCH][31];
+		char	szhFecUltMod[22];
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL SELECT TO_CHAR(SYSDATE,'DD-MM-YYYY HH24:MI:SS') INTO :szhFecUltMod FROM DUAL;
+	
+	vDTrazasLog(szFuncName,"\n\n\tError En SELECT SYSDATE "
+	                         "\n\t *** %d ***",LOG03,sqlca.sqlcode);
+	
+	ihCodCiclFact = stArgs.lCodPeriodo;
+	lMaxFetch     = MAXFETCH;
+
+	EXEC SQL DECLARE CUR_UNIVERSO CURSOR FOR SELECT 	
+		ROWID,
+		COD_CLIENTE, 
+		NUM_ABONADO, 
+		TO_CHAR(FEC_SOLICITUD,'DD-MM-YYYY HH24:MI:SS'), 
+		TO_CHAR(FEC_SOLICITUD,'YYYYMMDD'),
+		FLG_EMISION, 
+		NOM_USUARIO_SOLIC
+		FROM FAT_SOLICNCBAJA
+		WHERE COD_CICLFACT = :ihCodCiclFact
+		  AND FLG_EMISION  = 0;
+		
+		
+	vDTrazasLog(szFuncName,"\n\n\tError En DECLARE UNIVERSO "
+	                         "\n\t *** %d ***",LOG03,sqlca.sqlcode);  
+	
+	EXEC SQL OPEN CUR_UNIVERSO;
+	
+	vDTrazasLog(szFuncName,"\n\n\tError En OPEN UNIVERSO "
+	                         "\n\t *** %d ***",LOG03,sqlca.sqlcode);
+	
+	while(iFetchedRows == iRetrievRows)
+	{
+		EXEC SQL for :lMaxFetch
+			 FETCH CUR_UNIVERSO INTO :szhRowId,:lhCodCliente,:lhNumAbonado,
+			 :szhFecSolicitud,:szhFecBaja,:ihFlagEmision,:szhNomUsuarioSolic;
+			 
+		
+		vDTrazasLog(szFuncName,"\n\n\tFETCH UNIVERSO"
+	                         "\n\t *** %d ***",LOG03,sqlca.sqlcode);
+		
+		
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+		iLastRows = sqlca.sqlerrd[2];
+		for (i=0; i < iRetrievRows; i++)
+		{
+			paux = (stUniverso *) malloc(sizeof(stUniverso));
+			
+			strcpy(paux->szRowId			,	alm_trim(szhRowId[i]));
+			strcpy(paux->szFecSolicitud     ,   alm_trim(szhFecSolicitud[i]));
+			strcpy(paux->szFecBaja          ,   alm_trim(szhFecBaja[i]));
+			strcpy(paux->szNomUsuarioSolic  ,   alm_trim(szhNomUsuarioSolic[i]));
+			strcpy(paux->szFecUltMod        ,   alm_trim(szhFecUltMod));
+			strcpy(paux->szFecProceso       ,   alm_trim(szhFecUltMod));
+
+			paux->lCodCliente        =    lhCodCliente[i];
+			paux->lNumAbonado        =    lhNumAbonado[i];
+			paux->iCodCiclFact       =    ihCodCiclFact;
+			paux->iFlagEmision       =    ihFlagEmision[i];
+			
+			vMuestraRegistro(paux,LOG05,"vCreaUniverso",0);			
+
+			paux->sgte  = lstUniverso;
+			lstUniverso = paux;
+			lCantSolic++;
+		}
+	}
+	EXEC SQL CLOSE CUR_UNIVERSO;
+	
+	
+	
+	vDTrazasLog(szFuncName, "\nCantidad de Solicitudes de NC leidas....[%d]\n",LOG03,lCantSolic);
+	fprintf(stderr,"\nCantidad de Solicitudes de NC leidas....[%d]\n",lCantSolic);
+	stStatusProc.iSolProc = lCantSolic;
+}
+/*---------------------------------------------------------------------------*/
+/* Recupera el numero de la secuencia de la ga_seg_transacabo....            */
+/*---------------------------------------------------------------------------*/
+long	lfnGetNumSecuencia()
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	ihNumSec;
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL SELECT GA_SEQ_TRANSACABO.NEXTVAL
+			INTO :ihNumSec FROM DUAL;
+	
+	if(sqlca.sqlcode)
+	{
+		vDTrazasError("lfnGetNumSecuencia", "Error en ejecucion de la llamada al SELECT DEL nRO DE SECUENCIA \n",LOG03);
+		vDTrazasLog("lfnGetNumSecuencia", "\n%s  Error en SELECT GA_SEG_TRANSACABO.NEXTVAL "
+							   "\n  *** %s ***", LOG03, cfnGetTime(1),sqlca.sqlerrm.sqlerrmc);
+		return(0);
+	}
+	return(ihNumSec);
+}
+/*---------------------------------------------------------------------------*/
+/* Elimina unregistro desde la tabla de pendientes.                          */
+/*---------------------------------------------------------------------------*/
+int bfnEliminaPendiente(stUniverso * paux)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhRowId[20];EXEC SQL VAR szhRowId       IS STRING(20);
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy(szhRowId       , paux->szRowId);
+	vMuestraRegistro(paux,LOG05,"bfnEliminaPendiente",0);
+
+	EXEC SQL DELETE FROM FAT_SOLICNCBAJA
+		WHERE ROWID = :szhRowId;
+		
+		
+	if(sqlca.sqlcode==0)
+	{
+		return(TRUE);
+	}
+		
+	vDTrazasError(szFuncName,"\n\n\tError Eliminando solicitud Rowid :[%s] "
+	                         "\n\t *** %s ***\n",LOG03,szhRowId,sqlca.sqlerrm.sqlerrmc);
+	vMuestraRegistro(paux,LOG03,"bfnEliminaPendiente",1);
+	return(FALSE);
+
+}
+/*---------------------------------------------------------------------------*/
+/* Replica regisro en histórico...                                           */
+/*---------------------------------------------------------------------------*/
+int bfnPasaHistorico(stUniverso * paux)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	lhNumProceso;
+		char	szhFecProceso[22];
+		int		ihFlagEmision;
+		char	szhGlsEmision[61];
+		char	szhNomUsuarioSolic[31];
+		char	szhFecUltMod[22];		
+
+		long	lhCodCliente;
+		long	lhNumAbonado;
+		int		ihCodCiclFact;
+		char	szhFecSolicitud[22];
+	EXEC SQL END DECLARE SECTION;
+	vMuestraRegistro(paux,LOG05,"bfnPasaHistorico",0);
+
+	lhNumProceso   = paux->lNumProceso;
+	ihFlagEmision  = paux->iFlagEmision;
+	lhCodCliente   = paux->lCodCliente;
+	lhNumAbonado   = paux->lNumAbonado;
+	ihCodCiclFact  = paux->iCodCiclFact;
+
+	strcpy(szhGlsEmision       , paux->szGlsEmision);
+	strcpy(szhFecUltMod        , paux->szFecUltMod);
+	strcpy(szhFecProceso       , paux->szFecProceso);
+	strcpy(szhNomUsuarioSolic  , paux->szNomUsuarioSolic);
+	strcpy(szhFecSolicitud     , paux->szFecSolicitud);
+	
+	
+	EXEC SQL 
+	  INSERT INTO FAH_SOLICNCBAJA
+		 (COD_CLIENTE, NUM_ABONADO, COD_CICLFACT, FEC_SOLICITUD, 
+		  NUM_PROCESO, FEC_PROCESO, FLG_EMISION, GLS_EMISION, 
+		  NOM_USUARIO_SOLIC, FEC_ULTMOD)
+	  VALUES (:lhCodCliente, :lhNumAbonado, :ihCodCiclFact, TO_DATE(:szhFecSolicitud,'DD-MM-YYYY HH24:MI:SS'), 
+		  :lhNumProceso, TO_DATE(:szhFecProceso,'DD-MM-YYYY HH24:MI:SS'), :ihFlagEmision, :szhGlsEmision, 
+		  :szhNomUsuarioSolic, TO_DATE(:szhFecUltMod,'DD-MM-YYYY HH24:MI:SS'));
+	
+		  
+	if(sqlca.sqlcode==0)
+	{
+		return(TRUE);
+	}
+	
+	vDTrazasError(szFuncName,"\n\n\tError En Paso a Historico "
+	                         "\n\t *** %s ***",LOG03,sqlca.sqlerrm.sqlerrmc);
+	vMuestraRegistro(paux,LOG03,"bfnPasaHistorico",1);
+	return(FALSE);
+}
+/*---------------------------------------------------------------------------*/
+/* Procesa el universo...                                                    */
+/*---------------------------------------------------------------------------*/
+int bfnProcSolicitudes()
+{
+	stUniverso   * paux;
+	long		lCantEmitidas   = 0;
+	long		lCantRechazadas = 0;
+	int			bResp = TRUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	lhCodCliente;
+		char	szhFecSolicitud[22];
+		long	lhNumAbonado;
+		char	szhNomUsuarioSolic[31];
+		int		ihCodCiclFact;
+		long	ihNumProceso;
+		long	lhNumInterfaz;
+		char	szhFecProceso[22];
+		char	szhGlsEmision[61];
+		char	szhFecUltMod[22];	
+		char	szhDesCadena[256];
+		int		ihCodRetorno;
+	EXEC SQL END DECLARE SECTION;
+
+		for(paux = lstUniverso; paux != NULL; paux = paux->sgte)
+		{
+			ihNumProceso               = lfnGetNumSecuencia();
+			if (ihNumProceso == 0)
+				return(1);
+			lhCodCliente               = paux->lCodCliente;           
+			strcpy(szhFecSolicitud     , paux->szFecBaja);    
+			lhNumAbonado               = paux->lNumAbonado;           
+			strcpy(szhNomUsuarioSolic  , paux->szNomUsuarioSolic); 
+			ihCodCiclFact              = paux->iCodCiclFact;           
+			lhNumInterfaz              = 0;
+			
+			vMuestraRegistro(paux,LOG05,"Antes de PL",0);
+			
+			EXEC SQL EXECUTE 
+				BEGIN 
+					FA_PROC_NCBAJAS(:lhCodCliente,:lhNumAbonado,:szhFecSolicitud,1,:szhNomUsuarioSolic,:ihNumProceso,:ihCodCiclFact);
+	      			END;                            
+	    		END-EXEC;
+			vMuestraRegistro(paux,LOG05,"Despues de PL",0);
+			
+			EXEC SQL SELECT COD_RETORNO,DES_CADENA INTO :ihCodRetorno,:szhDesCadena
+			FROM GA_TRANSACABO
+			WHERE NUM_TRANSACCION = :ihNumProceso;
+			vDTrazasLog("Procesa Solicitudes","\n\n\tResultado de la PL        :"
+											  "\n\t Cod_Retorno: [%d] "
+											  "\n\t Des_Cadena : [%s] ",LOG05,
+											  ihCodRetorno,alm_trim(szhDesCadena));
+			switch(ihCodRetorno)
+			{
+				case 0:
+					EXEC SQL SELECT TO_NUMBER(DES_CADENA) 
+						INTO :lhNumInterfaz
+						FROM GA_TRANSACABO WHERE NUM_TRANSACCION = :ihNumProceso;
+	
+					paux->lNumProceso = lhNumInterfaz;
+					paux->iFlagEmision = 0;
+					strcpy(paux->szGlsEmision , "PROCESADO POR DESCARGA MASIVA.");
+					lCantEmitidas++;
+	
+					break;
+				case 1:
+				case 2:
+					EXEC SQL SELECT SUBSTR(DES_CADENA ,1,59)
+						INTO :szhDesCadena
+						FROM GA_TRANSACABO WHERE NUM_TRANSACCION = :ihNumProceso;
+	
+					strcpy(paux->szGlsEmision , alm_trim(szhDesCadena));
+					paux->lNumProceso = 0;
+					paux->iFlagEmision = 0;
+					lCantRechazadas++;
+					break;
+				default:
+					strcpy(paux->szGlsEmision , "ERROR EN PROCESO. SE CANCELA OPERACION.");
+					paux->lNumProceso = 0;
+					paux->iFlagEmision = 0;
+					lCantRechazadas++;
+					break;
+			}
+				
+			bResp = bfnPasaHistorico(paux);	
+			
+			if (bResp!=TRUE)
+				break;
+			
+			bResp = bfnEliminaPendiente(paux);
+			
+			
+			
+			if (bResp!=TRUE)
+			{
+				break;
+			}
+			else
+			{
+				EXEC SQL COMMIT;	
+			}
+		} 
+		stStatusProc.iSolEmitidas   = lCantEmitidas;
+		stStatusProc.iSolRechazadas = lCantRechazadas;
+		vDTrazasLog(szFuncName, "\nCantidad de Solicitudes Emitidas  :[%d]\n",LOG03, lCantEmitidas);
+		vDTrazasLog(szFuncName, "\nCantidad de Solicitudes Rechazadas:[%d]\n",LOG03, lCantRechazadas);
+		return (bResp);
+} 
+/*---------------------------------------------------------------------------*/
+/* Rutina encargada de quitar los espacios de la derecha                     */ 
+/*---------------------------------------------------------------------------*/
+char * alm_trim(char s[])
+{   
+	int i,indice=0;   
+
+		for (i=0;i<strlen(s) && s[i]!='\0';i++)
+		{       
+			if (s[i] != ' ')          
+				indice = i;   
+		}   
+		s[indice+1] = '\0';   
+		return s;
+}
+/*---------------------------------------------------------------------------*/
+/* Liberar Memoria Usada para Universo                                       */
+/*---------------------------------------------------------------------------*/
+void vLiberaUniverso(stUniverso * paux)
+{
+		if (paux == NULL)
+			return;
+		else if (paux->sgte == NULL)
+		{
+			free(paux);
+			return;
+		}
+		vLiberaUniverso(paux->sgte);
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina para manejo y validacion de argumentos ingresados como parametros  */
+/* externos.                                                                 */
+/*---------------------------------------------------------------------------*/
+int  vManejaArgs (int argc, char * const argv[])
+{
+	int         iOpt = 0;
+	extern char *optarg;
+	char        opstring[] = ":u:p:l:";
+	char        *szUserid_Aux;
+	char        userid[70];
+
+		while((iOpt=getopt(argc, argv, opstring)) != EOF)
+		{
+			switch(iOpt)
+			{
+			case 'u':
+				if(stArgs.bFlagUser == FALSE)
+				{
+					if(optarg[0]=='-')
+					{
+						fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+						fprintf(stderr, "%s\n\n", szUso);
+						return(1);
+					}
+					strcpy(userid, optarg);
+					if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+					{
+						fprintf(stderr, "\nUsuario Oracle no es valido\n");
+						fprintf(stderr, "%s\n\n", szUso);
+						return(1);
+					}
+					else
+					{
+						strncpy(stArgs.szUser, userid, szUserid_Aux-userid);
+						strcpy(stArgs.szPass, szUserid_Aux+1);
+					}
+				}
+				else
+			 	{
+					fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+					fprintf(stderr, "%s\n\n", szUso);
+					return(1);
+				}
+				stArgs.bFlagUser=TRUE;
+				break;
+	
+			case 'p':
+				if(stArgs.bFlagPeriodo == FALSE)
+				{
+					if(optarg[0]=='-')
+					{
+						fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+						fprintf(stderr, "%s\n\n", szUso);
+						return(1);
+					}
+					stArgs.lCodPeriodo = atol(optarg);
+				}
+				else
+			 	{
+					fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+					fprintf(stderr, "%s\n\n", szUso);
+					return(1);
+				}
+				stArgs.bFlagPeriodo = TRUE;
+				break;
+	
+			case 'l':
+				if(stArgs.bFlagLogLevel == FALSE)
+				{
+					if(optarg[0]=='-')
+					{
+						fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+						fprintf(stderr, "%s\n\n", szUso);
+						return(1);
+					}
+					stArgs.iLogLevel = atoi(optarg);
+				}
+				else
+			 	{
+					fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+					fprintf(stderr, "%s\n\n", szUso);
+					return(1);
+				}
+				stArgs.bFlagLogLevel = TRUE;
+				break;
+			case '?':
+				fprintf(stderr, "Opcion -%c no reconocida. Se cancela.\n", optopt);
+				fprintf(stderr, "%s\n\n", szUso);
+				return(1);
+			}  /* Fin switch */
+		}     /* Fin while  */
+		if(stArgs.bFlagPeriodo == FALSE)
+		{
+			fprintf(stderr, "%s\n", szRaya);
+			fprintf(stderr, "Se requiere argumento -p[Periodo(<YYYYMM>)]\n");
+			fprintf(stderr, "%s\n", szRaya);
+			fprintf(stderr, "%s\n\n", szUso);
+			return(1);
+		}
+		if(stArgs.bFlagLogLevel == FALSE)
+		{
+			stArgs.bFlagLogLevel = TRUE;
+			stArgs.iLogLevel     = iLOGNIVEL_DEF;
+		}
+		return(0);
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina principal.                                                         */
+/*---------------------------------------------------------------------------*/
+int 	main (int argc, char *argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+		char szComando  [128]   ="" ;
+		char szBaseName [128]   ="" ;
+		int iResp = TRUE;
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+		memset(&stArgs, 0, sizeof(rg_argumentos));
+		memset(&stStatusProc, 0, sizeof(rg_estadistica));
+		stArgs.bFlagUser     = FALSE;
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+		iResp = vManejaArgs(argc, argv);
+		if (iResp!=0) return iResp;
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+		if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+		{
+			setlocale(LC_TIME, LC_TIME_SPANISH);
+		}
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+/*
+        fprintf(stderr,"\n\tcfnGetTime(0):[%s]",cfnGetTime(0));
+        fprintf(stderr,"\n\tcfnGetTime(1):[%s]",cfnGetTime(1));
+        fprintf(stderr,"\n\tcfnGetTime(2):[%s]",cfnGetTime(2));
+        fprintf(stderr,"\n\tcfnGetTime(3):[%s]",cfnGetTime(3));
+        fprintf(stderr,"\n\tcfnGetTime(4):[%s]",cfnGetTime(4));
+        fprintf(stderr,"\n\tcfnGetTime(5):[%s]",cfnGetTime(5));
+        fprintf(stderr,"\n\tcfnGetTime(6):[%s]",cfnGetTime(6));
+        fprintf(stderr,"\n\tcfnGetTime(7):[%s]\n\n",cfnGetTime(7));
+*/
+        fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");
+		pszEnvLog = (char * )malloc (10024);
+		if ((pszEnvLog = szGetEnv("XPF_LOG")) == (char *)NULL)
+        {
+           return(1);
+        }
+        sprintf(pszEnvLog,"%s/SolicNCBaja/%s",pszEnvLog,cfnGetTime(2));
+        fprintf(stderr, "Directorio de Logs y Error        : [%s]\n", (char *)pszEnvLog);
+        sprintf(szComando,"mkdir -p %s", pszEnvLog);
+        system (szComando);
+        stStatus.LogNivel = stArgs.iLogLevel;
+        
+/*---------------------------------------------------------------------------*/
+/* Generacion del nombre y creacion del archivo de log y de err.             */
+/*---------------------------------------------------------------------------*/
+        strcpy(szhSysDate, cfnGetTime(5));
+        
+        sprintf(stStatus.LogName, "%s/%s_%s.log", (char *)pszEnvLog, LOGNAME, szhSysDate);
+
+        fprintf(stderr, "Archivo de Logs         : [%s]\n", stStatus.LogName);
+        if((stStatus.LogFile = fopen(stStatus.LogName, "w")) == (FILE *)NULL)
+        {
+           fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", stStatus.LogName);
+           fprintf(stderr, "Revise su existencia.\n");
+           fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+           fprintf(stderr, "Proceso finalizado con error.\n");
+           return(1);
+        }
+
+        sprintf(stStatus.ErrName, "%s/%s_%s.err", (char *)pszEnvLog, ERRNAME, szhSysDate);
+
+        fprintf(stderr, "Archivo de Error         : [%s]\n", stStatus.ErrName);
+        if((stStatus.ErrFile = fopen(stStatus.ErrName, "w")) == (FILE *)NULL)
+        {
+           fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", stStatus.ErrName);
+           fprintf(stderr, "Revise su existencia.\n");
+           fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+           fprintf(stderr, "Proceso finalizado con error.\n");
+           return(1);
+        }
+
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+/*		lSegIni=lGetTimer(); */
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+		fprintf(stderr, "Procesando ...\n");
+		strcpy(szFuncName, "main");
+		vDTrazasLog(szFuncName, "\n\t *****************************************************"
+								"\n\t *** Inicia Proceso de Solicitudes de Nota de Credito."
+								"\n\t *** Fecha          : [%s]"
+								"\n\t *** %s"
+								"\n\t *** VERSION       : [%s]"
+								"\n\t *** Username      : [%s] (id = %d)"
+								"\n\t *** Base de Datos : [%s]"
+								"\n\t *****************************************************",LOG03,
+								cfnGetTime(1),GLOSA_PROG,PROG_VERSION,getlogin(), getuid(),
+								(strcmp(getenv("ORACLE_SID"), "")!=0?getenv("ORACLE_SID"):getenv("TWO_TASK")));
+		
+		vDTrazasError(szFuncName, "\n\t *****************************************************"
+								"\n\t *** Inicia Proceso de Solicitudes de Nota de Credito."
+								"\n\t *** Fecha          : [%s]"
+								"\n\t *** %s"
+								"\n\t *** VERSION       : [%s]"
+								"\n\t *** Username      : [%s] (id = %d)"
+								"\n\t *** Base de Datos : [%s]"
+								"\n\t *****************************************************",LOG03,
+								cfnGetTime(1),GLOSA_PROG,PROG_VERSION,getlogin(), getuid(),
+								(strcmp(getenv("ORACLE_SID"), "")!=0?getenv("ORACLE_SID"):getenv("TWO_TASK")));
+		
+		vDTrazasLog(szFuncName, "\n\t *****************************************************"
+								"\n\t *** Argumentos recibidos:"
+								"\n\t *** Periodo a Procesar: [%ld]"
+								"\n\t *** Nivel de LOG      : [%d]",LOG03,stArgs.lCodPeriodo,stStatus.LogNivel);
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+		strcpy(szhUser, stArgs.szUser);
+		strcpy(szhPass, stArgs.szPass);
+		if(fnOraConnect(szhUser, szhPass) == FALSE)
+		{
+			strcpy(szFuncName, "fnOraConnect");
+			fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+			vDTrazasLog(szFuncName, "Usuario/Password Oracle no son validos. Se cancela.\n",LOG03);
+			vDTrazasError(szFuncName, "Usuario/Password Oracle no son validos. Se cancela.\n",LOG03);
+			
+			return(1);
+		}
+		else
+		{
+			vDTrazasLog(szFuncName, "\nConexion con la base de datos ha sido exitosa.\n",LOG03);
+		}
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+		EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';
+	
+/*---------------------------------------------------------------------------*/
+/* Procesamiento principal.                                                  */
+/*---------------------------------------------------------------------------*/
+		strcpy(szFuncName, "Proceso principal");
+		vDTrazasLog(szFuncName, "Inicio procesamiento principal ...\n\n",LOG03);
+/*---------------------------------------------------------------------------*/
+/*    - Inicia Carga de Universos de Solicitudes                             */
+/*---------------------------------------------------------------------------*/
+		strcpy(szFuncName,"vCreaUniverso");
+		vDTrazasLog(szFuncName, "\n\n[%s] Inicia Carga de Universos de Solicitudes...\n",LOG03 ,cfnGetTime(1));
+		fprintf(stderr, "Inicia Carga de Universos de Solicitudes ...\n\n");
+		vCreaUniverso();
+/*---------------------------------------------------------------------------*/
+/*    - Procesa las solicitudes                                              */
+/*---------------------------------------------------------------------------*/
+		vDTrazasLog(szFuncName,  "\n\n[%s]Procesa las solicitudes...\n",LOG03, cfnGetTime(1));
+		fprintf(stderr, "Procesa las solicitudes...\n\n");
+		iResp = bfnProcSolicitudes();
+		if (iResp!=TRUE) 
+		{
+			vDTrazasLog(szFuncName,  "\n\n[%s] Error en Procesamiento.\n",LOG03, cfnGetTime(1));			
+			fprintf(stderr,"\n\nProceso con error. Se cancela la ejecucion.\n\n");
+			return iResp;
+		}
+/*---------------------------------------------------------------------------*/
+/*    - Libera memoria utilizada por listas de abonados y universsos.        */
+/*---------------------------------------------------------------------------*/
+		vDTrazasLog(szFuncName, "\n\n[%s] Libera memoria utilizada por listas.\n", LOG03,cfnGetTime(1));
+		fprintf(stderr, "Libera memoria utilizada por listas de abonados y universsos...\n\n");
+		vLiberaUniverso(lstUniverso);
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/	
+/*		lSegFin=lGetTimer();
+		stStatusProc.lSegProceso = lSegFin - lSegIni; */
+		stStatusProc.lSegProceso = 0; 
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+		vDTrazasLog(szFuncName,"\n\n\t******************************************** "
+							   "\n\tEstadistica del proceso"
+							   "\n\t------------------------\n"
+							   "\n\tSolicitudes Emitidas           : [%d]"
+							   "\n\tSolicitudes Rechazadas         : [%d]"
+							   "\n\tSolicitudes Procesadas         : [%d]"
+							   "\n\tTiempo de Proceso              : [%d][seg]",LOG03,
+							    stStatusProc.iSolEmitidas,stStatusProc.iSolRechazadas,
+							    stStatusProc.iSolProc,stStatusProc.lSegProceso);
+		EXEC SQL COMMIT WORK RELEASE; 
+		fclose(stStatus.LogFile);
+    		fclose(stStatus.ErrFile);
+		return(0);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

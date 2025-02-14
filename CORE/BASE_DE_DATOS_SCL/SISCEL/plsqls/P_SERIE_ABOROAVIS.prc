@@ -1,0 +1,25 @@
+CREATE OR REPLACE PROCEDURE        P_SERIE_ABOROAVIS(
+  VP_ABONADO IN NUMBER ,
+  VP_SERIE IN VARCHAR2 ,
+  VP_SERIEHEX IN VARCHAR2 ,
+  VP_SERIEANT IN VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+BEGIN
+  --
+  -- Procedimiento de Actualizacion de fechas de activacion/desactivacion
+  -- en central de abonados roaming visitantes.
+  --
+  BEGIN
+     UPDATE GA_ABOROAVIS
+        SET NUM_SERIE = VP_SERIE,
+     NUM_SERIEHEX = VP_SERIEHEX
+      WHERE NUM_ABONADO  = VP_ABONADO
+        AND NUM_SERIE = VP_SERIEANT;
+  EXCEPTION
+     WHEN OTHERS THEN
+          VP_ERROR := 4;
+  END;
+END P_SERIE_ABOROAVIS;
+/
+SHOW ERRORS

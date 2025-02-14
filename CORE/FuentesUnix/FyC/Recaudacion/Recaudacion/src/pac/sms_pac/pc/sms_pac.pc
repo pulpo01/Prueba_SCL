@@ -1,0 +1,1499 @@
+/*============================================================================
+   Nombre     : sms_pac.pc
+   Programa   : Generacion SMS por Pagos Automaticos de Cuentas
+   Autor      : H.Q.R. 
+   Creado     : 19-Mayo-2009  ( Proyecto MIX-09003    )
+   Version    : 1.0.0
+   Modificado : <>
+  =============================================================================*/
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <pasoc.h>
+#include <unistd.h>
+#include "sms_pac.h"
+ 
+/*---------------------------------------------------------------------------*/
+/* Inclusion de	biblioteca para	manejo de interaccion con Oracle.	     	 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca; 
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con	Oracle.		     	 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    int  iDecimal;
+    char szhCodMensaje[4]	     ; EXEC SQL VAR szhCodMensaje            IS STRING(4);
+    int  ihCodCentralMens	     ;
+    char szhFecha_mmddyyyy [11]  ; EXEC SQL VAR szhFecha_mmddyyyy        IS STRING(11);
+    char szhFecha_ddmmyyyy [11]  ; EXEC SQL VAR szhFecha_ddmmyyyy        IS STRING(11);
+    char szhHora_hhmmss     [9]  ; EXEC SQL VAR szhHora_hhmmss           IS STRING(9);
+    char szhFechaDD         [3]  ; EXEC SQL VAR szhFechaDD               IS STRING(3);
+    char szFecha1yyyymmdd   [9]  ; EXEC SQL VAR szFecha1yyyymmdd         IS STRING(9);
+    char szFechayyyymmdd    [9]  ; EXEC SQL VAR szFechayyyymmdd          IS STRING(9);
+    char szFechayymm        [5]  ; EXEC SQL VAR szFechayymm              IS STRING(5);
+    char szFechayyyymm      [7]  ; EXEC SQL VAR szFechayyyymm            IS STRING(7);
+    char szFechaCargo       [7]  ; EXEC SQL VAR szFechaCargo             IS STRING(7);
+    char szhDDMMYYYY       [11]  ; EXEC SQL VAR szhDDMMYYYY	             IS STRING(11); 
+    char szhYYYYMMDDHHMISS [17]  ; EXEC SQL VAR szhYYYYMMDDHHMISS        IS STRING(17); 
+    char zshFormatoMonto   [21]  ; EXEC SQL VAR zshFormatoMonto          IS STRING(21); 
+    char szhLetraA          [2]  ; EXEC SQL VAR szhLetraA                IS STRING (2); 
+    char szhLetraD          [2]  ; EXEC SQL VAR szhLetraD                IS STRING (2); 
+    char szhLetraG          [2]  ; EXEC SQL VAR szhLetraG                IS STRING (2); 
+    char szhRutinaMensaje   [6]  ; EXEC SQL VAR szhRutinaMensaje         IS STRING (6); 
+    char szhModulo          [3]  ; EXEC SQL VAR szhModulo                IS STRING (3); 
+    char szhPendiente      [10]  ; EXEC SQL VAR szhPendiente             IS STRING(10); 
+    char szhS               [2]  ; EXEC SQL VAR szhS                     IS STRING (2); 
+
+    /* variables bind */    
+    char szhBAA             [4];
+    char szhFiller          [2];
+    char szhMMYY            [5];
+    char szhYYYYMMDD        [9];
+    char szhmmddyyyy        [11];
+    char szhHH24miss        [11];
+    char szhyymm	    	[5];
+    char szhyyyymm          [7];
+    char szhDDMMYY          [7];
+    char szhdd_mm_yyyy      [11];
+    char szhDD              [3];
+    int  ihValor_Veinte     ;
+    int  ihValor_Dos        ;
+    int  ihValor_Cero       ;
+    int  ihValor_uno        ;
+    int  ihValor_tres       ;
+    int  ihValor_cuatro     ;
+EXEC SQL END DECLARE SECTION; 
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de estructuras globales 				             			 */
+/*---------------------------------------------------------------------------*/
+LINEACOMANDO stLineaComando;
+ESTADISTICAS stEstadisticas;
+char szFileDat  [128]   ="" ;
+
+/*===========================================================================*/
+/* Rutina Principal						             						 */
+/*===========================================================================*/
+int main(int argc, char *argv[])
+{
+char modulo[]="Main";
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.							     						 */
+/*---------------------------------------------------------------------------*/
+int  iResultado, iFinProc=TRUE;
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de variables.						     					 */
+/*---------------------------------------------------------------------------*/
+	lContRegPac   	 = 0;
+	lRegAnomalo      = 0;
+	strcpy(szhFiller       ," ");
+	strcpy(szhMMYY         ,"MMYY");
+	strcpy(szhYYYYMMDD     ,"YYYYMMDD");
+	strcpy(szhDDMMYY       ,"DDMMYY");
+	strcpy(szhmmddyyyy     ,"mm-dd-yyyy");
+	strcpy(szhHH24miss     ,"hh24:mi:ss");
+	strcpy(szhyymm         ,"yymm");
+	strcpy(szhyyyymm       ,"yyyymm");
+	strcpy(szhDD           ,"DD");
+	strcpy(szhdd_mm_yyyy   ,"dd/mm/yyyy");
+	strcpy(szhBAA          ,"BAA");
+    strcpy(szhDDMMYYYY     ,"DD-MM-YYYY");
+    strcpy(szhYYYYMMDDHHMISS,"YYYYMMDDHH24MISS");
+	strcpy(szhLetraA       ,"A");
+	strcpy(szhLetraD       ,"D");
+	strcpy(szhLetraG       ,"G");
+	strcpy(szhRutinaMensaje,"MENSJ");
+	strcpy(szhModulo       ,"CO");	
+	strcpy(szhPendiente    ,"PENDIENTE");
+	strcpy(szhS            ,"S");
+
+	ihValor_Dos     = 2;
+	ihValor_Cero    = 0;
+	ihValor_uno     = 1;
+	ihValor_tres    = 3;
+	ihValor_cuatro  = 4;
+
+	
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura	de linea de comando y de status del programa */
+/*---------------------------------------------------------------------------*/
+	memset( &stLineaComando	, 0, sizeof(LINEACOMANDO) );
+	memset( &stStatus	    , 0, sizeof(STATUS) );
+    memset( &stEstadisticas , 0, sizeof(ESTADISTICAS));
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos	ingresados como	parametros externos.		     	 */
+/*---------------------------------------------------------------------------*/
+	iResultado = ifnManejaArgumentos(argc, argv);
+  	if (iResultado != 0) exit(1);
+/*---------------------------------------------------------------------------*/
+/* Conexion a Oracle							     						 */
+/*---------------------------------------------------------------------------*/	
+	if( !bfnConnectORA( stLineaComando.szUser,stLineaComando.szPass ))	{
+		fprintf(stdout, "\n\tUsuario/Passwd Invalido\n\t\t pac  <usuario> <passwd> \n       ");
+		return FALSE;	
+	} else	{
+		fprintf(stdout, "\n\t--------------------------------------------------------------  "
+			        	"\n\t* Conectado a ORACLE: Usuario %s Passwd xxxxxxxx   *  "
+			        	"\n\t--------------------------------------------------------------\n",stLineaComando.szUser );
+	}	
+
+	
+/*---------------------------------------------------------------------------*/
+/* Inicializacion del Proceso PAC					     					 */
+/*---------------------------------------------------------------------------*/		
+	if (!bfnIniciarProcesoSmsPac())	{
+		printf("\n\t Error Iniciando el Proceso\n\n");
+		return FALSE;
+	}
+/*---------------------------------------------------------------------------*/
+/* Header.								     								 */
+/*---------------------------------------------------------------------------*/	
+    fprintf(stdout, "\nProcesando ...\n");                                        
+    vDTrazasLog( modulo, "%s"      ,LOG03 , szRaya);                    
+    vDTrazasLog( modulo, "FECHA            [%s]",LOG03 , szhFecha_ddmmyyyy);
+    vDTrazasLog( modulo, "PROGRAMA         [%s]",LOG03 , LOGNAME    );                
+    vDTrazasLog( modulo, "%s"                   ,LOG03 , GLOSA_PROG );                
+    vDTrazasLog( modulo, "VERSION          [%s]",LOG03 , szhVersion );      
+    vDTrazasLog( modulo, "%s\n"    ,LOG03, szRaya); 
+
+    fprintf( stdout, "%s\n"      , szRaya);                    
+    fprintf( stdout, "FECHA            [%s]\n", szhFecha_ddmmyyyy);
+    fprintf( stdout, "PROGRAMA         [%s]\n", LOGNAME    );                
+    fprintf( stdout, "%s\n"                   , GLOSA_PROG );                
+    fprintf( stdout, "VERSION          [%s]\n", szhVersion );                  
+    fprintf( stdout, "%s\n"    , szRaya); 
+	    
+/*---------------------------------------------------------------------------*/
+/* Obtencion de Parametros						     						 */
+/*---------------------------------------------------------------------------*/
+    if (!bfnGedParametros())	{
+		printf("\n\t Error al Obtener Parametros\n\n");
+		return FALSE;
+	}              
+/*---------------------------------------------------------------------------*/
+/* Proceso PAC  -  Principal						     					 */
+/*---------------------------------------------------------------------------*/		    
+	if (!bfnProcesoGenSMSPac())	{
+		vDTrazasLog( modulo, "\n\t---------------------------------------"
+		"\n\t* Proceso NO termino Correctamente. *"
+		"\n\t---------------------------------------\n",LOG03);
+		iFinProc=FALSE;
+		if (!bfnOraRollBack()) return FALSE; 		
+	} else 	{
+		if (!bfnOraCommit())	return FALSE; 
+	}
+
+	stEstadisticas.lContRegPac= lContRegPac;
+	stEstadisticas.lRegAnomalo = lRegAnomalo;	
+/*---------------------------------------------------------------------------*/
+/* Desconexion de Oracle  					             					 */
+/*---------------------------------------------------------------------------*/		    
+	if (bfnDisconnectORA( 0 )) {
+		vDTrazasLog( modulo,   "\t---------------------------------------"
+				   			 "\n\t* Desconectado de  ORACLE             *" 
+				   			 "\n\t---------------------------------------\n\n"
+				   			,LOG03 );
+	}
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion	estadistica del	proceso.     		         */
+/*---------------------------------------------------------------------------*/
+    vDTrazasLog( modulo,  "************************************************" , LOG03);									 
+    vDTrazasLog( modulo,  "Estadistica del proceso", LOG03);			 
+    vDTrazasLog( modulo,  "************************************************" , LOG03);									 
+    vDTrazasLog( modulo,  "Cantidad de Registros con Pago PAC     [%ld]", LOG03,stEstadisticas.lContRegPac);			       
+    vDTrazasLog( modulo,  "Cantidad de Mensajes enviados          [%ld]", LOG03,stEstadisticas.lContRegPac-stEstadisticas.lRegAnomalo);	
+    vDTrazasLog( modulo,  "Cantidad de Mensajes con Error         [%ld]", LOG03,stEstadisticas.lRegAnomalo);	
+    if (iFinProc)  vDTrazasLog( modulo,  "Proceso [%s] finalizado Ok", LOG03,LOGNAME);
+    vDTrazasLog( modulo,  "************************************************\n\n\n" , LOG03);									 
+  
+    if (iFinProc)  {
+	    fprintf(stdout,	"================================================\n");									 
+	    fprintf(stdout, "Estadistica del proceso\n");								 
+	    fprintf(stdout,	"================================================\n");									 
+	    fprintf(stdout, "Cantidad de Registros con Pago PAC     [%ld]\n",stEstadisticas.lContRegPac);			       
+	    fprintf(stdout, "Cantidad de Mensajes enviados          [%ld]\n",stEstadisticas.lContRegPac-stEstadisticas.lRegAnomalo); 
+	    fprintf(stdout, "Cantidad de Mensajes con Error         [%ld]\n\n",stEstadisticas.lRegAnomalo);			       
+	    fprintf(stdout, "Proceso [%s] finalizado ok.\n\n\n", LOGNAME);
+    } else 
+	    fprintf(stdout,"\n\t* Proceso genero Errores. Favor Revisar. *\n\n");
+
+/*---------------------------------------------------------------------------*/
+/* Cierre de Archivos ERROR Y LOG   					                     */
+/*---------------------------------------------------------------------------*/		    
+	fclose(stStatus.LogFile );
+	fclose(stStatus.ErrFile );
+
+    EXEC SQL COMMIT	WORK RELEASE;													  
+    return(0);
+}/************************** Final main **************************************/
+
+/*===========================================================================*/
+/* Manejo de argumentos	ingresados como	parametros externos.		     	 */
+/*===========================================================================*/
+int ifnManejaArgumentos(int argc, char * const argv[])
+{
+char modulo[]="ifnManejaArgumentos";
+char  szUsuario[80] = ""    ;
+char  *psztmp               ; 
+char  opt[]         = "l:u:c:" ;
+
+extern char *optarg        ;
+
+BOOL  bArgumentou = FALSE;
+BOOL  bArgumentoc = FALSE;
+int   iOpt = 0 ;
+
+	while( ( iOpt = getopt( argc, argv, opt ) ) != EOF )
+	{
+		switch( iOpt )
+		{       
+			case 'u':
+				if(strlen(optarg)>0 )
+				{
+					strcpy(szUsuario,optarg);
+					if ( (psztmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+					{
+						fprintf (stderr, "\n\tUsuario Oracle no Valido\n%s\n",szUsage);
+						return (1);
+					}
+					else
+					{
+						strncpy(stLineaComando.szUser,szUsuario,psztmp-szUsuario);
+						strcpy (stLineaComando.szPass,psztmp+1);
+					}
+					bArgumentou=TRUE; 
+				}
+				break;  		
+			
+			case 'c':
+				if(strlen(optarg)>0 && strlen(optarg)<16)
+				{
+					strcpy(stLineaComando.szCodBanco,optarg);
+					bArgumentoc=TRUE; 
+				}
+				break;  
+			
+			case 'l':
+				if(strlen(optarg)>0 && strlen(optarg)<2)
+				{
+					stStatus.LogNivel= atoi(optarg); 
+				}
+				break;  
+			
+		}/* fin switch ... */
+	}/* fin while */
+	
+
+
+	if (!bArgumentou || !bArgumentoc)	{
+		fprintf(stdout,"%s",szUsage);
+		return (3)                  ; 
+	}
+	
+	if (stStatus.LogNivel <= 0 ) stStatus.LogNivel = 3; 
+		
+	return 0;
+}/*vManejaArgumentos*/
+
+/*===========================================================================*/
+/* Obtencion de Parametros del Proceso 					     				 */
+/*===========================================================================*/
+BOOL bfnGedParametros()
+{
+char modulo[]="bfnGedParametros";
+char szNulo        [2] ;
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhCODIGOMENSAJE    [12];
+	int    iValorUno  = 1;	
+EXEC SQL END DECLARE SECTION;
+
+	strcpy(szhCODIGOMENSAJE,"PAC_MENSAJE");
+  	szNulo   [0]=' '; 
+  	
+  	
+  	/*-----------------------------------------------------------------------*/
+  	/* Obtencion de Codigo de Mensaje	            			             */
+  	/*-----------------------------------------------------------------------*/	
+  	EXEC SQL
+
+  	SELECT val_parametro 
+  	INTO   :szhCodMensaje
+  	FROM   ged_parametros
+	WHERE  NOM_PARAMETRO = :szhCODIGOMENSAJE
+	AND    COD_MODULO    = :szhModulo
+	AND    COD_PRODUCTO  = :iValorUno; 
+
+  	if (SQLCODE==NOTFOUND )  {
+		vDTrazasLog( modulo, "\n     Error, Código de Mensaje No existe en GED_PARAMETROS (PAC_MENSAJE). [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Código de Mensaje No existe en GED_PARAMETROS (PAC_MENSAJE). [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	}       
+	else if (SQLCODE != SQLOK) {
+		vDTrazasLog( modulo, "\n     Error en SELECT VAL_PARAMETRO PAC_MENSAJE. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     SELECT VAL_PARAMETRO PAC_MENSAJE. [%s]\n",LOG03,SQLERRM);
+   		return FALSE;
+  	}
+
+	RighTrim(szhCodMensaje);
+  	vDTrazasLog(modulo,"\n\t=> Codigo de Mensaje [%d].",LOG03,szhCodMensaje);
+
+  	/*-----------------------------------------------------------------------*/
+  	/* Codigo de Central			    				                     */
+  	/*-----------------------------------------------------------------------*/	    
+  	EXEC SQL
+  	SELECT cod_central
+  	INTO   :ihCodCentralMens
+  	FROM   icg_mensaje 
+  	WHERE  COD_PRODUCTO  = :iValorUno
+  	AND    COD_MENSAJE   = :szhCodMensaje; 
+  	if (SQLCODE == NOTFOUND) {
+		vDTrazasLog( modulo, 
+		"\n     Error, Código de Central de Mensajes No existe [%s]. "
+		"\n       szhCodMensaje = [%s]\n",LOG03,SQLERRM,szhCodMensaje);	         		
+		vDTrazasError( modulo, 
+		"\n     Código de Central de Mensajes No existe [%s]. "
+		"\n       szhCodMensaje = [%s]\n",LOG03,SQLERRM,szhCodMensaje);	       				       				       		       		
+   		return FALSE;
+  	} 
+	else if (SQLCODE != SQLOK) {
+		vDTrazasLog( modulo, 
+		"\n     Error en SELECT cod_central FROM icg_mensaje. [%s]"
+		"\n       szhCodMensaje = [%s]\n",LOG03,SQLERRM,szhCodMensaje);	        		
+		vDTrazasError( modulo, 
+		"\n     SELECT cod_central FROM icg_mensaje. [%s]"
+		"\n       szhCodMensaje = [%s]\n",LOG03,SQLERRM,szhCodMensaje);	 
+   		return FALSE;
+  	}
+  	
+  	vDTrazasLog(modulo,"\n\t=> Codigo de Central [%d].",LOG03,ihCodCentralMens);
+  
+  	return TRUE;
+}/*bfnGedParametros*/
+
+/*===========================================================================*/
+/* Inicializacion del Proceso PAC. Conexion a Oracle, inicializacion de      */
+/* archivos log															 	 */
+/*===========================================================================*/
+BOOL bfnIniciarProcesoSmsPac()
+{
+char modulo[]="bfnIniciarProcesoSmsPac";
+char szFileBanco[60] = "";
+int  i;
+
+	/*-----------------------------------------------------------------------*/
+	/* Obtencion y tratamiento de Fecha para ser utilizada en archivos       */
+	/*-----------------------------------------------------------------------*/	
+	strcpy( szTime, cfnGetTimePac() );
+	/*-----------------------------------------------------------------------*/
+	/* Obtenemos la Fecha y hora del Sistema y Numero de decimales a tratar  */
+	/*-----------------------------------------------------------------------*/
+	EXEC SQL EXECUTE
+		BEGIN
+			:iDecimal         :=GE_PAC_GENERAL.PARAM_GENERAL('num_decimal');
+			:szhFecha_mmddyyyy:=TO_CHAR(SYSDATE	,:szhmmddyyyy)  ;
+         	:szhHora_hhmmss   :=TO_CHAR(SYSDATE	,:szhHH24miss)  ;
+         	:szFechayyyymmdd  :=TO_CHAR(SYSDATE	,:szhYYYYMMDD)  ;
+         	:szFechayymm      :=TO_CHAR(SYSDATE	,:szhyymm)      ;         	
+         	:szFechaCargo     :=TO_CHAR(SYSDATE	,:szhDDMMYY)    ;
+         	:szhFecha_ddmmyyyy:=TO_CHAR(SYSDATE	,:szhdd_mm_yyyy);
+         	:szhFechaDD       :=TO_CHAR(SYSDATE	,:szhDD)        ;
+		   	:szFecha1yyyymmdd :=TO_CHAR(SYSDATE+1,:szhYYYYMMDD) ; 
+		END;
+	END-EXEC;
+
+	if (SQLCODE!=SQLOK )  {
+		vDTrazasLog( modulo, "\n     Error al obtener Numero Decimal y Fecha. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Numero Decimal y Fecha. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	}       
+	
+	/* Inicio Requerimiento MIX-09003 - 135020 - 08.07.2010 - MQG*/
+	strcpy(zshFormatoMonto,"99,999,999,999     ");
+	if (iDecimal > 0) {		
+		zshFormatoMonto[14] = '.';
+		for(i=1;i<=iDecimal;i++){
+		    zshFormatoMonto[14+i] = '9';
+		} /*for(i==1;i<=iDecimal;i++)*/
+	} /*if (iDecimal > 0)*/
+	RighTrim(zshFormatoMonto);
+	/* Fin Requerimiento MIX-09003 - 135020 - 08.07.2010 - MQG*/
+	
+	/*-----------------------------------------------------------------------*/
+   	/* Inicializacion de Archivos LOG										 */
+	/*-----------------------------------------------------------------------*/
+  	if (ifnAbreArchivosLog(0)!=0) return FALSE;
+
+
+	vDTrazasError( modulo, "\n\t***************************************************************"
+					 	  "\n\t%s  SMS_PAC. Generación Automática de SMS por Pagos PAC.          Hora : %s      "
+						  "\n\t***************************************************************\n\n",LOG03,szhVersion,szhHora_hhmmss);	
+
+
+
+	return TRUE;
+}/* bfnIniciarProcesoSmsPac */
+
+/*===========================================================================*/
+/* Funcion que abre los archivos de log y de error                           */
+/*===========================================================================*/
+int ifnAbreArchivosLog(int iTipfile)
+{
+char modulo[]="ifnAbreArchivosLog";
+char *pathDir               ;
+char szComando  [128]   ="" ;
+char szPathLog  [128]   ="" ;
+
+   /*-----------------------------------------------------------------------*/
+   /* Inicializacion de estructura	de archivo								*/
+   /*-----------------------------------------------------------------------*/
+	memset(szArchivo,'\0',sizeof(szArchivo));
+
+	sprintf(szArchivo,"sms_pac%s",szTime);
+	pathDir =(char *)malloc(228);
+	pathDir =szGetEnv("HOME");
+
+	if (iTipfile == 0) {
+		sprintf(szPathLog  ,"%s/LOG/Recaudacion/sms_pac/%s",pathDir,szFechayyyymmdd);
+		free(pathDir);
+		sprintf(szComando,"/usr/bin/mkdir -p %s", szPathLog);
+		system (szComando);
+	
+		sprintf(stStatus.ErrName,"%s/%s.err",szPathLog,szArchivo);
+		if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+		    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		    return -1;
+		}
+	
+		sprintf(stStatus.LogName,"%s/%s.log",szPathLog,szArchivo);
+		if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+		    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+	    	return -1;
+	   }    
+	}
+	
+   return 0;
+}/* ifnAbreArchivosLog */
+
+/* Inicio Requerimiento MIX-09003 - 135020 - 08.07.2010 - MQG*/
+/*===========================================================================*/
+/* Proceso Principal de SMS PAC							                     */
+/*===========================================================================*/
+BOOL bfnProcesoGenSMSPac()
+{
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de Variables  										 	 */
+/*---------------------------------------------------------------------------*/
+char  modulo[]="bfnProcesoGenCorreoPac";
+char  szhCodBanco        [16];
+int   iFetchedRows = MAXFETCH;
+int   iRetrievRows = MAXFETCH;
+int   ihCuentaAgrupado  ; 
+int	  ihCuentaNoAgrupado; 
+int   iResultado     = 0;
+int   i;
+long  iLastRows    ;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/	
+EXEC SQL BEGIN DECLARE SECTION;
+	   	char szhCod_Banco     [16]; EXEC SQL VAR szhCod_Banco    IS STRING(16);	   	
+	   	char szhCodBancoPar   [MAXFETCH][16]; 
+	    long lMaxFetch ; 
+EXEC SQL END DECLARE SECTION;
+
+	
+    vDTrazasLog(modulo,	"\n\t* Parametros de Entrada a (bfnProcesoGenCorreoPac)"
+						"\n\t=> Nombre Usuario: [%s]"
+						"\n\t=> Password      : [xxxxxx]"
+						"\n\t=> Cod Banco     : [%s]"
+						,LOG03
+						,stLineaComando.szUser
+						,stLineaComando.szCodBanco);
+	
+	/*---------------------------------------------------------------------------*/
+	/* Inicializacion de estructuras de Bancos								     */
+	/*---------------------------------------------------------------------------*/	
+	memset( szhCod_Banco, '\0', sizeof( szhCod_Banco ) );	
+	strcpy( szhCod_Banco, stLineaComando.szCodBanco );
+	
+	/*---------------------------------------------------------------------------*/
+	/* Carga la estructura de manejo de decimales para la operadora local        */
+	/*---------------------------------------------------------------------------*/	
+	if (!bGetParamDecimales())	{
+		vDTrazasLog  ( modulo, "\n     Error al realizar carga de bGetParamDecimales(). [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Al realizar carga de bGetParamDecimales(). [%s]\n",LOG03,SQLERRM);
+	    return FALSE;
+	}    
+
+    /*---------------------------------------------------------------------------*/
+	/* Validacion Banco a procesar			         				 			 */
+	/*---------------------------------------------------------------------------*/	
+	ihCuentaAgrupado    = 0;
+	ihCuentaNoAgrupado  = 0;
+	lMaxFetch   = MAXFETCH;
+	iLastRows   = 0;
+
+	EXEC SQL
+	SELECT COUNT(1) 
+	INTO   :ihCuentaAgrupado
+    FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+	WHERE  B.COD_BANCO_GRP     = :szhCod_Banco
+	AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL;
+	
+	if (SQLCODE!=SQLOK)	{
+		vDTrazasLog  ( modulo, "\n     Error al consultar en GE_OPERADORA_SCL. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Al Consultar en GE_OPERADORA_SCL. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	} /* end if (SQLCODE!=SQLOK) */
+
+	if (ihCuentaAgrupado == 0)	{
+		vDTrazasLog(modulo,"\t\t  Proceso Banco No Agrupado .",LOG03);
+		EXEC SQL
+		SELECT COUNT(1) 
+		INTO   :ihCuentaNoAgrupado
+    	FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+		WHERE  B.COD_BANCO     = :szhCod_Banco
+		AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL;
+
+		if (ihCuentaNoAgrupado == 0)	{ 
+		    vDTrazasError( modulo, "\n  No Existe BANCO  [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+		} /* if (ihCuentaNoAgrupado == 0) */
+
+  		EXEC SQL DECLARE CUR_OPERADORA_NO CURSOR FOR      
+		SELECT B.COD_BANCO
+  		FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+		WHERE  B.COD_BANCO         = :szhCod_Banco
+		AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL
+		ORDER BY B.COD_BANCO;	
+              
+  		EXEC SQL OPEN CUR_OPERADORA_NO;      
+		if (SQLCODE!=SQLOK)	{
+			iDError(modulo,ERR000,vInsertarIncidencia,"\t en OPEN Cursor CUR_OPERADORA_NO.\n\t\t\t\t ",SQLERRM);
+		    vDTrazasError( modulo, "\n  en OPEN Cursor CUR_OPERADORA_NO.  [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+		} /* end if (SQLCODE!=SQLOK) */
+	} else {
+		vDTrazasLog(modulo,"\t\t  Proceso Bancos Agrupados .",LOG03);
+  		EXEC SQL DECLARE CUR_OPERADORA CURSOR FOR      
+		SELECT B.COD_BANCO
+  		FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+		WHERE  B.COD_BANCO_GRP     = :szhCod_Banco
+		AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL
+		ORDER BY B.COD_BANCO;	
+              
+  		EXEC SQL OPEN CUR_OPERADORA;      
+		if (SQLCODE!=SQLOK)	{
+		    vDTrazasError( modulo, "\n  en OPEN Cursor CUR_OPERADORA.  [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+		} /* end if (SQLCODE!=SQLOK)	*/
+	} /* end if (ihCuentaAgrupado == 0)	*/
+
+   	while (iFetchedRows == iRetrievRows)
+   	{
+			if (ihCuentaNoAgrupado > 0)	{
+				EXEC SQL 
+				for :lMaxFetch  FETCH CUR_OPERADORA_NO
+        		INTO :szhCodBancoPar;
+			} else {
+				EXEC SQL 
+				for :lMaxFetch  FETCH CUR_OPERADORA 
+        		INTO  :szhCodBancoPar;
+			} /* end if (ihCuentaNoAgrupado > 0)	*/
+
+		 iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+         iLastRows    = sqlca.sqlerrd[2];
+		 vDTrazasLog(modulo,"\t\t iLastRows  [%d].",LOG03,iLastRows);
+             
+         for (i=0; i < iRetrievRows; i++)
+         {                
+				strcpy (szhCodBanco    , szhCodBancoPar[i]);
+				RighTrim(szhCodBanco);
+				vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+		    	vDTrazasLog(modulo,"\t\t Registro Banco  ====>  [%d].",LOG03,i);
+				vDTrazasLog(modulo,"\t\t CodBanco        ====>  [%s].",LOG03,szhCodBanco);
+					
+				iResultado = ifnProcesaSMS(szhCodBanco);
+				
+		} /* end for */
+	} /* end while */
+
+	/*---------------------------------------------------------------------------*/
+	/*	Cierra cursor CUR_OPERADORA												 */
+	/*---------------------------------------------------------------------------*/	
+	if (ihCuentaNoAgrupado > 0)	{	
+		EXEC SQL CLOSE CUR_OPERADORA_NO;
+		if (SQLCODE )  {
+		    vDTrazasError( modulo, "\n  en CLOSE CUR_OPERADORA_NO.  [%s]\n",LOG03,SQLERRM);			
+			return FALSE;
+		}
+	} else {
+		EXEC SQL CLOSE CUR_OPERADORA;
+		if (SQLCODE )  {
+		    vDTrazasError( modulo, "\n  en CLOSE CUR_OPERADORA.  [%s]\n",LOG03,SQLERRM);			
+			return FALSE;
+		}
+	} /* end if (ihCuentaNoAgrupado == 0)*/
+
+	if (iResultado < 0) return FALSE;
+
+	return TRUE;
+
+} /* bfnProcesoGenSMSPac */
+
+/*===========================================================================*/
+/* ifnProcesaSMS                    					                     */
+/*===========================================================================*/
+BOOL ifnProcesaSMS(char *szpCodBanco)
+{
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de Variables  										 	 */
+/*---------------------------------------------------------------------------*/
+char  modulo[]="ifnProcesaSMS";
+char  zshFecValor   [17];	
+char  zshCodIdioma   [6];	
+char  zshFecProceso [11];		
+char  zshCodIdiomaAnt[6];	
+long  iLastRows    ;
+long  lhCodCliente;		   	
+int   iFetchedRows = MAXFETCH;
+int   iRetrievRows = MAXFETCH;
+int   ihTipDocum;
+int   ihIndSMS;
+int   i;
+double dhImporte;	
+
+/*Datos Celular*/
+char szhCodTecnologiaAnt[8];
+char szhTipPlanAnt[9];
+char szhCodActAbo[3];
+char szhCodActAboAnt[3];
+long lhCodActCen;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/	
+EXEC SQL BEGIN DECLARE SECTION;
+	   	char szhCod_Banco     [16]; EXEC SQL VAR szhCod_Banco     IS STRING(16);
+	   	char zshMensaje      [257]; EXEC SQL VAR zshMensaje       IS STRING(257);
+	   	char szhNumSerieHex    [9]; EXEC SQL VAR szhNumSerieHex   IS STRING (9);
+        char szhTipTerminal    [2]; EXEC SQL VAR szhTipTerminal   IS STRING (2);
+	   	char szhNumMin         [4]; EXEC SQL VAR szhNumMin        IS STRING (4);
+	   	char szhCodTecnologia  [8]; EXEC SQL VAR szhCodTecnologia IS STRING (8);
+        char szhNumSerie      [26]; EXEC SQL VAR szhNumSerie      IS STRING(26);
+        char szhNumImei       [26]; EXEC SQL VAR szhNumImei       IS STRING(26);
+        char szhImsi          [51]; EXEC SQL VAR szhImsi          IS STRING(51);
+        char szhTipPlan        [9]; EXEC SQL VAR szhTipPlan       IS STRING (9);
+
+	   	long lhCodClienteArr    [MAXFETCH];		   	
+	   	char zshCodIdiomaArr    [MAXFETCH][6] ; 	
+	   	char zshFecProcesoArr   [MAXFETCH][11];		
+	   	double dhImporteArr     [MAXFETCH];	
+	   	char zshFecValorArr     [MAXFETCH][17];	
+	   	int ihTipDocumArr       [MAXFETCH];
+	   	int ihIndSMSArr         [MAXFETCH];	
+
+        int  ihCodProducto;
+        int  ihCodCentral;
+        int  lhIndPlexsys;
+        long lhNumAbonado;
+        long lhNumCelular;
+        long lhCodCentralPlexsys;
+        long lhNumCelularPrexsys;
+        long lhNumMovimiento;
+        long lhNumMovimiento2;
+	   	
+	    long lMaxFetch    ; 
+EXEC SQL END DECLARE SECTION;
+	
+    vDTrazasLog(modulo,	"\n\t* Parametros de Entrada a (bfnProcesoGenSMSPac)"
+						"\n\t=> Cod Banco     : [%s]"
+						,LOG03
+						,szpCodBanco);
+	
+	/*---------------------------------------------------------------------------*/
+	/* Inicializacion de estructuras de Bancos								     */
+	/*---------------------------------------------------------------------------*/	
+	memset( szhCod_Banco, '\0', sizeof( szhCod_Banco ) );	
+	strcpy( szhCod_Banco, szpCodBanco );
+
+	lMaxFetch   = MAXFETCH;
+	iLastRows   = 0;
+
+	vDTrazasLog(modulo,"\t\t  Proceso SMS Pac .",LOG03);
+	
+	EXEC SQL DECLARE CUR_SMS CURSOR FOR      
+	SELECT a.cod_cliente, 
+	       nvl(b.cod_idioma,:ihValor_uno) cod_idioma, 
+	       TO_CHAR(a.fec_proceso, :szhDDMMYYYY) fec_proceso, 
+	       a.importe_debe , 
+	       TO_CHAR(a.fec_valor,:szhYYYYMMDDHHMISS), 
+	       a.cod_tipdocum ,
+	       a.ind_sms
+ 	FROM   co_pagospac a, ge_clientes b
+	WHERE  a.cod_cliente = b.cod_cliente
+	   AND a.cod_banco   = :szhCod_Banco
+	   AND a.ind_SMS  in (:ihValor_uno, :ihValor_tres);	
+      
+	EXEC SQL OPEN CUR_SMS;      
+	if (SQLCODE!=SQLOK)	{
+		vDTrazasLog  ( modulo, "\n     Error en OPEN Cursor CUR_SMS. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     en OPEN Cursor CUR_SMS. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	} /* end if (SQLCODE!=SQLOK)	*/
+
+   	while (iFetchedRows == iRetrievRows)
+   	{	   		
+	   	   		
+		EXEC SQL 
+		for :lMaxFetch  FETCH CUR_SMS 
+		INTO  	:lhCodClienteArr,
+			    :zshCodIdiomaArr, 
+		  	    :zshFecProcesoArr,
+		  	    :dhImporteArr,
+		  	    :zshFecValorArr,
+		  	    :ihTipDocumArr,
+		  	    :ihIndSMSArr;
+
+			iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+         	iLastRows    = sqlca.sqlerrd[2];
+			vDTrazasLog(modulo,"\t\t iLastRows  [%d].",LOG03,iLastRows);
+             
+         	for (i=0; i < iRetrievRows; i++)
+         	{               
+         		lContRegPac++; 
+				lhCodCliente = lhCodClienteArr[i];
+				dhImporte    = dhImporteArr   [i];
+				ihTipDocum   = ihTipDocumArr  [i];
+				ihIndSMS     = ihIndSMSArr    [i];
+
+				strcpy (zshCodIdioma , zshCodIdiomaArr [i]);
+				strcpy (zshFecProceso, zshFecProcesoArr[i]);
+				strcpy (zshFecValor  , zshFecValorArr  [i]);
+				
+				RighTrim(zshCodIdioma);
+				RighTrim(zshFecProceso);
+				RighTrim(zshFecValor);
+				
+				vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+		    	vDTrazasLog(modulo,"\t\t Registro SMS  ====>  [%d].",LOG03,i);
+				vDTrazasLog(modulo,"\t\t lhCodCliente        ====>  [%d].",LOG03,lhCodCliente);
+				vDTrazasLog(modulo,"\t\t szshCodIdioma       ====>  [%s].",LOG03,zshCodIdioma);
+				vDTrazasLog(modulo,"\t\t zshFecProceso       ====>  [%s].",LOG03,zshFecProceso);
+				vDTrazasLog(modulo,"\t\t dhImporte           ====>  [%f].",LOG03,dhImporte);
+				vDTrazasLog(modulo,"\t\t zshFecValor         ====>  [%s].",LOG03,zshFecValor);
+				vDTrazasLog(modulo,"\t\t ihTipDocum          ====>  [%d].",LOG03,ihTipDocum);
+				
+				/*--------------------------------------------------------------*/
+				/* Obtencion del Mensaje a Enviar (solo si el idioma es distinto al del registro anterior)*/
+				/*--------------------------------------------------------------*/				
+				
+				if (strcmp(zshCodIdiomaAnt,zshCodIdioma)!=0 ) {
+				
+					/* seleccionamos el mensaje que corresponde al cliente de acuerdo a mensaje/idioma */
+					if( !bfnSelectDescripcionMensaje(szhCodMensaje, zshCodIdioma, zshMensaje ) )
+					{
+						vDTrazasLog( modulo, 
+						"\n     Error al Obtener Mensaje a Enviar [%s]."
+						"\n       szhCodMensaje = [%s]"
+						"\n       zshCodIdioma  = [%s]"
+						"\n       lhCodCliente  = [%ld]\n\n",LOG03,SQLERRM, szhCodMensaje, zshCodIdioma, lhCodCliente);						
+						vDTrazasError( modulo, 
+						"\n     Al Obtener Mensaje a Enviar [%s]."
+						"\n       szhCodMensaje = [%s]"
+						"\n       zshCodIdioma  = [%s]"
+						"\n       lhCodCliente  = [%ld]\n\n",LOG03,SQLERRM, szhCodMensaje, zshCodIdioma, lhCodCliente);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+							lRegAnomalo++;
+							continue;
+						} else {
+							vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+												"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+												"\n\t----------------------------------------------------------",LOG05);
+						}						
+						lRegAnomalo++;
+						continue;
+					}										
+						strcpy (zshCodIdiomaAnt,zshCodIdioma);					
+				}
+				
+				/*--------------------------------------------------------------*/
+				/* Obtencion datos del celular al que se enviará el mensaje     */
+				/*--------------------------------------------------------------*/								
+			   	EXEC SQL 
+				SELECT cod_producto,
+					   num_abonado,
+					   num_celular,  
+					   cod_central,
+					   NVL(ind_plexsys, 0 ),
+					   NVL(cod_central_plex, 0 ),
+					   NVL(num_celular_plex, -1 ),
+					   NVL(num_seriehex, '0'),
+					   tip_terminal,
+					   NVL(num_min, 730 ),
+					   cod_tecnologia,
+					   DECODE(cod_tecnologia, 'GSM',  num_serie, ' ' ) as num_serie,
+					   NVL(num_imei, ' ' ),
+					   DECODE(cod_tecnologia, 'GSM', fRecuperSIMCARD_FN( num_serie, 'IMSI'), ' ' ) imsi,
+					   CO_fGetTipPlanCelular( cod_plantarif) AS TIP_PLAN
+				 INTO :ihCodProducto,
+					  :lhNumAbonado,
+					  :lhNumCelular,
+					  :ihCodCentral,
+					  :lhIndPlexsys,
+					  :lhCodCentralPlexsys,
+					  :lhNumCelularPrexsys,
+					  :szhNumSerieHex,
+					  :szhTipTerminal,
+					  :szhNumMin,
+					  :szhCodTecnologia,
+					  :szhNumSerie,
+					  :szhNumImei,
+					  :szhImsi,
+					  :szhTipPlan
+				 FROM ga_abocel
+			    WHERE cod_cliente = :lhCodCliente
+				  AND num_celular = (SELECT min(num_celular)
+					                   FROM ga_abocel
+					                  WHERE cod_cliente = :lhCodCliente
+					                    AND	tip_terminal IN ( :szhLetraA, :szhLetraD, :szhLetraG ) 
+					                    AND	cod_uso       != :ihValor_tres          
+					                    AND	cod_situacion != :szhBAA);
+		
+					if (SQLCODE!=SQLOK ) {
+						vDTrazasLog( modulo, 
+						"\n     Error al Obtener Datos celular al que se enviará el Mensaje [%s]."
+						"\n     lhCodCliente = [%ld]\n\n",LOG03,SQLERRM,lhCodCliente);						
+						vDTrazasError( modulo, 
+						"\n     Al Obtener Datos celular al que se enviará el Mensaje [%s]."
+						"\n     lhCodCliente = [%ld]\n\n",LOG03,SQLERRM,lhCodCliente);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+							lRegAnomalo++;
+							continue;
+						} else {
+							vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+												"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+												"\n\t----------------------------------------------------------",LOG05);
+						}						
+						lRegAnomalo++;
+						continue;
+					}
+				
+					vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+			    	vDTrazasLog(modulo,"\t\t Registro SMS  ====>  [%d].",LOG03,i);
+					vDTrazasLog(modulo,"\t\t lhCodCliente        ====>  [%d].",LOG03,lhCodCliente);
+					vDTrazasLog(modulo,"\t\t ihCodProducto       ====>  [%d].",LOG03,ihCodProducto);
+					vDTrazasLog(modulo,"\t\t num_abonado         ====>  [%d].",LOG03,lhNumAbonado);
+					vDTrazasLog(modulo,"\t\t lhNumCelular        ====>  [%ld].",LOG03,lhNumCelular);										
+					vDTrazasLog(modulo,"\t\t ihCodCentral        ====>  [%d].",LOG03,ihCodCentral);
+					vDTrazasLog(modulo,"\t\t lhIndPlexsys        ====>  [%d].",LOG03,lhIndPlexsys);
+					vDTrazasLog(modulo,"\t\t lhCodCentralPlexsys ====>  [%d].",LOG03,lhCodCentralPlexsys);				
+					vDTrazasLog(modulo,"\t\t lhNumCelularPrexsys ====>  [%ld].",LOG03,lhNumCelularPrexsys);
+					vDTrazasLog(modulo,"\t\t szhNumSerieHex      ====>  [%s].",LOG03,szhNumSerieHex);
+					vDTrazasLog(modulo,"\t\t szhTipTerminal      ====>  [%s].",LOG03,szhTipTerminal);
+					vDTrazasLog(modulo,"\t\t szhNumMin           ====>  [%s].",LOG03,szhNumMin);
+					vDTrazasLog(modulo,"\t\t szhCodTecnologia    ====>  [%s].",LOG03,szhCodTecnologia);
+					vDTrazasLog(modulo,"\t\t szhNumSerie         ====>  [%s].",LOG03,szhNumSerie);
+					vDTrazasLog(modulo,"\t\t szhNumImei          ====>  [%s].",LOG03,szhNumImei);
+					vDTrazasLog(modulo,"\t\t szhImsi             ====>  [%s].",LOG03,szhImsi);
+					vDTrazasLog(modulo,"\t\t szhTipPlan          ====>  [%s].",LOG03,szhTipPlan);
+
+					/*--------------------------------------------------------------*/
+					/* Obtencion de la Actuacion del Abonado                        */
+					/*--------------------------------------------------------------*/				
+					RighTrim(szhTipPlan);
+					if (strcmp(szhTipPlan,szhTipPlanAnt)!=0) {
+						if( !bfnGetActAbodeAccion( szhRutinaMensaje, szhTipPlan, ihValor_uno, szhCodActAbo ) ) {
+							/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Al Obtener Actuacion del Abonado.\n\t\t\t\t ",SQLERRM);*/
+							vDTrazasLog( modulo, 
+							"\n     Error al Obtener Actuacion del Abonado [%s]. "
+							"\n       szhTipPlan = [%s]\n\n",LOG03,SQLERRM,szhTipPlan);							
+							vDTrazasError( modulo, 
+							"\n     Al Obtener Actuacion del Abonado [%s]. "
+							"\n       szhTipPlan = [%s]\n\n",LOG03,SQLERRM,szhTipPlan);
+							if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS,ihIndSMS)) {
+								lRegAnomalo++;
+								continue;
+							} else {
+								vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+													"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+													"\n\t----------------------------------------------------------",LOG05);
+							}							
+							lRegAnomalo++;
+							break;  
+						}											    								
+						strcpy(szhTipPlanAnt,szhTipPlan);
+					}	
+					vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+			    	vDTrazasLog(modulo,"\t\t Registro SMS  ====>  [%d].",LOG03,i);
+					vDTrazasLog(modulo,"\t\t szhCodActAbo        ====>  [%s].",LOG03,szhCodActAbo);						
+										
+					/*--------------------------------------------------------------*/
+					/* Obtencion de la central asociada a la actuación              */
+					/*--------------------------------------------------------------*/				
+					RighTrim(szhCodTecnologia);
+					if ((strcmp(szhCodTecnologia,szhCodTecnologiaAnt)!=0) && (strcmp(szhCodActAbo, szhCodActAboAnt)!= 0)) {
+												
+						if( ( lhCodActCen = ifnGetActuacionCentralCelularAcc(szhCodActAbo, ihValor_uno, szhModulo, szhCodTecnologia ) ) < 0 )
+						{
+							vDTrazasLog( modulo, 
+							"\n     Error al Obtener Central de la Actuacion [%s]. "
+							"\n       szhCodActAbo     = [%s]"
+							"\n       szhCodTecnologia = [%s]\n",LOG03,SQLERRM,szhCodActAbo,szhCodTecnologia);							
+							vDTrazasError( modulo, 
+							"\n     Al Obtener Central de la Actuacion [%s]. "
+							"\n       szhCodActAbo     = [%s]"
+							"\n       szhCodTecnologia = [%s]\n",LOG03,SQLERRM,szhCodActAbo,szhCodTecnologia);
+							if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS,ihIndSMS)) {
+								lRegAnomalo++;
+								continue;
+							} else {
+								vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+													"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+													"\n\t----------------------------------------------------------",LOG05);
+							}							
+							lRegAnomalo++;							
+							continue;
+						}
+
+						strcpy(szhCodTecnologiaAnt,szhCodTecnologia);
+					}	
+					strcpy(szhCodActAboAnt, szhCodActAbo);
+					
+					vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+			    	vDTrazasLog(modulo,"\t\t Registro SMS  ====>  [%d].",LOG03,i);
+					vDTrazasLog(modulo,"\t\t lhCodActCen        ====>  [%d].",LOG03,lhCodActCen);						
+					
+					/*--------------------------------------------------------------*/
+					/* Obtencion del número de movimiento en centrales              */
+					/*--------------------------------------------------------------*/									
+				    EXEC SQL 
+					SELECT ICC_SEQ_NUMMOV.NEXTVAL
+					INTO   :lhNumMovimiento
+					FROM   DUAL;
+			
+					if (SQLCODE!=SQLOK ) {
+						vDTrazasLog( modulo, "\n     Error al Obtener Numero de Movimiento. [%s]\n\n",LOG03,SQLERRM);
+						vDTrazasError( modulo, "\n     Al Obtener Numero de Movimiento. [%s]\n\n",LOG03,SQLERRM);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS,ihIndSMS)) {
+							lRegAnomalo++;
+							continue;
+						} else {
+							vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+												"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+												"\n\t----------------------------------------------------------",LOG05);
+						}							
+						lRegAnomalo++;
+						continue;
+					}					
+					
+					vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+			    	vDTrazasLog(modulo,"\t\t Registro SMS  ====>  [%d].",LOG03,i);
+					vDTrazasLog(modulo,"\t\t lhNumMovimiento        ====>  [%d].",LOG03,lhNumMovimiento);	
+					
+					RighTrim(szhNumSerie);
+					RighTrim(szhNumImei);
+					RighTrim(szhImsi);
+					RighTrim(szhTipPlan);
+					if (lhIndPlexsys == 0){
+						/*--------------------------------------------------------------*/
+						/* Genera movimiento en Centrales                               */
+						/*--------------------------------------------------------------*/
+						EXEC SQL  
+						INSERT INTO ICC_MOVIMIENTO 
+							   (NUM_MOVIMIENTO, NUM_ABONADO  , COD_ESTADO    , COD_MODULO , 
+							    NUM_INTENTOS  , DES_RESPUESTA, COD_ACTUACION , COD_ACTABO ,
+							    NOM_USUARORA  , FEC_INGRESO  , COD_CENTRAL   , NUM_CELULAR, 
+							    NUM_SERIE     , TIP_TERMINAL , IND_BLOQUEO   , NUM_MIN    , 
+							    STA           , DES_MENSAJE  , TIP_TECNOLOGIA, 
+							    IMEI          , 
+							    IMSI          , 
+							    ICC           ,
+							    COD_MENSAJE   , PARAM1_MENS  , 
+							    PARAM2_MENS) 
+					    VALUES (:lhNumMovimiento, :lhNumAbonado  , :ihValor_uno     , :szhModulo   ,
+							    :ihValor_Cero   , :szhPendiente  , :lhCodActCen     , :szhCodActAbo,
+							    USER            , SYSDATE        , :ihCodCentralMens, :lhNumCelular,
+							    :szhNumSerieHex , :szhTipTerminal, :ihValor_Cero    , :szhNumMin   ,
+							    :szhS           , :zshMensaje    , :szhCodTecnologia, 
+							    DECODE(:szhNumImei , ' ', NULL, :szhNumImei),
+							    DECODE(:szhImsi    , ' ', NULL, :szhImsi),
+							    DECODE(:szhNumSerie, ' ', NULL, :szhNumSerie),
+							    :szhCodMensaje   , :zshFecProceso, 
+							    TO_CHAR(GE_PAC_GENERAL.REDONDEA(:dhImporte, :iDecimal, :ihValor_Cero),:zshFormatoMonto));					
+						
+						if (SQLCODE)  {
+							vDTrazasLog( modulo, 
+							"\n     Error al Insertar en la icc_movimientos. [%s]"
+							"\n       lhNumAbonado = [%ld]\n",LOG03,SQLERRM,lhNumAbonado);							
+							vDTrazasError( modulo, 
+							"\n     Al Insertar en la icc_movimientos. [%s]"
+							"\n       lhNumAbonado = [%ld]\n",LOG03,SQLERRM,lhNumAbonado);
+							if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+								lRegAnomalo++;
+								continue;
+							} else {
+								vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+													"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+													"\n\t----------------------------------------------------------",LOG05);
+							}							
+							lRegAnomalo++;
+							continue;
+					
+						} else {
+							vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+												"\n\tHemos volcado la informacion en la Base de Datos ICC_MOVIMIENTO"
+												"\n\t----------------------------------------------------------",LOG05);
+						}
+					}else{
+						/*--------------------------------------------------------------*/
+						/* Obtencion del nuevo número de movimiento en centrales        */
+						/*--------------------------------------------------------------*/									
+				    	EXEC SQL 
+						SELECT ICC_SEQ_NUMMOV.NEXTVAL
+						INTO   :lhNumMovimiento2
+						FROM   DUAL;
+				
+						if (SQLCODE!=SQLOK ) {
+							vDTrazasLog( modulo, "\n     Error al Obtener Numero de Movimiento 2. [%s]\n\n",LOG03,SQLERRM);
+							vDTrazasError( modulo, "\n     Al Obtener Numero de Movimiento 2. [%s]\n\n",LOG03,SQLERRM);
+							if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+								lRegAnomalo++;
+								continue;
+							} else {
+								vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+													"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+													"\n\t----------------------------------------------------------",LOG05);
+								}								
+							lRegAnomalo++;
+							continue;
+						}						
+						/*--------------------------------------------------------------*/
+						/* Genera movimiento en Centrales                               */
+						/*--------------------------------------------------------------*/
+						EXEC SQL  
+						INSERT INTO ICC_MOVIMIENTO 
+							   (NUM_MOVIMIENTO, NUM_ABONADO  , COD_ESTADO   , COD_MODULO    , 
+							    NUM_INTENTOS  , DES_RESPUESTA, COD_ACTUACION, COD_ACTABO    ,
+							    NOM_USUARORA  , FEC_INGRESO  , COD_CENTRAL  , NUM_CELULAR   , 
+ 							    NUM_SERIE     , TIP_TERMINAL , IND_BLOQUEO  , NUM_MOVPOS    ,
+ 							    NUM_MIN       , STA          , DES_MENSAJE  , TIP_TECNOLOGIA, 
+							    IMEI          , 
+							    IMSI          , 
+							    ICC           ,
+							    COD_MENSAJE   , PARAM1_MENS  , 
+							    PARAM2_MENS) 
+					    VALUES (:lhNumMovimiento, :lhNumAbonado  , :ihValor_uno     , :szhModulo       ,
+							    :ihValor_Cero   , :szhPendiente  , :lhCodActCen     , :szhCodActAbo    ,
+							    USER            , SYSDATE        , :ihCodCentralMens, :lhNumCelular    ,
+							    :szhNumSerieHex , :szhTipTerminal, :ihValor_Cero    , :lhNumMovimiento2,
+							    :szhNumMin      , :szhS          , :zshMensaje      , :szhCodTecnologia, 
+							    DECODE(:szhNumImei , ' ', NULL, :szhNumImei),
+							    DECODE(:szhImsi    , ' ', NULL, :szhImsi),
+							    DECODE(:szhNumSerie, ' ', NULL, :szhNumSerie),
+							    :szhCodMensaje  , :zshFecProceso, 
+							    TO_CHAR(GE_PAC_GENERAL.REDONDEA(:dhImporte, :iDecimal, :ihValor_Cero),:zshFormatoMonto));					
+						
+						if (SQLCODE)  {
+							vDTrazasLog( modulo, 
+							"\n     Error al Insertar en la icc_movimientos. [%s]"
+							"\n       lhNumAbonado = [%ld]\n\n",LOG03,SQLERRM);							
+							vDTrazasError( modulo, 
+							"\n     Al Insertar en la icc_movimientos. [%s]"
+							"\n       lhNumAbonado = [%ld]\n\n",LOG03,SQLERRM);
+							if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+								lRegAnomalo++;
+								continue;
+							} else {
+								vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+													"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+													"\n\t----------------------------------------------------------",LOG05);
+							}							
+							lRegAnomalo++;
+							continue;
+					
+						} else {
+							vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+												"\n\tHemos volcado la informacion en la Base de Datos ICC_MOVIMIENTO2"
+												"\n\t----------------------------------------------------------",LOG05);
+						}
+					
+						/*--------------------------------------------------------------*/
+						/* Genera Segundo movimiento en Centrales                       */
+						/*--------------------------------------------------------------*/
+						EXEC SQL  
+						INSERT INTO ICC_MOVIMIENTO 
+							   (NUM_MOVIMIENTO, NUM_ABONADO  , COD_ESTADO   , COD_MODULO    , 
+							    NUM_INTENTOS  , DES_RESPUESTA, COD_ACTUACION, COD_ACTABO    ,
+							    NOM_USUARORA  , FEC_INGRESO  , COD_CENTRAL  , NUM_CELULAR   , 
+							    NUM_SERIE     , TIP_TERMINAL , IND_BLOQUEO  , NUM_MOVANT    , 
+							    NUM_MIN       , STA          , DES_MENSAJE  , TIP_TECNOLOGIA, 
+							    IMEI          , 
+							    IMSI          , 
+							    ICC           ,
+							    COD_MENSAJE   , PARAM1_MENS  , 
+							    PARAM2_MENS) 
+					   VALUES (:lhNumMovimiento2, :lhNumAbonado  , :ihValor_uno        , :szhModulo          ,
+							   :ihValor_Cero    , :szhPendiente  , :lhCodActCen        , :szhCodActAbo       ,
+							   USER             , SYSDATE        , :lhCodCentralPlexsys, :lhNumCelularPrexsys,
+							   :szhNumSerieHex  , :szhTipTerminal, :ihValor_Cero       , :lhNumMovimiento    ,
+							   :szhNumMin       , :szhS          , :zshMensaje         , :szhCodTecnologia   , 
+							   DECODE(:szhNumImei , ' ', NULL, :szhNumImei),
+							   DECODE(:szhImsi    , ' ', NULL, :szhImsi),
+							   DECODE(:szhNumSerie, ' ', NULL, :szhNumSerie),
+							   :szhCodMensaje   , :zshFecProceso, 
+							   TO_CHAR(GE_PAC_GENERAL.REDONDEA(:dhImporte, :iDecimal, :ihValor_Cero),:zshFormatoMonto));					
+						
+						if (SQLCODE)  {
+							vDTrazasLog( modulo, 
+							"\n     Error al Insertar en la icc_movimientos. [%s]"
+							"\n       lhNumAbonado = [%ld]\n\n",LOG03,SQLERRM);							
+							vDTrazasError( modulo, 
+							"\n     Al Insertar en la icc_movimientos. [%s]"
+							"\n       lhNumAbonado = [%ld]\n\n",LOG03,SQLERRM);
+							if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+								lRegAnomalo++;
+								continue;
+							} else {
+								vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+													"\n\tHemos actualizado el error en la Base de Datos CO_PAGOSPAC"
+													"\n\t----------------------------------------------------------",LOG05);
+							}							
+							lRegAnomalo++;
+							continue;
+					
+						} else {
+							vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+												"\n\tHemos volcado la informacion en la Base de Datos ICC_MOVIMIENTO3"
+												"\n\t----------------------------------------------------------",LOG05);
+						}											
+					}					
+												
+				/*--------------------------------------------------------------*/
+				/* Actualiza Co_pagospac					                    */
+				/*--------------------------------------------------------------*/
+				if (!bfnActualizaCoPagosPac(ihValor_Dos, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndSMS)) {
+					lRegAnomalo++;
+					continue;
+				} else {
+					vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+										"\n\tHemos volcado la informacion en la Base de Datos CO_PAGOSPAC"
+										"\n\t----------------------------------------------------------",LOG05);
+				}										
+					
+		} /* end for */
+	} /* end while */
+
+	/*---------------------------------------------------------------------------*/
+	/*	Cierra cursor CUR_SMS												     */
+	/*---------------------------------------------------------------------------*/	
+	EXEC SQL CLOSE CUR_SMS;
+	if (SQLCODE )  {
+			vDTrazasLog  ( modulo, "\n     Error en CLOSE CUR_SMS. [%s]\n",LOG03,SQLERRM);
+			vDTrazasError( modulo, "\n     En CLOSE CUR_SMS. [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+	}	
+	return TRUE;
+} /* ifnProcesaSMS */
+/* Fin Requerimiento MIX-09003 - 135020 - 08.07.2010 - MQG*/
+
+/*==================================================================================================*/
+/* Funcion que Actualiza el estado de envío del SMS                                                 */
+/*==================================================================================================*/
+BOOL bfnActualizaCoPagosPac(int ipIndSMS, char *szpFecValor, char *szpCodBanco, long lpCodCliente, int ipCodTipDocum, char *szpFormatoFecha, int ipIndSMSAnt)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int     ihIndSMS;
+	char	szhFecValor[17];
+	char	szhCodBanco[16];
+	char    szhFormatoFecha[17];
+	long	lhCodCliente;
+	int	ihCodTipDocum;
+   
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "bfnActualizaCoPagosPac";
+int	rr, ilong = 0;
+struct sqlca sqlca;
+
+	memset(szhFecValor    , '\0', sizeof( szhFecValor ) );
+	memset(szhCodBanco    , '\0', sizeof( szhCodBanco ) );
+	memset(szhFormatoFecha, '\0', sizeof( szhFormatoFecha ) );
+	
+	strcpy(szhFecValor, szpFecValor );
+	strcpy(szhCodBanco, szpCodBanco );
+	strcpy(szhFormatoFecha, szpFormatoFecha);
+	ihIndSMS = ipIndSMS ;
+	lhCodCliente = lpCodCliente;
+	ihCodTipDocum = ipCodTipDocum;
+	if ((ipIndSMS == ihValor_tres) && (ipIndSMSAnt == ihValor_tres)) {
+		ihIndSMS = ihValor_cuatro;
+	}
+	else {
+		ihIndSMS = ipIndSMS ;
+	}
+	sqlca.sqlcode=0; /* se resetea la vble sql en caso de brain damage*/
+	EXEC SQL 
+		UPDATE CO_PAGOSPAC
+		SET IND_SMS = :ihIndSMS,
+		FEC_SMS = SYSDATE
+		WHERE fec_valor = TO_DATE(:szhFecValor,:szhFormatoFecha)
+		AND cod_banco = :szhCodBanco
+		AND cod_cliente = :lhCodCliente
+		AND cod_tipdocum = :ihCodTipDocum;
+
+	if( sqlca.sqlcode )
+	{
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Al actualizar co_pagospac.\n\t\t\t\t ",SQLERRM);*/
+		vDTrazasLog( modulo, 
+		"\n     Error al actualizar co_pagospac. [%s]"
+		"\n       lhCodCliente = [%ld]\n\n",LOG03,SQLERRM,lhCodCliente);		
+		vDTrazasError( modulo, 
+		"\n     Al actualizar co_pagospac. [%s]"
+		"\n       lhCodCliente = [%ld]\n\n",LOG03,SQLERRM,lhCodCliente);					
+		return FALSE;		
+	}
+
+	return TRUE;
+
+}/* fin bfnActualizaCoPagosPac */
+
+/*==================================================================================================*/
+/* Funcion que Selecciona el texto del mensaje a enviar al cliente y central de envio               */
+/*==================================================================================================*/
+BOOL bfnSelectDescripcionMensaje(char *szCodMensaje, char *szCodIdioma, char *szpDescMensaje )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhCodConcepto [13];
+	char	szhCodIdioma    [6];
+	long	lhSecuenciaMensaje = -1;
+	char	szhDescMensaje[257];
+	char    szhICG_MENSA   [12];
+	char    szhCOD_MENSA   [12];
+    int     ihValor_uno  = 1;	
+   
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "bfnSelectDescripcionMensaje";
+int	rr, ilong = 0;
+struct sqlca sqlca;
+
+	memset(szhCodConcepto, '\0', sizeof( szhCodConcepto ) );
+	memset(szhCodIdioma  , '\0', sizeof( szhCodIdioma   ) );
+	memset(szhDescMensaje, '\0', sizeof( szhDescMensaje ) );
+	
+	strcpy(szhCodConcepto, szCodMensaje );
+	strcpy(szhCodIdioma  , szCodIdioma );
+	strcpy(szhICG_MENSA  , "ICG_MENSAJE");
+	strcpy(szhCOD_MENSA  , "COD_MENSAJE");
+
+
+	sqlca.sqlcode=0; /* se resetea la vble sql en caso de brain damage*/
+	EXEC SQL 
+	SELECT DES_CONCEPTO
+	  INTO :szhDescMensaje	
+	  FROM GE_MULTIIDIOMA
+	 WHERE NOM_TABLA  = :szhICG_MENSA
+	  AND NOM_CAMPO	  = :szhCOD_MENSA
+	  AND COD_CONCEPTO= :szhCodConcepto
+	  AND COD_IDIOMA  = :szhCodIdioma
+	  AND COD_PRODUCTO= :ihValor_uno;
+
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		/*ifnTrazaHilos( modulo,&pfLog,  "Codigo => [%s], Idioma => [%s], error al Texto del Mensaje ==> [%s].", LOG00, szhCodConcepto, szhCodIdioma, sqlca.sqlerrm.sqlerrmc );  */
+		return FALSE;		
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		/*ifnTrazaHilos( modulo,&pfLog,  "Codigo => [%s], Idioma => [%s], , no existe Texto de Mensaje asociado.", LOG01, szhCodConcepto, szhCodIdioma );  */
+		return FALSE;		
+	}
+
+	strcpy( szpDescMensaje, szhDescMensaje );
+	return TRUE;
+
+}/* fin bfnSelectDescripcionMensaje */
+
+/*==================================================================================================*/
+/* Funcion bfnGetActAbodeAccion                                                                     */
+/*==================================================================================================*/
+BOOL bfnGetActAbodeAccion(char *szCodRutina, char *szCodTiPlan, int iCodProducto, char *szActuacionOut)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhCodRutina[6];
+	char szhCodTiPlan[9];
+	 int ihCodProducto;
+	char szhCodActAbo[3]; 
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bfnGetActAbodeAccion";
+struct sqlca sqlca;
+
+	memset( szhCodRutina, '\0', sizeof( szhCodRutina ) );
+	memset( szhCodTiPlan, '\0', sizeof( szhCodTiPlan ) );
+	memset( szhCodActAbo, '\0', sizeof( szhCodActAbo ) );
+
+	strcpy( szhCodRutina, szCodRutina );
+	strcpy( szhCodTiPlan, szCodTiPlan );
+	ihCodProducto = iCodProducto;
+
+	RighTrim( szhCodRutina );
+	RighTrim( szhCodTiPlan );
+
+	sqlca.sqlcode=0; /* se resetea la vble sql en caso de brain damage*/
+	EXEC SQL
+	SELECT COD_ACTABO
+	INTO   :szhCodActAbo
+	FROM   CO_RUTINA_ACTABO_TD
+	WHERE  COD_RUTINA = :szhCodRutina
+	AND    COD_TIPLAN = :szhCodTiPlan
+	AND    COD_PRODUCTO = :ihCodProducto;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND ) 	{  
+		/*ifnTrazaHilos( modulo,&pfLog,  "Error al recuperar COD_ACTABO => [%s].", LOG00, sqlca.sqlerrm.sqlerrmc );*/
+		return FALSE;
+	}  
+
+	if( sqlca.sqlcode == SQLNOTFOUND ) 	{  
+		/*ifnTrazaHilos( modulo,&pfLog,  "No se encuentra definida relacion RUTINA/ACTABO.", LOG02 );*/
+		return FALSE;
+	}  
+
+	RighTrim( szhCodActAbo );
+	strcpy( szActuacionOut, szhCodActAbo );
+/*	ifnTrazaHilos( modulo,&pfLog,  "Actuacion Abonado recuperada => [%s].", LOG05, szActuacionOut );*/
+	return TRUE;
+} /* BOOL bfnGetActAbodeAccion() */
+
+/*==================================================================================================*/
+/* Funcion que Busca el codigo de Activacion en Central para la actuacion de abonado                */
+/*==================================================================================================*/
+int ifnGetActuacionCentralCelularAcc(char *szActAbo, int iCodProducto, char *szCodModulo, char *szCodTecnologia)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int ihCodActCen   = 0;
+	int ihCodProducto = 0;
+	char szhActAbo    [3];	EXEC SQL VAR szhActAbo IS STRING(3);
+	char szhCodModulo [3];  EXEC SQL VAR szhCodModulo IS STRING(3);
+	char szhCodTecnologia[8];	EXEC SQL VAR szhCodTecnologia IS STRING(8);
+EXEC SQL END DECLARE SECTION;
+char modulo[] = "ifnGetActuacionCentralCelularAcc";
+struct sqlca sqlca;
+
+	memset( szhActAbo       , '\0', sizeof( szhActAbo ) );
+	memset( szhCodModulo    , '\0', sizeof( szhCodModulo ) );
+	memset( szhCodTecnologia, '\0', sizeof( szhCodTecnologia ) );
+	
+	strcpy( szhActAbo, szActAbo );
+	strcpy( szhCodModulo, szCodModulo );
+	strcpy( szhCodTecnologia, szCodTecnologia );
+	ihCodProducto = iCodProducto;
+	
+	RighTrim(szhActAbo );
+	RighTrim(szhCodModulo );
+	RighTrim(szhCodTecnologia);
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql en caso de brain damage*/
+	EXEC SQL
+	SELECT COD_ACTCEN
+	INTO  :ihCodActCen
+	FROM  GA_ACTABO
+	WHERE COD_ACTABO = :szhActAbo
+	AND   COD_PRODUCTO = :ihCodProducto
+	AND   COD_MODULO = :szhCodModulo
+	AND   COD_TECNOLOGIA = :szhCodTecnologia;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND ) {  
+		/*ifnTrazaHilos( modulo,&pfLog,  "ACTABO => [%s], TECNOLOGIA => [%s], Recuperando Actuacion Central => [%s].", LOG00, szhActAbo, szhCodTecnologia, sqlca.sqlerrm.sqlerrmc );*/
+		return -1;
+	} 
+
+	if( sqlca.sqlcode == SQLNOTFOUND )	 {  
+		/*ifnTrazaHilos( modulo,&pfLog,  "ACTABO => [%s], TECNOLOGIA => [%s], No se encuentra definida en Actuaciones Abonado.", LOG01, szhActAbo, szhCodTecnologia );*/
+		return -1;
+	} 
+
+	/*ifnTrazaHilos( modulo,&pfLog,  "ACTABO => [%s], TECNOLOGIA => [%s], Actuacion Central => [%d].", LOG05, szhActAbo, szhCodTecnologia, ihCodActCen );*/
+	/*ihCodCentral = ihCodActCen;*/
+	return ihCodActCen;
+} /* int ifnGetActuacionCentralCelularAcc( char *szActAbo ) */
+
+/*===========================================================================*/
+/* Funcion RighTrim : Limpia blancos a la derecha                            */
+/*===========================================================================*/
+int RighTrim (char *szVar)
+{
+int  iLenVar = 0;
+int  i       = 0;
+
+   iLenVar = strlen(szVar);
+   for (i=iLenVar-1;i>-1;i--) {
+        if (szVar[i]==' ') {
+            szVar[i]='\0';
+        } else break;
+   }
+   return (0);        
+} /* RighTrim */
+
+/*===========================================================================*/
+/* Tratamiento de Fecha para ser utilizada en nombre de archivos             */
+/*===========================================================================*/
+char* cfnGetTimePac()
+{
+	int i;
+	char c[255] = "";
+	char a[255] = "";
+	time_t ltime;
+	
+	time(&ltime);
+	
+	strcpy(c,ctime(&ltime));
+	
+	for( i = 22; i < 24; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i =  4; i <  7; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i =  8; i < 10; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	strcat(a,"_");
+	
+	for( i = 11; i < 13; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i = 14; i < 16; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i = 17; i < 19; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	return (char*)a;
+} /* cfnGetTimePac */
+
+
+/******************************************************************************************/
+/** Informaci¢n de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisi¢n                                            : */
+/**  %PR% */
+/** Autor de la Revisi¢n                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisi¢n ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creaci¢n de la Revisi¢n                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

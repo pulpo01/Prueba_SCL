@@ -1,0 +1,110 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <sqlda.h>
+#include <signal.h>
+#include <string.h>
+#include "scheduler.h"
+#include <stdlib.h>
+
+
+#define SqlNotFound  1403
+#define SqlNull      1405
+#define SqlOk        0
+EXEC SQL include sqlca;
+EXEC ORACLE OPTION (MAXOPENCURSORS=60); 
+
+/*===============================================================*/
+/* Variables de la base de datos                                 */
+/*===============================================================*/
+char szMsg[30];
+EXEC SQL BEGIN DECLARE SECTION;
+long mnum_jobs;
+long mnro_pid;
+char uid[20];              EXEC SQL var uid          is string(20);
+char pwd[20];              EXEC SQL var pwd          is string(20);
+char mcod_estado[10];      EXEC SQL var mcod_estado  is string(10);
+char mcod_proc[11];        EXEC SQL var mcod_proc    is string(11);
+char mcod_subpro[11];      EXEC SQL var mcod_subpro  is string(11);
+char mflg_batch[2];        EXEC SQL var mflg_batch   is string(02);
+
+EXEC SQL END DECLARE SECTION;
+
+/*===============================================================*/
+/* Funcion   : fnMsgError                                        */
+/* Objetivo  : manejador de errores sql                          */
+/*===============================================================*/
+void fnMsgError(char *szMsg, int iErrNum, int bRollCom)
+{
+ if (iErrNum != SqlNull) {
+     if ((iErrNum != SqlOk) && (iErrNum != SqlNotFound)) {
+          printf("ERROR SQL : %d EN %s \n", iErrNum, szMsg);
+         if (bRollCom) exec sql rollback work; 
+         exit(1);
+        }
+    }
+}
+
+/*===============================================================*/
+/* Programa Principal                                            */
+/*===============================================================*/
+void main(int argc, char **argv)
+{
+  int num_senal;
+ /*--->>> Lectura de Parametros <<<----*/
+ strcpy(mcod_estado,argv[1]);
+ if (argc>3) {
+     strcpy(uid,argv[2]);
+     strcpy(pwd,argv[3]);
+    }
+ else
+     printf("Parametros incorrectos [ESTADO USUARIO BD PASSWORD BD]\n");
+    
+ /*--->>> Conexin base de datos <<<----*/
+ EXEC SQL CONNECT :uid IDENTIFIED BY :pwd;
+ fnMsgError("Connect", sqlca.sqlcode, 0);
+ sqlca.sqlcode = 0;
+
+ /*--->>> Busqueda de los procesos que se les debe enviar mensaje <<<---*/
+ EXEC SQL DECLARE Currelproc cursor for
+    SELECT a.num_jobs, a.flg_batch, a.cod_proc, a.cod_subpro
+    FROM   sch_profile a, sch_detalle_proc b
+    WHERE  a.cod_estado  = :mcod_estado    AND
+           b.cod_proc    = a.cod_proc      AND
+           b.cod_subpro  = a.cod_subpro    AND
+           b.ind_colas  in ('S','X');
+ fnMsgError(szMsg, sqlca.sqlcode, 0);
+
+ EXEC SQL OPEN Currelproc;
+ EXEC SQL FETCH Currelproc into :mnum_jobs, :mflg_batch, :mcod_proc, :mcod_subpro;
+ if (sqlca.sqlcode == SqlNotFound) {
+     printf("No existen datos en la sch_profile con estado %s \n", mcod_estado);
+     exit(1);
+    }
+ if (strcmp(mcod_estado,"STOP") == 0) num_senal = SIGUSR2;
+ if (strcmp(mcod_estado,"PAUS") == 0) num_senal = SIGUSR1;
+ if (strcmp(mcod_estado,"PLAY") == 0) num_senal = SIGCONT;
+
+ while (sqlca.sqlcode != SqlNotFound) {
+	if (strcmp(mflg_batch,"B") != 0) { /*--->>> Si no es batch, se envia la se±al al num_jobs de la profile <<<---*/
+		sigsend (P_PID,mnum_jobs,num_senal);
+		printf("Envi senal a PID en linea [%ld] \n", mnum_jobs);
+	}
+	else {
+		EXEC SQL SELECT nro_pid 
+			INTO :mnro_pid
+			FROM sch_jobs
+			WHERE fec_iniexec IN (SELECT MAX(fec_iniexec) 
+									     FROM sch_jobs
+										 WHERE cod_proc    = :mcod_proc      AND
+											   cod_subpro  = :mcod_subpro    AND
+											   num_jobs    = :mnum_jobs);
+		fnMsgError(szMsg, sqlca.sqlcode, 0);
+		sigsend (P_PID,mnro_pid,num_senal);
+		printf("Envi senal a PID batch [%ld] \n", mnro_pid);
+	}
+    EXEC SQL FETCH Currelproc into :mnum_jobs, :mflg_batch, :mcod_proc, :mcod_subpro;
+	fnMsgError(szMsg, sqlca.sqlcode, 0);
+ }
+ exit(0);
+}
+

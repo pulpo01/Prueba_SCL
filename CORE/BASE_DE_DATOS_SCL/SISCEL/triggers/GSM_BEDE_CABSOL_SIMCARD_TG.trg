@@ -1,0 +1,26 @@
+CREATE OR REPLACE TRIGGER GSM_BEDE_CABSOL_SIMCARD_TG
+BEFORE  DELETE
+ON GSM_CABSOL_SIMCARD_TO
+FOR EACH ROW
+ 
+WHEN (OLD.COD_ESTADO = 'GE')
+DECLARE
+  v_num_seq_solicitud GSM_CABSOL_SIMCARD_TO.NUM_SEQ_SOLICITUD%TYPE;
+begin
+
+    v_num_seq_solicitud  := :old.NUM_SEQ_SOLICITUD;
+    -- Borro Detalle de la solicitud
+    DELETE FROM GSM_DETSOL_SIMCARD_TO
+    WHERE NUM_SEQ_SOLICITUD = v_num_seq_solicitud;
+
+
+    -- Borro de GSM_SOLICITUD_ARCHIVOS_TO
+    DELETE FROM GSM_SOLICITUD_ARCHIVOS_TO
+    WHERE NUM_SEQ_SOLICITUD = v_num_seq_solicitud;
+
+    -- Borro los estados de la Solicitud.....
+    DELETE  GSM_ESTADO_SOLICITUD_TO
+    WHERE NUM_SEQ_SOLICITUD = v_num_seq_solicitud;
+end;
+/
+SHOW ERRORS

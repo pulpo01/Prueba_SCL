@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="962" height="602" initialize="init();" xmlns:ns1="Cliente.*" alpha="1.0" backgroundAlpha="1.0" xmlns:componentes="user.libreria.componentes.*">
+
+
+<mx:Script>
+<![CDATA[
+	import user.libreria.clases.dto.CiudadDTO;
+	import user.libreria.clases.dto.RegionDTO;
+	import user.libreria.clases.StringUtil;
+	import generated.webservices.orquestador.GetDetalleClienteResultEvent;
+	import mx.messaging.channels.StreamingAMFChannel;
+	import mx.states.SetProperty;
+	
+	import mx.core.Application;
+	import mx.controls.Alert;
+	import mx.rpc.events.FaultEvent;
+	import mx.collections.ArrayCollection;
+	import mx.utils.ArrayUtil;
+	import mx.managers.PopUpManager;
+	import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+	import mx.managers.PopUpManager;
+	import mx.core.IFlexDisplayObject;
+	import flash.display.DisplayObject;
+	
+	import generated.webservices.orquestador.*;
+	import user.libreria.clases.StringUtil;
+	import user.libreria.clases.Utilidades;
+	import user.libreria.componentes.DatosEncabezadoOOSS;
+			
+	import mx.events.ModuleEvent;
+	import mx.events.CloseEvent;
+    import mx.modules.ModuleManager;
+   	import mx.modules.IModuleInfo;
+   	import mx.rpc.http.HTTPService;
+	import mx.rpc.events.FaultEvent;
+	import mx.rpc.events.ResultEvent;
+	   	
+	public var flagCarga:Number;
+	public var searchingPopUpView:Class = BarraDeProgreso2;
+	public var popUpWindow:IFlexDisplayObject;
+	public var popUpParent:DisplayObject;
+	
+	public var wsORQ:WSSEGPortal = new WSSEGPortal();
+	public var detalleDireccionDTO:DetalleDireccionDTO;
+	
+	// Http services para los listbox
+	public var httpSrvRegiones:HTTPService = new HTTPService();
+	public var httpSrvProvincias:HTTPService = new HTTPService();
+	public var httpSrvCiudades:HTTPService = new HTTPService();
+	public var httpSrvComunas:HTTPService = new HTTPService();
+
+	public var flagCambios:Boolean = false; 
+
+	[Bindable]
+	public var dsGrid:Array = new Array();
+
+	[Embed(source="/recursosInterfaz/imagenes/iconos/alert/warning.png")]
+    public var iconWarning:Class; 		
+
+
+	include "../../user/includes/modificacionDirecciones/manejoListbox.as";
+	include "../../user/includes/modificacionDirecciones/propositoGeneral.as";
+	include "../../user/includes/modificacionDirecciones/webservices.as";
+	include "../../user/includes/showBusy.as";
+	include "../../user/includes/datosEncabezadoOOSS.as";
+	
+	// --------------------------------------------------------------------------------
+
+  	private function init():void {
+
+		// Traigo los datos de la cuenta para el encabezado
+		datosCuenta(parentApplication.ctaSelect);
+
+		executeWS("load");
+
+	} // init
+
+	// --------------------------------------------------------------------------------	
+
+	]]>
+</mx:Script>
+	<mx:StringValidator id="valObservacion" requiredFieldError="Ingrese el comentario de la OOSS"
+						source="{txtComentario}" property="text"/>	
+	<mx:Panel width="947" height="590.55" layout="absolute" title="&gt;&gt; OOSS Modificación Direcciones del Cliente" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="-5">
+		<componentes:DatosEncabezadoOOSS id="DatosEncabezadoOOSS"  x="6.85">
+		</componentes:DatosEncabezadoOOSS>
+
+		<mx:Button x="583" y="507.55" label="Cerrar" width="103" height="31" fontSize="10" click="cerrar()">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/libIcons/16x16/close.png')</mx:icon>
+		</mx:Button>
+		<mx:Button x="473" y="507.55" label="Actualizar" width="102" height="31" fontSize="10" click="actualizar()" enabled="false" id="btnActualizar">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/libIcons/16x16/play.png')</mx:icon>
+		</mx:Button>
+		
+		<mx:AdvancedDataGrid resizableColumns="false" doubleClickEnabled="true" doubleClick="validaConUsuario();"  dataProvider="{acLista}" id="gridDirecciones" width="281" fontSize="10" textAlign="left" height="246.35"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" x="56" y="155">
+			<mx:columns>
+				<mx:AdvancedDataGridColumn headerText="Tipo" dataField="codTipDireccion" textAlign="right" paddingRight="5" width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Descripción" dataField="desTipDireccion" paddingLeft="5" width="250"/>
+				<mx:AdvancedDataGridColumn headerText="codDireccion" dataField="codDireccion" width="0"/>
+			</mx:columns>
+		</mx:AdvancedDataGrid>
+		<mx:Label text="Departamento" styleName="TituloCampo" x="375.5" y="159.35"/>
+		<mx:Label text="Municipio" styleName="TituloCampo" x="375.5" y="188.35"/>
+		<mx:Label text="Ciudad" styleName="TituloCampo" x="375.5" y="214.35"/>
+		<mx:Label text="Reparto" styleName="TituloCampo" x="375.5" y="240.35"/>
+		<mx:Label text="Calle" styleName="TituloCampo" x="357.5" y="291.35"/>
+		<mx:TextArea x="479" y="289.35" width="375" fontSize="10" editable="true" id="txtCalle" height="41" change="seteaFlagCambios()" maxChars="250"/>
+		<mx:Label text="Nro.Externo" styleName="TituloCampo" x="357.45" y="398.35"/>
+		<mx:TextInput x="478.95" y="396.35" width="120" fontSize="10" editable="true" id="txtNroExterno" height="22" change="seteaFlagCambios()" maxChars="10"/>
+		<mx:Label text="Nro.Interno" styleName="TituloCampo" x="645.95" y="398.35"/>
+		<mx:TextInput x="733.95" y="396.35" width="120" fontSize="10" editable="true" id="txtNroInterno" height="22" change="seteaFlagCambios()" maxChars="10"/>
+		<mx:Label text="Cod.Postal" styleName="TituloCampo" x="357.4" y="426.35"/>
+		<mx:TextInput x="478.95" y="424.35" width="150" fontSize="10" editable="true" id="txtCodPostal" height="22" change="seteaFlagCambios()" maxChars="15"/>
+		<mx:HRule x="357.5" y="272.35" width="494.50003" height="9"/>
+		<mx:Label text="Observación 1" styleName="TituloCampo" x="357.4" y="340.35" />
+		<mx:TextInput x="478.95" y="338.35" width="374.95" fontSize="10" editable="true" id="txtComentarios" height="22" change="seteaFlagCambios()" maxChars="30" />
+		<mx:ComboBox x="493" y="154.35" width="312" fontSize="10" fontWeight="normal" change="cambiaListbox(this.cboDepartamento)" id="cboDepartamento"></mx:ComboBox>
+		<mx:ComboBox x="493" y="186.35" width="312" fontSize="10" fontWeight="normal" change="cambiaListbox(this.cboMunicipio)" id="cboMunicipio"></mx:ComboBox>
+		<mx:ComboBox x="493" y="212.35" width="312" fontSize="10" fontWeight="normal" change="cambiaListbox(this.cboCiudad)" id="cboCiudad"></mx:ComboBox>
+		<mx:ComboBox x="493" y="238.35" width="312" fontSize="10" fontWeight="normal" id="cboReparto"></mx:ComboBox>
+		<mx:CheckBox x="83" y="511.95" label="Copiar al resto de las direcciones" styleName="TituloCampo" id="chkCopiar" enabled="true" selected="true"/>
+		<mx:Label text="Observación 2" styleName="TituloCampo" x="357.4" y="368.35" />
+		<mx:TextInput x="478.95" y="366.35" width="374.95" fontSize="10" editable="true" id="txtComentarios1" height="22" change="seteaFlagCambios()" maxChars="30"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="398.5" y="291.35" width="31" color="#FF0000"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="463.5" y="159.35" width="31" color="#FF0000"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="438" y="188.35" width="31" color="#FF0000"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="429.5" y="214.35" width="31" color="#FF0000"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="429.5" y="240.35" width="31" color="#FF0000"/>
+		<mx:Label text="Comentario" styleName="TituloCampo" width="83.3" x="56" y="479.55" fontSize="10" height="18"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="126" y="479.55" width="31" color="#FF0000" fontSize="10"/>
+		<mx:TextInput width="660" id="txtComentario" editable="true" enabled="true" maxChars="255" displayAsPassword="false" x="193.95" y="477.55" fontSize="10" styleName="TextoCampo"/>
+	</mx:Panel>
+	
+	<mx:ArrayCollection id="acLista" source="{ArrayUtil.toArray(dsGrid)}" />
+		
+</mx:Module>

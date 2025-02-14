@@ -1,0 +1,32 @@
+CREATE OR REPLACE TRIGGER SC_GEOF_AFUP_TG
+AFTER UPDATE ON GE_OFICINAS
+FOR EACH ROW
+
+WHEN (
+NEW.DES_OFICINA <> OLD.DES_OFICINA
+      )
+DECLARE
+v_codigo NUMBER(2);
+v_largo NUMBER(2);
+BEGIN
+       SELECT cod_dominio_cto, nvl(len_concepto,6)
+       INTO v_codigo, v_largo
+       FROM SC_DOMINIO_CTO
+       WHERE DES_DOMINIO_CTO = 'GE_OFICINAS';
+
+	   IF v_codigo > 0  THEN
+
+   	   UPDATE SC_CONCEPTO
+          SET DES_CONCEPTO = :NEW.DES_OFICINA
+          WHERE COD_DOMINIO_CTO = v_codigo
+          AND COD_CONCEPTO = LPAD(:NEW.COD_OFICINA,v_largo,'0');
+
+	   END IF;
+EXCEPTION
+       WHEN NO_DATA_FOUND THEN
+                 v_codigo := 0;
+       WHEN OTHERS THEN
+                 RAISE_APPLICATION_ERROR  (-20002,'ERROR INESPERADO EN TRIGGER : ORA-'||TO_CHAR(SQLCODE)||'.',TRUE);
+END;
+/
+SHOW ERRORS

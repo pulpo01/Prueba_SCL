@@ -1,0 +1,138 @@
+CREATE OR REPLACE PROCEDURE        P_GA_REHABOCEL
+(
+  VP_PETICION IN NUMBER ,
+  VP_ABONADO IN NUMBER ,
+  VP_CELULAR IN NUMBER ,
+  VP_TIPSUSP IN VARCHAR2 ,
+  VP_CODSUSP IN VARCHAR2 ,
+  VP_CODSERVSUPL IN NUMBER ,
+  VP_CODNIVEL IN NUMBER ,
+  VP_CODCENTRAL IN NUMBER ,
+  VP_NUMSERIE IN VARCHAR2 ,
+  VP_TIPTERMINAL IN VARCHAR2 ,
+  VP_INDPLEX IN NUMBER ,
+  VP_CELPLEX IN NUMBER ,
+  VP_CENTRALPLEX IN NUMBER ,
+  VP_ERROR IN OUT VARCHAR2 ,
+  VP_DESERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento de Rehabilitacion de Abonados Celulares
+--
+-- Los valores del codigo de retorno seran los siguientes :
+--         - "0" ; Se inserto correctamente el registro
+--         - "1" ; Error updateando GA_ABOCEL
+--         - "2" ; Error updateando GA_SUSPREABO
+--         - "3" ; Error consultando tabla GA_ACTABO
+--         - "4" ; Error consultando tabla ICG_SUSPREHAMOD
+--         - "5" ; Error consultando tabla DUAL
+--         - "6" ; Error consultando tabla DUAL
+--         - "7" ; Error moviendo Servicio y Nivel
+--         - "8" ; Error Insertando ICC_MOVIMIENTO
+--         - "9" ; Error Insertando ICC_MOVIMIENTO para IND_PLESYS='1'
+-- DECLARACION DE VARIABLES
+  V_MOVABO NUMBER(9) ;
+  V_MOVPLEX NUMBER(9);
+  V_TIPSUSP VARCHAR2(2);
+  V_CODSERVSUPL VARCHAR2(2);
+  V_CODNIVEL    VARCHAR2(4);
+  V_ACTUACION NUMBER(3);
+  V_COD_USO   NUMBER(3);
+  V_PREFIJO   VARCHAR2(3);
+BEGIN
+  -- Modificacion por el prefijo MIN 26/05/99
+  SELECT NUM_MIN
+    INTO V_PREFIJO
+    FROM GA_ABOCEL
+   WHERE NUM_ABONADO = VP_ABONADO;
+  -- Hasta aqui
+  IF VP_TIPSUSP='T' THEN
+     VP_ERROR := '1';
+     UPDATE GA_ABOCEL SET FEC_ULTMOD = SYSDATE,
+                          COD_SITUACION = 'RTP'
+     WHERE NUM_ABONADO = VP_ABONADO;
+  END IF;
+  VP_ERROR := '2';
+  UPDATE GA_SUSPREHABO SET FEC_REHABD = SYSDATE,
+                       TIP_REGISTRO = 3
+  WHERE NUM_ABONADO = VP_ABONADO AND
+        NUM_PETICION = VP_PETICION ;
+  IF VP_TIPSUSP ='P' THEN
+     VP_ERROR := '3';
+     V_TIPSUSP := 'RP' ;
+     SELECT COD_ACTCEN
+     INTO   V_ACTUACION
+     FROM   GA_ACTABO
+     WHERE  COD_PRODUCTO=1
+     AND    COD_ACTABO='RP';
+  ELSIF VP_TIPSUSP ='T' THEN
+     VP_ERROR := '4';
+     V_TIPSUSP := 'RT';
+     SELECT COD_ACTUACION_REHA
+     INTO   V_ACTUACION
+     FROM   ICG_SUSPREHAMOD
+     WHERE  COD_PRODUCTO=1
+     AND    COD_SUSPREHA=VP_CODSUSP
+     AND    COD_MODULO='GA';
+  END IF;
+  VP_ERROR := '5';
+  SELECT ICC_SEQ_NUMMOV.NEXTVAL
+  INTO   V_MOVABO
+  FROM   DUAL;
+  IF VP_INDPLEX='1' THEN
+     VP_ERROR := '6';
+     SELECT ICC_SEQ_NUMMOV.NEXTVAL
+     INTO   V_MOVPLEX
+     FROM   DUAL;
+  END IF;
+  VP_ERROR := '7';
+  IF VP_CODSERVSUPL = -1 THEN
+     V_CODSERVSUPL := NULL;
+  ELSE
+     V_CODSERVSUPL := LPAD(TO_CHAR(VP_CODSERVSUPL),2,0);
+  END IF;
+  IF VP_CODNIVEL = -1 THEN
+     V_CODNIVEL := NULL;
+  ELSE
+     V_CODNIVEL := LPAD(TO_CHAR(VP_CODNIVEL),4,0);
+  END IF;
+  VP_ERROR := '8';
+  INSERT INTO ICC_MOVIMIENTO
+         (NUM_MOVIMIENTO,  NUM_ABONADO,   COD_ESTADO,
+          COD_MODULO,      NOM_USUARORA,  COD_CENTRAL,
+          NUM_CELULAR,     COD_ACTUACION, FEC_INGRESO,
+          NUM_SERIE,       COD_SERVICIOS, COD_SUSPREHA,
+          TIP_TERMINAL,    COD_ACTABO,    NUM_MOVPOS,
+          NUM_MIN)
+  VALUES (V_MOVABO,       VP_ABONADO ,    '1',
+         'GA',            USER,           VP_CODCENTRAL,
+          VP_CELULAR,     V_ACTUACION,    SYSDATE,
+          VP_NUMSERIE ,   V_CODSERVSUPL || V_CODNIVEL,
+          VP_CODSUSP,     VP_TIPTERMINAL, V_TIPSUSP,
+          DECODE(VP_INDPLEX ,1,V_MOVPLEX,NULL),
+          V_PREFIJO);
+  IF VP_INDPLEX = '1' THEN
+     VP_ERROR := '9' ;
+     INSERT INTO ICC_MOVIMIENTO
+          (NUM_MOVIMIENTO,  NUM_ABONADO,    COD_ESTADO,
+           COD_MODULO,      NOM_USUARORA,   COD_CENTRAL,
+           NUM_CELULAR,     COD_ACTUACION,  FEC_INGRESO,
+           NUM_SERIE,       COD_SERVICIOS,  COD_SUSPREHA,
+           TIP_TERMINAL,    COD_ACTABO,     NUM_MOVANT,
+           NUM_MIN)
+     VALUES (V_MOVPLEX ,    VP_ABONADO ,   '1',
+           'GA',            USER,
+           DECODE(VP_CENTRALPLEX,-1,NULL,VP_CENTRALPLEX),
+           DECODE(VP_CELPLEX,-1,NULL,VP_CELPLEX),
+           V_ACTUACION,    SYSDATE,
+           VP_NUMSERIE ,    V_CODSERVSUPL || V_CODNIVEL,
+           VP_CODSUSP,      VP_TIPTERMINAL, V_TIPSUSP, V_MOVABO,
+           V_PREFIJO);
+  END IF;
+  VP_ERROR := '0';
+  EXCEPTION
+    WHEN OTHERS THEN
+           VP_DESERROR := SQLERRM ;
+END;
+/
+SHOW ERRORS

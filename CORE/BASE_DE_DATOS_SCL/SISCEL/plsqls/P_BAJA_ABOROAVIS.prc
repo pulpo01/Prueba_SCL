@@ -1,0 +1,63 @@
+CREATE OR REPLACE PROCEDURE        P_BAJA_ABOROAVIS(
+  VP_ESTADIA IN NUMBER ,
+  VP_TIPBAJA IN NUMBER ,
+  VP_FECSYS IN DATE ,
+  VP_MOVALTA IN NUMBER ,
+  VP_MOVBAJA IN NUMBER ,
+  VP_PROC IN OUT VARCHAR2 ,
+  VP_TABLA IN OUT VARCHAR2 ,
+  VP_ACT IN OUT VARCHAR2 ,
+  VP_SQLCODE IN OUT VARCHAR2 ,
+  VP_SQLERRM IN OUT VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento que actualiza o da de baja las tablas de interfase con
+-- tarificacion de abonados roaming visitantes
+--
+--            Los posibles retornos del procedimiento son :
+--                - '0' Actualizaciones realizadas correctamente
+--                - '4' Error en el proceso
+--
+BEGIN
+   VP_PROC := 'P_BAJA_ABOROAVIS';
+   IF VP_TIPBAJA = 0 THEN
+      VP_TABLA := 'GA_INTAROAVIS';
+      VP_ACT := 'D';
+      DELETE GA_INTAROAVIS
+       WHERE NUM_ESTADIA = VP_ESTADIA;
+      VP_TABLA := 'GA_INFACROAVIS';
+      VP_ACT := 'D';
+      DELETE GA_INFACROAVIS
+       WHERE NUM_ESTADIA = VP_ESTADIA;
+      VP_TABLA := 'ICC_MOVIMIENTO';
+      VP_ACT := 'U';
+      UPDATE ICC_MOVIMIENTO
+  SET COD_ESTADO = 10
+       WHERE NUM_MOVIMIENTO = VP_MOVALTA;
+      UPDATE ICC_MOVIMIENTO
+  SET COD_ESTADO = 10
+       WHERE NUM_MOVIMIENTO = VP_MOVBAJA;
+   ELSE
+      VP_TABLA := 'GA_INTAROAVIS';
+      VP_ACT := 'U';
+      UPDATE GA_INTAROAVIS
+         SET FEC_HASTA = VP_FECSYS
+       WHERE NUM_ESTADIA = VP_ESTADIA;
+      VP_TABLA := 'GA_INFACROAVIS';
+      UPDATE GA_INFACROAVIS
+         SET FEC_BAJA = VP_FECSYS
+       WHERE NUM_ESTADIA = VP_ESTADIA;
+      VP_TABLA := 'ICC_MOVIMIENTO';
+      /*UPDATE ICC_MOVIMIENTO
+        SET FEC_INGRESO = VP_FECSYS
+       WHERE NUM_MOVIMIENTO = VP_MOVBAJA;*/
+   END IF;
+EXCEPTION
+   WHEN OTHERS THEN
+ VP_SQLCODE := SQLCODE;
+ VP_SQLERRM := SQLERRM;
+        VP_ERROR := '4';
+END;
+/
+SHOW ERRORS

@@ -1,0 +1,52 @@
+CREATE OR REPLACE TRIGGER delete_ga_petsr
+BEFORE DELETE
+ON GA_PETSR
+FOR EACH ROW
+
+DECLARE
+BEGIN
+    INSERT INTO GA_HPETSR
+       (NUM_PETICION ,
+       NUM_ABONADO   ,
+       FEC_HISTORICO ,
+       FEC_ALTA      ,
+       COD_PRODUCTO  ,
+       TIP_SUSP      ,
+       COD_CAUSASUSP ,
+       NOM_USUARORA  ,
+       FEC_SUSPENSION,
+       FEC_REHABILITA,
+       COD_SUSPENSION,
+       COD_SERVSUPL  ,
+       COD_NIVEL     ,
+       IND_ESTADOSUSP,
+       IND_ESTADOREHA,
+       COD_CARGOSUSP ,
+       COD_CARGOREHA ,
+       NOM_USUAHIST
+             )
+        VALUES
+      (:OLD.NUM_PETICION  ,
+       :OLD.NUM_ABONADO   ,
+              SYSDATE            ,
+       :OLD.FEC_ALTA      ,
+       :OLD.COD_PRODUCTO  ,
+       :OLD.TIP_SUSP      ,
+       :OLD.COD_CAUSASUSP ,
+       :OLD.NOM_USUARORA  ,
+       :OLD.FEC_SUSPENSION,
+       :OLD.FEC_REHABILITA,
+       :OLD.COD_SUSPENSION,
+       :OLD.COD_SERVSUPL  ,
+       :OLD.COD_NIVEL     ,
+       :OLD.IND_ESTADOSUSP,
+       :OLD.IND_ESTADOREHA,
+       :OLD.COD_CARGOSUSP ,
+       :OLD.COD_CARGOREHA ,
+       USER
+             );
+    EXCEPTION WHEN OTHERS THEN
+  RAISE_APPLICATION_ERROR (-20273,' ORA'||TO_CHAR(SQLCODE));
+  END;
+/
+SHOW ERRORS

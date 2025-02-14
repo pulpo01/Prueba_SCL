@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="980" height="636" initialize="init();" verticalAlign="top"  backgroundColor="#FFFFFF" xmlns:componentes="user.libreria.componentes.*">
+<mx:Script>
+	<![CDATA[
+		import mx.messaging.messages.HTTPRequestMessage;
+	 	import mx.controls.Alert;
+	 	import mx.events.ModuleEvent;
+	    import mx.modules.ModuleManager;
+		import mx.modules.IModuleInfo;
+		import mx.rpc.events.FaultEvent;
+		import mx.events.ValidationResultEvent;
+		import mx.controls.AdvancedDataGrid;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		
+		import generated.webservices.orquestador.*;
+	   	import user.libreria.componentes.DatosEncabezadoOOSS;
+	   	import user.libreria.clases.StringUtil;
+	   	 
+		public var info:IModuleInfo;
+	 	public var grillaGlobal:AdvancedDataGrid = new AdvancedDataGrid();
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject; 					
+	 	public var searchingPopUpView:Class = BarraDeProgreso2;
+	 	
+	 	public var wsORQ: WSSEGPortal= new  WSSEGPortal();
+	 	public var datoDTO:EjecucionAbonoLimiteConsumoServicioSuplementarioDTO= new EjecucionAbonoLimiteConsumoServicioSuplementarioDTO; 
+	 	public var numTransaccion :String;
+	 	
+		
+		/* --------------------------------------------------------------------------------		
+			METODOS
+		-------------------------------------------------------------------------------- */
+		
+		include "../../user/includes/datosEncabezadoOOSS.as";
+		include "../../user/includes/registroConsulOoss.as";
+		
+		private function getError(event:FaultEvent):void    {			        
+			
+			var mensaje:String = new String();
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {
+				/*
+				mensaje = "Ha ocurrido un error en la petición a los servicios.";
+		     	Alert.show(mensaje, "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	  		}
+	     	
+		} // getError
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getDataCarga(event: CargarAbonoLimiteConsumoSSResultEvent):void	{
+	
+		var contDato:String;
+		var mensaje :String;
+		
+			PopUpManager.removePopUp(popUpWindow);
+			if (event.result.codError == null)	{
+				
+				numTransaccion=event.result.numTransaccion;
+				LimCredAct.text = event.result.desError;
+				LimConsFec.text = event.result.nombreCliente;
+	//			MtoLimite.text = event.result.key;;
+		//		Umbral.text = event.result.codSujeto;				
+				contDato=event.result.tipoOOSS;
+			} // if
+			else
+			{
+				mensaje = event.result.desError ;
+	     		Alert.show(mensaje, "No se puede ejecutar la OOSS");
+	     		cerrar();
+			} // else
+			
+		} // getData  
+		
+		private function getDataEjecuta(event: EjecutarAbonoLimiteConsumoSSResultEvent):void
+		{
+		var mensaje:String = new String();
+		
+		PopUpManager.removePopUp(popUpWindow);
+		
+		//	var contDato:Number;
+			if (event.result.desError == null )	{				
+				mensaje = "Numero de la OOSS.:  " + event.result.nroOOSS.toString();				
+		     	Alert.show(mensaje  , "Abono LC Abonado");
+		     	
+		     	//Se levanta la pantalla de registro
+		     	//levantaRegistroIngOoss('Abonado'); //Se comenta funcionalidad(No certificada) AF resposable : Ruben Araya
+		     	
+			} // if
+			else	{
+				mensaje = event.result.desError ;
+	     		Alert.show(mensaje, "Error en la aplicación");
+			} // else
+			cerrar();
+			
+		} // getData  
+					
+		// --------------------------------------------------------------------------------
+		
+		private function executeWSCarga():void	{
+			
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+	
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addcargarAbonoLimiteConsumoSSEventListener(getDataCarga);
+	
+			var codEvento:String = parentApplication.codEvento;
+	
+			
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			wsORQ.cargarAbonoLimiteConsumoSS(parentApplication.aboSelect, "A", "0004", parentApplication.usuario.username, codEvento);
+			
+		} // executeWS
+		
+		
+		private function executeWSEjecuta():void	{
+			 
+			
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			
+			
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addejecutarAbonoLimiteConsumoSSEventListener(getDataEjecuta);
+	
+			
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));			
+			
+			datoDTO.numTransaccion = numTransaccion;					// Numero de la transaccion;
+			datoDTO.comentario = Observacion.text ;  					//observacion que va a la CI_ORSERV 
+			datoDTO.nomUsuarioSCL = parentApplication.usuario.username;	//user de coneccion WS
+			datoDTO.codError = "1";					//
+			datoDTO.desError = "-";				//
+			datoDTO.nroOOSS= 1;
+			
+		//	var lnum:Number = new Number(AbonarMonto.text.toString());
+			
+		//	datoDTO.montoAbono = lnum ; 			//monto del abono al abonado.
+						
+		    wsORQ.ejecutarAbonoLimiteConsumoSS(datoDTO);
+			
+		} // executeWS
+		
+		private function EjecutaAnulaSiniestro():void	{
+			executeWSEjecuta();			
+		}
+		
+	
+		// --------------------------------------------------------------------------------
+		
+			private function init():void	{
+				// Traigo los datos para el encabezado
+				datosCuenta(parentApplication.ctaSelect);
+				datosCliente(parentApplication.cliSelect);
+
+				executeWSCarga();
+			} // init
+		
+		// --------------------------------------------------------------------------------
+			private function cerrar():void {
+				parentDocument.vbOOSS.enabled = false;
+				parentDocument.vb1.enabled=true;
+				parentDocument.tab1.selectedIndex=0;
+				this.visible=false;
+				return;
+			} // cerrar						
+	]]>	
+	  
+	</mx:Script>
+	
+	<mx:StringValidator id="valObservacion" requiredFieldError="Ingrese el comentario de la OOSS" source="{Observacion}" property="text" />
+
+	<mx:Panel width="961" height="600" layout="absolute" title="&gt;&gt; Abono Limite de Consumo Abonado" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="-4">
+		<mx:backgroundImage>@Embed(source='../../recursosInterfaz/imagenes/otros/fondo.jpg')</mx:backgroundImage>
+		<componentes:DatosEncabezadoOOSS id="DatosEncabezadoOOSS"  x="17.7" y="0"/>
+		<mx:Button label="Ejecutar" click="EjecutaAnulaSiniestro()" x="374.5" y="449" fontSize="10"/>
+		<mx:Button label="Cerrar" width="84" click="cerrar()" x="569.5" y="449" fontSize="10"/>
+		<mx:Label text="Tipo de Abono" styleName="TituloCampo" x="190" y="174" fontSize="10"/>
+		<mx:RadioButton label="Cliente" width="102" enabled="false" selected="false" x="348" y="170" fontSize="10"/>
+		<mx:RadioButton label="Abonado" width="106" enabled="false" selected="true" id="tipAbono" x="450.5" y="170" fontSize="10"/>
+		<mx:Label text="Limite de Credito Actual" styleName="TituloCampo" x="190" y="200" fontSize="10"/>
+		<mx:Label styleName="TextoCampo" width="127" id="LimCredAct" x="348" y="200" fontSize="10"/>
+		<mx:Label text="Limite Consumida a la Fecha " styleName="TituloCampo" height="26" x="503" y="200" fontSize="10"/>
+		<mx:Label styleName="TextoCampo" width="130" id="LimConsFec" x="682" y="200" fontSize="10"/>
+		<mx:Label text="Monto del Limite" styleName="TituloCampo" x="190" y="226" fontSize="10"/>
+		<mx:Label styleName="TextoCampo" width="127" id="MtoLimite" x="348" y="226" fontSize="10" height="18"/>
+		<mx:Label text="Umbral" styleName="TituloCampo" x="503" y="226" fontSize="10"/>
+		<mx:Label styleName="TextoCampo" width="130" id="Umbral" x="682" y="226" fontSize="10" height="18"/>
+		<mx:Label text="Monto del Abono" styleName="TituloCampo" x="217" y="348" fontSize="10"/>
+		<mx:TextInput id="AbonarMonto" editable="true" enabled="true" maxChars="10" displayAsPassword="false" width="215" x="330.25" y="345" fontSize="10"/>
+		<mx:Label text="Comentario" styleName="TituloCampo" x="217" y="377" fontSize="10"/>
+		<mx:TextInput id="Observacion" editable="true" enabled="true" maxChars="256" displayAsPassword="false" width="428" x="330.25" y="374" fontSize="10"/>
+	</mx:Panel>
+	
+	
+	
+</mx:Module>

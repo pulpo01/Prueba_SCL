@@ -1,0 +1,897 @@
+/*---------------------------------------------------------------------------*/
+/* Programa encargado de ejecutar la valoración por Permanencia              */
+/*---------------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                                  */
+/* Inicio: Martes 9 de Diciembre de 2002.                                    */
+/* Autor : Jaime Vargas Morales                                              */
+/*---------------------------------------------------------------------------*/
+/*****************************************************************************/
+/* Modificacion : Marcelo González Lizama                                    */
+/* Inicio       : Martes 07 de Octubre de 2003                               */
+/* Fin			:                                                            */
+/* Descripcion  : Carga de datos a travez de estructura StConceptosProc      */
+/*                Eliminacion y actualizacion de Querys para rescatar datos  */
+/*                Cambio de Funcion vWriteLog por fprintf                    */
+/* ************************************************************************* */ 
+/* INCLUSION DE LIBRERÍA PARA DEFINICIONES GENERALES DEL PROGRAMA.           */
+/*---------------------------------------------------------------------------*/
+#include "Val_Permanencia.h"
+#include "GEN_biblioteca.h"
+/*---------------------------------------------------------------------------*/
+/* INCLUSION DE BIBLIOTECA PARA MANEJO DE INTERACCION CON ORACLE.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+EXEC SQL WHENEVER SQLERROR DO vSqlError();
+/*---------------------------------------------------------------------------*/
+/* Declaración e inicialización de lista de conceptos a procesar.            */
+/*---------------------------------------------------------------------------*/
+stConceptosProc * lstConceptos = NULL;
+/*---------------------------------------------------------------------------*/
+/* DEFINICION DE VARIABLES GLOBALES PARA SER USADAS CON ORACLE.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+char    szhUser[30]="";
+char    szhPass[30]="";
+char    szhSysDate[17]="";
+char    szFechaYYYYMMDD[9];
+EXEC SQL END DECLARE SECTION;
+
+/*---------------------------------------------------------------------------*/
+/* LIBERA LISTA DE EVENTOS                                                                   */
+/*---------------------------------------------------------------------------*/
+void vLiberaEvento(stEvento * raux)
+{
+    if (raux == NULL)
+        return;
+    vLiberaEvento(raux->sgte);
+    free(raux);
+}
+/*---------------------------------------------------------------------------*/
+/* LIBERA MEMORIA USADA EN LA LISTA PRINCIPAL (TASADOR)                              */
+/*---------------------------------------------------------------------------*/
+void vLiberaPrincipal(stPrincipal * paux)
+{
+        if (paux == NULL)
+                return;
+        vLiberaPrincipal(paux->sgte);
+        vLiberaEvento(paux->sgte_evento);
+        free(paux);
+}
+/*****************************************************************************/
+/* Gestiona la carga de Conceptos y Parámetros de Valoración                 */
+/*****************************************************************************/
+int bCargaConceptos()
+{
+	switch (stCiclo.cTipCiclComis)
+	{
+		case PERIODICO:
+		    vFechaHora();                                                                                   
+		    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+		    fprintf(pfLog, "Carga lista de conceptos para ejecución Periodica o Normal..\n\n");  
+		    fprintf(stderr, "Carga lista de conceptos para ejecución Periodica o Normal...\n\n");  
+			lstConceptos = stGetConceptosPer(FORMACOMIS,stCiclo);
+			return TRUE;
+		case ESPORADICO:
+		    vFechaHora();                                                                                   
+		    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+		    fprintf(pfLog, "Carga lista de conceptos para ejecución Esporádica o Promocional..\n\n");  
+		    fprintf(stderr, "Carga lista de conceptos para ejecución Esporádica o Promocional...\n\n");  
+			lstConceptos = stGetConceptosProm(FORMACOMIS,stCiclo);
+			return TRUE;
+		default:
+		    vFechaHora();                                                                                   
+		    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+		    fprintf(pfLog, "Error, Forma de Ejecución:[%c] No reconocida..\n\n", stCiclo.cTipCiclComis);  
+		    fprintf(stderr, "Error, Forma de Ejecución:[%c] No reconocida..\n\n", stCiclo.cTipCiclComis);  
+			return FALSE;
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+/* MUESTRA UN RESUMEN DEL CONTENIDO DE LAS LISTAS LLENADAS POR EL PROCESO    */
+/*---------------------------------------------------------------------------*/
+BOOL vMuestraEstructura()                                                                                                                     
+{                                                                                                              
+        stPrincipal     * pPrincipal;
+        stEvento        * pEvento;
+
+        char    szDesde[11];
+        char    szHasta[11];
+        int     contador = 1;
+        
+        for (pPrincipal = lstPrincipal; pPrincipal != NULL; pPrincipal = pPrincipal->sgte)             
+        {      
+            printf ("pPrincipal->iCod_Concepto        [%ld]\n", pPrincipal->iCod_Concepto     );                                                                                             
+                printf ("pPrincipal->szCod_Tipcomis       [%s]\n" , pPrincipal->szCod_Tipcomis    );   
+                printf ("pPrincipal->szTip_Plan           [%s]\n" , pPrincipal->szTip_Plan        );            
+                                
+                printf ("------------------------------------------------------------------------\n");          
+        }
+        return (TRUE);
+}       
+/*---------------------------------------------------------------------------*/
+/* FUNCION QUE RETORNA EL SALDO VENCIDO DEL CLIENTE...                       */
+/*---------------------------------------------------------------------------*/
+BOOL bfnEstadoSaldo(long plCodCliente, long plNumAbonado)
+{
+        EXEC SQL BEGIN DECLARE SECTION;
+                long    lhCodCliente;
+                double  dhImpDebe;
+                long	lhNumAbonado;
+        EXEC SQL END DECLARE SECTION;
+
+        lhCodCliente = plCodCliente;
+        lhNumAbonado = plNumAbonado;
+        EXEC SQL SELECT NVL(SUM(IMPORTE_DEBE-IMPORTE_HABER),0)
+                INTO :dhImpDebe
+                FROM CO_CARTERA
+                WHERE COD_CLIENTE = :lhCodCliente
+                  AND NUM_ABONADO = :lhNumAbonado
+                  AND FEC_VENCIMIE <= SYSDATE;
+
+        if(dhImpDebe <= 0)
+                return TRUE;
+        else
+                return FALSE;
+}                                                                                                                                       
+/*---------------------------------------------------------------------------*/
+/* PROCESO QUE LLENA LA ESTRUCTURA PRINCIPAL (TASADOR) PARA LUEGO                */
+/* PODER VALORAR LAS    PERMANENCIAS                                         */
+/*---------------------------------------------------------------------------*/
+void bfnLlenaTasador ()
+{       
+        stPrincipal     * pPrincipal;
+        stConceptosProc	* raux;
+        
+        int                     i;
+        short                   iLastRows    = 0;       
+        int                     iFetchedRows = MAXFETCH;
+        int                     iRetrievRows = MAXFETCH;
+        long                    lCantidad = 0;
+        EXEC SQL BEGIN DECLARE SECTION;
+                long    lMaxFetch;
+                int		ihCodTipoRed		;
+                int     ihCod_Concepto      ;
+                char    szhCod_TipComis     [3];
+                char	szCodPlanComis		[6];
+                char    szhTip_Plan         [MAXFETCH][6];
+                char    szhFec_Desde        [11];
+                char    szhFec_Hasta        [11];
+                int     ihNum_Periodo       [MAXFETCH]; 
+                char    szhInd_Saldo        [MAXFETCH][2]; 
+                char    szhTip_Bonifica     [MAXFETCH][2];
+                int     ihCod_Concepto_Asoc [MAXFETCH];
+                double  dhImp_Bonifica      [MAXFETCH];
+                long    lhCodCiclo			;
+                char	szhCodUniverso[7]	;
+        EXEC SQL END DECLARE SECTION;
+
+        for(raux=lstConceptos; raux != NULL; raux = raux->sgte)
+	   	{
+        	ihCodTipoRed 			= 	raux->iCodTipoRed;
+        	strcpy(szCodPlanComis	,	raux->szCodPlanComis);
+        	ihCod_Concepto			= 	raux->iCodConcepto;
+        	strcpy(szhCod_TipComis	,	raux->szCodTipComis);
+        	strcpy(szhFec_Desde		,	raux->szFecDesde);
+        	strcpy(szhFec_Hasta		,	raux->szFecHasta);
+        	strcpy(szhCodUniverso	,	raux->szCodUniverso);
+        	
+	        fprintf(pfLog ,"\n(bfnLlenaTasador) Carga conceptos. TR:[%d] PlComis:[%s] TipComis:[%s] Conc:[%d] Desde[%s] Hasta:[%s]\n",ihCodTipoRed, szCodPlanComis, szhCod_TipComis, ihCod_Concepto, szhFec_Desde, szhFec_Hasta);
+	        fprintf(stderr,"\n(bfnLlenaTasador) Carga conceptos. TR:[%d] PlComis:[%s] TipComis:[%s] Conc:[%d] Desde[%s] Hasta:[%s]\n",ihCodTipoRed, szCodPlanComis, szhCod_TipComis, ihCod_Concepto, szhFec_Desde, szhFec_Hasta);
+        	        	
+			iFetchedRows 	= MAXFETCH;
+			iRetrievRows 	= MAXFETCH;
+	        lMaxFetch 		= MAXFETCH;
+	        iLastRows    	= 0;
+	        lhCodCiclo  	= stCiclo.lCodCiclo;
+	        
+	        EXEC SQL DECLARE Cur_Tasador CURSOR for
+	        		SELECT 
+	                          TIP_PLAN, 
+	                          NUM_PERIODOS, 
+	                          IND_SALDO, 
+	                          TIP_BONIFICACION,
+	                          COD_CONCEPTO_ASOC,
+	                          IMP_BONIFICACION	                          
+	                FROM  CM_PERMANENCIA_TD 
+	                WHERE 	
+	                		COD_TIPORED		= :ihCodTipoRed	
+		        	AND 	COD_PLANCOMIS	= :szCodPlanComis
+		        	AND		COD_CONCEPTO	= :ihCod_Concepto	                
+	                ORDER BY TIP_PLAN;
+	                  
+	        EXEC SQL OPEN Cur_Tasador;   
+	           
+	        while(iFetchedRows == iRetrievRows)
+	        {
+	                EXEC SQL for :lMaxFetch 
+	                        FETCH Cur_Tasador INTO
+	                        :szhTip_Plan      ,    
+	                        :ihNum_Periodo    ,       
+	                        :szhInd_Saldo     ,       
+	                        :szhTip_Bonifica  ,    
+	                        :ihCod_Concepto_Asoc,
+	                        :dhImp_Bonifica   ;    
+	
+	                iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+	                iLastRows = sqlca.sqlerrd[2];
+	                
+	                for (i=0; i < iRetrievRows; i++)
+	                {
+		                pPrincipal = (stPrincipal *) malloc(sizeof(stPrincipal));
+		                
+		                
+		                pPrincipal->iCodTipoRed					=	ihCodTipoRed;
+		                strcpy(pPrincipal->szCodPlanComis		,	szCodPlanComis);
+		                pPrincipal->iCod_Concepto           	= 	ihCod_Concepto;
+		                strcpy(pPrincipal->szCod_Tipcomis   	, 	szfnTrim(szhCod_TipComis));
+		                strcpy(pPrincipal->szTip_Plan       	, 	szfnTrim(szhTip_Plan[i]));
+		                strcpy(pPrincipal->szFec_Desde      	, 	szfnTrim(szhFec_Desde));
+		                strcpy(pPrincipal->szFec_Hasta      	, 	szfnTrim(szhFec_Hasta));
+		                pPrincipal->iNum_Periodos           	= 	ihNum_Periodo[i];                        
+		                strcpy(pPrincipal->szInd_Saldo      	, 	szfnTrim(szhInd_Saldo[i]));                      
+		    			strcpy(pPrincipal->szTip_Bonificacion	, 	szfnTrim(szhTip_Bonifica[i]));
+		    			pPrincipal->iCod_Concepto_Asoc       	= 	ihCod_Concepto_Asoc[i];
+		                pPrincipal->dImp_Bonificacion        	= 	dhImp_Bonifica[i];
+		                strcpy(pPrincipal->szCodUniverso		,   raux->szCodUniverso);
+		                lCantidad++;
+		                
+		                pPrincipal->sgte                = lstPrincipal;                 
+		                lstPrincipal                    = pPrincipal;
+		                pPrincipal->sgte_evento         = NULL;
+	                }       
+	        }
+        	EXEC SQL CLOSE Cur_Tasador;
+	    }	       
+        fprintf(pfLog,"\n\t(bfnLlenaTasador)Cantidad de Registros leidos:[%ld]\n",lCantidad);
+        fprintf(stderr,"\n\t(bfnLlenaTasador)Cantidad de Registros leidos:[%ld]\n",lCantidad);
+}
+/*---------------------------------------------------------------------------*/
+/* PROCEDIMIENTO QUE CARGA LOS EVENTOS  EN UNA LISTA                         */
+/* 1.- DETERMINA LA TABLA FISICA DONDE SE ENCUENTRAN LOS EVENTOS.            */
+/* 2.- CREA LA LISTA DE EVENTOS                                              */
+/*---------------------------------------------------------------------------*/
+stEvento * stCargaEventos(char * pszCodTipcomis, char * pszTipPlan, int piCodTipoRed, char * szCodPlanComis, int iCod_Concepto, char * pszIdCiclComis)
+{							
+        stEvento        * paux;  
+        stEvento        * qaux;  
+        
+        short           iLastRows    = 0;       
+        int             iFetchedRows = MAXFETCH;
+        int             iRetrievRows = MAXFETCH;
+        int             i;
+        int				iCantidad = 0;
+                
+        EXEC SQL BEGIN DECLARE SECTION;
+                long    lhNum_General       [MAXFETCH];
+                long    lhCod_Comisionista  [MAXFETCH];
+                char    szhCod_Estado       [MAXFETCH][3];
+                char    szhCod_Situacion    [MAXFETCH][4];
+                char    szhTip_Plan         [MAXFETCH][6];
+                char    szhCod_Categcliente [MAXFETCH][11];
+                long    ihCod_Cliente       [MAXFETCH];
+                long	lhNumAbonado		[MAXFETCH];
+                char	szhCodTipPlan		[6];
+                char    szhCodTipcomis      [3];
+                char    szIdCiclComis		[11];
+                long    lMaxFetch;
+                char    szTablaLogica       [31];
+                char    szTablaFisica       [31];
+                char    szTabla             [31];
+                char    szSentenciaSql      [1024];
+                int		ihCodTipoRed		;
+                char	szhCodPlanComis		[6];
+                int		ihCod_Concepto;
+                char	szhCod_Oficina		[MAXFETCH][3];
+             
+        EXEC SQL END DECLARE SECTION;
+        
+        paux = NULL;
+        qaux = NULL;
+		
+        strcpy(szTablaLogica,"CMT_HABIL_CELULAR");        
+        strcpy(szIdCiclComis	,	pszIdCiclComis);
+        strcpy(szhCodTipcomis	,	pszCodTipcomis);
+        ihCodTipoRed			=	piCodTipoRed;
+		strcpy(szhCodPlanComis	,	szCodPlanComis);
+		ihCod_Concepto			=	iCod_Concepto;
+		strcpy(szhCodTipPlan	, 	pszTipPlan);
+		
+        if (!(iBuscaTablaFisica(szTablaLogica, szIdCiclComis, szTablaFisica)))
+        {
+                return (NULL);
+        }
+        strcpy(szTablaFisica, szfnTrim(szTablaFisica)); 
+        if (strcmp(szTablaFisica,"0")==0)
+        {
+                return (NULL);
+        }
+        
+        fprintf(pfLog, "\n[stCargaEventos] TR:[%d] TipComis:[%s] Periodo:[%s] --->Tabla:[%s]\n",ihCodTipoRed, szhCodTipcomis, szIdCiclComis, szTablaFisica);
+        fprintf(stderr,"\n[stCargaEventos] TR:[%d] TipComis:[%s] Periodo:[%s] --->Tabla:[%s]\n",ihCodTipoRed, szhCodTipcomis, szIdCiclComis, szTablaFisica);
+        sprintf(szSentenciaSql, "SELECT "
+                                "A.NUM_GENERAL, "
+                                "A.COD_COMISIONISTA, "
+                                "A.NUM_ABONADO, "
+                                "NVL(B.COD_ESTADO,'BF'), "
+                                "NVL(B.COD_SITUACION,'BAA'), "
+                                "C.TIP_PLAN, "
+                                "A.COD_CATEGCLIENTE, "
+                                "A.COD_CLIENTE,"
+                                "A.COD_OFICINA "
+                                "FROM %s A, "
+                                "GA_ABOCEL         B, "
+                                "CMD_PLANESTARIF   C "
+                                "WHERE A.ID_PERIODO    	= :v1 "
+                                "AND A.COD_TIPCOMIS     = :v2 "
+                                "AND A.COD_TIPORED      = :v3 " 
+                                "AND A.NUM_ABONADO     	= B.NUM_ABONADO (+) "
+                                "AND A.COD_PLANTARIF    = C.COD_PLANTARIF "
+                                "AND ((C.TIP_PLAN = :v4) OR (:v4 = 'TODAS')) ",
+                                szTablaFisica);
+
+        EXEC SQL PREPARE Pre_cursor FROM :szSentenciaSql;
+        EXEC SQL DECLARE Cur_Eventos CURSOR for Pre_cursor ;
+        EXEC SQL OPEN Cur_Eventos using :szIdCiclComis, :szhCodTipcomis, :ihCodTipoRed, :szhCodTipPlan;
+        lMaxFetch = MAXFETCH;
+        
+        while(iFetchedRows == iRetrievRows)
+        {
+                EXEC SQL for :lMaxFetch 
+                        FETCH Cur_Eventos  
+                        INTO    
+                      		:lhNum_General     	,   
+                          	:lhCod_Comisionista	,
+                          	:lhNumAbonado		,  
+                          	:szhCod_Estado     	, 
+                          	:szhCod_Situacion  	, 
+                          	:szhTip_Plan		,
+                          	:szhCod_Categcliente, 
+                          	:ihCod_Cliente,
+                          	:szhCod_Oficina;
+                
+                iRetrievRows 	= sqlca.sqlerrd[2] - iLastRows;
+                iLastRows 		= sqlca.sqlerrd[2];
+                
+                for (i=0; i < iRetrievRows; i++)
+                {  
+	                paux = (stEvento *) malloc(sizeof(stEvento));
+	                paux->lNum_General              = 	lhNum_General[i];
+	                strcpy(paux->szCod_Tipcomis     , 	szhCodTipcomis);
+	                paux->iCod_Comisionista         = 	lhCod_Comisionista[i];
+	                paux->lNumAbonado				=	lhNumAbonado[i];
+	            	paux->iCod_Cliente              = 	ihCod_Cliente[i];
+	            	strcpy(paux->szTip_Plan         , 	szfnTrim(szhTip_Plan[i])); 
+	            	strcpy(paux->szCod_Categcliente , 	szfnTrim(szhCod_Categcliente[i]));
+	            	strcpy(paux->szCod_Estado       , 	szfnTrim(szhCod_Estado[i]));
+	    			strcpy(paux->szCod_Situacion    , 	szfnTrim(szhCod_Situacion[i]));
+	    			strcpy(paux->szCod_Oficina		,	szhCod_Oficina[i]);
+	               	iCantidad++;
+	                paux->sgte  	= qaux;                     
+	                qaux            = paux;                 
+                }
+        }
+        EXEC SQL CLOSE Cur_Eventos;
+        fprintf(pfLog, "\n[stCargaEventos] Ventas Recuperadas:[%d]\n", iCantidad);
+        fprintf(stderr,"\n[stCargaEventos] Ventas Recuperadas:[%d]\n", iCantidad);
+        return (qaux);
+}
+/*---------------------------------------------------------------------------*/
+/* FUNCION QUE RETORNA EL IMPORTE DE LA COMISION ASOCIADA (PARA PORCENTAJE)  */
+/*---------------------------------------------------------------------------*/
+double dGetImpComisionAsoc(stPrincipal * paux, stEvento * qaux)
+{
+	EXEC SQL BEGIN DECLARE SECTION; 
+		int		ihCodTipoRed;
+		int   	ihCodConcepto;  
+		char	szhIdCiclComis[11];
+		long	lhNumGeneral;
+		double	dhImpComision;
+		char	szTablaLogica[31];
+		char	szTablaFisica[31];
+		char	szSentenciaSql[1024];
+		int		lhNumRegistro;
+	EXEC SQL END DECLARE SECTION;
+
+	ihCodTipoRed 			= paux->iCodTipoRed;
+	ihCodConcepto			= paux->iCod_Concepto_Asoc;
+	strcpy(szhIdCiclComis 	, paux->szIdCiclComis);
+	lhNumGeneral   			= qaux->lNum_General;
+    strcpy(szTablaLogica	, "CMT_VALORIZADOS");        
+
+    if (!(iBuscaTablaFisica(szTablaLogica, szhIdCiclComis, szTablaFisica)))
+    {
+        return 0.00;
+    }
+    sprintf(szSentenciaSql, "SELECT COUNT(1) FROM %s "
+                            "WHERE COD_TIPORED 	= :v1 "
+                            " AND  NUM_GENERAL  = :v2 "
+                            " AND  COD_CONCEPTO = :v3 " 
+                            " AND  ID_PERIODO	= :v4 "
+                            ,szTablaFisica);
+                            
+                                    
+    EXEC SQL PREPARE Pre_cursor_1 FROM :szSentenciaSql;
+
+    EXEC SQL DECLARE Cur_Eventos_1 CURSOR for Pre_cursor_1;
+
+    EXEC SQL OPEN Cur_Eventos_1 using :ihCodTipoRed, :lhNumGeneral, :ihCodConcepto, :szhIdCiclComis;
+
+	EXEC SQL FETCH Cur_Eventos_1 INTO :lhNumRegistro;
+	
+	EXEC SQL CLOSE Cur_Eventos_1;
+	
+	if (lhNumRegistro == 0 )
+	{
+		return (0.00);
+	}
+	else
+	{
+    	sprintf(szSentenciaSql, "SELECT IMP_CONCEPTO FROM %s "
+                            "WHERE COD_TIPORED 	= :v1 "
+                            " AND  NUM_GENERAL  = :v2 "
+                            " AND  COD_CONCEPTO = :v3 " 
+                            " AND  ID_PERIODO	= :v4 "
+                            ,szTablaFisica);
+
+	    EXEC SQL PREPARE Pre_cursor_2 FROM :szSentenciaSql;
+	
+	    EXEC SQL DECLARE Cur_Eventos_2 CURSOR for Pre_cursor_2;
+	
+	    EXEC SQL OPEN Cur_Eventos_2 using :ihCodTipoRed, :lhNumGeneral, :ihCodConcepto, :szhIdCiclComis;
+	
+		EXEC SQL FETCH Cur_Eventos_2 INTO :dhImpComision;
+		
+		EXEC SQL CLOSE Cur_Eventos_2;
+        return(dhImpComision);
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* DUPLICA EL NODO DE EVENTO PARA INSERTARLO EN LA ESTRUCTURA GENERAL.       */
+/*---------------------------------------------------------------------------*/
+stEvento * stDuplicaEvento(stEvento * qaux)
+{
+	stEvento * paux;
+
+	paux = (stEvento *) malloc(sizeof(stEvento));
+	
+    paux->lNum_General              = qaux->lNum_General; 	
+    strcpy(paux->szCod_Tipcomis     , qaux->szCod_Tipcomis); 	
+    paux->iCod_Comisionista         = qaux->iCod_Comisionista; 	
+    paux->lNumAbonado         		= qaux->lNumAbonado; 	
+	paux->iCod_Cliente              = qaux->iCod_Cliente; 	
+	strcpy(paux->szTip_Plan         , qaux->szTip_Plan); 	
+	strcpy(paux->szCod_Categcliente , qaux->szCod_Categcliente); 	
+	strcpy(paux->szCod_Estado       , qaux->szCod_Estado); 	
+	strcpy(paux->szCod_Situacion    , qaux->szCod_Situacion); 	
+	strcpy(paux->szCod_Oficina		, qaux->szCod_Oficina);
+	paux->sgte = NULL;
+	
+	return paux;
+}
+/*---------------------------------------------------------------------------*/
+/* PROCEDIMIENTO QUE EJECUTA EL CALCULO DE LA COMISION DE LOS EVENTOS (qaux) */
+/* EN BASE A LO CONFIGURADO EN EL TASADOR (paux).                            */
+/*---------------------------------------------------------------------------*/
+void vCalculaComision(stPrincipal * paux, stEvento * saux)
+{
+	stEvento * raux;
+	stEvento * qaux;
+	EXEC SQL BEGIN DECLARE SECTION;
+	    double  dhComision ;
+	    double  dhPorcentaje;
+	    double  dhComisionAsoc;
+	    int     ihConsidera;
+	    char	szhIdCiclComis[11];
+	EXEC SQL END DECLARE SECTION;
+	
+
+	for (qaux = saux; qaux != NULL; qaux = qaux->sgte)
+	{
+
+		fprintf(pfLog, "\n[vCalculaComision] Analiza Evento:[%ld] TPlan:[%s] CatCte.:[%s] Estado:[%s] Situac:[%s]\n", qaux->lNum_General, qaux->szTip_Plan, qaux->szCod_Categcliente, qaux->szCod_Estado, qaux->szCod_Situacion);  
+/*		fprintf(stderr,"\n[vCalculaComision] Analiza Evento:[%ld] TPlan:[%s] CatCte.:[%s] Estado:[%s] Situac:[%s]\n", qaux->lNum_General, qaux->szTip_Plan, qaux->szCod_Categcliente, qaux->szCod_Estado, qaux->szCod_Situacion);  */
+
+		ihConsidera = TRUE;
+		/* verificamos que sea un cliente activo */
+		if ((strcmp(qaux->szCod_Situacion ,"BAA") != 0) && 
+			(strcmp(qaux->szCod_Situacion ,"BAP") != 0) &&
+			(strcmp(qaux->szCod_Estado    ,"CO")  == 0))
+		{   
+			if (strcmp(paux->szInd_Saldo,"S") == 0 )  /* verificamos su estado de saldo 0  */
+			{                        
+				if (!bfnEstadoSaldo(qaux->iCod_Cliente, qaux->lNumAbonado))
+				{
+	            	fprintf(pfLog, "\nn[vCalculaComision] Cliente:[%d] Abonado [%ld] Posee Saldo en Mora. No se Comisiona.\n",qaux->iCod_Cliente,  qaux->lNumAbonado);  
+/*	            	fprintf(stderr,"\nn[vCalculaComision] Cliente:[%d] Abonado [%ld] Posee Saldo en Mora. No se Comisiona.\n",qaux->iCod_Cliente,  qaux->lNumAbonado);  */
+	            	ihConsidera = FALSE;
+	            }
+			}
+		}
+		else
+		{
+        	fprintf(pfLog, "\nn[vCalculaComision] Abonado [%ld] no se encuentra ACTIVO. No se Comisiona.\n", qaux->lNumAbonado);  
+/*        	fprintf(stderr,"\nn[vCalculaComision] Abonado [%ld] no se encuentra ACTIVO. No se Comisiona.\n", qaux->lNumAbonado);  */
+        	ihConsidera = FALSE;
+        }
+
+	    if (ihConsidera==TRUE)
+	    {
+			if (strcmp(paux->szTip_Bonificacion, "M") == 0)
+			{ 
+				dhComision = paux->dImp_Bonificacion ;
+			}          
+			else
+			{                    
+				dhComisionAsoc = dGetImpComisionAsoc(paux, qaux);
+				dhComision = (paux->dImp_Bonificacion * dhComisionAsoc) / 100.00 ;
+			}
+		}
+		else
+		{
+			dhComision = 0.00;
+		}
+		raux = stDuplicaEvento(qaux);
+		raux->dImp_Comision = dhComision;
+		
+		raux->sgte = paux->sgte_evento;
+		paux->sgte_evento = raux;
+ 	    fprintf(pfLog, "\n[vCalculaComision] Comision Asociada:[%7.2f] Evento:[%ld]\n", raux->dImp_Comision, raux->lNum_General);  
+		raux = NULL;
+
+    }
+}
+
+/*---------------------------------------------------------------------------*/
+/* PROCEDIMIENTO QUE INICIA LA VALORACION DE LISTAS                          */
+/* 1.- RECORRE LA LISTA PRINCIPAL                                            */
+/* 2.- CALCULA EL PERIODO SOBRE EL QUE RECOLECTARA LAS EVENTOS               */
+/* 3.- MANDA A CREAR LA LISTA DE EVENTOS...                                  */
+/* 4.- CALCULA LA COMISION SOBRE LA LISTA DE EVENTOS.                                           */
+/*---------------------------------------------------------------------------*/
+void bfnEvaluaPermanencia()
+{
+        stPrincipal 	* paux;
+        stEvento        * qaux;
+        
+        long            lCodPeriodo;
+        char            szTablaLogica[30];
+        char            szTablaFisica[30];
+        char			szIdCiclComis[11];
+        int             iNumPeriodos;
+        long			lhCodPeriodo;
+        
+        for(paux=lstPrincipal; paux!=NULL; paux=paux->sgte)
+        {
+	    		lCodPeriodo = lNewCiclComis(stCiclo.lCodCiclComis, paux->iNum_Periodos * -1);
+	    		strcpy(paux->szIdCiclComis 	, 	szNewCiclComis(lCodPeriodo));
+				
+                fprintf(pfLog, "\n(bfnEvaluaPermanencia)Procesa Permanencia Periodo:[%s] Tr:[%d] PlComis:[%s] Conc:[%d] TipComis:[%s]...\n",paux->szIdCiclComis, paux->iCodTipoRed, paux->szCodPlanComis, paux->iCod_Concepto, paux->szCod_Tipcomis);
+                fprintf(stderr, "\n(bfnEvaluaPermanencia)Procesa Permanencia Periodo:[%s] Tr:[%d] PlComis:[%s] Conc:[%d] TipComis:[%s]...\n",paux->szIdCiclComis, paux->iCodTipoRed, paux->szCodPlanComis, paux->iCod_Concepto, paux->szCod_Tipcomis);
+                qaux = stCargaEventos(paux->szCod_Tipcomis,paux->szTip_Plan, paux->iCodTipoRed, paux->szCodPlanComis, paux->iCod_Concepto,paux->szIdCiclComis);
+                
+                if (qaux!= NULL)
+                {
+                        fprintf(pfLog, "\n(bfnEvaluaPermanencia)Asigna la comisión a la lista de eventos.\n");
+                        fprintf(stderr, "\n(bfnEvaluaPermanencia)Asigna la comisión a la lista de eventos.\n");
+                        vCalculaComision(paux,qaux);
+                }
+                fprintf(pfLog, "\n(bfnEvaluaPermanencia)Libera Eventos Seleccionados...\n");
+                fprintf(stderr,"\n(bfnEvaluaPermanencia)Libera Eventos Seleccionados...\n");
+                vLiberaEvento(qaux);
+        }
+}
+
+/*-----------------------------------------------------------------------------*/
+/* INSERTA  REGISTROS EN LA TABLA CMT_VALORIZADOS                              */
+/*-----------------------------------------------------------------------------*/
+void bfnInsertaValorizados()
+{
+    stPrincipal    * pPrincipal;
+    stEvento       * pEvento;
+    int                    i;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+            int		ihCodTipoRed;
+            long    lhNumGeneral;
+            char    szhCodUniverso[7];
+            int     ihCodConcepto;
+            char    szhCodTipComis[3];
+            long    lhCodComisionista;
+            long    lhCodPeriodo;
+            char    szhIdPeriodo[11];
+            double  dhImpConcepto;                
+    EXEC SQL END DECLARE SECTION;   
+    i = 0;
+            
+    strcpy(szhIdPeriodo    , stCiclo.szIdCiclComis);        
+    lhCodPeriodo           = stCiclo.lCodCiclComis;     
+                
+    for (pPrincipal = lstPrincipal; pPrincipal != NULL; pPrincipal = pPrincipal->sgte)             
+    {       
+        strcpy(szhCodTipComis   , 	pPrincipal->szCod_Tipcomis);                        
+        ihCodConcepto          	= 	pPrincipal->iCod_Concepto;
+        strcpy(szhCodUniverso	,	pPrincipal->szCodUniverso);
+		ihCodTipoRed			=	pPrincipal->iCodTipoRed;
+        for (pEvento = pPrincipal->sgte_evento; pEvento != NULL; pEvento = pEvento->sgte)
+        {
+            lhNumGeneral      	= 	pEvento->lNum_General;
+            lhCodComisionista 	= 	pEvento->iCod_Comisionista;
+            dhImpConcepto     	= 	fnCnvDouble(pEvento->dImp_Comision, 0);
+            i++;
+
+			fprintf(pfLog, "\n+++++++++++++++++++++++++++[%d]+++++++++++++\n", i);
+			fprintf(pfLog, "[bfnInsertaValorizados] ihCodTipoRed     [%d]\n",pPrincipal->iCodTipoRed);                    
+			fprintf(pfLog, "[bfnInsertaValorizados] lhNumGeneral     [%d]\n",pEvento->lNum_General);
+			fprintf(pfLog, "[bfnInsertaValorizados] szhCodUniverso   [%s]\n",pPrincipal->szCodUniverso);
+			fprintf(pfLog, "[bfnInsertaValorizados] ihCodConcepto    [%d]\n",pPrincipal->iCod_Concepto);
+			fprintf(pfLog, "[bfnInsertaValorizados] szhCodTipComis   [%s]\n",pPrincipal->szCod_Tipcomis);
+			fprintf(pfLog, "[bfnInsertaValorizados] lhCodComisionista[%d]\n",pEvento->iCod_Comisionista);
+			fprintf(pfLog, "[bfnInsertaValorizados] lhCodPeriodo     [%d]\n",stCiclo.lCodCiclComis);
+			fprintf(pfLog, "[bfnInsertaValorizados] szhIdPeriodo     [%s]\n",stCiclo.szIdCiclComis);
+			fprintf(pfLog, "[bfnInsertaValorizados] dhImpConcepto    [%7.2f]\n",pEvento->dImp_Comision);
+           
+            EXEC SQL INSERT INTO CMT_VALORIZADOS
+                ( 	COD_TIPORED,
+                	NUM_GENERAL,  
+                  	COD_UNIVERSO,
+                  	COD_CONCEPTO,
+                  	COD_TIPCOMIS,
+                  	COD_COMISIONISTA,
+                  	COD_PERIODO, 
+                  	ID_PERIODO, 
+                  	IMP_CONCEPTO)
+                VALUES
+                 	(:ihCodTipoRed,
+                 	:lhNumGeneral,
+                  	:szhCodUniverso,
+                  	:ihCodConcepto,
+                  	:szhCodTipComis,
+                  	:lhCodComisionista,
+                  	:lhCodPeriodo,
+                  	:szhIdPeriodo,
+                  	:dhImpConcepto);
+        }                                                                                
+    }
+    stStatusProc.lCantRegistros = i;        
+}
+      
+/*---------------------------------------------------------------------------*/
+/* RUTINA PRINCIPAL.                                                         */
+/*---------------------------------------------------------------------------*/
+int main (int argc, char *argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+        long  lSegIni, lSegFin;
+        short ibiblio;
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+    memset(&stArgs, 0, sizeof(rg_argumentos));
+    memset(&stCiclo, 0, sizeof(reg_ciclo));
+    memset(&stStatusProc, 0, sizeof(rg_estadistica));
+    memset(&proceso, 0, sizeof(proceso));
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+        lSegIni=lGetTimer();
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+        vManejaArgs(argc, argv); 
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+
+
+        strcpy(szhUser, stArgs.szUser);
+        strcpy(szhPass, stArgs.szPass);
+
+        if(fnOraConnect(szhUser, szhPass) == FALSE)
+        {
+                fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+                exit(EXIT_205);
+        }
+        else
+        {
+                fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");
+                fprintf(stderr, "Username: %s\n\n", szhUser);
+        }
+/*---------------------------------------------------------------------------*/
+/* Inicia estructura de proceso y bloques.                                   */
+/*---------------------------------------------------------------------------*/
+        vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);  
+        ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);                                      
+        if (ibiblio)                                                                                 
+        {                                                                                            
+            fprintf(stderr, "Error al Abrir Traza");                                                 
+            fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);                  
+            exit(ibiblio);                                                                           
+        }                                                                                            
+
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+        fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");             
+        if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)                                        
+        {                                                                                                           
+        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0)); 
+        }                                                                                                           
+        fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);                                  
+/*---------------------------------------------------------------------------*/
+/* GENERACION DEL NOMBRE Y CREACION DEL ARCHIVO DE LOG.                      */
+/*---------------------------------------------------------------------------*/
+        strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+        strncpy(szhSysDate, pszGetDateLog(),16);                                                                
+        strcpy(stArgsLog.szProceso,LOGNAME);                                                                        
+        strncpy(stArgsLog.szSysDate,szhSysDate,16);                                                                    
+        sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);                          
+                                                                                                              
+        if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)                                                            
+        {                                                                                                          
+            fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", szLogName);                                   
+            fprintf(stderr, "Revise su existencia.\n");                                                            
+            fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                  
+            fprintf(stderr, "Proceso finalizado con error.\n");                                                    
+            exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_301,"ARCHIVO DE DATOS NO PUDO SER ABIERTO.",0,0));   
+        }                                                                                                          
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                               
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    
+    fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+
+    fprintf(pfLog, "Identificador de Proceso		<%s>\n", stArgs.szProceso);
+    fprintf(pfLog, "Identificador de Bloque			<%s>\n", stArgs.szBloque);
+    fprintf(pfLog, "Secuencia de Ejecucion			<%d>\n", stArgs.izSecuencia);
+
+	fprintf(pfLog, "Base de datos : %s\n\n", (strcmp(getenv((const char *)"TWO_TASK"), "")!=0?getenv((const char *)"TWO_TASK"):getenv((const char *)"ORACLE_SID")));
+    fprintf(pfLog,"\nUsuario ORACLE      :[ %s ]\n",(char * )sysGetUserName() );    
+   
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+        EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';
+/*---------------------------------------------------------------------------*/
+/* PROCESAMIENTO PRINCIPAL.                                                  */
+/*---------------------------------------------------------------------------*/
+        lSegIni=lGetTimer();                                                                
+                                                                                            
+        fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());      
+        fprintf(pfLog,  "Inicio procesamiento principal ...\n\n");
+        fprintf(stderr, "Inicio procesamiento principal ...\n\n");
+
+/*--------------------------------------------------------------------------*/
+/* Carga Fechas de periodo a procesar                                       */
+/*--------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+    fprintf(pfLog, "Carga fechas que definen el periodo actual...\n\n");  
+    fprintf(stderr, "Carga fechas que definen el periodo actual...\n\n");  
+    if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    {
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	exit(EXIT_101);
+    }
+
+/*--------------------------------------------------------------------------*/
+/* Carga Estructura de Conceptos y Tipos de Red a Procesar...               */
+/*--------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+    fprintf(pfLog, "Gestiona Carga de Datos y Parámetros..\n\n");  
+    fprintf(stderr, "Gestiona Carga de Datos y Parámetros...\n\n");  
+	if (!bCargaConceptos())
+	{
+        fprintf(stderr, "\nError Recuperando Lista de Conceptos de comisiones.\n");
+        fprintf(stderr, "Revise la parametrización.\n");
+        fprintf(stderr, "Proceso finalizado con error.\n");
+        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_301,"NO PUEDE CARGAR LISTA DE CONCEPTOS DE COMISION.",0,0));
+	}
+
+/*---------------------------------------------------------------------------*/
+/* CARGA ESTRUCTURA PRINCIPAL DE VALORACION DE UNIVERSOS                     */
+/*---------------------------------------------------------------------------*/
+        vFechaHora();                                                                                   
+        fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());                      
+        fprintf(pfLog,  "Carga estructura principal de valoración...\n\n");       
+        fprintf(stderr,  "Carga estructura principal de valoración...\n\n");  
+        bfnLlenaTasador(); 
+/*---------------------------------------------------------------------------*/
+/* EJECUTA VALORACION DE EVENTOS POR CONCEPTOS DE PERMANENCIA                */
+/*---------------------------------------------------------------------------*/
+        vFechaHora();                                                                                   
+        fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());                      
+        fprintf(pfLog,  "Ejecuta valoracion de eventos por conceptos de permanencia...\n\n");       
+        fprintf(stderr,  "Ejecuta valoracion de eventos por conceptos de permanencia...\n\n");  
+        bfnEvaluaPermanencia(); 
+/*---------------------------------------------------------------------------*/
+/* GRABA RESULTADOS EN CMT_VALORIZADOS                                       */
+/*---------------------------------------------------------------------------*/
+        vFechaHora();                                                                                   
+        fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());                      
+        fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());          
+        fprintf(pfLog,  "Graba resultados en cmt_valorizados...\n\n");
+        fprintf(stderr, "Graba resultados en cmt_valorizados...\n\n");
+        bfnInsertaValorizados(); 
+/*---------------------------------------------------------------------------*/
+/* LIBERA MEMORIA UTILIZADA POR LISTA PRINCIPAL                              */
+/*---------------------------------------------------------------------------*/
+        vFechaHora();                                                                   
+        fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());      
+        fprintf(pfLog, "Libera memoria utilizada por lista Principal...(vLiberaPrincipal)\n\n");
+        fprintf(stderr, "Libera memoria utilizada por lista Principal...(vLiberaPrincipal)\n\n");
+        vLiberaPrincipal(lstPrincipal);
+/*---------------------------------------------------------------------------*/
+/*    - LIBERA MEMORIA UTILIZADA POR LISTAS DE CONCEPTOS.                    */
+/*---------------------------------------------------------------------------*/
+        
+        vFechaHora();
+        fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+        fprintf(pfLog, "Libera memoria utilizada por listas de Conceptos...(vLiberaConceptosVal)\n\n");
+        fprintf(stderr, "Libera memoria utilizada por listas de Conceptos...(vLiberaConceptosVal)\n\n");
+        vLiberaConceptosVal(lstConceptos);
+/*---------------------------------------------------------------------------*/
+/* RECUPERACION DE LOS SEGUNDOS REALES OCUPADOS POR EL PROCESO.              */
+/*---------------------------------------------------------------------------*/
+    lSegFin=lGetTimer();
+        stStatusProc.lSegProceso = lSegFin - lSegIni;
+        
+        if (iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,0,"",stStatusProc.lSegProceso,stStatusProc.lCantRegistros))                                         
+                exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_400,"NO SE PUDO CERRAR TRAZA OK.",0,0));                                              
+        
+        EXEC SQL COMMIT WORK RELEASE;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+        fprintf(pfLog,  "\nEstadistica del proceso\n");
+        fprintf(pfLog,  "------------------------\n");
+        fprintf(pfLog,  "Segundos Reales Utilizados             : [%d]\n", stStatusProc.lSegProceso);
+        fprintf(pfLog,  "Cantidad Registros Porcesados          : [%d]\n",stStatusProc.lCantRegistros);
+    fprintf(pfLog , "\n\nProceso [%s] finalizado ok.\n", basename(argv[0]));
+    fprintf(stderr, "\n\nProceso [%s] finalizado ok.\n", basename(argv[0]));
+
+    fclose(pfLog);
+    return(EXIT_0);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

@@ -1,0 +1,70 @@
+CREATE OR REPLACE PROCEDURE PV_ACT_OOSS
+IS
+
+V_DIAS    Number(9);
+sCodValor VARCHAR2(5); -- MAM 24/09/2003 - PROYECTO PORTAB.NUMERICA(WORK AROUND)
+CURSOR PV_OOSS IS
+	-- MAM 24/09/2003 - PROYECTO PORTAB.NUMERICA(WORK AROUND)
+	SELECT A.NUM_OS
+	FROM   PV_IORSERV A,PV_SOLICITUD_BAJAS_TO B
+	WHERE  A.NUM_OS > 0
+	AND    B.NUM_OS=A.NUM_OS
+	AND    A.COD_OS=10232
+	AND    TRUNC(A.FECHA_ING + to_number(V_DIAS))<=TRUNC(SYSDATE)
+	AND    A.COD_ESTADO=1
+	AND    A.TIP_PROCESA=3
+	AND    A.FH_EJECUCION IS NULL
+	AND    B.COD_ESTADO NOT IN (TO_NUMBER(sCodValor)) -- no considera solicitudes en estado CANCELADA
+	UNION ALL
+	SELECT A.NUM_OS
+	FROM   PV_IORSERV A, PV_SOLICITUD_BAJAS_TO B
+	WHERE  A.NUM_OS > 0
+	AND    B.NUM_OS=A.NUM_OS
+	AND    A.COD_OS=10232
+	AND    TRUNC(A.FH_EJECUCION)<=TRUNC(SYSDATE)
+	AND    A.COD_ESTADO=1
+	AND    A.TIP_PROCESA=3
+	AND    B.COD_ESTADO NOT IN (TO_NUMBER(sCodValor));-- no considera solicitudes en estado CANCELADA
+
+begin
+
+ 	-- MAM 24/09/2003 - PROYECTO PORTAB.NUMERICA(WORK AROUND)
+        SELECT COD_VALOR
+        INTO   sCodValor
+        FROM   GED_CODIGOS
+        WHERE  NOM_COLUMNA = 'COD_ESTADO'
+        AND    DES_VALOR='CANCELADA';
+	Select val_parametro
+  	into V_DIAS
+	from ged_parametros
+	where nom_parametro = 'DIAS_MAX_BAJA'
+  	and cod_modulo = 'GA'
+  	and cod_producto = 1;
+	FOR C1 IN PV_OOSS LOOP
+
+		UPDATE pv_solicitud_bajas_to a
+	 	SET   COD_ESTADO = 10
+		where  a.num_os = C1.NUM_OS;
+
+		UPDATE pv_iorserv
+	 	SET   COD_ESTADO = 10,
+		STATUS='Inscribiendo Administrador'
+		where  num_os = C1.NUM_OS;
+
+		INSERT INTO PV_ERECORRIDO (NUM_OS, COD_ESTADO, DESCRIPCION, TIP_ESTADO, FEC_INGESTADO)
+		VALUES (C1.NUM_OS, 10, 'Inscribiendo Administrador', 3, SYSDATE);
+
+	END LOOP;
+
+
+
+   	commit;
+
+EXCEPTION
+
+   WHEN OTHERS THEN
+     ROLLBACK;
+
+end PV_ACT_OOSS;
+/
+SHOW ERRORS

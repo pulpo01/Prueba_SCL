@@ -1,0 +1,263 @@
+/* ============================================================================= */
+/*
+    Tipo        :  ACCION
+    Nombre      :  AsigDicom.pc ("ASDIC"->szfnAsigDicom)
+    Descripcion :  ASIGna la categoria de Dicom, al cliente en proceso
+    Recibe      :  by Val -> Cod Cliente 
+    Devuelve    :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+                   "NORUT"-> Fue imposible determinar el rut del cliente dado
+                   "PND"  -> La accion queda pendiente                         / MGG_27032001 /
+				       "NODIR"-> Fue imposible determinar la direccion del cliente / MGG_27032001 /
+				       "OK"   -> La accion se ejecuto correctamente
+    Autor       :  Manuel Garcia G.
+    Fecha       :  17 - Mayo - 2001
+Modificacion    :  12-11-2004
+						 Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "AsigDicom.h"
+
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* funcion de asignacion de entidad de cobranza externa                          */
+/* ============================================================================= */
+char  *szfnAsigDicom (FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+char 	modulo[] = "szfnAsigDicom";
+int 	iResp = 0, iMetropolitana = 13, iAsignado = 0;
+int 	i = 0, iMorososComuna = 0 , iPorcentajeTotal = 0;
+long 	lTotalRows = 0;
+float 	fPorcentajeDefinido = 0.0;
+float 	fPorcentajeActual   = 0.0;
+char		szhCodEntidadAsig[] = "DICOM";
+char		szRutina[] = "A"; 
+char		szMovimiento[] = "A";
+EXEC SQL BEGIN DECLARE SECTION;
+   long lhCodCliente          = 0  ;
+   char szhCodRegion[4]       = "" ; EXEC SQL VAR szhCodRegion IS STRING (4);
+   char szhCodComuna[6]       = "" ; EXEC SQL VAR szhCodComuna IS STRING (6);
+   int ihDirCorrespondencia  = 3  ;
+   char szhNumIdent[iLENNUMIDENT]       = "" ; EXEC SQL VAR szhNumIdent IS STRING (iLENNUMIDENT);
+   char szhCodTipIdent[3]     = "" ; EXEC SQL VAR szhCodTipIdent IS STRING (3);
+   long lhCodCuentaNew        = 0  ;
+   char szhCodMovimiento[6]   = "" ; EXEC SQL VAR szhCodMovimiento IS STRING (6);
+   char szhFecMovimiento[15]  = "" ; EXEC SQL VAR szhFecMovimiento IS STRING (15);
+   char szhAuxHoy[15]         = "" ; EXEC SQL VAR szhAuxHoy IS STRING (15);
+   char szhCodEnvio[6]        = "" ; EXEC SQL VAR szhCodEnvio IS STRING (6);
+   int  ihIncrementoClientes  = 0  ;
+   char szhRutStgo[2]         = "" ; EXEC SQL VAR szhRutStgo IS STRING (2);
+   double dhDeudaRut = 0.0;
+	int  cntcategorias         = 0;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+       
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+
+   lhCodCliente = lCliente;
+    
+    /*-(0) Obtiene el Rut del Cliente -*/            
+    iResp = ifnGetRutCliente(&pfLog, lCliente, szhNumIdent, szhCodTipIdent, CXX); /* el envia mensaje en caso de error */
+    if (iResp == 0) /*No encontro el rut */
+    {
+        return "NORUT";
+    }
+    else if (iResp < 0 ) /* error oracle */
+    {
+        return "PND";
+    }
+    
+    iResp = 0;
+
+    ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)(NumIdent:%s)(TipIdent:%s)",LOG05,lhCodCliente,szhNumIdent,szhCodTipIdent);  
+
+    
+    /*- (0.5) Verificar la deuda del rut del cliente */
+    if ( !bfnGetSaldoPorRutAcc(&pfLog, szhNumIdent,szhCodTipIdent,&dhDeudaRut, CXX ) ) return "PND";
+  
+	/* transformamos decimales segun definicion para la operadora tratada */
+	ifnTrazaHilos( modulo,&pfLog, "Valores antes de transformer dhDeudaRut = [%.4f].", LOG05, dhDeudaRut );  
+	dhDeudaRut = fnCnvDouble( dhDeudaRut, 0 );
+	ifnTrazaHilos( modulo,&pfLog, "Valores despues de transformer dhDeudaRut = [%.4f].", LOG05, dhDeudaRut );  
+
+	/* debemos actualizar la co_gestion, con un alta transitoria para DICOM */
+	if( !bfnActualizaCoGestionClienteAcc(&pfLog, lhCodCliente, lhCodCuentaNew, szhNumIdent, szhCodTipIdent, 
+									   szhCodEntidadAsig, szRutina, szMovimiento, CXX ) )
+	{
+		return "PND";
+	}
+		
+    /*--(1) Verificar si el rut de este cliente ya tiene alguna dicom asignado --*/    
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    SELECT 	A.COD_MOVIMIENTO, 
+    		A.COD_ENVIO, 
+    		TO_CHAR(A.FEC_MOVIMIENTO,'YYYYMMDDHH24MISS'), 
+    		TO_CHAR(SYSDATE,'YYYYMMDDHH24MISS')
+    INTO 	:szhCodMovimiento, 
+    		:szhCodEnvio, 
+    		:szhFecMovimiento, 
+    		:szhAuxHoy
+    FROM 	CO_DICOM A
+    WHERE 	A.NUM_IDENT 	= :szhNumIdent
+    AND   	A.COD_TIPIDENT 	= :szhCodTipIdent;
+
+    if (sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) CO_DICOM => %s ",LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND"; /* error oracle*/
+    }
+    else if ( sqlca.sqlcode != SQLNOTFOUND ) /* LO ENCONTRO. EL RUT YA EXISTE */
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)-->Ya esta en CO_DICOM -OK- ", LOG03, lhCodCliente );  
+        
+        /*ihIncrementoClientes = 1; * XC-51 20040706 capc*/
+        ihIncrementoClientes = 0;
+        
+        if ( strcmp( szhCodMovimiento, "SM" ) == 0 )		/* si no tiene movimiento */
+        {
+            if ( strcmp( szhCodEnvio, "B" ) == 0 )  		/* si el envio es de baja */
+            { 
+                strcpy( szhCodMovimiento, "A" );        	/* cambiar cod_movimiento a 'A' */
+                /* ihIncrementoClientes = 0;               	*  XC-51 20040706 capc  ** no incrementa la cantidad de clientes, asume que tiene uno */
+				ihIncrementoClientes = 1;
+            }
+			else
+			{
+                strcpy( szhCodMovimiento, "M" );   			/* cambiar cod_movimiento a 'M' */
+			}
+            strcpy( szhFecMovimiento, szhAuxHoy );      	/* cambiar fecha del movimiento */
+        }
+        else 
+        {
+            if( strcmp( szhCodMovimiento, "A" ) != 0 )		/* si tiene movimiento distinto de 'A' : Alta */
+            {    
+                if( strcmp( szhCodMovimiento, "B" ) == 0 )
+                	/*ihIncrementoClientes = 0; * XC-51 20040706 capc */
+					ihIncrementoClientes = 1;                
+
+                strcpy( szhCodMovimiento, "M" );            /* cambiar cod_movimiento a 'M'  */
+            }
+
+            strcpy( szhFecMovimiento, szhAuxHoy );			/* cambiar fecha del movimiento */
+        }
+        
+        sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+        EXEC SQL
+        UPDATE 	CO_DICOM
+        SET    	CNT_CLIENTES 	= CNT_CLIENTES + :ihIncrementoClientes
+              , COD_MOVIMIENTO 	= :szhCodMovimiento 
+              , FEC_MOVIMIENTO 	= TO_DATE(:szhFecMovimiento,'YYYYMMDDHH24MISS')
+              , MTO_VENCIDO 	= :dhDeudaRut
+        WHERE 	NUM_IDENT 		= :szhNumIdent
+        AND   	COD_TIPIDENT 	= :szhCodTipIdent ;
+        
+        if (sqlca.sqlcode)
+        {
+            ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) UPDATE CO_DICOM => %s " ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+            return "PND"; /* error oracle*/
+        }
+            
+        return "OK"; /* No hace nada mas, porque ya esta en DICOM */
+
+    }
+    /* SQLNOTFOUND : No esta en DICOM, continua el proceso*/
+
+    /*--(0) Obtiene el cod_cuenta del cliente en la CO_MOROSOS --*/    
+	/*INICIO***** XC-51 **************/  
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+	SELECT  COUNT(UNIQUE COD_CATEGORIA)
+	INTO  :cntcategorias
+	FROM  GE_CLIENTES
+	WHERE NUM_IDENT    = :szhNumIdent
+	AND   COD_TIPIDENT = :szhCodTipIdent;
+
+	if (cntcategorias > 1 ) 
+	{
+		return "RDCAT";
+	}
+	
+	/*FIN***** XC-51 **************/    
+
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    SELECT 	COD_CUENTA
+    INTO 	:lhCodCuentaNew
+    FROM 	CO_MOROSOS
+    WHERE 	COD_CLIENTE = :lhCodCliente;
+
+    if( sqlca.sqlcode == SQLOK && sqlca.sqlcode == SQLNOTFOUND )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select Cod_cuenta from CO_MOROSOS => %s " ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "PND"; /* error oracle*/
+    }                                              
+    else if( sqlca.sqlcode == SQLNOTFOUND )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) No se encuentra Cod_cuenta en la CO_MOROSOS => %s.", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND"; /* error oracle*/
+    }
+	
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL 
+    INSERT INTO CO_DICOM
+    ( 
+        NUM_IDENT,		COD_TIPIDENT,		COD_CUENTA,			FEC_INGRESO,       
+        NUM_PROCESO,	COD_MOVIMIENTO, 	FEC_MOVIMIENTO,     MTO_DEUDA,         
+        MTO_VENCIDO,	CNT_CLIENTES,  		COD_ENVIO,          NOM_USUARIO
+    )
+    VALUES
+    (   
+        :szhNumIdent,	:szhCodTipIdent,	:lhCodCuentaNew,   	SYSDATE,            
+        0,             	'A',       			SYSDATE,			0,
+        :dhDeudaRut, 	1,    				'X',                USER
+    );
+
+    if ( sqlca.sqlcode )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Al insertar en CO_DICOM => %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND"; /* error oracle*/
+    }
+
+    ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)-->Insertado CO_DICOM -OK- ", LOG03, lhCodCliente );  
+
+    return "OK";
+} 
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

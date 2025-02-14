@@ -1,0 +1,12 @@
+CREATE OR REPLACE PACKAGE FA_FACTOR_TIPO_UNIDAD_D_PG
+IS
+
+ FUNCTION FA_ELIMINAR_FN
+               (
+                EV_valor GE_VALORES_dominios_td.valor%TYPE
+               )
+ RETURN NUMBER;
+
+END FA_FACTOR_TIPO_UNIDAD_D_PG;
+/
+SHOW ERRORS

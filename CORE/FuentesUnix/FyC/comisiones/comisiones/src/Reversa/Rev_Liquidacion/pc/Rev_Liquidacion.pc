@@ -1,0 +1,262 @@
+/* Reversa de proceso de liquidacion                                    */
+/*----------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                             */
+/* Inicio: Martes 9 de Julio de 2002.                                   */
+/* Por Nelson Contreras Helena                                          */
+/*----------------------------------------------------------------------*/
+/* 20031001 Marcelo Quiroz G. Versionado Cuzco.                         */
+/* Se filtra reversa de tablas mediante el campo ID_PERIODO             */
+/*                                                                      */
+/************************************************************************/
+
+#include "Rev_Liquidacion.h"
+#include "GEN_biblioteca.h"
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+	char    szhUser[30]="";
+	char    szhPass[30]="";
+	char    szhSysDate [17]="";
+	char    szFechaYYYYMMDD[9]="";
+	char    szhIdPeriodo[11];
+EXEC SQL END DECLARE SECTION;
+/*****************************************************************************/
+/* RUTINA PARA LIMPIEZA DE TABLA CM_LIQUIDACION_TO                            */
+/*****************************************************************************/
+void    vRevLiquidacion()
+{
+        
+        EXEC SQL DELETE FROM CM_LIQUIDACION_TO 
+                 WHERE ID_PERIODO = :szhIdPeriodo;
+
+        stStatusProc.lCantLiquidacion = sqlca.sqlerrd[2];
+               
+}
+
+/*****************************************************************************/
+/* RUTINA PARA REVERSA DE AJUSTES Y ANTICIPOS                                */
+/*****************************************************************************/
+void vRevAjustesAnticipos()
+{
+    EXEC SQL
+        UPDATE CMT_ANTICIPOS
+           SET COD_ESTADO_LIQ = 'ING'
+        WHERE  ID_PERIODO_LIQ  = :szhIdPeriodo
+        AND    COD_ESTADO_LIQ  = 'LIQ';
+
+    stStatusProc.lCantAnticipos = sqlca.sqlerrd[2];
+        
+    EXEC SQL
+        UPDATE CMT_AJUSTES_COMISIONES
+           SET COD_ESTADO  = 'ING'
+        WHERE  ID_PERIODO  = :szhIdPeriodo
+        AND    COD_ESTADO  = 'LIQ';
+
+    stStatusProc.lCantAjustes = sqlca.sqlerrd[2];
+
+}
+
+/*****************************************************************************/
+/* Rutina principal.                                                         */
+/*****************************************************************************/
+int     main (int argc, char *argv[])
+{       
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+        short ibiblio;
+		long  lSegIni, lSegFin;	
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+        lSegIni=lGetTimer();			
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+        memset(&stCiclo, 0, sizeof(reg_ciclo));  
+        memset(&stStatusProc, 0, sizeof(rg_estadistica));
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+        memset(&stArgs, 0, sizeof(rg_argumentos));
+        vManejaArgs(argc, argv);
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+		fprintf(stderr, "\nstArgs.szUser        [%s]\n", stArgs.szUser);
+		fprintf(stderr, "\nstArgs.szPass        [%s]\n", stArgs.szPass);
+	
+		strcpy(szhUser, stArgs.szUser);                                                      
+		strcpy(szhPass, stArgs.szPass);                                                    
+		if(fnOraConnect(szhUser, szhPass) == FALSE)                                          
+		{                                                                                  
+		   	fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+		   	exit(EXIT_205);                                                            
+		}                                                                                  
+		else                                                                               
+		{                                                                                  
+	   		fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");     
+	   		fprintf(stderr, "Username: %s\n\n", szhUser);                              
+		}
+/*---------------------------------------------------------------------------*/
+/* Inicia estructura de proceso y bloques.                                   */
+/*---------------------------------------------------------------------------*/
+        vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);
+        ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);
+        if (ibiblio)
+        {
+            fprintf(stderr, "Error al Abrir Traza");
+            fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);
+            exit(ibiblio);
+        }        
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+        if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+        {
+                setlocale(LC_TIME, LC_TIME_SPANISH);
+        }
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+        fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");
+        if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)
+        {
+                exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));
+        }
+        fprintf(stderr, "Directorio de Logs            : [%s]\n", (char *)pszEnvLog);
+   
+/*------------------------------------------------------------*/        
+/* Ingresa parametros para estructura que crea archivo de Log */
+/*------------------------------------------------------------*/    
+		strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+                strncpy(szhSysDate, pszGetDateLog(),16);                                                           
+		strcpy(stArgsLog.szProceso,LOGNAME);                                                                     
+		strncpy(stArgsLog.szSysDate,szhSysDate,16);                                                                  
+		sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);                       
+	                                                                                                         
+		if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)                                                          
+		{                                                                                                        
+		    fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", LOGNAME);                                 
+	    	fprintf(stderr, "Revise su existencia.\n");                                                          
+	    	fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                
+	    	fprintf(stderr, "Proceso finalizado con error.\n");                                                  
+        	exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_301,"ARCHIVO DE DATOS NO PUDO SER ABIERTO.",0,0));
+		}                                                                                                               
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();                                                               
+    	fprintf(stderr, "Procesando ...\n");                                        
+    	fprintf(pfLog, "%s\n", szRaya);                    
+    	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    	fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    	fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    	fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    	fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    	fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    	fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+        EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy hh24:mi:ss';        
+/*---------------------------------------------------------------------------*/
+/* Procesamiento principal:                                                  */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+    	fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    	fprintf(pfLog,  "Carga estructura de ciclo de proceso...\n\n");       
+    	fprintf(stderr, "Carga estructura de ciclo de proceso...\n\n");       
+    	if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    	{
+	    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    		fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    		fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    		fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    		exit(EXIT_101);
+    	}
+    	strcpy(szhIdPeriodo , stArgs.szIdPeriodo);   
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA LIMPIEZA LIQUIDACIONES ( CM_LIQUIDACION_TO )                  */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vRevLiquidacion) Eliminando registros desde CM_LIQUIDACION_TO...\n");
+		fprintf(stderr,"\n(vRevLiquidacion) Eliminando registros desde CM_LIQUIDACION_TO...\n");
+        vRevLiquidacion();
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA REVERSA DE AJUSTES Y ANTICIPOS                             */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vRevAjustesAnticipos) Reversando registro de ajuetes y anticipos...\n");
+		fprintf(stderr,"\n(vRevAjustesAnticipos) Reversando registro de ajuetes y anticipos...\n");
+        vRevAjustesAnticipos();
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+        lSegFin=lGetTimer();
+        stStatusProc.lSegProceso = lSegFin - lSegIni;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+		fprintf(pfLog,  "Estadistica del proceso\n");
+		fprintf(pfLog,  "------------------------\n");
+		fprintf(pfLog,  "Segundos Reales Utilizados      : [%d]\n\n", stStatusProc.lSegProceso);
+		fprintf(pfLog,  "Registros Liquidacion           : [%d]\n"  , stStatusProc.lCantLiquidacion);
+		fprintf(pfLog,  "Registros Anticipos             : [%d]\n"  , stStatusProc.lCantAnticipos);
+		fprintf(pfLog,  "Registros Ajustes               : [%d]\n"  , stStatusProc.lCantAjustes);
+	
+		fprintf(stderr, "Estadistica del proceso\n");
+		fprintf(stderr,"------------------------\n");
+		fprintf(stderr, "Segundos Reales Utilizados      : [%d]\n\n", stStatusProc.lSegProceso);
+		fprintf(stderr, "Registros Liquidacion           : [%d]\n"  , stStatusProc.lCantLiquidacion);
+		fprintf(stderr, "Registros Anticipos             : [%d]\n"  , stStatusProc.lCantAnticipos);
+		fprintf(stderr, "Registros Ajustes               : [%d]\n"  , stStatusProc.lCantAjustes);
+
+        ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,EXIT_0,"",stStatusProc.lSegProceso,stStatusProc.lCantLiquidacion);
+        if (ibiblio)
+                exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));
+        EXEC SQL COMMIT WORK RELEASE; 
+          
+		vFechaHora();
+		fprintf(stderr, "Programa [%s] finalizado ok.\n", basename(argv[0]));
+		fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+		fprintf(pfLog, "Proceso [%s] finalizado ok.\n", basename(argv[0]));
+		fclose(pfLog);
+		return(EXIT_0);        
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

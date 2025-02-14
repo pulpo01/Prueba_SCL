@@ -1,0 +1,651 @@
+/**
+ * Programa     : FPCargaUltPago
+ */
+
+#include "FPCargaUltPago.h"
+
+EXEC SQL INCLUDE sqlca;
+
+static int inicializado       = 0;
+int        iFlagRangoClientes = 0;
+long	   lClienteFinRango = 0;	/* Requerimiento de Soporte #42142 mgg */
+
+int main (int argc,char* argv[])
+{
+    char   modulo[]="main";
+    char   szFecha[20]= "";
+    ARGSENTRADA  stArgsEntrada;
+
+    printf("\n(II)\t*** FPCargaUltPago, Version de compilacion: [%s] - [%s] ***\n",__DATE__,__TIME__);
+    memset(&stArgsEntrada,0,sizeof(ARGSENTRADA));
+
+    if (!bfnValidaParametros (argc, argv, &stArgsEntrada))
+        return (RET_ERROR_PARAMETROS);
+
+    if ( inicializado == 0 )
+    {
+        if (!bfnAbreArchivosLog(stArgsEntrada.lCodCiclFact,stArgsEntrada.iLogLevel))
+            return (RET_ERROR_ARCHIVOSLOG);
+
+        if (!ifnAcessoOracle(stArgsEntrada.szOraAccount,stArgsEntrada.szOraPasswd))
+            return (RET_ERROR_ACCESSORA);
+
+        inicializado=1;
+    }
+
+    vDTrazasLog( modulo ,"\n\t\t***  Parametro de Entrada FPCargaUltPago  ***"
+                         "\n\t\t=> Usuario               [%s]"
+                         "\n\t\t=> Ciclo Facturacion     [%d]"
+                         "\n\t\t=> Cliente Inicial       [%ld]"
+                         "\n\t\t=> Cliente Final         [%ld]"
+                         "\n\t\t=> Niv.Log               [%d]"
+                         ,LOG03
+                         ,stArgsEntrada.szOraAccount
+                         ,stArgsEntrada.lCodCiclFact
+                         ,stArgsEntrada.lClienteIni
+                         ,stArgsEntrada.lClienteFin
+                         ,stArgsEntrada.iLogLevel);
+
+/*** INI Proceso de Traza ***/
+    stTrazaProc.lCodCliente  = stArgsEntrada.lClienteIni;
+    stTrazaProc.lCodCiclFact = stArgsEntrada.lCodCiclFact;
+    stTrazaProc.iCodProceso  = iPROC_CARGAULTPAGO;
+    stTrazaProc.iCodEstaProc = iIND_FACT_ENPROCESO;
+
+    if (!bfnWrapperValidaTrazaProc(stTrazaProc))
+        return (FALSE);
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        return (FALSE);
+    }
+
+    bfnWrapperSelectTrazaProc (stTrazaProc.lCodCiclFact, stTrazaProc.iCodProceso, &stTrazaProc);
+
+    
+    stArgsEntrada.lClienteIni = stTrazaProc.lCodCliente;  /* se vuelven a asignar por si se modifican por HostsID */
+    stArgsEntrada.lClienteFin = lClienteFinRango;         /* Requerimiento de Soporte #42142 mgg */
+    stArgsEntrada.lCodCiclFact= stTrazaProc.lCodCiclFact; /* se vuelven a asignar por si se modifican por HostsID */
+    
+    bPrintTrazaProc(stTrazaProc);
+/*** FIN Proceso de Traza ***/
+    
+    if (!bfnBorraUltPago (stArgsEntrada))
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Carga de pagos Termino con Error ");
+    }
+    else 
+    {
+        if (!bfnOraCommit ())
+        {
+            vDTrazasError(modulo," en Commit bfnBorraUltPago", LOG01);
+            vDTrazasLog  (modulo," en Commit bfnBorraUltPago", LOG01);
+            return FALSE;
+        }
+
+        if (!bfnProcesaUltPago (stArgsEntrada))
+        {
+            stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+            strcpy(stTrazaProc.szGlsProceso,"Proceso Carga de pagos Termino con Erro");
+        }
+        else
+        {
+            if (!bfnOraCommit ())
+            {
+                vDTrazasError(modulo," en Commit Procesa Ult. Pago", LOG01);
+                vDTrazasLog  (modulo," en Commit Procesa Ult. Pago", LOG01);
+                return FALSE;
+            }
+            if (!bfnProcesaAjustes (stArgsEntrada))
+            {
+                stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+                strcpy(stTrazaProc.szGlsProceso,"Proceso Carga de pagos Termino con Erro");
+            }
+            else 
+            {
+                stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+                strcpy(stTrazaProc.szGlsProceso,"Proceso Carga de pagos Terminado OK");
+            }
+        }
+    }
+
+    if (!bfnSelectSysDate(szFecha))
+        return -1;
+
+    strcpy(stTrazaProc.szFecTermino,szFecha);
+
+    bPrintTrazaProc(stTrazaProc);
+
+    if(!bfnWrapperUpdateTrazaProc(stTrazaProc))
+        return -1;
+
+    if (!bfnOraCommit())
+    {
+        vDTrazasError(modulo," en Commit de cierre de traza", LOG01);
+        vDTrazasLog  (modulo," en Commit de cierre de traza", LOG01);
+        return FALSE;
+    }
+
+    vDTrazasLog(modulo, "Proceso FPCargaUltPago Finalizado.", LOG03);
+    printf("Proceso FPCargaUltPago Finalizado.\n");
+
+    return 0;
+}
+
+/************************* Fin Main *************************/
+
+/************************* bfnProcesaUltPago *************************/
+BOOL bfnProcesaUltPago (ARGSENTRADA stArgs)
+{
+    char modulo[]="bfnProcesaUltPago";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long   lhCodCiclFact;
+        long   lhClienteInicial;
+        long   lhClienteFinal;
+        int    ihFlagRangoClientes;
+        char   szStmtOut[200];EXEC SQL VAR szStmtOut IS STRING (200);
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodCiclFact    = stArgs.lCodCiclFact;
+    lhClienteInicial = stArgs.lClienteIni;    
+    lhClienteFinal   = stArgs.lClienteFin;    
+    ihFlagRangoClientes = iFlagRangoClientes;
+
+    printf("VALUES: [%ld][%ld][%ld][%d]\n",lhCodCiclFact,lhClienteInicial,lhClienteFinal,ihFlagRangoClientes);
+
+    /***** Exec SP ORacle ****/ 
+    sqlca.sqlcode = 0;
+    vDTrazasLog(modulo, "\nEjecutando SP para insercion en tabla CO_ULTPAGO_TT...",LOG03);
+    vDTrazasLog(modulo, "Parametros de Invocacion para CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN...",LOG03);
+    vDTrazasLog(modulo, "Ciclo de Facturacion  => [%ld].", LOG03, lhCodCiclFact );
+    vDTrazasLog(modulo, "Flag Rango Clientes   => [%d].", LOG03, ihFlagRangoClientes );
+    vDTrazasLog(modulo, "Cliente Inicial       => [%ld].", LOG03, lhClienteInicial );
+    vDTrazasLog(modulo, "Cliente Final         => [%ld].", LOG03, lhClienteFinal );
+
+    EXEC SQL EXECUTE
+    BEGIN
+        :szStmtOut := CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN(:lhCodCiclFact, :ihFlagRangoClientes, :lhClienteInicial, :lhClienteFinal); 
+    END;
+    END-EXEC;
+
+    if(sqlca.sqlcode!=SqlOk)
+    {
+        vDTrazasLog(modulo, "ERROR: CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN\n\tCod.[%d]\t Err.[%s]" , LOG03 , sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+        vDTrazasError(modulo, "ERROR: CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN \n\tCod.[%d]\t Err.[%s]" , LOG03 , sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+        return FALSE;
+    }
+
+    if(szStmtOut==NULL)
+    {
+        vDTrazasLog  (modulo,"* Atencion: szResultado_fn == NULL, Se reemplaza por cadena vacia.", LOG03);
+        strcpy(szStmtOut, "");
+    }
+
+    vDTrazasLog(modulo, "CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN Retorno [%s]",LOG03, szStmtOut); 
+
+    if(strcmp(szStmtOut,"OK")==0)
+        return TRUE;
+    else
+        return FALSE;
+} /*** FIN bfnProcesaUltPago ***/
+
+
+/************************* bfnValidaParametros *************************/
+BOOL bfnValidaParametros ( int argc, char *argv[], ARGSENTRADA *pstArgsEntrada)
+{
+    extern char *optarg;
+    extern int optind, opterr, optopt;
+    char opt[] = ":u:c:i:f:l:";
+    int iOpt=0;
+    char *psztmp = "";
+    char szUser [64] = "";
+    BOOL bUserflag=FALSE;
+    BOOL bCicflag=FALSE;
+    BOOL bLogflag=FALSE;
+    BOOL bClieIniFlag=FALSE;
+    BOOL bClieFinFlag=FALSE;
+
+    if(argc == 1)
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : se debe ingresar parametros >>\n%s\n",szUsage);
+        return FALSE;    
+    }
+    
+    while ((iOpt = getopt(argc, argv, opt)) != EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u': /* username/password */
+                if(bUserflag==FALSE)
+                {
+                    strcpy(szUser, optarg);
+                    bUserflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'c': /* Ciclo de facturacion */
+                if(bCicflag==FALSE)
+                {
+                    pstArgsEntrada->lCodCiclFact=atol(optarg);
+                    bCicflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'i': /* Rango Inicial de cliente */
+                pstArgsEntrada->lClienteIni = atol(optarg);
+                bClieIniFlag = TRUE;
+                break;
+
+            case 'f': /* Rango final de cliente */
+                pstArgsEntrada->lClienteFin = atol(optarg);
+                bClieFinFlag = TRUE;
+                break;
+
+            case 'l': /* Nivel de Log */
+                if(bLogflag==FALSE)
+                {
+                    pstArgsEntrada->iLogLevel=atoi(optarg);
+                    bLogflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case '?':
+                fprintf(stdout,"\n(EE)\t<< Error: opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+                return FALSE;
+
+            case ':':
+                fprintf(stdout,"\n(EE)\t<< Error: falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+                return FALSE;
+
+        } /*** END Switch ***/
+    } /*** END While ***/
+
+    if(bUserflag == FALSE || bCicflag == FALSE || bLogflag == FALSE)
+    {
+        fprintf (stderr,"\n(EE)\t<< ERROR : Se debe especificar Usuario/Password, Ciclo y Nivel de Log como minimo.>>\n%s\n",szUsage); 
+        return FALSE;
+    }
+    
+    if( (bClieIniFlag == TRUE && bClieFinFlag == FALSE) || 
+        (bClieIniFlag == FALSE && bClieFinFlag == TRUE) )
+    {
+        fprintf (stderr,"\n(EE)\t<< ERROR : Falta especificar parametro -i o -f >>\n%s\n",szUsage);
+        return FALSE;
+    }
+    
+    if(bClieIniFlag == TRUE && bClieFinFlag == TRUE)
+    {
+        iFlagRangoClientes = 1;
+    }
+
+    if(bUserflag==TRUE)
+    {
+        if ( (psztmp=(char *)strstr(szUser,"/") )==(char *)NULL )
+        {
+            fprintf (stderr,"\n(EE)\t<< Error : usuario no valido. Requiere \"/\" >>\n%s\n",szUsage);
+            return (FALSE);
+        }
+        else
+        {
+            strncpy (pstArgsEntrada->szOraAccount,szUser,psztmp-szUser);
+            strcpy  (pstArgsEntrada->szOraPasswd, psztmp+1);
+        }
+    }
+    return TRUE;
+}
+
+/* ******************************************************************************** */
+/* ifnAcessoOracle : Se conecta y trabaja sobre la base de Datos */
+/* ******************************************************************************** */
+BOOL ifnAcessoOracle(char *szOraAccount , char *szOraPasswd) 
+{
+    char    modulo[]="ifnAcessoOracle";
+
+    char    szUsuario[64]="";
+    char    szAux[16]="";
+    char    *psztmp = "";
+    char    szhNomUsuarOra[32]="";
+    char    szhPasUsuarOra[32]="";
+
+    strcpy(szhNomUsuarOra,szOraAccount);
+    strcpy(szhPasUsuarOra,szOraPasswd);
+
+/*  Formateo adecuado del Usuario/Password recuperado de la base */
+    memset(szUsuario,0,sizeof(szUsuario));
+
+    if ( (psztmp=(char *)strstr(szhNomUsuarOra,"\\$") )!=(char *)NULL )
+    {
+        sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+    else if ((psztmp=(char *)strchr(szhNomUsuarOra,'$') )!=(char *)NULL )
+    {
+        memset(szAux,0,sizeof(szAux));
+        strncpy (szAux,szhNomUsuarOra,psztmp-szhNomUsuarOra);
+        sprintf (szUsuario,"%s\\%s/%s",szAux,psztmp,szhPasUsuarOra);
+    }
+    else
+    {
+        sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+
+    if (!fnOraConnect(szOraAccount,szOraPasswd))
+    {
+        vDTrazasError(modulo, " No Hay Conexion a la Base de Datos", LOG01);
+        return (FALSE);
+    }
+    vDTrazasLog(modulo,"(II)\t%s Conectado a la Base de Datos", LOG03, cfnGetTime(1));
+
+    return (TRUE);
+} /*********************************  Fin  ifnAcessoOracle *******************************/
+
+
+/* ************************************************************************************* */
+/* bfnAbreArchivosLog                                                                    */
+/* ************************************************************************************* */
+BOOL bfnAbreArchivosLog( long lCodCiclFact, int iLogLevel)
+{
+    char modulo[]="bfnAbreArchivosLog";
+
+    char *pathDir;
+    char szArchivo[52]="";
+    char szPath[128]="";
+    char szComando[128]="";
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"FPCargaUltPago_%s",cfnGetTime(5));
+
+    pathDir=(char *)malloc(128);
+    pathDir=szGetEnv("XPF_LOG");
+    sprintf(szPath,"%s/FPCargaUltPago/%ld",pathDir,lCodCiclFact);
+    free(pathDir);
+
+    fprintf( stdout, "\n\tCrea Directorio Log  : %s\n", szPath);
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    fprintf( stdout, "\n\tCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+    stStatus.LogNivel = iLogLevel;
+
+    sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )/* "wb+" */
+    {
+        fprintf( stderr, "\n\t<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+        return (FALSE);
+    }
+
+    vDTrazasError(modulo, "(II)\t%s << Abre Archivo de Errores >>", LOG03, cfnGetTime(1));
+
+    sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+    if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) /* "wb+" */
+    {
+        fprintf(stderr, "\n\t<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+        vDTrazasError(modulo, " << No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+        return (FALSE);
+    }
+
+    vDTrazasLog(modulo, "(II)\t%s << Abre Archivo de Log Version Programa FPCargaUltPago => [%s] >>", LOG03, cfnGetTime(1), szhVersion);
+    return (TRUE);
+}
+/****************************    Fin bfnAbreArchivosLog   ******************************/
+
+
+/*
+ * Funcion      : bfnWrapperSelectTrazaProc
+ * Descripcion  : Funcion "wrapper" que selecciona datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperSelectTrazaProc (long lCicloFac,int iCodProc, TRAZAPROC * pstTraza)
+{
+    char modulo[]="bfnWrapperSelectTrazaProc";
+    char szHostId[25];
+    long lClieIniBD;
+    long lClieFinBD;
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    { /* Sin Hosts ID */
+        if (!bfnSelectTrazaProc (lCicloFac, iCodProc, pstTraza))
+            return (FALSE);
+    }
+    else
+    { /* Con Hosts ID */
+        if (!bfnSelectTrazaProcHost (lCicloFac, iCodProc, pstTraza, szHostId))
+            return (FALSE);
+
+        /*** Busqueda de rangos de clientes desde Base de Datos ***/
+        vDTrazasLog(modulo,"(INFO) main(): Tratando de obtener Rangos de clientes desde Base de Datos...\n", LOG05);
+        if( (iGetRangosHost(szHostId, lCicloFac, &lClieIniBD, &lClieFinBD))==0 )
+        {
+            pstTraza->lCodCliente = lClieIniBD;
+            lClienteFinRango      = lClieFinBD; /* Requerimiento de Soporte #42142 mgg */
+            pstTraza->lCodCiclFact = lCicloFac;
+            iFlagRangoClientes = 1;
+            vDTrazasLog(modulo, "(AVISO) Se modfican datos ingresados desde linea de comando (Si existen).", LOG03);
+        }
+        else
+        {
+            vDTrazasLog(modulo, "(AVISO) main(): No se rescatan datos de Rango de clientes desde base de datos\n"
+                                "\t\tSe mantienen datos ingresados desde linea de comando (Si existen).", LOG05);
+        }
+    }
+    return (TRUE);
+}
+
+/*
+ * Funcion      : bfnWrapperUpdateTrazaProc
+ * Descripcion  : Funcion "wrapper" que actualiza datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperUpdateTrazaProc (TRAZAPROC pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnUpdateTrazaProc (pstTraza))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnUpdateTrazaProcHost (pstTraza, szHostId))
+            return (FALSE);
+    }
+
+    return (TRUE);
+
+}
+
+/************************* bfnProcesaUltPago *************************/        
+BOOL bfnBorraUltPago (ARGSENTRADA stArgs)
+{
+    char modulo[]="bfnBorraUltPago";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long   lhCodCiclFact;
+        long   lhClienteInicial;
+        long   lhClienteFinal;
+        int    ihFlagRangoClientes;
+        int    ihCodCiclo;
+        int    ihValor_uno = 1;
+        long   lhMaxRangoCliente = 99999999;
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodCiclFact    = stArgs.lCodCiclFact;
+    lhClienteInicial = stArgs.lClienteIni;
+    lhClienteFinal   = stArgs.lClienteFin;
+    ihFlagRangoClientes = iFlagRangoClientes;
+
+    printf("VALUES: [%ld][%ld][%ld][%d]\n",lhCodCiclFact,lhClienteInicial,lhClienteFinal,ihFlagRangoClientes);
+
+    vDTrazasLog(modulo, "\nEjecutando SP para borrado en tabla CO_ULTPAGO_TT...",LOG03);
+    vDTrazasLog(modulo, "Ciclo de Facturacion  => [%ld].", LOG03, lhCodCiclFact );
+    vDTrazasLog(modulo, "Flag Rango Clientes   => [%d].", LOG03, ihFlagRangoClientes );
+    vDTrazasLog(modulo, "Cliente Inicial       => [%ld].", LOG03, lhClienteInicial );
+    vDTrazasLog(modulo, "Cliente Final         => [%ld].\n", LOG03, lhClienteFinal );
+
+/********************************************************************************/
+/* Inicio Requerimiento de Soporte #42418 mgg
+
+    stCiclo.lCodCiclFact = stArgs.lCodCiclFact;
+    if(!bFindCiclFact(&stCiclo))
+            return (FALSE);
+
+    ihCodCiclo = stCiclo.iCodCiclo;
+   Fin Requerimiento de Soporte #42418 mgg
+*/
+/********************************************************************************/
+    /***** Exec DELETE ****/ 
+    vDTrazasLog( modulo, "Borrando Tabla CO_ULTPAGO_TT...\n", LOG03 );
+
+    sqlca.sqlcode = 0;
+/* Inicio Requerimiento de Soporte #42418 mgg
+        EXEC SQL
+        DELETE CO_ULTPAGO_TT PAG
+        WHERE ((COD_CLIENTE BETWEEN :lhClienteInicial AND :lhClienteFinal) 
+           OR (1 <> :ihFlagRangoClientes))
+          AND EXISTS (SELECT 1 
+                       FROM FA_CICLOCLI CLI
+                      WHERE CLI.COD_CLIENTE = PAG.COD_CLIENTE
+                        AND CLI.IND_MASCARA = 1 
+                        AND CLI.NUM_PROCESO >= 0			
+                        AND CLI.COD_CICLO = :ihCodCiclo);
+
+   Fin Requerimiento de Soporte #42418 mgg
+*/
+    EXEC SQL
+	DELETE FROM co_ultpago_tt pag
+	 WHERE pag.cod_cliente BETWEEN DECODE( :ihFlagRangoClientes, :ihValor_uno, :lhClienteInicial, :ihValor_uno ) 
+	   AND DECODE( :ihFlagRangoClientes, :ihValor_uno, :lhClienteFinal, :lhMaxRangoCliente )
+	   AND pag.cod_ciclfact = :lhCodCiclFact;
+
+    if(sqlca.sqlcode==SqlOk)
+        vDTrazasLog(modulo, "Borrado de tabla CO_ULTPAGO_TT exitoso.", LOG03);
+    else
+    {
+        if(sqlca.sqlcode==SqlNotFound)
+            vDTrazasLog(modulo, "No Existen registros a eliminar en CO_ULTPAGO_TT.", LOG03);
+        else
+        {
+            vDTrazasLog(modulo  , "ERROR: DELETE CO_ULTPAGO_TT \n\tCod.[%d]\t Err.[%s]" , LOG03 , sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            vDTrazasError(modulo, "ERROR: DELETE CO_ULTPAGO_TT \n\tCod.[%d]\t Err.[%s]" , LOG01 , sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+            return FALSE;
+        }
+    }
+    return TRUE;
+} /*** FIN bfnBorraUltPago ***/
+
+
+/************************* bfnProcesaAjustes *************************/        
+BOOL bfnProcesaAjustes (ARGSENTRADA stArgs)
+{
+    char modulo[]="bfnProcesaAjustes";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long   lhCodCiclFact;
+        long   lhClienteInicial;
+        long   lhClienteFinal;
+        int    ihFlagRangoClientes;
+        char   szStmtOut[200];EXEC SQL VAR szStmtOut IS STRING (200);
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodCiclFact    = stArgs.lCodCiclFact;
+    lhClienteInicial = stArgs.lClienteIni;    
+    lhClienteFinal   = stArgs.lClienteFin;    
+    ihFlagRangoClientes = iFlagRangoClientes;
+
+    printf("VALUES: [%ld][%ld][%ld][%d]\n",lhCodCiclFact,lhClienteInicial,lhClienteFinal,ihFlagRangoClientes);
+
+    /***** Exec SP ORacle ****/ 
+    sqlca.sqlcode = 0;
+    vDTrazasLog(modulo, "\nEjecutando SP para insercion en tabla CO_ULTPAGO_TT...",LOG03);
+    vDTrazasLog(modulo, "Parametros de Invocacion para CO_ULTPAGO_PG.CO_CARGAJUSTES_FN...",LOG03);
+    vDTrazasLog(modulo, "Ciclo de Facturacion  => [%ld].", LOG03, lhCodCiclFact );
+    vDTrazasLog(modulo, "Flag Rango Clientes   => [%d].", LOG03, ihFlagRangoClientes );
+    vDTrazasLog(modulo, "Cliente Inicial       => [%ld].", LOG03, lhClienteInicial );
+    vDTrazasLog(modulo, "Cliente Final         => [%ld].", LOG03, lhClienteFinal );
+
+    EXEC SQL EXECUTE
+    BEGIN
+    	:szStmtOut := CO_ULTPAGO_PG.CO_CARGAJUSTES_FN(:lhCodCiclFact, :ihFlagRangoClientes, :lhClienteInicial, :lhClienteFinal); 
+    END;
+    END-EXEC;
+
+    if(sqlca.sqlcode!=SqlOk)
+    {
+        vDTrazasLog(modulo, "ERROR: CO_ULTPAGO_PG.CO_CARGAJUSTES_FN\n\tCod.[%d]\t Err.[%s]" , LOG03 , sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+        vDTrazasError(modulo, "ERROR: CO_ULTPAGO_PG.CO_CARGAJUSTES_FN \n\tCod.[%d]\t Err.[%s]" , LOG03 , sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+
+        return FALSE;
+    }
+
+    if(szStmtOut==NULL)
+    {
+        vDTrazasLog  (modulo,"* Atencion: szResultado_fn == NULL, Se reemplaza por cadena vacia.", LOG03);
+        strcpy(szStmtOut, "");
+    }
+
+    vDTrazasLog(modulo, "CO_ULTPAGO_PG.CO_CARGAJUSTES_FN Retorno [%s]",LOG03, szStmtOut); 
+
+    if(strcmp(szStmtOut,"OK")==0)
+        return TRUE;
+    else
+        return FALSE;
+} /*** FIN bfnProcesaAjustes ***/
+
+BOOL bfnWrapperValidaTrazaProc(TRAZAPROC pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnValidaTrazaProc( pstTraza.lCodCiclFact, pstTraza.iCodProceso, pstTraza.iCodEstaProc))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnValidaTrazaProcHost( pstTraza.lCodCiclFact, pstTraza.iCodProceso, pstTraza.iCodEstaProc, szHostId))
+            return (FALSE);
+    }
+    return (TRUE);
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

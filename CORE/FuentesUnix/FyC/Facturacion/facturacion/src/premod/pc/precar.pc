@@ -1,0 +1,1021 @@
+/*****************************************************************************/
+/* Fichero:      precar.pc                                                   */
+/* Descripcion:                                                              */
+/*                                                                           */
+/* Fecha:        20-07-2007                                                  */
+/* Autor:        Jaime Espinoza Matamala                                     */
+/*****************************************************************************/
+
+#define _PRECAR_PC_
+
+#include <precar.h>
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    char  szpFecHasta     [15];EXEC SQL VAR szpFecHasta   IS STRING(15);
+    char  szpFecDesde     [15];EXEC SQL VAR szpFecDesde   IS STRING(15);
+    char  szpFecEmision   [15];EXEC SQL VAR szpFecEmision IS STRING(15);
+EXEC SQL END DECLARE SECTION  ;
+
+
+/*****************************************************************************/
+/*                         funcion : iOpenCargosRec                          */
+/*****************************************************************************/
+static int iOpenCargosRec (long lhCodCliente)
+{
+    static char  szFormatoFec[17]  ; EXEC SQL VAR szFormatoFec  IS STRING(17);
+    int    ihUno;
+    
+    strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+    ihUno = 1;
+    
+    EXEC SQL DECLARE Cur_CargosRecurrentes CURSOR FOR
+	 SELECT	  ROWID                                ,
+	          COD_CLIENTESERV                      ,
+	          NUM_ABONADOSERV                      ,
+	          /* :ihUno                               , */ /* PGG - 7-09-2010 - 144781 - SE COMENTA */
+	          COD_PROD_CONTRATADO                  , /* PGG - 7-09-2010 - 144781 - FALTA EL CAMPO DE PRODUCTO CONTRATADO */ 
+		  COD_CARGO_CONTRATADO                 ,
+	          COD_TIPSERV                          ,
+	          COD_SERVICIO                         ,
+	          COD_PLANSERV                         ,	
+	          IND_CARGOPRO                         ,
+	          COD_CONCEPTO                         ,
+	          TO_CHAR(FEC_ALTA,:szFormatoFec)      ,
+	          TO_CHAR(FEC_BAJA,:szFormatoFec)      ,
+	          IND_BLOQUEO                          ,
+	          EST_BLOQUEO
+	FROM      FA_CARGOS_REC_TO
+	WHERE     COD_CLIENTESERV = :lhCodCliente
+	AND       FEC_ALTA  <= TO_DATE(:szpFecHasta,:szFormatoFec)                                    
+        AND       FEC_BAJA  >= TO_DATE(:szpFecDesde,:szFormatoFec) 
+      /*AND       FEC_ALTA  <=  TO_DATE(:szpFecEmision,:szFormatoFec)*/ /* P-MIX-09003 */
+        AND FEC_DESDECOBR <= TO_DATE(:szpFecHasta,:szFormatoFec)
+	AND FEC_HASTACOBR >= TO_DATE(:szpFecDesde,:szFormatoFec);
+
+  	EXEC SQL OPEN Cur_CargosRecurrentes;
+
+    if (SQLCODE)
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Open->FA_CARGOS_REC_TO", szfnORAerror());
+
+    return SQLCODE;
+}/*********************** Final iOpenCargosRec *******************************/
+
+/******************************************************************************
+Funcion		:     	iFetchCargosRec
+*******************************************************************************/
+int  iFetchCargosRec(CARGORECURRENTE_HOST *pstHost, CARGORECURRENTE_HOST_NULL *pstHostNull, long *plNumFilas)
+{
+	
+    EXEC SQL FETCH Cur_CargosRecurrentes INTO
+                        :pstHost->szRowid                             ,
+                        :pstHost->lhCodCliente                        ,/*Listo*/
+                        :pstHost->lhNumAbonado                        ,/*Listo*/
+                        :pstHost->lhCodProducto                       ,/*Listo*/
+                        :pstHost->lhCodCargoCont                      ,/*Listo*/
+                        :pstHost->szhCodTipServ:pstHostNull->i_shCodTipServ        ,
+                        :pstHost->szhCodServicio:pstHostNull->i_shCodServicio      ,
+                        :pstHost->szhCodPlanServ:pstHostNull->i_shCodPlanServ      ,
+                        :pstHost->shIndCargoPro                       ,/*Listo*/
+                        :pstHost->ihCodConcepto                       ,/*Listo*/
+                        :pstHost->szhFecAlta                          ,/*Listo*/
+                        :pstHost->szhFecBaja:pstHostNull->i_shFecBaja              ,/*Listo*/
+                        :pstHost->szhIndBloqueo:pstHostNull->i_shIndBloqueo        ,
+                        :pstHost->szhEstBloqueo:pstHostNull->i_shEstBloqueo        ;
+	
+	
+    if (SQLCODE==SQLOK)
+	*plNumFilas = TAM_HOST;
+    else
+	if (sqlca.sqlcode==NOTFOUND)
+	    *plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+    return SQLCODE;
+}
+
+/*****************************************************************************/
+/*                        funcion : iCloseConceptos                          */
+/*****************************************************************************/
+static int iCloseCargosRec (void)
+{
+    EXEC SQL CLOSE Cur_CargosRecurrentes;
+
+    if (SQLCODE != SQLOK)
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Close->FA_CARGOS_REC_TO",szfnORAerror());
+        return  FALSE;
+    }
+
+    return SQLCODE;
+}/********************** Final iCloseConceptos *******************************/
+
+/*****************************************************************************/
+/*                        funcion : bEMCargosRecurrentes                */
+/*****************************************************************************/
+BOOL bEMCargosRecurrentes (void)
+{
+  
+    EXEC SQL BEGIN DECLARE SECTION;
+         static char*  szhFecDesde  ; EXEC SQL VAR szhFecDesde IS STRING(15);
+         static long   lhCodCliente ;
+  	 short  shIndAlta           ;
+         static int   iCero       =0;
+/* P-MIX-09003 */
+         long   lhNumAbonado        ; 
+         long   lhCodCicloFact      ;
+         long   lhCodConcepto       ;
+         long   lhNumProceso        ;
+         long   lhNumOcurrencias    ;
+         long   lhCodError          ;
+         char   szhMsgError [3000+1]; EXEC SQL VAR szhMsgError IS STRING(3000+1);
+         long   lhEvento            ;
+/* P-MIX-09003 */    
+         double dhImporteOverride   ; /* P-MIX-09003 XX */              
+    EXEC SQL END DECLARE SECTION;      
+
+    int    i = 0;
+    int    iIndAbo=0;
+    long   lCont;
+    BOOL   bRes = FALSE;
+    int    iOra;
+    long   lNumFilas;
+    static CARGORECURRENTE_HOST stCargoRecHost;
+    static CARGORECURRENTE_HOST_NULL stCargoRecHostNull;
+    double dImpConceptoAux;    
+    int  iFlagAbonCero = FALSE;  /* PGG - 7-09-2010 - 145044 */
+  
+    PASOPRORRATEO     stPasoProrrateo;
+    GRUPOCOB          stGrupoCob;
+    CARGOSRECURRENTES stTempCargoRec;
+    CONCEPTO          stConcepto;
+    SERVABO           *pTmpSerA = (SERVABO *)NULL;
+  
+    lhCodCliente  = stCliente.lCodCliente;
+    strcpy(szpFecHasta  , stCiclo.szFecHastaCFijos);
+    strcpy(szpFecDesde  , stCiclo.szFecDesdeCFijos);
+    strcpy(szpFecEmision, stCiclo.szFecEmision);    
+
+    vDTrazasLog (szExeName, "\n\t\t* Parametros de Entrada bfnCargaRecurrentes (FACT_CICLO)\n"
+                            "\t\t=> Cod.Cliente  [%ld]\n"
+                            "\t\t=> Fec.Desde     [%s] \n"
+                            "\t\t=> Fec.Hasta     [%s] \n"
+                            "\t\t=> Fec.Emision   [%s] \n"
+                          , LOG03
+                          , lhCodCliente
+                          , szpFecDesde
+                          , szpFecHasta
+                          , szpFecEmision );
+                   
+    iOra = iOpenCargosRec(lhCodCliente);
+  
+    if ( iOra != SQLOK )
+    {
+	 vDTrazasLog  (szExeName,">> ERROR: Al Realizar Open al cursor Cur_CargosRecurrentes  <<",LOG03);
+         vDTrazasError(szExeName,">> ERROR: Al Realizar Open al cursor Cur_CargosRecurrentes  <<",LOG03);
+	 return FALSE;
+    }
+  
+    while( iOra != NOTFOUND )
+    {
+           iOra = iFetchCargosRec(&stCargoRecHost,&stCargoRecHostNull,&lNumFilas);
+           if ( iOra != SQLOK  && iOra != NOTFOUND )
+	   {
+		vDTrazasLog  (szExeName,">> ERROR: Al Realizar Fetch al cursor Cur_CargosRecurrentes  <<",LOG03);
+    		vDTrazasError(szExeName,">> ERROR: Al Realizar Fetch al cursor Cur_CargosRecurrentes  <<",LOG03);
+		return FALSE;
+	   }
+
+	   if (!lNumFilas)
+	   {
+		break;
+	   }
+
+	   for ( lCont = 0 ; lCont < lNumFilas ; lCont++ )
+	   {
+           
+                i = stPreFactura.iNumRegistros;
+           
+                if (stCargoRecHostNull.i_shCodTipServ [lCont] == ORA_NULL) strcpy (stCargoRecHost.szhCodTipServ [lCont],"");
+                if (stCargoRecHostNull.i_shCodServicio[lCont] == ORA_NULL) strcpy (stCargoRecHost.szhCodServicio[lCont],"");
+                if (stCargoRecHostNull.i_shCodPlanServ[lCont] == ORA_NULL) strcpy (stCargoRecHost.szhCodPlanServ[lCont],"");
+                if (stCargoRecHostNull.i_shFecBaja    [lCont] == ORA_NULL) strcpy (stCargoRecHost.szhFecBaja    [lCont],"");
+                if (stCargoRecHostNull.i_shIndBloqueo [lCont] == ORA_NULL) strcpy (stCargoRecHost.szhIndBloqueo [lCont],"");
+                if (stCargoRecHostNull.i_shEstBloqueo [lCont] == ORA_NULL) strcpy (stCargoRecHost.szhEstBloqueo [lCont],"");
+           
+           			/* PGG - 7-09-2010 - 145044 */
+								if (stCargoRecHost.lhNumAbonado[lCont] == 0)
+										iFlagAbonCero = TRUE;
+								else
+										iFlagAbonCero = FALSE;
+								
+								
+								bRes = FALSE;
+								for ( iIndAbo=0;iIndAbo<stCliente.iNumAbonos;iIndAbo++ )
+								{
+										if ( stCliente.pAbonos[iIndAbo].lNumAbonado == stCargoRecHost.lhNumAbonado[lCont] )
+										{
+												vDTrazasLog (szExeName, "\n\t\t* pAbonos - Encontro Abonado [%ld]" , LOG03, stCargoRecHost.lhNumAbonado[lCont]);
+												shIndAlta = stCliente.pAbonos[iIndAbo].iIndAlta;
+												bRes = TRUE;
+										}
+								}								
+								if( !bRes )
+								{
+										if (iFlagAbonCero) /* PGG - 7-09-2010 - 145044 */			
+										{
+												shIndAlta = 0;
+										}else{
+												vDTrazasLog (szExeName, "\n\t\t* pAbonos - NO se encontro numero de abonado [%ld] para obtener ind_alta", LOG03, stCargoRecHost.lhNumAbonado[lCont]);
+												continue; /* P-MIX-09003 */
+										}
+								}
+
+                bRes = FALSE;                
+                for ( iIndAbo=0;iIndAbo<stCliente.iNumServAbo;iIndAbo++ )
+                {
+           	      if ( stCliente.pServAbo[iIndAbo].lNumAbonado == stCargoRecHost.lhNumAbonado[lCont] )
+           	      {
+		           		   vDTrazasLog (szExeName, "\n\t\t* pServAbo - Encontro Abonado [%ld]", LOG03,stCargoRecHost.lhNumAbonado[lCont]);
+		           		   pTmpSerA = (SERVABO *)&stCliente.pServAbo[iIndAbo];
+		           		   bRes = TRUE;
+           	      }
+								}
+								if(!bRes && !iFlagAbonCero) /* PGG - 7-09-2010 - 145044 */
+                {
+			           	    vDTrazasLog (szExeName, "\n\t\t* pServAbo - NO se encontro numero de abonado [%ld]", LOG03, stCargoRecHost.lhNumAbonado[lCont]);
+			           	    continue; /* P-MIX-09003 */		           	  
+                }
+		   
+                memset (&stTempCargoRec,0,sizeof(CARGOSRECURRENTES));
+                stTempCargoRec.lCodCargo = stCargoRecHost.lhCodCargoCont[lCont];
+                
+                /* P-MIX-09003 OVERRIDE XX */
+                
+                if( !bFindCargoRecurrente(&stTempCargoRec) )
+                {
+           	     vDTrazasLog (szExeName, "\n\t\t* NO se encontro el monto al Cod.Cargo [%ld]"
+           	                           , LOG03
+           	                           , stCargoRecHost.lhCodCargoCont[lCont]);
+           	     return FALSE;
+                }
+                else
+                {
+           	     vDTrazasLog (szExeName, "\n\t\t* bFindCargoRecurrente lhCodCargoCont [%ld]"
+                                             "\n\t\t* szCodMoneda [%s]"
+                                             "\n\t\t* dMontoImporte [%10.4f]"
+           		                   , LOG03
+           				   , stCargoRecHost.lhCodCargoCont[lCont]
+           				   , stTempCargoRec.szCodMoneda
+           				   , stTempCargoRec.dMontoImporte);                	
+                }       
+                
+                dhImporteOverride = 0.0;                
+                
+                if ( !bFindOverridePA (lhCodCliente,
+                                       stCargoRecHost.lhNumAbonado[lCont],
+                                       stTempCargoRec.lCodCargo,
+                                       &dhImporteOverride,
+                                       stCargoRecHost.lhCodProducto[lCont])) /* PGG - 144781 | 144241 - 03-09-2010 - SE AGREGA NUEVA PARAMETRO PARA OVERRIDE */
+                {
+                     vDTrazasLog (szExeName, "\n\t\t* NO Encontro Override para Planes Adicionales %ld"
+                                           , LOG05,stTempCargoRec.lCodCargo);
+                }   
+                else
+                {
+                     vDTrazasLog (szExeName, "\n\t\t* Encontro Override para Planes Adicionales %ld"
+                                           , LOG05,stCargoRecHost.lhCodCargoCont[lCont]);
+                     stTempCargoRec.dMontoImporte  = dhImporteOverride  ;
+                }         
+                /* P-MIX-09003 OVERRIDE XX */                
+           
+                memset (&stGrupoCob,0,sizeof (GRUPOCOB));
+                stGrupoCob.iCodConcepto = stCargoRecHost.ihCodConcepto[lCont];
+                /* stGrupoCob.iCodProducto =  stCargoRecHost.lhCodProducto[lCont]; */ /* PGG - 144781 | 144241 - 03-09-2010 - NUEVO PARAMETRO PARA OVERRIDE NO SIRVE PARA OBTENCION DE TIPOCOBRO */
+                stGrupoCob.iCodProducto =  1; /* PGG - 144781 | 144241 - 03-09-2010 - NUEVO PARAMETRO PARA OVERRIDE NO SIRVE PARA OBTENCION DE TIPOCOBRO */
+                stGrupoCob.iCodCiclo    = stCiclo.iCodCiclo   ;
+
+                if (iFlagAbonCero) /* PGG - 8-09-2010 - 145044 */
+									strcpy (stGrupoCob.szCodGrupo,"01");
+								else
+  	              strcpy (stGrupoCob.szCodGrupo,pTmpSerA->szCodGrpServ);
+           
+                if ( !bFindGrupoCob(&stGrupoCob) )
+                {
+                     vDTrazasLog (szExeName, "\n\t\t* NO Encontro grupo de Cobro %s"
+                                           , LOG03
+                                           , stGrupoCob.szCodGrupo);
+                     return FALSE;
+                }
+                
+                dImpConceptoAux = stTempCargoRec.dMontoImporte;
+
+                if ( !bConversionMoneda ( stCliente.lCodCliente       , 
+                                          stTempCargoRec.szCodMoneda  ,
+           		       	          stDatosGener.szCodMoneFact  ,
+                                          szpFecDesde                 ,
+                                         &stTempCargoRec.dMontoImporte))
+                {
+                     return FALSE;
+                } /* P-MIX-09003 4 */ 
+                
+                memset ( &stPasoProrrateo, 0, sizeof(PASOPRORRATEO));
+
+                stPasoProrrateo.sIndAlta = shIndAlta;
+                strcpy (stPasoProrrateo.szFecInicio , stCargoRecHost.szhFecAlta[lCont]);
+                strcpy (stPasoProrrateo.szFecTermino, stCargoRecHost.szhFecBaja[lCont]);
+                stPasoProrrateo.dImpServicio = stTempCargoRec.dMontoImporte;
+                stPasoProrrateo.sIndTipoCobro= stGrupoCob.iTipCobro; 
+                stPasoProrrateo.sIndProrrateo= stCargoRecHost.shIndCargoPro[lCont];
+                
+/* P-MIX-09003 */                
+
+                vDTrazasLog( szExeName, "\n** (bEMCargosRecurrentes) Ejecución Package FA_SERVICIOS_FACTURACION_PG **", LOG05);
+                                      
+                lhNumAbonado = stCargoRecHost.lhNumAbonado[lCont];
+                lhCodCicloFact = stCiclo.lCodCiclFact;
+                lhCodConcepto = stCargoRecHost.ihCodConcepto[lCont];
+                lhNumProceso = stStatus.IdPro;
+								
+								if (iFlagAbonCero) /* PGG - 8-09-2010 - 145044 */
+								{
+									lhNumOcurrencias = 0;
+									vDTrazasLog( szExeName, "\n** (bEMCargosRecurrentes) ABONADO CERO - NO HAY PL **", LOG03);
+								}
+								else
+								{	
+	                EXEC SQL EXECUTE
+	                 BEGIN
+	                     FA_SERVICIOS_FACTURACION_PG.FA_ConsultaCobroAdelantado_PR
+	                     ( :lhNumAbonado,
+	                       :lhCodCicloFact,
+	                       :lhCodConcepto,
+	                       :lhNumProceso,
+	                       :lhNumOcurrencias,
+	                       :lhCodError,
+	                       :szhMsgError,
+	                       :lhEvento);
+	                 END;
+	                END-EXEC;
+	                
+	                vDTrazasLog( szExeName, "\n**  (bEMCargosRecurrentes) Package FA_SERVICIOS_FACTURACION_PG Procedure FA_ConsultaCobroAdelantado_PR() **"
+	                                             "\n\t\t\t=> lhNumAbonado...... [%ld]"
+	                                             "\n\t\t\t=> lhCodCicloFact.... [%ld]"
+	                                             "\n\t\t\t=> lhCodConcepto..... [%d]"
+	                                             "\n\t\t\t=> lhNumPorceso...... [%ld]"
+	                                             "\n\t\t\t=> lhNumOcurrencias.. [%ld]"                                              
+	                                             "\n\t\t\t=> lhCodError........ [%ld]"
+	                                             "\n\t\t\t=> szhMsgError....... [%s]"
+	                                             "\n\t\t\t=> lhEvento.......... [%ld]"
+	                                             "\n\t\t\t=> SQLCODE........... [%d]"                                                                                          
+	                                           , LOG05
+	                                           , lhNumAbonado
+	                                           , lhCodCicloFact
+	                                           , lhCodConcepto
+	                                           , lhNumProceso
+	                                           , lhNumOcurrencias
+	                                           , lhCodError
+	                                           , szhMsgError
+	                                           , lhEvento
+	                                           , SQLCODE);                
+	                  
+	                if ( SQLCODE != SQLOK  || lhCodError != 0)
+	                {       	
+	                     vDTrazasError( szExeName , "\n**  (bEMCargosRecurrentes) Error package FA_SERVICIOS_FACTURACION_PG    **"
+	                                                "\n**  en procedure FA_ConsultaCobroAdelantado_PR() **"
+	                                                " [%d]  [%s]"
+	                                              , LOG01,SQLCODE,SQLERRM);                                          
+	                     vDTrazasLog( szExeName, "\n**  (bEMCargosRecurrentes) Error en procedure FA_ConsultaCobroAdelantado_PR() **"
+	                                             "\n\t\t\t=> lhNumAbonado...... [%ld]"  
+	                                             "\n\t\t\t=> lhCodCicloFact.... [%ld]"  
+	                                             "\n\t\t\t=> lhCodConcepto..... [%d]"   
+	                                             "\n\t\t\t=> lhNumPorceso...... [%ld]"  
+	                                             "\n\t\t\t=> lhNumOcurrencias.. [%ld]"                                              
+	                                             "\n\t\t\t=> lhCodError........ [%ld]"  
+	                                             "\n\t\t\t=> szhMsgError....... [%s]"   
+	                                             "\n\t\t\t=> lhEvento.......... [%ld]"  
+	                                             "\n\t\t\t=> SQLCODE........... [%d]"   
+	                                             "\n\t\t\t=> SQLERRM........... [%s]"                                             
+	                                           , LOG01
+	                                           , lhNumAbonado
+	                                           , lhCodCicloFact
+	                                           , lhCodConcepto
+	                                           , lhNumProceso
+	                                           , lhNumOcurrencias
+	                                           , lhCodError
+	                                           , szhMsgError
+	                                           , lhEvento
+	                                           , SQLCODE
+	                                           , SQLERRM);
+	                     return(FALSE);
+	                }    
+               
+              	}
+               
+                if ( lhNumOcurrencias > 0 )
+                {
+                    stPreFactura.A_PFactura[i].dImpConcepto = fnCnvDouble(stPasoProrrateo.dImpServicio, USOFACT);
+	   	     					vDTrazasLog (szExeName, "\t\t* Importe Servicio Suplementario Sin Prorrateado [%f], Numero de dias [%d]"
+	   	                           , LOG05
+	   	                           , fnCnvDouble(stPasoProrrateo.dImpServicio, USOFACT)
+	   	                           , stCiclo.iDiaPeriodo);                     
+                }  
+                else
+                {
+                     if( !bfnProrrateoStandar(&stPasoProrrateo) )
+                     {
+                         vDTrazasLog (szExeName, "\n\t\t* NO se Prorrate-o el Importe Cargo Recurrente %s"
+                                               , LOG03
+                                               , stCargoRecHost.szhCodServicio[lCont]);
+                         return FALSE;
+                     }
+	   	    					vDTrazasLog (szExeName, "\t\t* Importe Servicio Suplementario Prorrateado [%f], Numero de dias prorrateados [%d]"
+	   	                           , LOG05
+	   	                           , fnCnvDouble(stPasoProrrateo.dImpConcepto, USOFACT)
+	   	                           , stPasoProrrateo.sDiasAbono);
+                }
+/* P-MIX-09003 */        
+                stPreFactura.A_PFactura[i].bOptServicios= TRUE;
+                stPreFactura.A_PFactura[i].lNumProceso  = stStatus.IdPro;
+                stPreFactura.A_PFactura[i].lCodCliente  = lhCodCliente;
+                stPreFactura.A_PFactura[i].lCodCiclFact = stCiclo.lCodCiclFact;
+                stPreFactura.A_PFactura[i].iIndEstado   = EST_NORMAL;
+                stPreFactura.A_PFactura[i].iCodTipConce = ARTICULO;
+                stPreFactura.A_PFactura[i].iIndFactur   = 1;
+	
+	        			strcpy (stPreFactura.A_PFactura[i].szFecEfectividad,szSysDate);
+                strcpy (stPreFactura.A_PFactura[i].szCodRegion     ,stCliente.szCodRegion);
+                strcpy (stPreFactura.A_PFactura[i].szCodProvincia  ,stCliente.szCodProvincia);
+                strcpy (stPreFactura.A_PFactura[i].szCodCiudad     ,stCliente.szCodCiudad);
+                strcpy (stPreFactura.A_PFactura[i].szCodModulo     , "FA");
+                stPreFactura.A_PFactura[i].lNumAbonado   = stCargoRecHost.lhNumAbonado[lCont];
+/*                stPreFactura.A_PFactura[i].iCodProducto  = stCargoRecHost.lhCodProducto[lCont];*/ /* PGG - 144781 | 144241 - 03-09-2010 - NUEVO PARAMETRO PARA OVERRIDE NO SIRVE PARA OBTENCION DE TIPOCOBRO. SE DEJA EN 1 */
+                stPreFactura.A_PFactura[i].iCodProducto  = 1; /* PGG - 144781 | 144241 - 03-09-2010 - NUEVO PARAMETRO PARA OVERRIDE NO SIRVE PARA OBTENCION DE TIPOCOBRO. SE DEJA EN 1 */
+                stPreFactura.A_PFactura[i].iIndAlta      = stPasoProrrateo.sIndAlta;
+                
+                if (iFlagAbonCero) /* PGG - 7-09-2010 - 145044 */			
+			          {
+			          	stPreFactura.A_PFactura[i].lCapCode      = 0    ;
+				          stPreFactura.A_PFactura[i].lCodPlanCom   = 0 ;
+				          strcpy (stPreFactura.A_PFactura[i].szNumTerminal,"0");
+				       	}
+				       	else
+								{
+									stPreFactura.A_PFactura[i].lCapCode      = pTmpSerA->lCapCode;          	
+                	stPreFactura.A_PFactura[i].lCodPlanCom   = pTmpSerA->lCodPlanCom;
+                	strcpy (stPreFactura.A_PFactura[i].szNumTerminal,pTmpSerA->szNumTerminal);
+                }
+                
+                stPreFactura.A_PFactura[i].iCodCatImpos  = stCliente.iCodCatImpos;	   
+	        			strcpy (stPreFactura.A_PFactura[i].szFecValor   ,stCiclo.szFecEmision);                
+                stPreFactura.A_PFactura[i].iCodConcepto = stCargoRecHost.ihCodConcepto[lCont];  /*Listo*/
+           
+                memset ( &stConcepto, 0, sizeof(CONCEPTO));
+           
+                if ( !bFindConcepto (stCargoRecHost.ihCodConcepto[lCont],&stConcepto) )
+		{
+		     iDError (szExeName,ERR021,vInsertarIncidencia,"pstConceptos");
+		     return FALSE;
+		}
+		else
+		{
+		     if ( stConcepto.iIndActivo == 0 )
+		     {
+		         sprintf (stAnomProceso.szObsAnomalia, "%s %d","Ind.Activo Cero"
+		                                             , stConcepto.iIndActivo);
+		           return FALSE;
+		     }
+		}        
+           
+                strcpy (stPreFactura.A_PFactura[i].szDesConcepto,stConcepto.szDesConcepto);
+           
+                if ( !bGetMaxColPreFa ( stPreFactura.A_PFactura[i].iCodConcepto,
+                                        &stPreFactura.A_PFactura[i].lColumna) )
+                {
+                     return FALSE;
+                }
+                
+                if (stPasoProrrateo.dImpServicio == 0)
+                {
+                    stPreFactura.A_PFactura[i].dImpMontoBase    = 0;
+                }
+                else              
+                {
+                    if (dImpConceptoAux != stPasoProrrateo.dImpServicio)
+                    {
+                        stPreFactura.A_PFactura[i].dImpMontoBase    = fnCnvDouble(stPasoProrrateo.dImpServicio,0)/fnCnvDouble(dImpConceptoAux,0);
+                    }
+                    else
+                    {
+                    	stPreFactura.A_PFactura[i].dImpMontoBase    = 0;
+                    }
+                }
+
+                stPreFactura.A_PFactura[i].iCodConceRel   = 0;
+                stPreFactura.A_PFactura[i].lColumnaRel    = 0;
+                /* Inc 176702 PPV 18/10/2011 si se convierte a moneda local esta moneda debe quedar en el detalle de la factura */         
+                /*strcpy(stPreFactura.A_PFactura[i].szCodMoneda ,stTempCargoRec.szCodMoneda);*/
+                strcpy(stPreFactura.A_PFactura[i].szCodMoneda ,stDatosGener.szCodMoneFact);
+                stPreFactura.A_PFactura[i].dImpConcepto   = fnCnvDouble(stPasoProrrateo.dImpConcepto, USOFACT);
+                stPreFactura.A_PFactura[i].dImpFacturable = fnCnvDouble(stPasoProrrateo.dImpConcepto, USOFACT);
+                stPreFactura.A_PFactura[i].dImpFacturable = fnCnvDouble( stPreFactura.A_PFactura[i].dImpFacturable,USOFACT);                
+	   	stPreFactura.A_PFactura[i].szNumSerieMec[0] = 0;
+                stPreFactura.A_PFactura[i].szNumSerieLe [0] = 0;
+                stPreFactura.A_PFactura[i].lCapCode        = ORA_NULL;
+                stPreFactura.A_PFactura[i].iFlagImpues     = 0       ;
+                stPreFactura.A_PFactura[i].iFlagDto        = 0       ;
+                stPreFactura.A_PFactura[i].fPrcImpuesto    = 0.0     ;
+                stPreFactura.A_PFactura[i].dValDto         = 0.0     ;
+                stPreFactura.A_PFactura[i].iTipDto         = 0       ;
+                stPreFactura.A_PFactura[i].lNumVenta       = 0       ;
+                stPreFactura.A_PFactura[i].lNumTransaccion = 0       ;
+                stPreFactura.A_PFactura[i].iMesGarantia    = 0       ;
+                stPreFactura.A_PFactura[i].lNumUnidades    = 1       ;
+                stPreFactura.A_PFactura[i].iIndSuperTel    = 0       ;
+                stPreFactura.A_PFactura[i].iNumPaquete     = 0       ;
+                stPreFactura.A_PFactura[i].iIndCuota       = 0       ;
+                stPreFactura.A_PFactura[i].iNumCuotas      = 0       ;
+                stPreFactura.A_PFactura[i].iOrdCuota       = 0       ;
+			
+                if( bfnIncrementarIndicePreFactura()==FALSE )
+                {
+                   vDTrazasLog  (szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+                   vDTrazasError(szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+                   return FALSE;
+                } 
+
+	        if( !bUpdateCargosRecurrentes(stCargoRecHost.szRowid[lCont]) )
+	        {
+	            vDTrazasLog  (szExeName,">> ERROR: Al Actualizar el detalle del Cargo Regucurrente <<",LOG01);
+	            return FALSE;
+	        }
+           }/* for (lCont = 0 ; lCont < lNumFilas ; lCont++) */    
+    }/* fin while ... */
+  
+    iOra = iCloseCargosRec();
+    if ( iOra != SQLOK )
+    {
+	 vDTrazasLog  (szExeName,">> ERROR: Al Realizar Close al cursor Cur_CargosRecurrentes  <<",LOG03);
+         vDTrazasError(szExeName,">> ERROR: Al Realizar Close al cursor Cur_CargosRecurrentes  <<",LOG03);
+	 return FALSE;
+    }
+  
+    return TRUE;
+}/************************* Final bfnCargaCargosRecurrentes ********************/
+
+static BOOL bUpdateCargosRecurrentes(char *szRowid)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+   	long  lhNumProceso   ;
+   	long  lhCodCiclFac   ;
+   	char  szhRowid       [19]; EXEC SQL VAR szhRowid IS STRING(19);
+   	char  szFormatoFec[17]  ; EXEC SQL VAR szFormatoFec  IS STRING(17);
+   	EXEC SQL END DECLARE SECTION  ;
+   	
+    strcpy(szhRowid, szRowid);
+   	lhNumProceso = stStatus.IdPro;
+   	lhCodCiclFac = stCiclo.lCodCiclFact;
+
+   	strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+
+   EXEC SQL UPDATE 
+                   FA_CARGOS_REC_TO
+            SET    FEC_ULTFACTURA  = TO_DATE (:szpFecEmision,:szFormatoFec),
+	  			   COD_ULTCICLFACT = :lhCodCiclFac ,
+	  			   NUM_ULTPROCESO  = :lhNumProceso       
+            WHERE  ROWID = :szhRowid;
+   if (SQLCODE) 
+       iDError (szExeName,ERR000,vInsertarIncidencia,"Update->Fa_Cargos_Rec_To",
+                szfnORAerror());
+
+   return (SQLCODE)?FALSE:TRUE;
+}
+
+
+/* PGG SOPORTE: 15-09-2005 Funcion nueva que obtiene la cantidad de dias a prorratear, tanto del periodo actual, como del anterior */
+static BOOL bfnObtieneCantDiasAProrratear (int iDiasTotales, int *iDiasAnt, int *iDiasActual)
+{
+
+    vDTrazasLog(szExeName,  "bfnObtieneCantDiasAProrratear  iDiasTotales(%d)\n"
+                            "bfnObtieneCantDiasAProrratear  stCiclo.iDiaPeriodo(%d)"
+                            ,LOG03, iDiasTotales, stCiclo.iDiaPeriodo);
+
+    *iDiasAnt   = iDiasTotales - stCiclo.iDiaPeriodo;
+    *iDiasActual    = stCiclo.iDiaPeriodo;
+
+    vDTrazasLog(szExeName,  "bfnObtieneCantDiasAProrratear  iDiasAnt(%d)\n"
+                            "bfnObtieneCantDiasAProrratear  iDiasActual(%d)",LOG03, *iDiasAnt, *iDiasActual);
+
+    return (TRUE);
+}
+
+
+/****************************************************************************************/
+/*                        funcion : bfnProrrateoStandar                                 */
+/* -Funcion generica  que realiza el prorrateo de cargos recurrentes                    */
+/* - Recibe como entrada los siguientes estructura de parametros :                      */
+/*  Fec Inicio : Fecha de Inicio del servicio YYYYMMDD                                  */
+/*  Fec Termino: Fecha de Termino del servicio YYYYMMDD                                 */
+/*  Importe Servicio : Importe del servicio para un periodo compleo                     */
+/*  Tipo de cobro    : VENCIDO o ANTICIPADO                                             */
+/*  Indicador de Alta: Indicador de alta del servicio                                   */
+/*  Indicador de Prorrateo : Indicador si el servicio es prorrateable 1:SI 0:NO         */
+/*  Importe Concepto : Importe prorrateado. Resultado del calculo                       */
+/*  Dias Prorrateo   : Numero dias en q se prorrateo el importe                         */
+/*                                                                                      */
+/* Si todo OK retorna TRUE , en caso contrario retorna FALSE                            */
+/****************************************************************************************/
+/* Modificación: Ya no pregunta si es anticipado o vencido, es más generico que el ant. */
+/* se respalda proceso real como preser_real.pc                                         */
+/* Fabian aEdo Ramírez Agosto 28, del 2002.                                             */
+/****************************************************************************************/
+static BOOL bfnProrrateoStandar(PASOPRORRATEO *pCargo)
+{
+    int iDiasAlta ;
+    int iDiasAnt    ;   /* PGG SOPORTE: 15-09-2005 */
+    int iDiasActual ;       /* PGG SOPORTE: 15-09-2005 */
+
+    vDTrazasLog(szExeName,  "\n\t\t* bfnProrrateoStandar CR"
+                "\n\t\t=> Fec Inicio  : [%s]"
+                "\n\t\t=> Fec Termino     : [%s]"
+                "\n\t\t=> Importe Servicio: [%f]"
+                "\n\t\t=> Tipo de cobro   : [%d]"
+                "\n\t\t=> Ind Alta        : [%d]",LOG03,
+                pCargo->szFecInicio,
+                pCargo->szFecTermino,
+                pCargo->dImpServicio,
+                pCargo->sIndTipoCobro,
+                pCargo->sIndAlta);
+
+    vDTrazasLog(szExeName,  "\t\t* bfnProrrateoStandar --> More..."
+                "\n\t\t=> pCargo->sIndProrrateo        : [%d]"
+                "\n\t\t=> stCiclo.szFecDesdeCFijos     : [%s]"
+                "\n\t\t=> stCiclo.szFecHastaCFijos     : [%s]"
+                "\n\t\t=> stCiclo.iDiaPeriodo          : [%d]"
+                "\n\t\t=> stCiclo.iDiaPeriodoAnt       : [%d]",LOG03,
+                pCargo->sIndProrrateo,
+                stCiclo.szFecDesdeCFijos,
+                stCiclo.szFecHastaCFijos,
+                stCiclo.iDiaPeriodo,
+                stCiclo.iDiaPeriodoAnt);
+
+    if ( pCargo->sIndProrrateo) /* Si servicio es prorrateable */
+    {
+
+        /* CASO 4 :Alta anterior al inicio del ciclo y baja posterior al termino del ciclo */
+        if ( strcmp(pCargo->szFecInicio, stCiclo.szFecDesdeCFijos ) <=0 &&
+           ( strcmp(pCargo->szFecTermino,stCiclo.szFecHastaCFijos ) > 0 ||
+             strcmp(pCargo->szFecTermino,"" ) == 0 ) )
+        {
+            /* Primera vez que se factura... va hacia atras... */
+            if ( pCargo->sIndAlta == 1 )
+            {
+                if (!bRestaFechas ( stCiclo.szFecHastaCFijos,pCargo->szFecInicio,&iDiasAlta))
+                {
+                    vDTrazasError (szExeName, "\n\t\t=> Error bRestaFechas"
+                                              "\n\t\t=> Fecha 1 : [%s]"
+                                              "\n\t\t=> Fecha 2 : [%s]",LOG03,
+                                              pCargo->szFecTermino,
+                                              stCiclo.szFecDesdeCFijos);
+                    return FALSE;
+                }
+                /* TM-1705 (1-1) ---> TRAZAS */
+                vDTrazasLog(szExeName,  "\n\t\t* bRestaFechas --> Resultados..."
+                            "\n\t\t=> stCiclo.szFecHastaCFijos     : [%s]"                                    
+                            "\n\t\t=> pCargo->szFecInicio          : [%s]",LOG03,
+                            stCiclo.szFecHastaCFijos,
+                            pCargo->szFecInicio);
+            }
+            else
+            {
+                iDiasAlta = stCiclo.iDiaPeriodo;
+            }
+
+            /* TM-1705 (1-1) ---> TRAZAS */
+            vDTrazasLog(szExeName,  "\n\t\t* bRestaFechas --> Dias Alta..."
+                        			"\n\t\t=> iDiasAlta  SALIDA     : [%d]",LOG03,
+                        iDiasAlta);                     
+
+            if (iDiasAlta > stCiclo.iDiaPeriodo)
+            {
+                /* TM-1705 (1-1) ---> TRAZAS */
+                vDTrazasLog(szExeName,  "Dias Alta condicion iDiasAlta > stCiclo.iDiaPeriodo (%d)",LOG03,
+                        iDiasAlta);
+
+                if (!bfnObtieneCantDiasAProrratear (iDiasAlta, &iDiasAnt, &iDiasActual))
+                {
+                    vDTrazasLog(szExeName,  "\n\t\t CASO 4 :(Obtencion de dias para Prorratear)"
+                                "\n\t\t=> Error en la ejecucion de F(x)  bfnObtieneCantDiasAProrratear", LOG03);
+                    return (FALSE);
+
+                }
+                /* TM-1705 (1-1) ---> TRAZAS */
+                vDTrazasLog(szExeName,  "bfnObtieneCantDiasAProrratear   iDiasAnt (%d) -- iDiasActual (%d)\n",LOG03,
+                            iDiasAnt,iDiasActual);
+
+
+                if ((stCiclo.iDiaPeriodo == 0) || (stCiclo.iDiaPeriodoAnt == 0))
+                {
+                   /* TM-1705 (1-1) ---> TRAZAS */
+                   vDTrazasLog(szExeName,  "stCiclo.iDiaPeriodo == 0) || (stCiclo.iDiaPeriodoAnt == 0\n",LOG03);
+                   if (stCiclo.iDiaPeriodo == 0)
+                   {
+                      if (stCiclo.iDiaPeriodoAnt == 0)
+                          pCargo->dImpConcepto = 0.0;
+                      else
+                      {
+                          /* TM-1705 (1-1) ---> TRAZAS */
+                          pCargo->dImpConcepto = (double) ((pCargo->dImpServicio * iDiasAlta) / stCiclo.iDiaPeriodoAnt);
+                      }
+                      /* TM-1705 (1-1) ---> TRAZAS */
+                      vDTrazasLog(szExeName,  "pCargo->dImpConcepto A (%f)\n",LOG03, pCargo->dImpConcepto);
+                   }
+                   else
+                   {
+                       if (stCiclo.iDiaPeriodoAnt == 0)
+                            if (stCiclo.iDiaPeriodo == 0)
+                                pCargo->dImpConcepto = 0.0;
+                            else
+                            {
+                                /* TM-1705 (1-1) ---> TRAZAS */
+                                pCargo->dImpConcepto = (double) ((pCargo->dImpServicio * iDiasAlta) / stCiclo.iDiaPeriodo);
+                            }
+                      /* TM-1705 (1-1) ---> TRAZAS */
+                      vDTrazasLog(szExeName,  "pCargo->dImpConcepto B (%f)\n",LOG03, pCargo->dImpConcepto);
+                    }
+                }
+                else
+                {
+
+                    pCargo->dImpConcepto = (double) (((pCargo->dImpServicio * iDiasActual) / stCiclo.iDiaPeriodo) + 
+                                                     ((pCargo->dImpServicio * iDiasAnt) / stCiclo.iDiaPeriodoAnt));
+                    vDTrazasLog(szExeName,  "CARGO IMPUESTO SERVICIO %lf\n"
+                                            "DIAS PERIODO ACTUAL %d\n"
+                                            "DIAS ACTUAL %d\n"
+                                            "========================\n"
+                                            "CARGO IMPUESTO SERVICIO %lf\n"
+                                            "DIAS PERIODO ANTERIOR %d\n"
+                                            "DIAS ANTERIOR %d\n"
+                                            "========================\n"
+                                            "TOTAL CARGO IMPUESTO CONCEPTO %lf\n"
+                                            ,LOG03,pCargo->dImpServicio,stCiclo.iDiaPeriodo,iDiasActual
+                                            ,pCargo->dImpServicio,stCiclo.iDiaPeriodoAnt,iDiasAnt,pCargo->dImpConcepto);
+                }
+            }
+            else
+            {
+                vDTrazasLog(szExeName,  "C  iDiasAlta (%d) -- stCiclo.iDiaPeriodo (%d)\n",LOG03, iDiasAlta, stCiclo.iDiaPeriodo);
+                if (stCiclo.iDiaPeriodo == 0)
+                    pCargo->dImpConcepto = 0.0;
+                else
+                    pCargo->dImpConcepto = (double) ((pCargo->dImpServicio * iDiasAlta) / stCiclo.iDiaPeriodo);
+                /* TM-1705 (1-1) ---> TRAZAS */
+                vDTrazasLog(szExeName,  "pCargo->dImpConcepto C (%f)\n",LOG03, pCargo->dImpConcepto);
+            }
+
+            pCargo->sDiasAbono   = iDiasAlta;
+
+            vDTrazasLog(szExeName,  "\n\t\t CASO 4 :(A anterior y B posterior)\n"
+                                    "\t\t=> Ind Prorrateo   : [%d]\n"
+                                    "\t\t=> Dias Abono      : [%d]\n"
+                                    "\t\t=> Importe Concepto: [%f]\n",LOG03,
+                                    pCargo->sIndProrrateo,
+                                    pCargo->sDiasAbono,
+                                    pCargo->dImpConcepto);
+        }
+        /* CASO 1 :Alta y Baja dentro del ciclo en proceso */
+        else if (strcmp(pCargo->szFecInicio,stCiclo.szFecDesdeCFijos)  >  0 &&
+                 strcmp(pCargo->szFecTermino,stCiclo.szFecHastaCFijos) <= 0 &&
+                 strcmp(pCargo->szFecTermino,"" ) != 0 )
+        {
+            if (!bRestaFechas ( pCargo->szFecTermino,pCargo->szFecInicio,&iDiasAlta))
+            {
+                vDTrazasError (szExeName,"\n\t\t=> Error bRestaFechas"
+                                         "\n\t\t=> Fecha 1 : [%s]"
+                                         "\n\t\t=> Fecha 2 : [%s]",LOG03,
+                                         pCargo->szFecInicio,
+                                         pCargo->szFecTermino);
+                return FALSE;
+            }
+
+            if (iDiasAlta == 0 ) iDiasAlta = 1;
+
+            pCargo->dImpConcepto = fnCnvDouble((pCargo->dImpServicio * iDiasAlta/stCiclo.iDiaPeriodo), USOFACT);
+            pCargo->sDiasAbono   = iDiasAlta;
+
+            vDTrazasLog(szExeName,  "\n\t\t CASO 1 :(A y B dentro del Periodo)\n"
+                                    "\t\t=> Ind Prorrateo   : [%d]\n"
+                                    "\t\t=> Dias Abono      : [%d]\n"
+                                    "\t\t=> Importe Concepto: [%f]\n",LOG03,
+                                    pCargo->sIndProrrateo,
+                                    pCargo->sDiasAbono,
+                                    pCargo->dImpConcepto);
+        }
+        /* CASO 2 :Alta dentro del ciclo y baja posterior */
+        else if (strcmp(pCargo->szFecInicio, stCiclo.szFecDesdeCFijos) > 0 &&
+                 strcmp(pCargo->szFecInicio, stCiclo.szFecHastaCFijos) <=0 &&
+                (strcmp(pCargo->szFecTermino,stCiclo.szFecHastaCFijos) > 0 ||
+                 strcmp(pCargo->szFecTermino,"" ) == 0 ) )
+        {
+
+            if (!bRestaFechas ( stCiclo.szFecHastaCFijos,pCargo->szFecInicio,&iDiasAlta))
+            {
+                vDTrazasError (szExeName,   "\n\t\t=> Error bRestaFechas"
+                                            "\n\t\t=> Fecha 1 : [%s]"
+                                            "\n\t\t=> Fecha 2 : [%s]",LOG03,
+                                            stCiclo.szFecHastaCFijos,
+                                            pCargo->szFecInicio);
+                return FALSE;
+            }
+
+            if (iDiasAlta == 0 ) iDiasAlta = 1;
+
+            pCargo->dImpConcepto = fnCnvDouble(( (pCargo->dImpServicio * iDiasAlta)/stCiclo.iDiaPeriodo), USOFACT);
+            pCargo->sDiasAbono   = iDiasAlta;
+            
+            if ((pCargo->sIndAlta == 1)&&(pCargo->sIndTipoCobro == 1)) /* P-MIX-09003 */
+            {
+            	pCargo->dImpConcepto = pCargo->dImpConcepto + pCargo->dImpServicio;
+                vDTrazasLog(szExeName, "\n\t\t* Se agrega Cargo Inicial adelantado. *\n"
+                                     , LOG05);
+            }            
+
+            vDTrazasLog(szExeName,  "\n\t\t CASO 2 :(A dentro y B posterior)\n"
+                                    "\t\t=> Ind Prorrateo   : [%d]\n"
+                                    "\t\t=> Dias Abono      : [%d]\n"
+                                    "\t\t=> Importe Concepto: [%f]\n",LOG03,
+                                    pCargo->sIndProrrateo,
+                                    pCargo->sDiasAbono,
+                                    pCargo->dImpConcepto);
+
+        }
+        /* CASO 3 :Alta anterior al inicio de ciclo y baja dentro de ciclo */
+        else if( strcmp(pCargo->szFecInicio,stCiclo.szFecDesdeCFijos) <= 0 &&
+                 strcmp(pCargo->szFecTermino,stCiclo.szFecDesdeCFijos) >= 0 &&
+                 strcmp(pCargo->szFecTermino,stCiclo.szFecHastaCFijos) <= 0 &&
+                 strcmp(pCargo->szFecTermino,"" ) != 0)
+        {
+            /* Primera vez que se factura... va hacia atras... */
+            if ( pCargo->sIndAlta == 1 )
+            {
+                if (!bRestaFechas ( pCargo->szFecTermino,pCargo->szFecInicio,&iDiasAlta))
+                {
+                    vDTrazasError (szExeName,   "\n\t\t=> Error bRestaFechas"
+                                                "\n\t\t=> Fecha 1 : [%s]"
+                                                "\n\t\t=> Fecha 2 : [%s]",LOG03,
+                                                pCargo->szFecTermino,
+                                                pCargo->szFecInicio);
+                    return FALSE;
+                }
+            }
+            else
+            {
+                if (!bRestaFechas ( pCargo->szFecTermino,stCiclo.szFecDesdeCFijos,&iDiasAlta))
+                {
+                    vDTrazasError (szExeName,   "\n\t\t=> Error bRestaFechas"
+                                                "\n\t\t=> Fecha 1 : [%s]"
+                                                "\n\t\t=> Fecha 2 : [%s]",LOG03,
+                                                pCargo->szFecTermino,
+                                                stCiclo.szFecDesdeCFijos);
+                         return FALSE;
+                }
+            }
+            if (iDiasAlta == 0 ) iDiasAlta = 1;
+
+        if (iDiasAlta > stCiclo.iDiaPeriodo)
+        {
+
+            if (!bfnObtieneCantDiasAProrratear (iDiasAlta, &iDiasAnt, &iDiasActual))
+                {
+                    vDTrazasLog(szExeName,  "\n\t\t CASO 4 :(Obtencion de dias para Prorratear)\n"
+                                    "\t\t=> Error en la ejecucion de F(x)  bfnObtieneCantDiasAProrratear\n", LOG03);
+                return (FALSE);
+
+                }
+
+            if ((stCiclo.iDiaPeriodo == 0) || (stCiclo.iDiaPeriodoAnt == 0))
+            {
+                if (stCiclo.iDiaPeriodo == 0)
+                {
+                    if (stCiclo.iDiaPeriodoAnt == 0)
+                        pCargo->dImpConcepto = 0.0;
+                    else
+                        pCargo->dImpConcepto = (double) ((pCargo->dImpServicio * iDiasAnt) / stCiclo.iDiaPeriodoAnt);
+                }
+                else if(stCiclo.iDiaPeriodoAnt == 0)
+                    if (stCiclo.iDiaPeriodo == 0)
+                        pCargo->dImpConcepto = 0.0;
+                    else
+                        pCargo->dImpConcepto = (double) ((pCargo->dImpServicio * iDiasActual) / stCiclo.iDiaPeriodo);
+            }
+            else
+            {
+                pCargo->dImpConcepto = fnCnvDouble ((((pCargo->dImpServicio * iDiasActual) / stCiclo.iDiaPeriodo) + ((pCargo->dImpServicio * iDiasAnt) / stCiclo.iDiaPeriodoAnt)), USOFACT);
+                    }
+
+        }
+        else
+        {
+            if (stCiclo.iDiaPeriodo == 0)
+                pCargo->dImpConcepto = 0.0;
+            else
+                pCargo->dImpConcepto = fnCnvDouble (((pCargo->dImpServicio * iDiasAlta) / stCiclo.iDiaPeriodo), USOFACT);
+        }
+
+            pCargo->sDiasAbono   = iDiasAlta;
+            
+            if ((pCargo->sIndTipoCobro == 1)) /* P-MIX-09003 */
+            {
+            	pCargo->dImpConcepto = 0;
+                vDTrazasLog(szExeName, "\n\t\t* Ultimo Cargo = 0 por Cargo Adelantado. *\n"
+                                     , LOG05);            	
+            }            
+
+            vDTrazasLog(szExeName,  "\n\t\t CASO 3 :(A anterior y B dentro del ciclo)\n"
+                                    "\t\t=> Ind Prorrateo   : [%d]\n"
+                                    "\t\t=> Dias Abono      : [%d]\n"
+                                    "\t\t=> Importe Concepto: [%f]\n",LOG03,
+                                    pCargo->sIndProrrateo,
+                                    pCargo->sDiasAbono,
+                                    pCargo->dImpConcepto);
+
+        }
+        /* CASO 5 :Alta y Baja anterior al ciclo en proceso */
+        else if ( strcmp(pCargo->szFecInicio,stCiclo.szFecDesdeCFijos)  < 0 &&
+                  strcmp(pCargo->szFecTermino,stCiclo.szFecDesdeCFijos) < 0 &&
+                  strcmp(pCargo->szFecTermino,"" ) != 0  )
+        {
+            if (!bRestaFechas ( pCargo->szFecTermino,pCargo->szFecInicio,&iDiasAlta))
+            {
+                vDTrazasError (szExeName,   "\n\t\t=> Error bRestaFechas"
+                                            "\n\t\t=> Fecha 1 : [%s]"
+                                            "\n\t\t=> Fecha 2 : [%s]",LOG03,
+                                            pCargo->szFecInicio,
+                                            pCargo->szFecTermino);
+                return FALSE;
+            }
+
+            vDTrazasError (szExeName, "\n\t\t=> pCargo->sIndAlta[%d]",LOG03, pCargo->sIndAlta);
+
+            if (pCargo->sIndAlta == 1)
+            {
+                if (iDiasAlta == 0 ) iDiasAlta = 1;
+
+                pCargo->dImpConcepto = fnCnvDouble((pCargo->dImpServicio * iDiasAlta/stCiclo.iDiaPeriodo), USOFACT);
+                pCargo->sDiasAbono   = iDiasAlta;
+
+                vDTrazasLog(szExeName,  "\n\t\t CASO 5 :(A y B anterior al Periodo)\n"
+                            "\t\t=> Ind Prorrateo   : [%d]\n"
+                            "\t\t=> Dias Abono      : [%d]\n"
+                            "\t\t=> Importe Concepto: [%f]\n",LOG03,
+                            pCargo->sIndProrrateo,
+                            pCargo->sDiasAbono,
+                            pCargo->dImpConcepto);
+            }
+            else {
+                vDTrazasLog(szExeName,  "\n\t\t CASO 5 :(A y B anterior al Periodo) Cargo Basico Facturado Previamente (No se Prorraeta)...\n"
+                                        "\t\t=> Ind Prorrateo   : [%d]\n"
+                                        "\t\t=> Dias Abono      : [%d]\n"
+                                        "\t\t=> Importe Concepto: [%f]\n",LOG03,
+                                        pCargo->sIndProrrateo,
+                                        pCargo->sDiasAbono,
+                                    pCargo->dImpConcepto);
+            }
+        }
+        /* CASO 6 :Alta y Baja posterior al ciclo en proceso */
+        else if ( strcmp(pCargo->szFecInicio,stCiclo.szFecHastaCFijos)  > 0 &&
+                 (strcmp(pCargo->szFecTermino,stCiclo.szFecHastaCFijos) > 0 ||
+                  strcmp(pCargo->szFecTermino,"" ) == 0 ) )
+        {
+            vDTrazasLog(szExeName,  "\n\t\t CASO 6 : A y B  posterior -->Error\n"
+                                    "\t\t=> Fecha Alta   : [%s]\n"
+                                    "\t\t=> Fecha Baja   : [%s]\n",LOG03,
+                                    pCargo->szFecInicio,
+                                    pCargo->szFecTermino);
+
+            vDTrazasError(szExeName,"\n\t\t=> Error Prorrateo (A y B posterior) CASO 6"
+                                    "\n\t\t=> Fecha Alta : [%s]"
+                                    "\n\t\t=> Fecha Baja : [%s]",LOG03,
+                                    pCargo->szFecInicio,
+                                    pCargo->szFecTermino);
+
+            pCargo->dImpConcepto = 0.0;
+            pCargo->sDiasAbono   = 0;
+        }
+
+    }
+    else
+    { /* Servicio no es prorrateable */
+
+        vDTrazasLog(szExeName,  "\n\t\t Servicio NO prorrateable \n"
+                                "\t\t Importe Concepto : [%f]\n",LOG03,
+                                pCargo->dImpServicio);
+
+        pCargo->dImpConcepto = fnCnvDouble(pCargo->dImpServicio, USOFACT);
+        pCargo->sDiasAbono   = stCiclo.iDiaPeriodo;
+    }
+
+    return TRUE;
+}
+/**************************** Fin bfnProrrateoStandar ***************************************/
+

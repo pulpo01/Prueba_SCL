@@ -1,0 +1,43 @@
+CREATE OR REPLACE TRIGGER GSM_DSOL_AFUP_TG
+AFTER UPDATE
+ON GSM_DET_SOLICITUD_AUC_TO
+FOR EACH ROW
+	
+WHEN ( NEW.COD_ESTADO <> OLD.COD_ESTADO)
+DECLARE
+v_registro  GSM_DET_SOLICITUD_AUC_TO%RowType;
+BEGIN
+  -- Actualizo el Registro.
+  v_registro.NUM_SEQ_SOLICITUD_AUC  := :old.NUM_SEQ_SOLICITUD_AUC;
+  v_registro.NUM_SIMCARD            := :old.NUM_SIMCARD;
+  v_registro.NUM_MOVIMIENTO         := :old.NUM_MOVIMIENTO;
+  v_registro.NUM_INTENTO            := :old.NUM_INTENTO;
+  v_registro.FEC_ACTUALIZACION      := :old.FEC_ACTUALIZACION;
+  v_registro.COD_ESTADO             := :old.COD_ESTADO;
+  v_registro.DES_ERROR              := :old.DES_ERROR ;
+  v_registro.COD_USUARIO            := :old.COD_USUARIO;
+
+  INSERT INTO  GSM_DET_SOLICITUD_AUC_TH (
+  NUM_SEQ_SOLICITUD_AUC,
+  NUM_SIMCARD,
+  NUM_MOVIMIENTO,
+  NUM_INTENTO,
+  FEC_ACTUALIZACION,
+  COD_ESTADO,
+  DES_ERROR,
+  COD_USUARIO )
+  VALUES
+  (v_registro.NUM_SEQ_SOLICITUD_AUC,
+   v_registro.NUM_SIMCARD,
+   v_registro.NUM_MOVIMIENTO,
+   v_registro.NUM_INTENTO,
+   -- INICIO INCIDENCIA RA-200602060706
+   SYSDATE,
+   -- FIN INCIDENCIA RA-200602060706
+   v_registro.COD_ESTADO,
+   v_registro.DES_ERROR,
+   v_registro.COD_USUARIO );
+
+END;
+/
+SHOW ERRORS

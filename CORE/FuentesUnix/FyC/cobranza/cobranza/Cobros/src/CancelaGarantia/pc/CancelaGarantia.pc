@@ -1,0 +1,445 @@
+/*==================================================================================
+Nombre      : CancelaGarantia.pc
+Programa    : Cancela Deuda de un Documento de Garantia en Cartera (32).
+Autor       : G.A.C.  
+Modificado  : 10-Julio-2003 (TMM)
+==================================================================================
+21-Dic-2004 : Modificado por Proyecto MAS-03043 Mejoras Cancelacion de Creditos. 
+==================================================================================*/
+#include <stdlib.h> 
+#include <stdio.h>
+#include <string.h>
+#include <pasoc.h>
+#include <unistd.h>
+#include "CancelaGarantia.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    long   lhCod_Cliente     [MAXREG];
+    char   szhFecPago        [MAXREG][9] ; EXEC SQL VAR szhFecPago IS STRING(9);
+
+    char   szHora            [11]; EXEC SQL VAR szHora IS STRING(11);
+    char   szFechayyyymmdd   [9] ; EXEC SQL VAR szFechayyyymmdd IS STRING(9);
+  
+EXEC SQL END DECLARE SECTION;
+
+int  i=0 , iCantDoc=0;
+int  iRows=0;
+char szArchivoLog[256];
+
+LINEACOMANDO	stLineaComando;		/* Datos con los que se invoco al proceso */
+DATCON		    stCobros;
+
+char   szPath     [128]   ="" ;
+static char szUsage [] =
+   "\n\tUso : CancelaGarantia"
+   "\n\t       -u [Usuario]/[Password]"
+   "\n\t       -l [NivelLog]\n\n";
+
+/*****************************************************************************/
+/*     main                                                                  */
+/*****************************************************************************/
+int main (int argc, char* argv[])
+{
+extern int   opterr;
+extern int   optopt;
+extern char *optarg;
+
+char opt[]  = "u:l:n:f:";
+int  iOpt   = 0    ;
+
+char szUsuario[61] = "" ;
+char *pszTmp       = "" ;
+char modulo[] = "main";
+
+    memset (&stLineaComando,0,sizeof (LINEACOMANDO));
+    memset (&stStatus,0,sizeof (STATUS));
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF) {
+        switch (iOpt) {
+            case 'u':  
+                if ( strlen (optarg) ) {
+                    strcpy (szUsuario,optarg)  ;
+                    stLineaComando.bOptUsuario = TRUE;
+                }
+                break;
+            case 'l': 
+                if ( strlen (optarg) ) {
+                    stLineaComando.bOptNivelLog = TRUE         ;
+                    stLineaComando.iNivelLog    = atoi (optarg);
+                }
+                break;   
+        }/* fin switch */
+    }/* fin While de Opciones */
+
+    if (!stLineaComando.bOptUsuario) {
+         fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: \n%s\n\n",szUsage);
+         return  -1 ;
+
+    } else {
+       
+       if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL) {
+             fprintf (stderr,"\n\t=>Formato Usuario Oracle Incorrecto:\n%s\n\n",szUsage);
+             return -1;
+
+       } else {
+             strncpy (stLineaComando.szUsuario ,szUsuario,pszTmp-szUsuario);
+             strcpy  (stLineaComando.szPassWord, pszTmp+1);
+       }
+    }
+    
+    if (!stLineaComando.bOptNivelLog)
+         stLineaComando.iNivelLog = LOG03;
+
+
+    if (ifnInicio(&stLineaComando,&stStatus)!=0)  return -1;
+    
+    
+    if (ifnCarga_Garantias()!=0) {
+        EXEC SQL ROLLBACK WORK;
+        if (SQLCODE != SQLOK) {
+            iDError(modulo,ERR000,vInsertarIncidencia,"ROLLBACK WORK.\n ",SQLERRM);
+            return -1;
+        }
+
+        fclose(stStatus.LogFile);
+	    fclose(stStatus.ErrFile);
+        return -1;
+    }
+ 
+    EXEC SQL COMMIT WORK;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"COMMIT WORK.\n ",SQLERRM);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\n\t *** Proceso Termino OK *****",LOG03);
+    if (ifnExitAplicapago()!=0) return -1;
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+    return 0; 
+}/***************************** Final main ***********************************/
+
+/*****************************************************************************/
+/* Funcion : bfnInicio                                                       */
+/*****************************************************************************/
+int ifnInicio ( LINEACOMANDO *stLineaComando, STATUS *pstStatus )
+{
+int  iRes=0;
+char modulo[] = "ifnInicio";
+EXEC SQL BEGIN DECLARE SECTION;
+	char  szhHH24MISS       [11];
+	char  szhYYYYMMDD        [9];
+EXEC SQL END DECLARE SECTION;
+
+	strcpy(szhHH24MISS ,"HH24:MI:SS");
+	strcpy(szhYYYYMMDD ,"YYYYMMDD");
+   
+   if (!bfnConnectORA (stLineaComando->szUsuario,stLineaComando->szPassWord))  {
+        fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+        return   -1 ;
+   }
+    
+   /* Datos Iniciales de Tiempo */
+   cpu_ini = clock();
+   time (&real_ini) ;
+   pstStatus->OraConnected = 1;
+    
+   EXEC SQL
+   SELECT TO_CHAR(SYSDATE,:szhHH24MISS), 
+          TO_CHAR(SYSDATE,:szhYYYYMMDD)
+   INTO   :szHora   , 
+          :szFechayyyymmdd
+   FROM   DUAL;
+    
+   if (ifnAbreArchivosLog()!=0)  return -1;
+    
+   pstStatus->LogNivel = stLineaComando->iNivelLog;
+    
+   vDTrazasLog  (modulo,
+    "\n     *******************************************************************"
+    "\n     *%s          CANCELA GARANTIA                HORA : %s *"
+    "\n     *******************************************************************\n", LOG03,szVersion,szHora);
+    
+    vDTrazasError(modulo,
+    "\n     *******************************************************************"
+    "\n     *%s      ERRORES EN CANCELA GARANTIA         HORA : %s *"
+    "\n     *******************************************************************\n", LOG03,szVersion,szHora);
+    
+    return 0;
+}/************************** Final bfnInicio *************************/ 
+
+/*****************************************************************************/
+/* Funcion : ifnExitAplicapago                                               */
+/*****************************************************************************/
+int ifnExitAplicapago (void)
+{
+char modulo[] = "ifnExitAplicapago";
+
+    /* Desconexion Oracle */
+    if (!bfnDisconnectORA(0)) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"Desconexion de Oracle.\n ",SQLERRM);
+        return -1;
+    }
+    stStatus.OraConnected = FALSE;
+    vDTrazasLog (modulo,"\t *** Desconexion a Oracle ***",LOG03);
+    
+    /* Datos Fin de Tiempo */
+    times (&tms)     ;
+    cpu_fin = clock();
+    time (&real_fin) ;
+    
+    real = (real_fin-real_ini)                ;
+    cpu  =(float)cpu_fin/(float)CLOCKS_PER_SEC;
+    
+    vDTrazasLog (modulo,"\n\t => Tiempo de CPU     : [%g]"
+                        "\n\t => Tiempo Real       : [%g]\n\n\n",
+                        LOG03, cpu, real); 
+
+
+    return 0;                                
+                           
+}/*************************** Final ifnExitAplicapago ************************/
+
+/****************************************************************************************************/
+/* ifnCarga_Garantias() : Selecciona los documento de garantia          		   					*/
+/****************************************************************************************************/
+int ifnCarga_Garantias() 
+{
+char modulo[] = "ifnCarga_Garantias";
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhYYYYMMDD    [9];
+	int  ihValor_cero   = 0;
+	int  ihValor_uno    = 1;
+	int  ihValor_dos    = 2;
+	int  ihValor_32     =32;
+EXEC SQL END DECLARE SECTION;
+
+   vDTrazasLog (modulo, "\t*** Funcion ifnCarga_Garantias() ***",LOG03);
+	strcpy(szhYYYYMMDD ,"YYYYMMDD");
+
+   EXEC SQL DECLARE Cur_Canga CURSOR FOR
+   SELECT A.COD_CLIENTE            ,
+          TO_CHAR(A.FEC_PAGO ,:szhYYYYMMDD)
+   FROM   CO_CARTERA A, GE_TIPDOCUMEN B
+   WHERE  A.COD_CLIENTE   > :ihValor_cero
+   AND    A.COD_TIPDOCUM  = B.COD_TIPDOCUM
+   AND    A.COD_TIPDOCUM  = :ihValor_32
+   AND    A.COD_CONCEPTO  = :ihValor_dos
+   AND    A.IND_FACTURADO = :ihValor_uno
+   ORDER BY A.FEC_VENCIMIE ASC, A.COD_CLIENTE ;
+    
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En DECLARE Cur_Canga.\n ",SQLERRM);
+        return -1;
+    }
+
+    EXEC SQL OPEN Cur_Canga ;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En OPEN Cur_Canga.\n ",SQLERRM);
+        return -1;
+    }
+
+    while (1) {
+        EXEC SQL FETCH Cur_Canga INTO 
+                :lhCod_Cliente    ,
+                :szhFecPago       ;
+
+        iRows = SQLROWS;
+        if (SQLCODE == SQLNOTFOUND ) break;
+        if (SQLCODE != SQLOK) {
+            iDError(modulo,ERR000,vInsertarIncidencia,"En FETCH Cur_Canga.\n ",SQLERRM);
+            return -1;
+        }
+    }
+    EXEC SQL CLOSE Cur_Canga ;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En CLOSE Cur_Canga.\n ",SQLERRM);
+        return -1;
+    }
+    
+    vDTrazasLog (modulo, "\t*** Fin a ifnCarga_Garantias() ***\n",LOG03);
+
+    if (ifnGetCobros()!=0 ) return -1;
+
+    return 0;
+}
+
+/******************************************************************************************************/
+/* ifnGetCobros() : Carga el host array en una estructura que sera usada en la cancelacion de creditos*/
+/******************************************************************************************************/
+int ifnGetCobros()
+{
+char modulo[] = "ifnGetCobros";
+EXEC SQL BEGIN DECLARE SECTION;
+	long lhNum_Transaccion     ;
+	long lhCodCliente          ;
+	char szhFec_Pago       [20];
+	int  ihRetorno             ;
+	char szhGlosa         [500];
+	int  ihCarrier  = 0        ;
+EXEC SQL END DECLARE SECTION; 
+
+	vDTrazasLog (modulo, "\t*** Funcion ifnGetCobros() ***\n",LOG03);
+	
+	for (i=0;i<iRows;i++) 
+	{
+		memset(szhGlosa,'\0',sizeof(szhGlosa));
+		ihRetorno=99;
+		iCantDoc++;
+		
+		EXEC SQL
+		SELECT GA_SEQ_TRANSACABO.NEXTVAL
+		INTO   :lhNum_Transaccion
+		FROM   DUAL;
+		if (SQLCODE != SQLOK) {
+		    iDError(modulo,ERR000,vInsertarIncidencia,"En SELECT GA_SEQ_TRANSACABO.NEXTVAL.\n ",SQLERRM);
+		    return -1;
+		}
+		
+		lhCodCliente=lhCod_Cliente[i];
+		strncpy(szhFec_Pago,szhFecPago[i],8);
+		vDTrazasLog ( modulo,   "\n\t****** Registro No : [%d] ******"
+										"\n\t\t=> lhCodCliente      [%ld]"
+										"\n\t\t=> szFecPago         [%s] "
+										"\n\t\t=> lhNum_Transaccion [%ld]\n\n",
+										LOG03,iCantDoc ,lhCodCliente ,szhFec_Pago, lhNum_Transaccion );
+		         
+		vDTrazasLog( modulo, "\tIniciando CANCELACION DE CREDITOS con Cliente [%ld].\n", LOG03,lhCodCliente);
+		/*if (ifnCancelacionCreditos( lCod_Cliente, &stCobros, iCodAbono, stCobros.szFecEfectividad, 0 )!= 0) {
+		vDTrazasLog( modulo, "Error al realizar CANCELACION DE CREDITOS.\n", LOG02 );
+		}*/
+		
+		
+		EXEC SQL EXECUTE
+			BEGIN
+					CO_CANCELACION_PG.CO_CANCELACREDITOS_PR(:lhCodCliente, TO_DATE(:szhFec_Pago,'YYYYMMDD'), :lhNum_Transaccion , :ihCarrier , NULL , NULL , NULL, :ihRetorno , :szhGlosa );
+			END;
+		END-EXEC;
+		
+		if (SQLCODE != SQLOK ) {
+	   	iDError(modulo,ERR000,vInsertarIncidencia,"En CO_CANCELACREDITOS_PR.\n ",SQLERRM);
+	   	ihRetorno=-1;
+	   }
+	   if (ihRetorno == 99) {
+	   	iDError(modulo,ERR000,vInsertarIncidencia,"Valor de Retorno es 99. Posible error en la PL\n ",SQLERRM);
+	   
+	   }
+	   else if (ihRetorno != 0)   {
+	   	RighTrim(szhGlosa);
+	   	vDTrazasLog (modulo, "\tValor ihRetorno [%d]\n\tszhGlosa  [%s]\n",LOG03,ihRetorno,szhGlosa);
+	   	iDError(modulo,ERR000,vInsertarIncidencia,"En CO_CANCELACREDITOS_PR. ",SQLERRM);
+	   
+	   }
+	  
+	} /* fin for */
+
+   vDTrazasLog ( modulo,  "\n", LOG03 );
+	return 0;
+	
+}/**************************** Final ifnGetCobros ****************************/
+
+
+/*****************************************************************************/
+/* Funcion que abre los archivos de log y de error                           */
+/*****************************************************************************/
+int ifnAbreArchivosLog()
+{
+char *pathDir               ;
+char szArchivo  [32]    ="" ;
+char szComando  [128]   ="" ;
+char modulo[] = "ifnAbreArchivosLog";
+
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	sprintf(szArchivo,"CancelaGarantia");
+
+	pathDir =(char *)malloc(228);
+	pathDir =szGetEnv("XPFACTUR_LOG");
+	sprintf(szPath  ,"%s/CancelaGarantia/%s",pathDir,szFechayyyymmdd);
+
+	free(pathDir);
+
+	sprintf(szComando,"/usr/bin/mkdir -p %s", szPath);
+	system (szComando);
+
+	sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+	    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+	    return -1;
+	}
+
+	sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+	    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+    	return -1;
+    }
+    
+    return 0;
+}
+/******************************************************/
+
+/*****************************************************************************/
+/* Funcion RighTrim : Limpia blancos a la derecha                            */
+/*****************************************************************************/
+int RighTrim (char *szVar)
+{
+int  iLenVar = 0, i=0;
+
+    iLenVar = strlen(szVar);
+    for (i=iLenVar-1;i>-1;i--) {
+        if (szVar[i]==' ') {
+            szVar[i]='\0';
+        } else break;
+    }
+    return (0);        
+}
+
+/*****************************************************************************/
+/* Funcion LeftTrim : Limpia blancos a la izquierda                          */
+/*****************************************************************************/
+int LeftTrim (char *szVar)
+{
+int iLenVar = 0, i=0;
+char szVarAux [250];
+
+    iLenVar = strlen(szVar);
+    for (i=0;i<iLenVar;i++) {
+        if (szVar[i]==' ') {
+            memset(&szVarAux ,0,sizeof(szVarAux));
+            strncpy(szVarAux,&szVar[i+1],iLenVar);
+        } else break;
+    }
+
+    sprintf(szVar,"%s\0",szVarAux);
+    return (0);        
+}
+
+
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

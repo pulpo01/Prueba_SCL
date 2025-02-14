@@ -1,0 +1,438 @@
+/***************************************************************************/
+/* Modulo donde se definen las funciones y procedimientos relacionados con */
+/* el manejo de las tablas de trazas de facturacion de ciclo.              */
+/*                                                                         */
+/* Autor: William Sepulveda V.                                             */
+/*-------------------------------------------------------------------------*/
+/* Version 1 - Revision 00  ("checktraza.pc")                              */
+/* Miercoles 17 de mayo del 2000.                                          */
+/***************************************************************************/
+#define _CHECKTRAZA_PC_
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "checktraza.h"
+
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+
+/*---------------------------------------------------------------------------*/
+/* Variables globales del modulo, visibles para Oracle.                      */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+int	ihCodProcPrec[MAX_PRECEDENTES];
+EXEC SQL END DECLARE SECTION;
+
+/*---------------------------------------------------------------------------*/
+/* Variables globales del modulo.                                            */
+/*---------------------------------------------------------------------------*/
+int	iNumProcPrec;
+
+/*****************************************************************************/
+/*  Funcion que recupera el indicador de reproceso de la tabla FA_PROCFACT.  */
+/*****************************************************************************/
+int	iGetIndReproceso (int iCodProceso, int *iIndReproceso)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCodProceso;
+	int	ihIndReproceso;
+	EXEC SQL END DECLARE SECTION;
+
+	ihCodProceso = iCodProceso;
+	
+	EXEC SQL SELECT IND_REPROCESO
+	INTO :ihIndReproceso
+	FROM FA_PROCFACT
+	WHERE COD_PROCESO = :ihCodProceso;
+	
+	if(sqlca.sqlcode == SQLOK)
+	{
+		*iIndReproceso = ihIndReproceso;
+	}
+
+	return(sqlca.sqlcode);
+}
+
+
+/*****************************************************************************/
+/*  Funcion que recupera los procesos precedentes en tabla FA_PROCFACTPREC.  */
+/*****************************************************************************/
+int	iGetProcPrecedentes (int iCodProceso)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCodProceso;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodProceso = iCodProceso;
+	
+	EXEC SQL DECLARE Cursor_ProcFactPrec CURSOR FOR
+   SELECT COD_PROCPREC
+   FROM FA_PROCFACTPREC 
+   WHERE COD_PROCESO = :ihCodProceso;
+	
+	EXEC SQL OPEN Cursor_ProcFactPrec;
+	
+	if(sqlca.sqlcode != SQLOK)
+	{
+		return(sqlca.sqlcode);
+	}
+	
+	while(1)
+   {
+		if(sqlca.sqlcode < SQLOK)
+		{
+			return(sqlca.sqlcode);
+		}
+		
+		EXEC SQL FETCH Cursor_ProcFactPrec
+      INTO :ihCodProcPrec;
+
+		if(sqlca.sqlcode == SQLNOTFOUND) break;
+	}
+	
+	EXEC SQL CLOSE Cursor_ProcFactPrec;
+	if(sqlca.sqlcode != SQLOK)
+	{
+		return(sqlca.sqlcode);
+	}
+
+	iNumProcPrec = sqlca.sqlerrd[2];
+	return(sqlca.sqlcode);
+}
+
+
+/*****************************************************************************/
+/* Funcion que recupera el estado del proceso en la tabla de trazas de       */
+/* facturacion (FA_TRAZAPROC).                                               */
+/*****************************************************************************/
+int	iGetEstadoProc (int iCodProceso, int iCodCiclFact, int *iCodEstado)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCodProceso;
+	int	ihCodCiclFact;
+	int	ihCodEstaProc;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodProceso  = iCodProceso;
+	ihCodCiclFact = iCodCiclFact;
+	
+	EXEC SQL SELECT COD_ESTAPROC
+	INTO :ihCodEstaProc
+   FROM FA_TRAZAPROC
+   WHERE COD_PROCESO  = :ihCodProceso
+   AND   COD_CICLFACT = :ihCodCiclFact;
+   
+   if(sqlca.sqlcode != SQLOK)
+   {
+   	return(sqlca.sqlcode);
+   }
+   
+   *iCodEstado  = ihCodEstaProc;
+   return(sqlca.sqlcode);
+}
+
+/*****************************************************************************/
+/* Funcion encargada de insertar un registro en la tabla de trazas de        */
+/* facturacion de ciclo. Utiliza la estructura global stTrazaProcCheck para       */
+/* obtener los valores que deben ser insertados, de manera que la            */
+/* responsabilidad de llenar dicha estructura es de la aplicacion o funcion  */
+/* llamante.                                                                 */
+/*****************************************************************************/
+int	iInsertTrazaProc ( void )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int 	ihCodCiclFact;
+	int	ihCodProceso;
+	int	ihCodEstaProc;
+	char 	szhGlsProceso[51];
+	int 	ihCodCliente;
+	int 	ihNumAbonado;
+	int	ihNumRegistros;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodCiclFact  = stTrazaProcCheck.iCodCiclFact      ;
+	ihCodProceso   = stTrazaProcCheck.iCodProceso       ;
+	ihCodEstaProc  = iPROC_EST_RUN                 ;
+	ihCodCliente   = stTrazaProcCheck.iCodCliente       ;
+	ihNumAbonado   = stTrazaProcCheck.iNumAbonado       ;
+	ihNumRegistros = stTrazaProcCheck.iNumRegistros     ;
+	strcpy(szhGlsProceso, stTrazaProcCheck.szGlsProceso);
+	
+	EXEC SQL INSERT INTO FA_TRAZAPROC
+	(COD_CICLFACT, COD_PROCESO, COD_ESTAPROC, FEC_INICIO, GLS_PROCESO, COD_CLIENTE, NUM_ABONADO, NUM_REGISTROS) 
+	VALUES (:ihCodCiclFact, :ihCodProceso, :ihCodEstaProc, sysdate, :szhGlsProceso, :ihCodCliente,
+	        :ihNumAbonado, :ihNumRegistros);
+
+   return(sqlca.sqlcode);
+}
+
+
+/*****************************************************************************/
+/* Funcion que borra un registro de la tabla FA_TRAZAPROC.                   */
+/*****************************************************************************/
+int	iDeleteTrazaProc (int iCodProceso, int iCodCiclFact)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCodProceso;
+	int	ihCodCiclFact;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodProceso  = iCodProceso;
+	ihCodCiclFact = iCodCiclFact;
+	
+	EXEC SQL DELETE FROM FA_TRAZAPROC
+	WHERE COD_PROCESO = :ihCodProceso
+	AND  COD_CICLFACT = :ihCodCiclFact;
+	
+	return(sqlca.sqlcode);
+}
+
+
+/*****************************************************************************/
+/* Funcion que selecciona un registro desde la tabla FA_TRAZAPROC.           */
+/*****************************************************************************/
+int	iGetTrazaProc (int iCodProceso, int iCodCiclFact)
+{	
+	EXEC SQL BEGIN DECLARE SECTION;
+	int 	ihCodCiclFact;
+	int	ihCodProceso;
+	int	ihCodEstaProc;
+	char 	szhFecInicio[15];
+	char 	szhFecTermino[15];
+	char 	szhGlsProceso[51];
+	int 	ihCodCliente;
+	int 	ihNumAbonado;
+	int	ihNumRegistros;
+	short	ihIndFecTermino;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodProceso  = iCodProceso;
+	ihCodCiclFact = iCodCiclFact;
+	
+	EXEC SQL SELECT COD_ESTAPROC, TO_CHAR(FEC_INICIO, 'yyyymmddhh24miss'), TO_CHAR(FEC_TERMINO, 'yyyymmddhh24miss'),  
+	                NVL(GLS_PROCESO, ' '), NVL(COD_CLIENTE, 0), NVL(NUM_ABONADO, 0), NVL(NUM_REGISTROS, 0)	                
+	INTO :ihCodEstaProc, :szhFecInicio, :szhFecTermino:ihIndFecTermino, :szhGlsProceso, :ihCodCliente,
+	     :ihNumAbonado, :ihNumRegistros
+	FROM FA_TRAZAPROC
+	WHERE COD_PROCESO = :ihCodProceso
+	AND  COD_CICLFACT = :ihCodCiclFact;
+	     
+	if(sqlca.sqlcode != SQLOK)
+	{
+		return(sqlca.sqlcode);
+	}
+	
+	stTrazaProcCheck.iCodProceso  = ihCodProceso;
+	stTrazaProcCheck.iCodCiclFact = ihCodCiclFact;
+	stTrazaProcCheck.iCodEstaProc = ihCodEstaProc;
+	strcpy(stTrazaProcCheck.szFecInicio, szhFecInicio); 
+	strcpy(stTrazaProcCheck.szGlsProceso, szhGlsProceso);
+	stTrazaProcCheck.iCodCliente = ihCodCliente;
+	stTrazaProcCheck.iNumAbonado = ihNumAbonado;
+	stTrazaProcCheck.iNumRegistros = ihNumRegistros;
+	
+	if(ihIndFecTermino == -1)
+	{
+		strcpy(stTrazaProcCheck.szFecTermino, "");
+	}
+	else
+	{
+		strcpy(stTrazaProcCheck.szFecTermino, szhFecTermino);
+	}
+	return(sqlca.sqlcode);
+}
+
+
+/*****************************************************************************/
+/* Funcion que actualiza un registro en la tabla de traza de facturacion.    */
+/*****************************************************************************/
+int	iUpdateTrazaProc ( void )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCodProceso;
+	int	ihCodCiclFact;
+	int	ihCodEstaProc;
+	char 	szhFecTermino[15];
+	char 	szhGlsProceso[51];
+	int 	ihCodCliente;
+	int 	ihNumAbonado;
+	int	ihNumRegistros;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodProceso   = stTrazaProcCheck.iCodProceso       ;
+	ihCodCiclFact  = stTrazaProcCheck.iCodCiclFact      ;
+	ihCodEstaProc  = stTrazaProcCheck.iCodEstaProc      ;
+	ihCodCliente   = stTrazaProcCheck.iCodCliente       ;
+	ihNumAbonado   = stTrazaProcCheck.iNumAbonado       ;
+	ihNumRegistros = stTrazaProcCheck.iNumRegistros     ;
+	strcpy(szhGlsProceso, stTrazaProcCheck.szGlsProceso);
+	
+	EXEC SQL UPDATE FA_TRAZAPROC
+	SET COD_ESTAPROC = :ihCodEstaProc, FEC_TERMINO = sysdate, GLS_PROCESO = :szhGlsProceso,
+	    COD_CLIENTE = :ihCodCliente, NUM_ABONADO = :ihNumAbonado, NUM_REGISTROS = :ihNumRegistros 
+	WHERE COD_PROCESO = :ihCodProceso
+	AND  COD_CICLFACT = :ihCodCiclFact;
+
+	return(sqlca.sqlcode);
+}
+
+/*****************************************************************************/
+/* Funcion que revisa el estado de cada uno de los procesos precedentes en   */
+/* la tabla de trazas de facturacion de ciclo (FA_TRAZAPROC), comparandolo   */
+/* con el que deberia tener, de acuerdo a la tabla de precedentes.           */
+/*****************************************************************************/
+int	iValidaTrazaProc (int *iCodRetorno)
+{
+	int	iIndRepro = 0;
+	int	iNum      = 0;
+	int	iEstadoProc, iEstadoProcPrec;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCodProceso;
+	int	ihCodCiclFact;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodCiclFact = stTrazaProcCheck.iCodCiclFact;
+	ihCodProceso  = stTrazaProcCheck.iCodProceso ;
+	
+	/*---------------------------------------------------------------------------*/
+	/* Recuperacion del indicativo de reproceso desde la tabla de procesos de    */
+	/* facturacion de ciclo.                                                     */
+	/*---------------------------------------------------------------------------*/
+	if(iGetIndReproceso(ihCodProceso, &iIndRepro) != SQLOK)
+	{
+		*iCodRetorno = FAIL_GETIND_REPROCESO;
+		return(sqlca.sqlcode);
+	}
+	
+	/*---------------------------------------------------------------------------*/
+	/* Recuperacion de todos los procesos precedentes, es decir, los que deben   */
+	/* haber terminado OK, para que se pueda ejecutar el proceso actual.         */
+	/*---------------------------------------------------------------------------*/
+	if(iGetProcPrecedentes(ihCodProceso) != SQLOK)
+	{
+		*iCodRetorno = FAIL_GETPROC_PREC;
+		return(sqlca.sqlcode);
+	}
+	
+	/*---------------------------------------------------------------------------*/
+	/* Recuperacion del estado registrado en la tabla de trazas, FA_TRAZAPROC,   */
+	/* para cada uno de los procesos precedentes.                                */
+	/*---------------------------------------------------------------------------*/
+	for(iNum=0; iNum < iNumProcPrec; iNum++)
+	{	
+		/*---------------------------------------------------------------------------*/
+		/* Si no se recupera registro, o bien, si hay algun error Oracle en la       */
+		/* recuperacion del registro, o bien, si el estado recuperado es distinto de */
+		/* OK, entonces el proceso actual no puede ser ejecutado.                    */
+		/*---------------------------------------------------------------------------*/
+		if(iGetEstadoProc(ihCodProcPrec[iNum], ihCodCiclFact, &iEstadoProcPrec) != SQLOK)
+		{
+			*iCodRetorno = FAIL_GETESTADO_PROC;
+			return(sqlca.sqlcode);
+		}
+		if(iEstadoProcPrec != iPROC_EST_OK)
+		{
+			*iCodRetorno = FAIL_VALIDA_ESTPROC;
+			return(FAILURE);
+		}
+	}
+	
+	/*---------------------------------------------------------------------------*/
+	/* Se revisa si existe registro para el proceso y ciclo actuales, en la      */
+	/* tabla FA_TRAZAPROC y, en caso de existir, se evalua cual es el estado que */
+	/* se indica.                                                                */
+	/*---------------------------------------------------------------------------*/
+	switch(iGetEstadoProc(ihCodProceso, ihCodCiclFact, &iEstadoProc))
+	{
+		case SQLOK:
+				/*-------------------------------------------------------------------------*/
+				/* Se encontro que ya hay un registro en la tabla FA_TRAZAPROC, para el    */
+				/* proceso y periodo especificados. Por ello, se evalua cual es el estado  */
+				/* indicado por ese registro.                                              */
+				/* No se puede permitir la ejecucion del proceso si ya existe otro que se  */
+				/* encuentre en curso.                                                     */
+				/*-------------------------------------------------------------------------*/
+				if(iEstadoProc == iPROC_EST_RUN)
+				{
+					*iCodRetorno = FAIL_PROC_EJECUCION;
+					return(FAILURE);
+				}
+				/*-------------------------------------------------------------------------*/
+				/* El proceso en particular no admite posibilidad de reproceso.            */
+				/*-------------------------------------------------------------------------*/
+				if(iIndRepro != IND_REPROCESO)
+				{
+					*iCodRetorno = FAIL_PROC_REPROCESO;
+					return(FAILURE);
+				}
+				/*-------------------------------------------------------------------------*/
+				/* El proceso en particular es reprocesable, por lo que se elimina el      */
+				/* registro existente en la traza y se inserta uno nuevo.                  */
+				/*-------------------------------------------------------------------------*/
+				if(iDeleteTrazaProc(ihCodProceso, ihCodCiclFact) != SQLOK)
+				{
+					*iCodRetorno = FAIL_DELETE_TRAZAPROC;
+					return(sqlca.sqlcode);
+				}
+				if(iInsertTrazaProc() != SQLOK)
+				{
+					*iCodRetorno = FAIL_INSERT_TRAZAPROC;
+					return(sqlca.sqlcode);
+				}
+				*iCodRetorno = RET_OK;
+				break;
+				
+		case SQLNOTFOUND:
+				/*---------------------------------------------------------------------------*/
+				/* No se encontro registro en la tabla de trazas, para el proceso actual, de */
+				/* modo que se trata de la primera ejecucion. Entonces, se inserta un nuevo  */
+				/* registro, con los valores contenidos en la estructura global stTrazaProcCheck. */
+				/*---------------------------------------------------------------------------*/
+				if(iInsertTrazaProc() != SQLOK)
+				{
+					*iCodRetorno = FAIL_INSERT_TRAZAPROC;
+					return(sqlca.sqlcode);
+				}
+				*iCodRetorno = RET_OK;
+				break;
+				
+		default:
+				/*---------------------------------------------------------------------------*/
+				/* Se produjo un error Oracle al intentar recuperar registros desde la tabla */
+				/* FA_TRAZAPROC. El proceso debe ser cancelado.                              */
+				/*---------------------------------------------------------------------------*/
+				*iCodRetorno = FAIL_GETESTADO_PROC;
+				return(sqlca.sqlcode);
+	}
+	
+	return(SQLOK);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

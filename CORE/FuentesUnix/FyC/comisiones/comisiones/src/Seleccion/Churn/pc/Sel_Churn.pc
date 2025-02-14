@@ -1,0 +1,488 @@
+/************************************************************************/
+/* Programa encargado de seleccionar y calcular el Churn para cada      */
+/* comisionista.                                                        */ 
+/*----------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                             */
+/* Inicio: Viernes 13 de Diciembre de 2002.                             */
+/* Fin:                                                                 */
+/* Autor : Patricio Gonzalez Gomez.                                     */
+/************************************************************************/
+/* 20030923 Marcelo Quiroz G. Versionado Cuzco.                         */
+/* Se normalizan nombres de funciones y de variables                    */
+/* Se incorpora manejo de lista general de tipos de comisionistas.      */
+/* Se reestructura proceso en funcion de estructura de tipos de         */
+/* comisionistas.                                                       */
+/*                                                                      */
+/************************************************************************/
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de librería para definiciones generales del programa.           */
+/*---------------------------------------------------------------------------*/
+#include "Sel_Churn.h"
+#include "GEN_biblioteca.h"
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+EXEC SQL WHENEVER SQLERROR DO vSqlError();
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+	char    szhUser[30]="";
+	char    szhPass[30]="";
+	char    szhSysDate [17]="";
+	char    szFechaYYYYMMDD[9]="";
+	long    lhCodCiclComis;       
+    char    szhIdCiclComis[11]; 
+EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------*/
+/* Lista de Tipos de Comisionistas para ejecucion de ciclo                   */
+/*---------------------------------------------------------------------------*/
+	stTiposComis * lstTiposComis = NULL;
+/*---------------------------------------------------------------------------*/
+/* Carga la estructura de tipos de comisionistas que serán procesados.       */
+/* en funcion del tipo de ciclo en proceso, se ejecuta librería de carga de  */
+/* tipos de comisionista a procesar.                                         */
+/*---------------------------------------------------------------------------*/
+void vCargaTiposComis()
+{
+    stTiposComis * paux;
+    
+    lstUniverso = NULL;
+    switch(szTipoPeriodo)
+    {
+    	case PERIODICO:
+    			fprintf(stderr,"\n(vCargaTiposComis) EJECUCION EN MODO PERIODICO.\n");
+    			fprintf(pfLog ,"\n(vCargaTiposComis) EJECUCION EN MODO PERIODICO.\n");
+    			lstTiposComis = stGetTipComisSelecPer(UNIVERSO, stCiclo);
+				break;
+    	case ESPORADICO:
+    			fprintf(stderr,"\n(vCargaTiposComis) EJECUCION EN MODO ESPORADICO.\n");
+    			fprintf(pfLog ,"\n(vCargaTiposComis) EJECUCION EN MODO ESPORADICO.\n");
+    			lstTiposComis = stGetTipComisSelecProm(UNIVERSO, stCiclo);
+    			break;
+    }
+	if (lstTiposComis==NULL)
+		fprintf(pfLog, "\n[vCargaTiposComis] No existen Tipos de Comisionistas para procesar.");
+	else
+	{
+		for (paux=lstTiposComis;paux != NULL; paux=paux->sgte)
+        {
+			fprintf(pfLog ,"\n(vCargaTiposComis) Carga las Ventas para TipComis:[%s] [%s].\n",paux->szCodTipComis,paux->szDesTipComis);
+			fprintf(stderr,"\n(vCargaTiposComis) Carga las Ventas para TipComis:[%s] [%s].\n",paux->szCodTipComis,paux->szDesTipComis);
+            vSeleccionarUniverso(paux->iCodTipoRed, paux->szCodTipComis, paux->szCodTipVendedor);
+		}
+/*---------------------------------------------------------------------------*/        
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCalculaChurn) Calculo de Churn\n");
+		fprintf(stderr,"\n(vCalculaChurn) Calculo de Churn\n");
+	    vCalculaChurn();
+/*---------------------------------------------------------------------------*/        
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vMuestraEstructura) Muestra Estructura\n");
+		fprintf(stderr,"\n(vMuestraEstructura) Muestra Estructura\n");
+	    vMuestraEstructura();
+/*---------------------------------------------------------------------------*/        
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vInsertaEvaluaChurn) Evalua e Inserta Churn\n");
+		fprintf(stderr,"\n(vInsertaEvaluaChurn) Evalua e Inserta Churn\n");
+	    vInsertaEvaluaChurn();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+	    fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Libera la memoria utilizada.\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Libera la memoria utilizada.\n");
+		vLiberaUniverso(lstUniverso);
+		vLiberaTiposComis(lstTiposComis);
+	}    
+}	
+/* -------------------------------------------------------------------------------------- */
+/* Se extrae el universo DIRECTO inicial de registros a considerar para Comisiones.       */
+/* -------------------------------------------------------------------------------------- */
+void vSeleccionarUniverso(int piCodTipoRed, char * pszCodTipComis, char * pszCodTipVendedor)
+{
+	stUniverso 	* paux;
+    long       	iCantidad = 0;
+    int         i;      
+    short       iLastRows    = 0;       
+    int         iFetchedRows = MAXFETCH;
+    int         iRetrievRows = MAXFETCH;
+                
+    EXEC SQL BEGIN DECLARE SECTION;         
+         long    lMaxFetch;              
+         char    szhCodTipComis[3];
+         long    lhCodComisionista[MAXFETCH];
+	 	 char	 szhCodTipVendedor[3];
+	 	 int	 ihCodTipoRed;
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhCodTipComis   , pszCodTipComis);
+    strcpy(szhCodTipVendedor, pszCodTipVendedor);
+    ihCodTipoRed			= piCodTipoRed;    
+    lMaxFetch               = MAXFETCH;
+
+    EXEC SQL DECLARE cur_universo CURSOR FOR
+         SELECT  DISTINCT 
+		 		C.COD_VENDEDOR
+         FROM   VE_REDVENTAS_TD    C, 
+				VE_VENDEDORES      B
+         WHERE	C.COD_TIPORED  = :ihCodTipoRed 
+		 AND    C.COD_VENDEDOR = B.COD_VENDEDOR
+         AND	B.COD_TIPCOMIS = :szhCodTipComis;
+        
+    EXEC SQL OPEN cur_universo;
+        
+    while(iFetchedRows == iRetrievRows)
+    {
+          EXEC SQL for :lMaxFetch FETCH cur_universo INTO :lhCodComisionista;
+                        
+          iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+          iLastRows    = sqlca.sqlerrd[2];                
+                
+          for (i=0; i < iRetrievRows; i++)
+          {
+              paux = (stUniverso *) malloc(sizeof(stUniverso));
+              
+              paux->iCodTipoRed     	    = ihCodTipoRed;
+			  strcpy(paux->szCodTipComis    , szhCodTipComis);  
+			  strcpy(paux->szCodTipVendedor , szhCodTipVendedor);            
+              paux->lNumGeneral             = 0;
+              paux->lCodComisionista        = lhCodComisionista[i];
+              paux->dChurn                  = 0.00;
+                        
+              paux->sgte                    = lstUniverso;
+              lstUniverso                   = paux;
+              iCantidad++;
+          }
+    }
+    EXEC SQL CLOSE cur_universo;
+    fprintf(pfLog, "\n [vSeleccionarUniverso] Cantidad de Registros :[%ld].\n", iCantidad);
+        
+}
+/* -------------------------------------------------------------------------------------- */
+/* Calculo de CHURN                                                                       */
+/* -------------------------------------------------------------------------------------- */
+void vCalculaChurn ()
+{      
+    stUniverso  * paux; 	 
+    double      dPaso;
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+         char    szhCodTipComis[3];
+         long    lhCantAltas;
+         long    lhCodComisionista;
+         long    lhCantBajas;
+         char	 szhCodTipVendedor[3];     
+    EXEC SQL END DECLARE SECTION;
+
+    for(paux = lstUniverso; paux != NULL; paux = paux->sgte)  
+    {         
+       strcpy(szhCodTipComis   , paux->szCodTipComis);                
+       lhCodComisionista       = paux->lCodComisionista;
+       strcpy(szhCodTipVendedor, paux->szCodTipVendedor);
+       
+       EXEC SQL SELECT COUNT(NUM_GENERAL) 
+       INTO  :lhCantAltas
+       FROM  CMT_HABIL_CELULAR 
+       WHERE COD_COMISIONISTA 	= :lhCodComisionista
+       AND   COD_TIPCOMIS     	= :szhCodTipComis
+       AND   COD_TIPVENDEDOR	= :szhCodTipVendedor
+       AND   ID_PERIODO       	= :szhIdCiclComis;
+                        
+       EXEC SQL SELECT COUNT(NUM_GENERAL)
+       INTO  :lhCantBajas
+       FROM  CMT_BAJAS_CELULAR
+       WHERE COD_COMISIONISTA 	= :lhCodComisionista
+       AND   COD_TIPCOMIS     	= :szhCodTipComis
+       AND   COD_TIPVENDEDOR	= :szhCodTipVendedor
+       AND   ID_PERIODO       	= :szhIdCiclComis;
+                        
+       dPaso = ((double)lhCantAltas - (double)lhCantBajas) / 2;
+                
+       if (lhCantBajas == 0 || dPaso == 0)
+       {
+           paux->lCantAltas = lhCantAltas;
+           paux->lCantBajas = lhCantBajas;
+           paux->dChurn     = 0 ;               
+       }
+       else                               
+       {
+           paux->lCantAltas = lhCantAltas;
+           paux->lCantBajas = lhCantBajas;
+           paux->dChurn     = (double)(lhCantBajas) / dPaso;
+       }                       
+    }                
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Muestra Estructura                                                                     */
+/* -------------------------------------------------------------------------------------- */
+void vMuestraEstructura()
+{
+    stUniverso  * paux; 	 
+        
+    for(paux = lstUniverso; paux != NULL; paux = paux->sgte)  
+    {
+        fprintf (pfLog, "-----Principal-----------------------------------\n");
+        fprintf (pfLog, "paux->szCodTipComis      [%s] \n",  paux->szCodTipComis );
+        fprintf (pfLog, "paux->lCodComisionista   [%ld]\n",  paux->lCodComisionista ); 
+        fprintf (pfLog, "paux->szCodTipVendedor   [%s]\n",   paux->szCodTipVendedor); 
+        fprintf (pfLog, "paux->dChurn             [%5.3f]\n",paux->dChurn);
+    }
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Evalua e Inserta Churn                                                                 */
+/* -------------------------------------------------------------------------------------- */
+void vInsertaEvaluaChurn ()
+{
+    stUniverso  * paux   ; 	 
+    long        lCantidad;
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+         char    szhCodTipComis[3];
+         long    lhCodComisionista;
+         long    lhNumAltas;
+         long    lhNumBajas;
+         double  dhNumChurn;
+         long    lhNumSecuencia;
+	 	 char	 szhCodTipVendedor[3];
+	 	 int	 ihCodTipoRed;         
+    EXEC SQL END DECLARE SECTION;        
+        
+    for(paux = lstUniverso; paux != NULL; paux = paux->sgte)  
+    {
+       strcpy(szhCodTipComis   , paux->szCodTipComis);             
+       lhCodComisionista       = paux->lCodComisionista;
+       lhNumAltas              = paux->lCantAltas;      
+       lhNumBajas              = paux->lCantBajas;      
+       dhNumChurn              = paux->dChurn;
+       ihCodTipoRed            = paux->iCodTipoRed;
+	   strcpy(szhCodTipVendedor, paux->szCodTipVendedor);            
+                 
+       EXEC SQL SELECT CMS_REG_SELECCION.NEXTVAL INTO :lhNumSecuencia FROM DUAL;
+       lCantidad++;
+                                                
+       EXEC SQL INSERT INTO CM_EVALUA_CHURN_TO (
+              NUM_GENERAL    , COD_TIPCOMIS , COD_COMISIONISTA, 
+              COD_CICLCOMIS  , ID_CICLCOMIS , NUM_ALTAS       , 
+              NUM_BAJAS      , NUM_CHURN    , COD_TIPORED     , 
+              COD_TIPVENDEDOR, COD_VENDEDOR) 
+       VALUES (
+              :lhNumSecuencia   , :szhCodTipComis, :lhCodComisionista, 
+              :lhCodCiclComis   , :szhIdCiclComis, :lhNumAltas       , 
+              :lhNumBajas       , :dhNumChurn    , :ihCodTipoRed     ,
+              :szhCodTipVendedor, :lhCodComisionista);   
+    }
+    stStatusProc.lCantRegistros = lCantidad;
+    fprintf(stderr,"\n[vInsertaSeleccion] Cantidad de Registros Insertados:[%d].\n",lCantidad);
+    fprintf(pfLog ,"\n[vInsertaSeleccion] Cantidad de Registros Insertados:[%d].\n",lCantidad);
+}
+
+/*****************************************************************************/
+/* Rutina que devuelve la memoria utilizada por las listas de abonados.      */
+/*****************************************************************************/
+void vLiberaUniverso(stUniverso * paux)
+{
+        if (paux == NULL)
+                return;
+        vLiberaUniverso(paux->sgte);
+        free(paux);
+}
+
+/*---------------------------------------------------------------------------*/
+/* Rutina principal.                                                         */
+/*---------------------------------------------------------------------------*/
+int main (int argc, char *argv[])
+{        
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+	long  lSegIni, lSegFin;         
+	short ibiblio;                  
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+	lSegIni=lGetTimer();        
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+    memset(&stCiclo, 0, sizeof(reg_ciclo));       
+    memset(&stStatusProc, 0, sizeof(rg_estadistica));
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+    memset(&stArgs, 0, sizeof(rg_argumentos));
+    vManejaArgs(argc, argv); 
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/	
+	strcpy(szhUser, stArgs.szUser);                                                      
+	strcpy(szhPass, stArgs.szPass);                                                    
+
+	if(fnOraConnect(szhUser, szhPass) == FALSE)                                          
+	{                                                                                  
+	        fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+	        exit(EXIT_205);                                                            
+	}                                                                                  
+	else                                                                               
+	{                                                                                  
+	        fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");     
+	        fprintf(stderr, "Username: %s\n\n", szhUser);                              
+	}
+/*---------------------------------------------------------------------------*/
+/* Inicializacion estructura de Bloque(proceso).                             */
+/*---------------------------------------------------------------------------*/
+    vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);
+    ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);                                    
+    if (ibiblio)                                                                               
+    {                                                                                          
+       fprintf(stderr, "Error al Abrir Traza");                                           
+       fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);            
+       exit(ibiblio);                                                                     
+    }                                                                                          
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+    if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+    {                                                  
+       setlocale(LC_TIME, LC_TIME_SPANISH);       
+    }                                                  
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n"); 
+    if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)                                               
+    {                                                                                                                  
+       exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));
+    }                                                                                                                  
+  
+    fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);                                         
+/*---------------------------------------------------------------------------*/
+/* Generacion del nombre y creacion del archivo de log.                      */
+/*---------------------------------------------------------------------------*/
+	strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+        strncpy(szhSysDate, pszGetDateLog(),16);                                                          
+	strcpy(stArgsLog.szProceso,LOGNAME);                                                                     
+	strncpy(stArgsLog.szSysDate,szhSysDate,16);                                                                 
+	sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);                       
+	                                                                                                         
+	if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)                                                          
+	{                                                                                                        
+	    fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", szLogName);                                 
+	    fprintf(stderr, "Revise su existencia.\n");                                                          
+	    fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                
+	    fprintf(stderr, "Proceso finalizado con error.\n");                                                  
+	}                                                                                                               
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                               
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    
+    fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+
+    fprintf(pfLog, "Identificador de Proceso		<%s>\n", stArgs.szProceso);
+    fprintf(pfLog, "Identificador de Bloque			<%s>\n", stArgs.szBloque);
+    fprintf(pfLog, "Secuencia de Ejecucion			<%d>\n", stArgs.izSecuencia);
+
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+    EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';      
+/*---------------------------------------------------------------------------*/
+/* CARGA ESTRUCTURA CICLOS DE PROCESO                                        */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog,  "Carga estructura de ciclo de proceso...\n\n");       
+    fprintf(stderr, "Carga estructura de ciclo de proceso...\n\n");       
+    if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    {
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	exit(EXIT_101);
+    }
+    szTipoPeriodo         = stCiclo.cTipCiclComis;
+    lhCodCiclComis 	      = stCiclo.lCodCiclComis;
+	strcpy(szhIdCiclComis , stCiclo.szIdCiclComis);
+/*---------------------------------------------------------------------------*/
+/* CARGA TIPOS DE COMISIONISTAS                                              */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog,  "Carga tipos de comisionistas a procesar...\n\n");       
+    fprintf(stderr, "Carga tipos de comisionistas a procesar...\n\n");       
+	vCargaTiposComis();
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+    lSegFin=lGetTimer();                         
+    stStatusProc.lSegProceso = lSegFin - lSegIni;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+	fprintf(pfLog, "Estadistica del proceso\n");
+	fprintf(pfLog, "------------------------\n");
+	fprintf(pfLog, "Registros Finales Procesados   : [%d]\n", stStatusProc.lCantRegistros);
+	fprintf(pfLog, "Segundos Reales Utilizados     : [%d]\n\n", stStatusProc.lSegProceso);
+
+	fprintf(stderr, "Estadistica del proceso\n");
+	fprintf(stderr, "------------------------\n");
+	fprintf(stderr, "Registros Finales Procesados   : [%d]\n", stStatusProc.lCantRegistros);
+	fprintf(stderr, "Segundos Reales Utilizados     : [%d]\n\n", stStatusProc.lSegProceso);
+
+/*---------------------------------------------------------------------------*/
+	ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,EXIT_0,"",stStatusProc.lSegProceso,stStatusProc.lCantRegistros);
+	if (ibiblio)
+	        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));
+	EXEC SQL COMMIT WORK RELEASE;
+	
+	vFechaHora();
+	fprintf(stderr, "Programa [%s] finalizado ok.\n", basename(argv[0]));
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+	fprintf(pfLog, "Proceso [%s] finalizado ok.\n", basename(argv[0]));
+	fclose(pfLog);
+	return(EXIT_0);
+}
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

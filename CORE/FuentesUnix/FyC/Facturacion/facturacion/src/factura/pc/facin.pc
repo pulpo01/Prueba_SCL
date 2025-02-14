@@ -1,0 +1,1019 @@
+/* ********************************************************************** */
+/* *  Fichero : facinffac01.pc                                              * */
+/* *  Reporte de "Movimientos de facturacion"                           * */
+/* *  Autor : Ignacio Fuentealba S.                                     * */
+/* *  Comentarios : Es un listador                                      * */
+/* ********************************************************************** */
+
+#define _FACINFFAC01_PC_
+
+#include "facinffac01.h"
+/* #include <time.h>  */
+
+EXEC SQL INCLUDE sqlca;
+
+BOOL bfnCopiaFilasCel(const long lhTipoDocumen, long lhCodCiclFact);
+
+EXEC SQL BEGIN DECLARE SECTION ;
+
+char QueParam  [1];
+
+long lhCodCiclo;
+long lhCodCiclFact;
+long lhCiclParam;
+
+long SupertParam;
+long lhFechaF1;
+long lhFechaFact1;
+long lhFechaParam1;
+long FechaPxx1;
+long FechaPxx2;
+char fecha1[10];			EXEC SQL VAR fecha1                     IS STRING(10);
+char fecha2[10];			EXEC SQL VAR fecha2                     IS STRING(10);
+char fechap1[11];			EXEC SQL VAR fechap1                    IS STRING(11);
+char fechap11[11];			EXEC SQL VAR fechap11                   IS STRING(11);
+char fechap2[11];			EXEC SQL VAR fechap2                    IS STRING(11);
+char supertelefono[17];			EXEC SQL VAR supertelefono              IS STRING(17);
+
+long lhFechaF2;
+long lhFechaFact2;
+long lhFechaParam2;
+
+long lhTipoDoc;
+long lhTipoDocumen;
+long lhTipoDParam;
+long TipoParam;
+
+char fecha[15];                         EXEC SQL VAR fecha			IS STRING(15);
+char hora[15];                          EXEC SQL VAR hora			IS STRING(15);
+char ind_tiempo[8];                    EXEC SQL VAR ind_tiempo			IS STRING(8);
+int hora11, hora12, hora13;
+int hora21, hora22, hora23;
+int hora31, hora32, hora33;
+
+int conc_cod_tipconce;
+int conc_cod_concepto;
+int fact_cod_concepto;
+int fact_cod_concepto_ant;
+int clie_ind_ordentotal;
+char newf_clie_ind_ordentotal[27];	EXEC SQL VAR newf_clie_ind_ordentotal   IS STRING(27);
+char conc_des_concepto[62];		EXEC SQL VAR conc_des_concepto          IS STRING(62);
+char fact_des_concepto[62];		EXEC SQL VAR conc_des_concepto          IS STRING(62);
+int fact_seg_consumido;
+int factseg[3];
+int factseg60;
+int fact_ind_factur;
+int fact_ind_supertel;
+char newf_factseg60[27];		EXEC SQL VAR newf_factseg60		IS STRING(27);
+int factseg_impuesto[3];
+int abo1_ind_ordentotal;
+char newf_abo1_ind_ordentotal[27];	EXEC SQL VAR newf_abo1_ind_ordentotal   IS STRING(27);
+int abo2_ind_ordentotal;
+char newf_abo2_ind_ordentotal[27];	EXEC SQL VAR newf_abo2_ind_ordentotal   IS STRING(27);
+
+int facd_cod_tipdocum, facd_ind_supertel, facd_cod_ciclfact, facd_ind_ordentotal, facd_cod_cliente ;
+
+double fact_imp_facturable;
+double factimp[3];
+char newf_factimp[27];			EXEC SQL VAR newf_factimp               IS STRING(27);
+char newf_factimp_impuesto[27]	;	EXEC SQL VAR newf_factimp_impuesto	IS STRING(27);
+double factimp_impuesto[3];
+double factimp_siva;
+double factimp_total_siva[3];
+double factimp_total;
+char newf_factimp_total_siva[27];	EXEC SQL VAR newf_factimp_total_siva    IS STRING(27);
+char newf_factimp_total[27];		EXEC SQL VAR newf_factimp_total         IS STRING(27);
+char tipo_mov[23];			EXEC SQL VAR tipo_mov                   IS STRING(23);
+
+
+short	i_facd_cod_tipdocum;
+short	i_facd_ind_supertel;
+short	i_facd_cod_ciclfact;
+short	i_facd_ind_ordentotal;
+short	i_facd_cod_cliente;
+
+EXEC SQL END DECLARE SECTION ;
+
+
+int pagina;
+int num_linea;
+int hay_datos;
+int iii;
+int i;
+int sw, sw7, sw8, sw9;
+
+void ini_arreglo();
+void acumuladores();
+void fecha_hora();
+void cabeza(); 
+void imprima_detalle(); 
+void imprima_impuesto(); 
+void imprima_total_sin_iva(); 
+void imprima_total(); 
+void total_clientes(); 
+void carga(); 
+void fallo_facd(); 
+void carga_histd_ciclica();
+void carga_histd_no_ciclica();
+void carga_factdocu();
+BOOL informe(); 
+BOOL abonados(); 
+BOOL hacer_fetch() ;
+BOOL fetch_concepto() ;
+BOOL cuerpo(char* lQueDato,long lTipoDocumen,long lCodCiclFact,long lCodCiclFact1,long lCodCiclFact2);
+
+void ini_arreglo()
+{
+	for(i=1;i<3;++i)
+	{
+		factimp_impuesto[i]	= 0;
+		factseg_impuesto[i]	= 0;
+		factseg[i]		= 0;
+		factimp[i]		= 0;
+		factimp_total_siva[i]	= 0;
+	}
+}
+
+void cabeza()
+{
+	fecha_hora();
+	pagina ++;
+	fprintf(stReporteFacinffac01.ReporteFile,"\n\f");
+	fprintf(stReporteFacinffac01.ReporteFile,"CTC STARTEL                      MOVIMIENTO %21s                             Pagina: %-9d\n", tipo_mov, pagina);
+	fprintf(stReporteFacinffac01.ReporteFile,"FACINFACT01                                                                                     Fecha : %9s\n",fecha);
+	fprintf(stReporteFacinffac01.ReporteFile,"TIPO DOCUMENTO : %d                                                                              Hora  : %-9s\n", TipoParam, hora);
+	if ( lhFechaParam1 == 0 || lhFechaParam2 == 0 )
+	fprintf(stReporteFacinffac01.ReporteFile,"PERIODO : %d\n\n", lhCiclParam);
+	else
+	fprintf(stReporteFacinffac01.ReporteFile,"PERIODO :%12s  al%12s\n\n", fechap1,fechap2);
+	fprintf(stReporteFacinffac01.ReporteFile,"------------------------------------------------------------------------------------------------------------------\n");
+	fprintf(stReporteFacinffac01.ReporteFile,"    Codigo     Nombre del Concepto                                              Minutos                      Monto\n");
+	fprintf(stReporteFacinffac01.ReporteFile,"------------------------------------------------------------------------------------------------------------------\n");
+	num_linea = 10;
+}
+
+void fecha_hora()
+{
+	EXEC SQL
+		SELECT to_char(sysdate,'dd/mm/yyyy'), 
+		to_char(sysdate,'hh24:mm:ss')
+		INTO :fecha, :hora
+		FROM dual;
+
+	EXEC SQL
+		SELECT lpad(:lhFechaParam1,8,'0'), lpad(:lhFechaParam2,8,'0')
+		INTO :fecha1, :fecha2
+		FROM dual;
+
+	EXEC SQL
+		SELECT
+		to_char(to_date(:fecha1,'ddmmyyyy'),'dd/mm/yyyyy'),
+		to_char(to_date(:fecha2,'ddmmyyyy'),'dd/mm/yyyy')
+		INTO :fechap1, :fechap2
+		FROM dual;
+}
+
+BOOL  cuerpo(char* lQueDato,long lTipoDocumen,long lCodCiclFact,long lCodCiclFact1,long lCodCiclFact2)
+{
+	system("clear");
+	strcpy(QueParam,lQueDato);
+	TipoParam       = lTipoDocumen;
+	lhCiclParam     = lCodCiclFact;
+	lhFechaParam1   = lCodCiclFact1;
+	lhFechaParam2   = lCodCiclFact2;
+	FechaPxx1   = lCodCiclFact1;
+	FechaPxx2   = lCodCiclFact2;
+
+	EXEC SQL
+		SELECT to_number(to_char(sysdate,'hh24')),to_number(to_char(sysdate,'mi')),to_number(to_char(sysdate,'ss'))
+		INTO :hora11,:hora12,:hora13
+		FROM dual;
+
+	EXEC SQL
+		SELECT lpad(:lhFechaParam1,8,'0')
+		INTO :fecha1
+		FROM dual;
+
+	EXEC SQL
+		SELECT lpad(:lhFechaParam2,8,'0')
+		INTO :fecha2
+		FROM dual;
+
+	if ((!strcmp(QueParam,"Cc" )) || (!strcmp(QueParam,"Ch" )))
+	{
+		carga();
+	}
+	if (!strcmp(QueParam,"Is"))
+	{
+		SupertParam = 1;
+		informe();
+	}
+	else
+	if (!strcmp(QueParam,"In"))
+	{
+		SupertParam = 0;
+		informe();
+	}
+}
+
+BOOL informe()
+{
+	printf ("\nInforme   ");
+	printf ("\n");
+
+	if ( TipoParam == 2 || TipoParam == 23 )
+		if (lhCiclParam == 0)
+		{
+			printf ("Error en el Ciclo\n");
+			printf ("lhCiclParam  : %d\n", lhCiclParam);
+		}
+		else
+		{
+			lhCodCiclFact    = lhCiclParam ;
+			lhCodCiclo       = 0           ;
+		}
+	else
+		if (lhCiclParam != 0 )
+		{
+			printf ("Error Tipo de Documento incomptable con Ciclo\n");
+			printf ("lhCiclParam  : %d\n", lhCiclParam);
+		}
+		else
+		if ( lhFechaParam1 == 0 || lhFechaParam2 == 0 )
+		{
+			printf ("Error no debe tener Fecha\n");
+		}
+		else
+		{
+			lhFechaFact1      = lhFechaParam1;
+			lhFechaF1         = 0           ;
+			lhFechaFact2      = lhFechaParam2;
+			lhFechaF2         = 0           ;
+		}
+
+		lhTipoDParam  = TipoParam;
+		if (lhTipoDParam == 0)
+		{
+			printf ("Error en el Tipo de Documento\n");
+			printf ("lhTipoDParam : %d\n", lhTipoDParam);
+		}
+		else
+		{
+			lhTipoDocumen    = lhTipoDParam ;
+			lhTipoDoc        = 0            ;
+		}
+	if ( TipoParam == 2 )
+	{
+
+		EXEC SQL DECLARE c_fact CURSOR FOR
+		SELECT * 
+		from (
+			SELECT	cod_concepto
+			,       des_concepto
+			,       sum(cel0.seg_consumido)
+			,       sum(cel0.imp_facturable)
+			,       cel0.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factcelu0 cel0, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = cel0.ind_ordentotal
+			GROUP BY
+				cel0.cod_concepto
+			,       cel0.des_concepto
+			,       cel0.ind_factur
+			,       xpfa.ind_supertel
+			union all
+			SELECT  cod_concepto
+			,       des_concepto
+			,       sum(cel1.seg_consumido)
+			,       sum(cel1.imp_facturable)
+			,       cel1.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factcelu1 cel1, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = cel1.ind_ordentotal
+			GROUP BY
+				cel1.cod_concepto
+			,       cel1.des_concepto
+			,       cel1.ind_factur
+			,       xpfa.ind_supertel
+			union all              
+			SELECT  cod_concepto
+			,       des_concepto
+			,       sum(cel2.seg_consumido)
+			,       sum(cel2.imp_facturable)
+			,       cel2.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factcelu2 cel2, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = cel2.ind_ordentotal
+			GROUP BY
+				cel2.cod_concepto
+			,       cel2.des_concepto
+			,       cel2.ind_factur
+			,       xpfa.ind_supertel
+			union all
+			SELECT  cod_concepto
+			,       des_concepto
+			,       sum(cel3.seg_consumido)
+			,       sum(cel3.imp_facturable)
+			,       cel3.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factcelu3 cel3, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = cel3.ind_ordentotal
+			GROUP BY
+				cel3.cod_concepto
+			,       cel3.des_concepto
+			,       cel3.ind_factur
+			,       xpfa.ind_supertel
+			union all 
+			SELECT  cod_concepto
+			,       des_concepto
+			,       sum(cel4.seg_consumido)
+			,       sum(cel4.imp_facturable)
+			,       cel4.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factcelu4 cel4, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = cel4.ind_ordentotal
+			GROUP BY
+				cel4.cod_concepto
+			,       cel4.des_concepto
+			,       cel4.ind_factur
+			,       xpfa.ind_supertel
+			union all
+			SELECT  cod_concepto
+			,       des_concepto
+			,       0
+			,       sum(bee0.imp_facturable)
+			,       bee0.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factbeep0 bee0, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = bee0.ind_ordentotal
+			GROUP BY
+				bee0.cod_concepto
+			,       bee0.des_concepto
+			,       bee0.ind_factur
+			,       xpfa.ind_supertel
+			union all
+			SELECT  cod_concepto
+			,       des_concepto
+			,       0
+			,       sum(bee1.imp_facturable)
+			,       bee1.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factbeep1 bee1, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = bee1.ind_ordentotal
+			GROUP BY
+				bee1.cod_concepto
+			,       bee1.des_concepto
+			,       bee1.ind_factur
+			,       xpfa.ind_supertel
+			union all
+			SELECT  cod_concepto
+			,       des_concepto
+			,       0
+			,       sum(gene.imp_facturable)
+			,       gene.ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_factgene gene, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.ind_ordentotal     = gene.ind_ordentotal
+			GROUP BY
+				gene.cod_concepto
+			,       gene.des_concepto
+			,       gene.ind_factur
+			,       xpfa.ind_supertel)
+			ORDER BY 
+			        5
+			,       6
+			,	1;
+			printf("Paso c_fact \n");
+	}
+	else
+	{
+		EXEC SQL DECLARE c_fach CURSOR FOR
+			SELECT  * from (
+			SELECT  cod_concepto
+			,       des_concepto
+			,       sum(hcce.seg_consumido)
+			,       sum(hcce.imp_facturable)
+			,       ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_histconccelu hcce, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.ind_ordentotal     = hcce.ind_ordentotal
+			GROUP BY
+			hcce.cod_concepto
+			,       hcce.des_concepto
+			union all
+			SELECT  cod_concepto
+			,       des_concepto
+			,       sum(hcbe.seg_consumido)
+			,       sum(hcbe.imp_facturable)
+			,       ind_factur
+			,       xpfa.ind_supertel
+			FROM    fa_histconcbeep hcbe, XPF_INFFACTCONC xpfa
+			WHERE   xpfa.cod_tipdocum       = :lhTipoDocumen
+			AND     xpfa.cod_ciclfact       = :lhCodCiclFact
+			AND     xpfa.ind_ordentotal     = hcbe.ind_ordentotal
+			GROUP BY
+				hcbe.cod_concepto
+			,       hcbe.des_concepto)
+			ORDER BY 
+			        ind_factur
+			,       xpfa.ind_supertel
+			,	cod_concepto;
+			printf("Paso c_hist \n");
+	}
+
+	if ( TipoParam == 2 )
+			EXEC SQL OPEN c_fact;
+		else
+			EXEC SQL OPEN c_fach;
+
+		if(SQLCODE == SQLNOTFOUND)
+		{
+			return (FALSE);
+		}
+		if(SQLCODE != SQLOK)
+		{
+			printf("Error en el Cursor c_fact o c_fach\n");
+			printf("SQLCODE :%d\n", SQLCODE);
+			return (FALSE);
+		}
+
+		hay_datos = hacer_fetch() ;
+		sw7 = 0;
+		sw8 = 0;
+		sw9 = 0;
+
+		while ( hay_datos )
+		{
+			fact_cod_concepto_ant = fact_cod_concepto;
+			while(( fact_cod_concepto_ant == fact_cod_concepto ) &&  hay_datos )
+			{
+				if ( fact_ind_factur == 0 && fact_ind_supertel == 0 )
+				{
+					i = 1;
+					sw = 1;
+					acumuladores();
+				}
+				if ( fact_ind_factur == 1 && fact_ind_supertel == 0 )
+				{
+					i = 2;
+					sw = 2;
+					acumuladores();
+				}
+				if ( fact_ind_supertel == 1 )
+				{
+					i = 3;
+					sw = 3;
+					acumuladores();
+				}
+
+					fetch_concepto();
+
+					if (num_linea > 61)
+						cabeza();
+
+					hay_datos = hacer_fetch() ;
+			}
+				fetch_concepto();
+				if  ( sw == 1  && sw7 == 0)
+				{
+					strcpy(tipo_mov,"FACTURADO NO EMITIDOS");
+					cabeza();
+					sw7 = 7;
+				}
+				if  ( sw == 2  && sw8 == 0)
+				{
+					strcpy(tipo_mov,"FACTURADO EMITIDOS   ");
+					cabeza();
+					sw8 = 8;
+				}
+				if  ( sw == 3  && sw9 == 0)
+				{
+					strcpy(tipo_mov,"SUPER TELEFONO       ");
+					cabeza();
+					sw9 = 9;
+				}
+
+				imprima_detalle();
+				factseg[i] = 0;
+				factimp[i] = 0;
+		}
+				imprima_total_sin_iva();
+				imprima_impuesto();
+				imprima_total();
+				abonados();
+				total_clientes();
+		EXEC SQL CLOSE c_fact;
+}
+
+void acumuladores()
+{
+		if (conc_cod_tipconce == 1)
+		{
+			factimp_impuesto[i] += fact_imp_facturable;
+			factseg_impuesto[i] += fact_seg_consumido;
+		}
+		else
+		{
+			factseg[i]          += fact_seg_consumido;
+			factimp[i]          += fact_imp_facturable;
+			factimp_total_siva[i] += fact_imp_facturable;
+		}
+		factimp_total += fact_imp_facturable;
+}
+
+BOOL hacer_fetch()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND GOTO no_mas;
+	if ( TipoParam == 2 )
+	{
+		EXEC SQL FETCH  c_fact
+
+		INTO    :fact_cod_concepto
+		,       :fact_des_concepto
+		,       :fact_seg_consumido
+		,       :fact_imp_facturable
+		,       :fact_ind_factur
+		,       :fact_ind_supertel;
+	}
+	else
+	{
+		EXEC SQL FETCH  c_fach
+		INTO    :fact_cod_concepto
+		,       :fact_des_concepto
+		,       :fact_seg_consumido
+		,       :fact_imp_facturable
+		,       :fact_ind_factur
+		,       :fact_imp_facturable;
+	}
+		return( TRUE );
+	no_mas:
+		return( FALSE );
+}
+
+BOOL fetch_concepto()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND GOTO sin_conc ;
+
+	EXEC SQL DECLARE c_conc CURSOR FOR
+		SELECT  conc.cod_tipconce
+		,       conc.cod_concepto
+		,       substr(conc.des_concepto,1,45)
+		FROM    fa_conceptos conc
+		WHERE   conc.cod_concepto = :fact_cod_concepto_ant;
+
+	EXEC SQL OPEN c_conc;
+
+	EXEC SQL
+		WHENEVER NOT FOUND GOTO sin_conc ;
+	EXEC SQL
+		FETCH   c_conc
+		INTO    :conc_cod_tipconce
+		,       :conc_cod_concepto
+		,       :conc_des_concepto;
+
+	EXEC SQL
+		CLOSE   c_conc ;
+
+		return ( TRUE ) ;
+	sin_conc:
+		return ( FALSE ) ;
+}
+
+void imprima_detalle()
+{
+	if (conc_cod_tipconce != 1)
+	{
+		factseg60 = (factseg[i]/60);
+		EXEC SQL
+			WHENEVER NOT FOUND CONTINUE;
+		EXEC SQL
+			SELECT TO_CHAR(:factseg60,'9999999,999,999'),TO_CHAR(:factimp[i],'$9999999,999,999,999,999')
+			INTO :newf_factseg60,:newf_factimp 
+			FROM dual;
+
+		num_linea++;
+		fprintf(stReporteFacinffac01.ReporteFile,"      %4d     %-45s   %24s  %24s\n", conc_cod_concepto, conc_des_concepto, newf_factseg60, newf_factimp);
+	}
+}
+
+void imprima_total_sin_iva()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL
+		SELECT TO_CHAR(:factimp_total_siva[i],'$99999999,999,999,999,999') 
+		INTO :newf_factimp_total_siva
+		FROM dual;
+	num_linea++;
+	fprintf(stReporteFacinffac01.ReporteFile,"                                                                                                ------------------\n");
+	fprintf(stReporteFacinffac01.ReporteFile,"          TOTAL  NETO                                                                   %24s\n", newf_factimp_total_siva);
+}
+
+void imprima_impuesto()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL
+		SELECT TO_CHAR(:factimp_impuesto[i],'$999999,999,999,999,999')
+		INTO :newf_factimp_impuesto
+		FROM dual;
+	num_linea++;
+	fprintf(stReporteFacinffac01.ReporteFile,"\n          TOTAL  I. V. A.                                                                 %24s\n", newf_factimp_impuesto);
+}
+
+void imprima_total()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL
+		SELECT TO_CHAR(:factimp_total,'$9999999,999,999,999,999') 
+		INTO :newf_factimp_total
+		FROM dual;
+	num_linea++;
+	fprintf(stReporteFacinffac01.ReporteFile,"                                                                                                ------------------\n");
+	fprintf(stReporteFacinffac01.ReporteFile,"          TOTAL                                                                          %24s\n", newf_factimp_total);
+}
+
+void total_clientes()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+
+	EXEC SQL SELECT  distinct count(*) ind_ordentotal
+		INTO    :clie_ind_ordentotal
+		FROM    xpf_inffactconc;
+
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL
+		SELECT TO_CHAR(:clie_ind_ordentotal,'999,999,999,999,999') 
+		INTO :newf_clie_ind_ordentotal
+		FROM dual;
+
+	num_linea++;
+	num_linea++;
+	if (!strcmp(QueParam,"Is"))
+		strcpy(supertelefono,"SUPERTELEFONO");
+	else
+		strcpy(supertelefono,"             ");
+	fprintf(stReporteFacinffac01.ReporteFile,"\n          TOTAL CLIENTES %15s                      %24s\n", supertelefono, newf_clie_ind_ordentotal);
+	EXEC SQL
+		SELECT to_number(to_char(sysdate,'hh24')),to_number(to_char(sysdate,'mi')),to_number(to_char(sysdate,'ss'))
+		INTO :hora21,:hora22,:hora23
+		FROM dual;
+
+
+		if ( hora23 < hora13 )
+		{
+			hora23 = hora23 + 60;
+			hora22 = hora22 - 1;
+		}
+
+		if ( hora22 < hora12 )
+		{
+			hora22 = hora22 + 60;
+			hora21 = hora21 - 1;
+		}
+
+		hora31 = hora21 - hora11;
+		hora32 = hora22 - hora12;
+		hora33 = hora23 - hora13;
+			
+/*	time_t  horainicio;
+	horainicio = time(0);
+	printf ("%0.0lf",difftime(time(0),horainicio));  */
+
+	fprintf(stReporteFacinffac01.ReporteFile,"\n          TIEMPO DE EJECUCION        %d:%d:%d ", hora31, hora32, hora33);
+
+	fprintf(stReporteFacinffac01.ReporteFile,"\n        --------------------------------------------------------------------------------");
+}
+
+BOOL abonados()
+{
+	EXEC SQL WHENEVER SQLERROR DO error_ora() ;
+	EXEC SQL SELECT  distinct count(*) ind_ordentotal
+	
+		INTO    :abo1_ind_ordentotal
+		FROM    fa_factabocelu faac, XPF_INFFACTCONC xpfa
+		WHERE   xpfa.cod_ciclfact   = :lhCodCiclFact
+		AND     xpfa.cod_tipdocum   = :lhTipoDocumen
+		AND     xpfa.ind_ordentotal = faac.ind_ordentotal;
+
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL
+		SELECT TO_CHAR(:abo1_ind_ordentotal,'999,999,999,999,999') 
+		INTO :newf_abo1_ind_ordentotal
+		FROM dual;
+
+	num_linea++;
+	num_linea++;
+	fprintf(stReporteFacinffac01.ReporteFile,"\n        --------------------------------------------------------------------------------");
+	fprintf(stReporteFacinffac01.ReporteFile,"\n          TOTAL  CELULAR                                      %24s\n", newf_abo1_ind_ordentotal);
+
+	EXEC SQL WHENEVER SQLERROR DO error_ora() ;
+	EXEC SQL SELECT  distinct count(*) ind_ordentotal
+		INTO    :abo2_ind_ordentotal
+		FROM    fa_factabobeep faab, XPF_INFFACTCONC xpfa
+		WHERE   xpfa.cod_ciclfact   = :lhCodCiclFact
+		AND     xpfa.cod_tipdocum   = :lhTipoDocumen
+		AND     xpfa.ind_ordentotal = faab.ind_ordentotal;
+
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE;
+	EXEC SQL
+		SELECT TO_CHAR(:abo2_ind_ordentotal,'999,999,999,999,999') 
+		INTO :newf_abo2_ind_ordentotal
+		FROM dual;
+
+	num_linea++;
+	fprintf(stReporteFacinffac01.ReporteFile,"\n          TOTAL  BEEPER                                       %24s\n", newf_abo2_ind_ordentotal);
+}
+
+error_ora()
+{
+	printf ("Error ORACLE Codigo : %d\n", sqlca.sqlcode);
+	getchar();
+}
+
+void carga()
+{
+	printf ("\nCarga    ");
+	if (!strcmp(QueParam,"Cc" ))
+	{
+		carga_factdocu();
+	}
+	else
+	if (!strcmp(QueParam,"Ch" ))
+	{
+		if ( lhCiclParam != 0 && ( lhFechaParam1 == 0 || lhFechaParam2 == 0))
+		{	
+			printf ("Factura Historica Ciclica : \n");
+			carga_histd_ciclica();
+		}
+		else
+		if ( lhCiclParam == 0 && ( lhFechaParam1 != 0 && lhFechaParam2 != 0))
+		{
+			printf ("Factura Historia no Ciclica : \n");
+			carga_histd_no_ciclica();
+		}
+	}
+}
+
+void carga_factdocu()
+{
+	printf ("Facturas de documentos \n");
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE ;
+	EXEC SQL DECLARE c_facd CURSOR FOR
+	SELECT  cod_tipdocum
+	,       ind_supertel
+	,       nvl(cod_ciclfact,0)
+	,       ind_ordentotal
+	,       cod_cliente 
+	FROM    fa_factdocu
+	WHERE   num_secuenci > 0
+	AND     cod_tipdocum = :TipoParam
+	AND     cod_vendedor_agente > 0
+	AND     letra = 'I'
+	AND     cod_ciclfact = :lhCiclParam;
+
+	EXEC SQL OPEN c_facd;
+
+	EXEC SQL
+	WHENEVER NOT FOUND CONTINUE ;
+	EXEC SQL
+		TRUNCATE
+		TABLE XPF_INFFACTCONC;
+
+	hay_datos = fetch_factdocu() ;
+	while ( hay_datos )
+	{
+		EXEC SQL
+			WHENEVER SQLERROR
+			DO error_ora() ;
+
+                EXEC SQL
+			INSERT
+			INTO XPF_INFFACTCONC
+			( cod_tipdocum, ind_supertel, cod_ciclfact, ind_ordentotal, cod_cliente )
+			VALUES
+			( :facd_cod_tipdocum:i_facd_cod_tipdocum,
+			  :facd_ind_supertel:i_facd_ind_supertel,
+			  :facd_cod_ciclfact:i_facd_cod_ciclfact,
+			  :facd_ind_ordentotal:i_facd_ind_ordentotal,
+			  :facd_cod_cliente:i_facd_cod_cliente ); 
+
+		hay_datos = fetch_factdocu() ;
+		iii++; 
+		if (iii > 115)
+		hay_datos = 0; 
+	}
+	EXEC SQL
+		COMMIT  WORK RELEASE;
+}
+
+BOOL fetch_factdocu()
+{
+	EXEC SQL
+                WHENEVER NOT FOUND GOTO no_mas;
+		EXEC SQL FETCH  c_facd
+		INTO    :facd_cod_tipdocum:i_facd_cod_tipdocum
+                ,       :facd_ind_supertel:i_facd_ind_supertel
+		,       :facd_cod_ciclfact:i_facd_cod_ciclfact
+		,       :facd_ind_ordentotal:i_facd_ind_ordentotal
+		,       :facd_cod_cliente:i_facd_cod_cliente;
+
+		return( TRUE );
+	no_mas:
+		return( FALSE );
+}
+
+void carga_histd_ciclica()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE ;
+	EXEC SQL DECLARE c_fahc CURSOR FOR
+	SELECT  cod_tipdocum
+	,       ind_supertel
+	,       nvl(cod_ciclfact,0)
+	,       ind_ordentotal
+	,       cod_cliente 
+	FROM    fa_histdocu
+	WHERE   num_secuenci > 0
+	AND     cod_tipdocum = :TipoParam
+	AND     cod_vendedor_agente > 0
+	AND     letra = 'I'
+	AND     cod_ciclfact = :lhCiclParam
+	AND	ind_anulada = 0
+	AND	ind_impresa > 0;
+
+	EXEC SQL OPEN c_fahc;
+
+	EXEC SQL
+	WHENEVER NOT FOUND CONTINUE ;
+	EXEC SQL
+		TRUNCATE
+		TABLE XPF_INFFACTCONC;
+
+	hay_datos = fetch_fach_ciclica() ;
+	while ( hay_datos )
+	{
+		EXEC SQL
+			WHENEVER SQLERROR
+			DO error_ora() ;
+
+                EXEC SQL
+			INSERT
+			INTO XPF_INFFACTCONC
+			( cod_tipdocum, ind_supertel, cod_ciclfact, ind_ordentotal, cod_cliente )
+			VALUES
+			( :facd_cod_tipdocum:i_facd_cod_tipdocum,
+			  :facd_ind_supertel:i_facd_ind_supertel,
+			  :facd_cod_ciclfact:i_facd_cod_ciclfact,
+			  :facd_ind_ordentotal:i_facd_ind_ordentotal,
+			  :facd_cod_cliente:i_facd_cod_cliente ); 
+
+		hay_datos = fetch_fach_ciclica() ;
+		iii++; 
+		if (iii > 115)
+		hay_datos = 0; 
+	}
+	EXEC SQL
+		COMMIT  WORK RELEASE;
+}
+
+BOOL fetch_fach_ciclica()
+{
+	EXEC SQL
+                WHENEVER NOT FOUND GOTO no_mas;
+		EXEC SQL FETCH  c_fahc
+		INTO    :facd_cod_tipdocum:i_facd_cod_tipdocum
+                ,       :facd_ind_supertel:i_facd_ind_supertel
+		,       :facd_cod_ciclfact:i_facd_cod_ciclfact
+		,       :facd_ind_ordentotal:i_facd_ind_ordentotal
+		,       :facd_cod_cliente:i_facd_cod_cliente;
+
+		return( TRUE );
+	no_mas:
+		return( FALSE );
+}
+
+void carga_histd_no_ciclica()
+{
+	EXEC SQL
+		WHENEVER NOT FOUND CONTINUE ;
+	EXEC SQL DECLARE c_fahn CURSOR FOR
+	SELECT  cod_tipdocum
+	,       ind_supertel
+	,       nvl(cod_ciclfact,0)
+	,       ind_ordentotal
+	,       cod_cliente 
+	FROM    fa_histdocu
+	WHERE   num_secuenci > 0
+	AND     cod_tipdocum = :TipoParam
+	AND     cod_vendedor_agente > 0
+	AND     letra = 'I'
+	AND	ind_anulada = 0
+	AND	ind_impresa > 0
+	AND	fec_emision >= TO_DATE(:fecha1,'ddmmyyyy')
+	AND	fec_emision <= TO_DATE(:fecha2,'ddmmyyyy');
+/*	AND	TO_CHAR(fec_emision,'ddmmyyyy') >= TO_CHAR(TO_DATE(:lhFechaParam1,'ddmmyyyy'),'ddmmyyyy')
+	AND	TO_CHAR(fec_emision,'ddmmyyyy') <= TO_CHAR(TO_DATE(:lhFechaParam2,'ddmmyyyy'),'ddmmyyyy');  */
+
+
+	EXEC SQL
+	WHENEVER NOT FOUND CONTINUE ;
+	EXEC SQL
+		TRUNCATE
+		TABLE XPF_INFFACTCONC;
+
+	EXEC SQL OPEN c_fahn;
+
+	hay_datos = fetch_fach_no_ciclica() ;
+	while ( hay_datos )
+	{
+		EXEC SQL
+			WHENEVER SQLERROR
+			DO error_ora() ;
+
+                EXEC SQL
+			INSERT
+			INTO XPF_INFFACTCONC
+			( cod_tipdocum, ind_supertel, cod_ciclfact, ind_ordentotal, cod_cliente )
+			VALUES
+			( :facd_cod_tipdocum:i_facd_cod_tipdocum,
+			  :facd_ind_supertel:i_facd_ind_supertel,
+			  :facd_cod_ciclfact:i_facd_cod_ciclfact,
+			  :facd_ind_ordentotal:i_facd_ind_ordentotal,
+			  :facd_cod_cliente:i_facd_cod_cliente ); 
+
+		hay_datos = fetch_fach_no_ciclica() ;
+		iii++; 
+		if (iii > 115)
+		hay_datos = 0; 
+	}
+	EXEC SQL
+		COMMIT  WORK RELEASE;
+} 
+
+BOOL fetch_fach_no_ciclica()
+{
+	EXEC SQL
+                WHENEVER NOT FOUND GOTO no_mas;
+		EXEC SQL FETCH  c_fahn
+		INTO    :facd_cod_tipdocum:i_facd_cod_tipdocum
+                ,       :facd_ind_supertel:i_facd_ind_supertel
+		,       :facd_cod_ciclfact:i_facd_cod_ciclfact
+		,       :facd_ind_ordentotal:i_facd_ind_ordentotal
+		,       :facd_cod_cliente:i_facd_cod_cliente;
+
+		return( TRUE );
+	no_mas:
+		return( FALSE );
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

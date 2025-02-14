@@ -1,0 +1,85 @@
+CREATE OR REPLACE
+TYPE PV_GE_CARGOS_QT AS OBJECT
+(
+  NUM_CARGO         NUMBER(9),
+  COD_CLIENTE       NUMBER(8),
+  COD_PRODUCTO      NUMBER(1),
+  COD_CONCEPTO      NUMBER(4),
+  FEC_ALTA          DATE,
+  IMP_CARGO         NUMBER(14,4),
+  COD_MONEDA        VARCHAR2(3),
+  COD_PLANCOM       NUMBER(6),
+  NUM_UNIDADES      NUMBER(6),
+  IND_FACTUR        NUMBER(1),
+  NUM_TRANSACCION   NUMBER(9),
+  NUM_VENTA         NUMBER(8),
+  NUM_PAQUETE       NUMBER(3),
+  NUM_ABONADO       NUMBER(8),
+  NUM_TERMINAL      VARCHAR2(15),
+  COD_CICLFACT      NUMBER(6),
+  NUM_SERIE         VARCHAR2(25),
+  NUM_SERIEMEC      VARCHAR2(20),
+  CAP_CODE          NUMBER(7),
+  MES_GARANTIA      NUMBER(2),
+  NUM_PREGUIA       VARCHAR2(10),
+  NUM_GUIA          VARCHAR2(10),
+  NUM_FACTURA       NUMBER(8),
+  COD_CONCEPTO_DTO  NUMBER(4),
+  VAL_DTO           NUMBER(14,4),
+  TIP_DTO           NUMBER(1),
+  IND_CUOTA         NUMBER(1),
+  IND_SUPERTEL      NUMBER(1),
+  IND_MANUAL        NUMBER(1),
+  NOM_USUARORA      VARCHAR2(30),
+  PREF_PLAZA        VARCHAR2(25),
+  COD_TECNOLOGIA    VARCHAR2(7),
+  CONSTRUCTOR FUNCTION PV_GE_CARGOS_QT RETURN self AS result
+
+)
+/
+
+
+CREATE OR REPLACE
+TYPE BODY PV_GE_CARGOS_QT IS
+  CONSTRUCTOR FUNCTION PV_GE_CARGOS_QT RETURN self AS result AS
+
+  BEGIN
+
+    NUM_CARGO         := NULL;
+    COD_CLIENTE       := NULL;
+    COD_PRODUCTO      := NULL;
+    COD_CONCEPTO      := NULL;
+    FEC_ALTA          := NULL;
+    IMP_CARGO         := NULL;
+    COD_MONEDA        := NULL;
+    COD_PLANCOM       := NULL;
+    NUM_UNIDADES      := NULL;
+    IND_FACTUR        := NULL;
+    NUM_TRANSACCION   := NULL;
+    NUM_VENTA         := NULL;
+    NUM_PAQUETE       := NULL;
+    NUM_ABONADO       := NULL;
+    NUM_TERMINAL      := NULL;
+    COD_CICLFACT      := NULL;
+    NUM_SERIE         := NULL;
+    NUM_SERIEMEC      := NULL;
+    CAP_CODE          := NULL;
+    MES_GARANTIA      := NULL;
+    NUM_PREGUIA       := NULL;
+    NUM_GUIA          := NULL;
+    NUM_FACTURA       := NULL;
+    COD_CONCEPTO_DTO  := NULL;
+    VAL_DTO           := NULL;
+    TIP_DTO           := NULL;
+    IND_CUOTA         := NULL;
+    IND_SUPERTEL      := NULL;
+    IND_MANUAL        := NULL;
+    NOM_USUARORA      := NULL;
+    PREF_PLAZA        := NULL;
+    COD_TECNOLOGIA    := NULL;
+    RETURN;
+
+  END;
+END;
+/
+SHOW ERRORS

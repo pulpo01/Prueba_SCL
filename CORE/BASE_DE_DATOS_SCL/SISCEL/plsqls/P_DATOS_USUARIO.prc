@@ -1,0 +1,146 @@
+CREATE OR REPLACE PROCEDURE        P_DATOS_USUARIO(
+  VP_USUARIO IN NUMBER ,
+  VP_NOMUS IN VARCHAR2 ,
+  VP_AP1US IN VARCHAR2 ,
+  VP_AP2US IN VARCHAR2 ,
+  VP_PROC IN OUT VARCHAR2 ,
+  VP_TABLA IN OUT VARCHAR2 ,
+  VP_ACT IN OUT VARCHAR2 ,
+  VP_SQLCODE IN OUT VARCHAR2 ,
+  VP_SQLERRM IN OUT VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento de actualizacion de los datos de usuario en tabla
+-- de abonados a facturar en ciclo
+--
+-- Los valores del codigo de retorno seran los siguientes :
+--         - "0" ; El cambio se ha realizado correctamente
+--         - "4" ; Error en el proceso
+--
+   CURSOR C1 IS
+   SELECT A.ROWID
+     FROM FA_CICLOCLI A,GA_ABOCEL B
+    WHERE B.COD_USUARIO = VP_USUARIO
+      AND A.NUM_ABONADO = B.NUM_ABONADO;
+   CURSOR C2 IS
+   SELECT A.ROWID
+     FROM FA_CICLOCLI A,GA_ABOBEEP B
+    WHERE B.COD_USUARIO = VP_USUARIO
+      AND A.NUM_ABONADO = B.NUM_ABONADO;
+   CURSOR C3 IS
+   SELECT A.ROWID
+     FROM FA_CICLOCLI A,GA_ABOTRUNK B
+    WHERE B.COD_USUARIO = VP_USUARIO
+      AND A.NUM_ABONADO = B.NUM_ABONADO;
+   CURSOR C4 IS
+   SELECT A.ROWID
+     FROM FA_CICLOCLI A,GA_ABOTREK B
+    WHERE B.COD_USUARIO = VP_USUARIO
+      AND A.NUM_ABONADO = B.NUM_ABONADO;
+   CURSOR C5 IS
+   SELECT A.ROWID
+     FROM GA_SUSCBEEP A,GA_ABOBEEP B
+    WHERE B.COD_USUARIO = VP_USUARIO
+      AND A.NUM_ABONADO = B.NUM_ABONADO;
+   V_ROWID ROWID;
+BEGIN
+   VP_PROC := 'P_DATOS_USUARIO';
+   VP_TABLA := 'C1';
+   VP_ACT := 'O';
+   OPEN C1;
+   LOOP
+      VP_ACT := 'F';
+      FETCH C1 INTO V_ROWID;
+      EXIT WHEN C1%NOTFOUND;
+      VP_TABLA := 'FA_CICLOCLI';
+      VP_ACT := 'U';
+      UPDATE FA_CICLOCLI
+         SET NOM_USUARIO = VP_NOMUS,
+      NOM_APELLIDO1 = VP_AP1US,
+             NOM_APELLIDO2 = VP_AP2US
+       WHERE ROWID = V_ROWID;
+   END LOOP;
+   VP_TABLA := 'C1';
+   VP_ACT := 'C';
+   CLOSE C1;
+   VP_TABLA := 'C2';
+   VP_ACT := 'O';
+   OPEN C2;
+   LOOP
+      VP_ACT := 'F';
+      FETCH C2 INTO V_ROWID;
+      EXIT WHEN C2%NOTFOUND;
+      VP_TABLA := 'FA_CICLOCLI';
+      VP_ACT := 'U';
+      UPDATE FA_CICLOCLI
+         SET NOM_USUARIO = VP_NOMUS,
+      NOM_APELLIDO1 = VP_AP1US,
+             NOM_APELLIDO2 = VP_AP2US
+       WHERE ROWID = V_ROWID;
+   END LOOP;
+   VP_TABLA := 'C2';
+   VP_ACT := 'C';
+   CLOSE C2;
+   VP_TABLA := 'C3';
+   VP_ACT := 'O';
+   OPEN C3;
+   LOOP
+      VP_ACT := 'F';
+      FETCH C3 INTO V_ROWID;
+      EXIT WHEN C3%NOTFOUND;
+      VP_TABLA := 'FA_CICLOCLI';
+      VP_ACT := 'U';
+      UPDATE FA_CICLOCLI
+         SET NOM_USUARIO = VP_NOMUS,
+      NOM_APELLIDO1 = VP_AP1US,
+             NOM_APELLIDO2 = VP_AP2US
+       WHERE ROWID = V_ROWID;
+   END LOOP;
+   VP_TABLA := 'C3';
+   VP_ACT := 'C';
+   CLOSE C3;
+   VP_TABLA := 'C4';
+   VP_ACT := 'O';
+   OPEN C4;
+   LOOP
+      VP_ACT := 'F';
+      FETCH C4 INTO V_ROWID;
+      EXIT WHEN C4%NOTFOUND;
+      VP_TABLA := 'FA_CICLOCLI';
+      VP_ACT := 'U';
+      UPDATE FA_CICLOCLI
+         SET NOM_USUARIO = VP_NOMUS,
+      NOM_APELLIDO1 = VP_AP1US,
+             NOM_APELLIDO2 = VP_AP2US
+       WHERE ROWID = V_ROWID;
+   END LOOP;
+   VP_TABLA := 'C4';
+   VP_ACT := 'C';
+   CLOSE C4;
+   VP_TABLA := 'C5';
+   VP_ACT := 'O';
+   OPEN C5;
+   LOOP
+      VP_ACT := 'F';
+      FETCH C5 INTO V_ROWID;
+      EXIT WHEN C5%NOTFOUND;
+      VP_TABLA := 'GA_SUSCBEEP';
+      VP_ACT := 'U';
+      UPDATE GA_SUSCBEEP
+  SET NOM = SUBSTR(RTRIM(VP_NOMUS)||' '||
+     RTRIM(VP_AP1US)||' '||
+     RTRIM(VP_AP2US),1,50)
+       WHERE ROWID = V_ROWID;
+   END LOOP;
+   VP_TABLA :='C5';
+   VP_ACT := 'C';
+   CLOSE C5;
+EXCEPTION
+   WHEN OTHERS THEN
+        VP_ERROR := '4';
+ VP_SQLCODE := SQLCODE;
+ VP_SQLERRM := SQLERRM;
+END;
+/
+SHOW ERRORS

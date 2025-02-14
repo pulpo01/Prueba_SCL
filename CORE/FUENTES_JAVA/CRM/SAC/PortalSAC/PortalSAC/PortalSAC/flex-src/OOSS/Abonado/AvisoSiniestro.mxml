@@ -1,0 +1,477 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="980" height="423" initialize="init();" verticalAlign="top"  backgroundColor="#FFFFFF" xmlns:ns1="user.libreria.componentes.*">
+<mx:Script>
+<![CDATA[
+	import mx.formatters.SwitchSymbolFormatter;
+	import user.libreria.clases.dto.GenericoDTO;
+	import mx.collections.ArrayCollection;
+	import mx.messaging.messages.HTTPRequestMessage;
+ 	import mx.controls.Alert;
+ 	import mx.events.ModuleEvent;
+    import mx.modules.ModuleManager;
+	import mx.modules.IModuleInfo;
+	import mx.rpc.events.FaultEvent;
+	import mx.events.ValidationResultEvent;
+	import mx.controls.AdvancedDataGrid;
+	import mx.managers.PopUpManager;
+	import mx.core.IFlexDisplayObject;
+	import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+	
+	import generated.webservices.orquestador.*;
+   	import user.libreria.componentes.DatosEncabezadoOOSS;
+   	import user.libreria.clases.StringUtil;
+   	 
+	import mx.rpc.http.HTTPService;
+	import mx.rpc.events.FaultEvent;
+	import mx.rpc.events.ResultEvent;
+	   	 
+	public var info:IModuleInfo;
+ 	public var grillaGlobal:AdvancedDataGrid = new AdvancedDataGrid();
+	public var popUpWindow:IFlexDisplayObject;
+	public var popUpParent:DisplayObject; 					
+ 	public var searchingPopUpView:Class = BarraDeProgreso2;
+	
+ 	public var wsORQ:WSSEGPortal = new WSSEGPortal(); 
+
+ 	// Http services para los listbox
+	public var httpTiposSiniestros:HTTPService = new HTTPService();
+	public var httpTiposSuspension:HTTPService = new HTTPService();
+	public var httpCausas:HTTPService = new HTTPService();
+
+	public var flagCarga:Number;
+	
+	/* --------------------------------------------------------------------------------		
+		METODOS
+	-------------------------------------------------------------------------------- */
+	include "../../user/includes/datosEncabezadoOOSS.as";
+	include "../../user/includes/registroConsulOoss.as";
+	
+	[Embed(source="../../recursosInterfaz/imagenes/iconos/alert/warning.png")]
+    public var iconWarning:Class; 	
+	
+	private function getError(event:FaultEvent):void    {
+		        
+		PopUpManager.removePopUp(popUpWindow);
+		
+		Application.application.sesionFlagButon = false;
+		
+		if(flash.external.ExternalInterface.call('controlSession')) {
+			
+			/*
+			var mensaje:String = new String();
+			mensaje = event.fault.faultString + "\n" + event.fault.faultDetail;
+			Alert.show( mensaje, 
+							"Error en la aplicación", 
+							mx.controls.Alert.OK,
+							this,
+							null,
+							iconWarning,
+							mx.controls.Alert.OK );
+							*/
+							
+				var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		
+		}
+		
+	} // getError
+	
+	// --------------------------------------------------------------------------------
+	
+	private function init():void	{
+
+		popUpParent = parentApplication.document;
+		popUpWindow = PopUpManager.createPopUp(popUpParent, searchingPopUpView, true);
+		PopUpManager.centerPopUp(popUpWindow);		
+
+		// Traigo los datos para el encabezado
+		datosCuenta(parentApplication.ctaSelect);
+		datosCliente(parentApplication.cliSelect);
+
+		flagCarga = 3;
+		
+		// Cargo los 3 listbox
+		loadTiposSiniestros();
+		loadTiposSuspension();
+		loadCausasSiniestro();
+
+		// Como esta pantalla no tiene un metodo de carga
+		// se ejecuta la carga generica que solo realiza una auditoria.
+		var nomUsuario:String = Application.application.usuario.username;
+		var codEvento:String = Application.application.codEvento; 
+
+		wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+		wsORQ.addWSSEGPortalFaultEventListener(getError);
+		wsORQ.cargaOSGenericaAbonado(parentApplication.aboSelect, nomUsuario, codEvento);
+		
+	} // init
+	
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 08-10-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+	private function loadTiposSiniestros():void	{
+
+		httpTiposSiniestros.addEventListener(FaultEvent.FAULT, getError);
+		httpTiposSiniestros.method="GET";
+		httpTiposSiniestros.resultFormat="e4x";
+		httpTiposSiniestros.addEventListener(ResultEvent.RESULT, getTiposSiniestros);
+		httpTiposSiniestros.url = StringUtil.getValor("AppServerRootURL","VALOR") + StringUtil.getValor("ConsultaTiposSiniestro","PATH");
+		httpTiposSiniestros.send();
+
+	} // loadTipoSiniestros
+
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 08-10-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+	private function loadTiposSuspension():void	{
+
+		httpTiposSuspension.addEventListener(FaultEvent.FAULT, getError);
+		httpTiposSuspension.method="GET";
+		httpTiposSuspension.resultFormat="e4x";
+		httpTiposSuspension.addEventListener(ResultEvent.RESULT, getTiposSuspension);
+		httpTiposSuspension.url = StringUtil.getValor("AppServerRootURL","VALOR") + StringUtil.getValor("ConsultaTiposSuspension","PATH");
+		httpTiposSuspension.send();
+
+	} // loadTiposSuspension
+
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 08-10-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+	private function loadCausasSiniestro():void	{
+
+		httpCausas.addEventListener(FaultEvent.FAULT, getError);
+		httpCausas.method="GET";
+		httpCausas.resultFormat="e4x";
+		httpCausas.addEventListener(ResultEvent.RESULT, getCausasSiniestro);
+		httpCausas.url = StringUtil.getValor("AppServerRootURL","VALOR") + StringUtil.getValor("ConsultaCausasSiniestro","PATH");
+		httpCausas.send();
+
+	} // loadCausas
+	
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 08-10-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+
+	private function getTiposSiniestros(evento:ResultEvent):void	{
+		var desError:String = Utilidades.buscarElementoEnXML(evento.result as XML, "desError");
+		if (evento.result != null && desError == "")	{
+			
+			cboTipoSiniestro.labelField = "desValor";
+			//Creamos el dummy
+			var dummy:GenericoDTO = new GenericoDTO();
+			dummy.codValor = "";
+			dummy.desValor = "Seleccione...";
+
+			var resultado:ArrayCollection = Utilidades.fillArrayCollection(evento.result, user.libreria.clases.dto.GenericoDTO);
+
+			//Insertamos el dummy
+			resultado.addItemAt(dummy,0);
+			cboTipoSiniestro.dataProvider = resultado;
+			cboTipoSiniestro.selectedIndex = 0;
+		}
+		else	{
+			// Si no encuentra nada debe limpiar la grilla de posibles resultados anteriores
+			Alert.show( desError, 
+						"Advertencia", 
+						mx.controls.Alert.OK,
+						this,
+						null,
+						null,
+						mx.controls.Alert.OK );
+		}
+		
+		hideScrollBar();		
+	} // getTiposSiniestros
+
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 08-10-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+
+	private function getTiposSuspension(evento:ResultEvent):void	{
+		var desError:String = Utilidades.buscarElementoEnXML(evento.result as XML, "desError");
+		if (evento.result != null && desError == "")	{
+			cboTipoSuspension.labelField = "desValor";
+			
+			//Creamos el dummy
+			var dummy:GenericoDTO = new GenericoDTO();
+			dummy.codValor = "";
+			dummy.desValor = "Seleccione...";
+			
+			var resultado:ArrayCollection = Utilidades.fillArrayCollection(evento.result, user.libreria.clases.dto.GenericoDTO);
+			
+			//Insertamos el dummy
+			resultado.addItemAt(dummy,0);
+			
+			cboTipoSuspension.dataProvider = resultado;
+			cboTipoSuspension.selectedIndex = 0;
+		}
+		else	{
+			// Si no encuentra nada debe limpiar la grilla de posibles resultados anteriores
+			Alert.show( desError, 
+						"Advertencia", 
+						mx.controls.Alert.OK,
+						this,
+						null,
+						null,
+						mx.controls.Alert.OK );
+		}
+		
+		hideScrollBar();		
+	} // getTiposSuspension
+
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 08-10-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+
+	private function getCausasSiniestro(evento:ResultEvent):void	{
+		var desError:String = Utilidades.buscarElementoEnXML(evento.result as XML, "desError");
+		if (evento.result != null && desError == "")	{
+			cboCausa.labelField = "desCausa";
+			
+			//Creamos el dummy
+			var dummy:GenericoDTO = new GenericoDTO();
+			dummy.codCausa = "";
+			dummy.desCausa = "Seleccione...";
+			
+			var resultado:ArrayCollection = Utilidades.fillArrayCollection(evento.result, user.libreria.clases.dto.GenericoDTO);
+			
+			//Insertamos el dummy
+			resultado.addItemAt(dummy,0);
+			
+			cboCausa.dataProvider = resultado;
+			cboCausa.selectedIndex = 0;
+		}
+		else	{
+			// Si no encuentra nada debe limpiar la grilla de posibles resultados anteriores
+			Alert.show( desError, 
+						"Advertencia", 
+						mx.controls.Alert.OK,
+						this,
+						null,
+						null,
+						mx.controls.Alert.OK );
+		}
+		
+		hideScrollBar();		
+	} // getCausasSiniestro
+		
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 16-08-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+
+	// Si se terminaron de orquestar todos los servicios de la pagina entonces se oculta el scrollbar
+	private function hideScrollBar():void	{
+	
+		flagCarga--;
+		if (flagCarga==0)
+			PopUpManager.removePopUp(popUpWindow);
+		
+	} // hideScrollBar
+	
+	
+	// ----------------------------------------------------------------------------------------
+	// Create by HGG 
+	// Date 16-08-2009
+	// Version 1.0
+	// ----------------------------------------------------------------------------------------
+
+	private function ejecutarAvisoSiniestro():void	{
+
+		popUpParent = parentApplication.document;
+		popUpWindow = PopUpManager.createPopUp(popUpParent, searchingPopUpView, true);
+		PopUpManager.centerPopUp(popUpWindow);		
+
+		var bloqueoDTO:RealizarBloqueoRoboSACINDTO = new RealizarBloqueoRoboSACINDTO();
+		var nomUsuario:String = Application.application.usuario.username;		
+		
+		bloqueoDTO.usuario = nomUsuario;
+		bloqueoDTO.causaSiniestro = parseInt(cboCausa.selectedItem.codCausa);
+		bloqueoDTO.numCelular = parseInt(Application.application.numCelAboSelect);
+		bloqueoDTO.tipoSiniestro = cboTipoSiniestro.selectedItem.codValor;
+		bloqueoDTO.tipoSusp = parseInt(cboTipoSuspension.selectedItem.codValor);
+		
+		trace("bloqueoDTO.usuario:"+bloqueoDTO.usuario);
+		trace("bloqueoDTO.causaSiniestro:"+bloqueoDTO.causaSiniestro);
+		trace("bloqueoDTO.numCelular:"+bloqueoDTO.numCelular);
+		trace("bloqueoDTO.tipoSiniestro:"+bloqueoDTO.tipoSiniestro);
+		trace("bloqueoDTO.tipoSusp:"+bloqueoDTO.tipoSusp);
+		
+		wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+		wsORQ.addWSSEGPortalFaultEventListener(getError);
+		wsORQ.addrealizarBloqueoRoboEventListener(getDataEjecutar);
+		wsORQ.realizarBloqueoRobo(bloqueoDTO);
+		
+	} // ejecutarAvisoSiniestro
+	
+	// ----------------------------------------------------------------------------------------
+	
+	private function getDataEjecutar(event:RealizarBloqueoRoboResultEvent):void	{
+
+		PopUpManager.removePopUp(popUpWindow);
+
+		var mensaje: String = new String();
+		var estadoOK:Boolean = false;
+		var numOossOK:Number = 0;
+		var numOossOKDos:Number = 0;
+		switch(event.result.tipoSiniestro)	{
+			case "S":
+				if (event.result.numSolSim != 0){
+					mensaje = "Numero de la OOSS (simcard): " + event.result.numSolSim.toString();
+					
+					//Asignacion OOSS
+					numOossOK = event.result.numSolSim;
+					
+					//Estado OK
+					estadoOK = true;
+				}else
+					if (event.result.desError == null) 
+						mensaje = "Error en el webservices de Aviso de siniestro (CRMAssurance)";
+					else
+					  	mensaje = event.result.desError;
+				break;
+			case "E":
+				if (event.result.numSolEqu != 0){
+					mensaje = "Numero de la OOSS (equipo): " + event.result.numSolEqu.toString(), "OOSS Aviso de Siniestro";
+					
+					//Asignacion OOSS
+					numOossOK = event.result.numSolEqu;
+					
+					//Estado OK
+					estadoOK = true;
+				}else
+					if (event.result.desError == null) 
+						mensaje = "Error en el webservices de Aviso de siniestro (CRMAssurance)";
+					else
+					  	mensaje = event.result.desError;
+				break;
+			case "A":
+				if (event.result.numSolEqu != 0 && event.result.numSolSim != 0){
+					mensaje = "Numero de la OOSS (simcard): " + event.result.numSolSim.toString() + "\n"
+							 + "Numero de la OOSS (equipo): " + event.result.numSolEqu.toString();
+					
+					//Asignacion OOSS
+					numOossOK = event.result.numSolSim;
+					numOossOKDos = event.result.numSolEqu;
+					
+					//Estado OK
+					estadoOK = true;			 
+				}else
+					if (event.result.desError == null) 
+						mensaje = "Error en el webservices de Aviso de siniestro (CRMAssurance)";
+					else
+					  	mensaje = event.result.desError;
+		} // switch
+
+		Alert.show(mensaje, "OOSS Aviso de Siniestro");	
+		
+		cerrar();
+
+		if(estadoOK){
+		
+			//Se llama al WS para grabar el comentario
+			wsInsertaComentPvIorserv(txtComentario.text, numOossOK );
+			
+			if(numOossOKDos != 0){
+				//Se llama al WS para grabar el comentario
+				wsInsertaComentPvIorserv(txtComentario.text, numOossOKDos );
+			}
+			
+			//Se levanta la pantalla de registro
+		    //levantaRegistroIngOoss('Abonado'); //Se comenta funcionalidad(No certificada) AF resposable : Ruben Araya
+		}
+		
+		//cerrar();
+		
+	} // getDataEjecutar
+	
+	// ----------------------------------------------------------------------------------------
+	
+	private function validarRequeridos():void {
+	
+		if (cboTipoSiniestro.selectedIndex > 0 && 
+			cboCausa.selectedIndex > 0 &&
+			cboTipoSuspension.selectedIndex > 0 &&
+			txtComentario.text.length > 0 )	ejecutarAvisoSiniestro();
+		else
+			Alert.show( "Debe ingresar todos los datos requeridos identificados con (*).", 
+			"Advertencia", 
+			mx.controls.Alert.OK,
+			this,
+			null,
+			iconWarning,
+			mx.controls.Alert.OK );		
+
+	} // validarRequeridos
+	
+	// ----------------------------------------------------------------------------------------
+		
+	private function cerrar():void {
+	
+		parentDocument.vbOOSS.enabled = false;
+		parentDocument.vb1.enabled=true;
+		parentDocument.tab1.selectedIndex=0;
+		this.visible=false;
+		return;
+	
+	} // cerrar
+	
+	// ----------------------------------------------------------------------------------------
+	
+	// ------------------------------------------------------------------------------------------
+	// Autor : Gabriel Moraga L.
+	// Version : 1.0
+	// Fecha : 13/08/2010
+	// ------------------------------------------------------------------------------------------
+	
+	private function wsInsertaComentPvIorserv(comentario:String, numOoss:Number):void {
+		
+		wsORQ.addWSSEGPortalFaultEventListener(getError);
+		wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+		//wsORQ.addinsertComentarioPvIorservEventListener();
+		wsORQ.insertComentarioPvIorserv(comentario,numOoss);
+		
+	}
+
+]]>	
+  
+</mx:Script>
+	
+<mx:Panel width="961" height="364" layout="absolute" title="&gt;&gt; Aviso de Siniestro" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="-4">
+	<mx:backgroundImage>@Embed(source='../../recursosInterfaz/imagenes/otros/fondo.jpg')</mx:backgroundImage>
+	
+	<ns1:DatosEncabezadoOOSS x="19" y="7" id="DatosEncabezadoOOSS" />
+
+	<mx:Button label="Ejecutar" click="validarRequeridos();" x="430" y="284" fontSize="10" color="#000000"/>
+
+	<mx:Button label="Cerrar" width="84" click="cerrar()" x="526" y="284" fontSize="10" color="#000000"/>
+	<mx:Label text="Tipo de Siniestro" styleName="TituloCampo" x="31.35" y="158.25"/>
+	<mx:Label text="(*)" styleName="TituloCampo" x="152.35" y="158.25" width="31" color="#FF0000"/>
+	<mx:ComboBox width="385" id="cboTipoSiniestro"  fontSize="10" themeColor="#CBDEEB" color="#000000" x="208.3" y="158.25"></mx:ComboBox>
+	<mx:Label text="Tipo de Suspensión" styleName="TituloCampo" x="31.35" y="186.25"/>
+	<mx:Label text="(*)" styleName="TituloCampo" x="152.35" y="186.25" width="31" color="#FF0000"/>
+	<mx:ComboBox width="385" id="cboTipoSuspension" fontSize="10" themeColor="#CBDEEB" color="#000000" x="208.3" y="186.25"></mx:ComboBox>
+	<mx:Label text="Causa" styleName="TituloCampo" x="31.35" y="214.25"/>
+	<mx:Label text="(*)" styleName="TituloCampo" x="152.35" y="214.25" width="31" color="#FF0000"/>
+	<mx:ComboBox width="385" id="cboCausa" fontSize="10" themeColor="#CBDEEB" color="#000000" x="208.3" y="214.25" visible="true"></mx:ComboBox>
+	<mx:Label x="31" y="248" text="Comentario" styleName="TituloCampo"/>
+	<mx:Label text="(*)" styleName="TituloCampo" x="152.35" y="248.25" width="31" color="#FF0000"/>
+	<mx:TextInput x="208" y="246" width="385.3" id="txtComentario" styleName="TextoCampo" maxChars="255" />
+</mx:Panel>
+
+</mx:Module>

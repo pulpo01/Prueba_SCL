@@ -1,0 +1,46 @@
+CREATE OR REPLACE PACKAGE ge_log_pg AS
+    CV_NONE  CONSTANT VARCHAR2(5):='NONE';
+    CV_FATAL CONSTANT VARCHAR2(5):='FATAL';
+    CV_ERROR CONSTANT VARCHAR2(5):='ERROR';
+    CV_WARN  CONSTANT VARCHAR2(5):='WARN';
+    CV_INFO  CONSTANT VARCHAR2(5):='INFO';
+    CV_DEBUG CONSTANT VARCHAR2(5):='DEBUG';
+    CV_ALL   CONSTANT VARCHAR2(5):='NONE';
+
+	SUBTYPE log_msg IS GE_LOGTABLE_TO%ROWTYPE;
+	TYPE    msg_lst IS TABLE OF log_msg INDEX BY BINARY_INTEGER;
+
+    FUNCTION get_maquina RETURN VARCHAR2;
+    FUNCTION get_programa RETURN VARCHAR2;
+
+	FUNCTION fatal_activo RETURN BOOLEAN;
+	FUNCTION error_activo RETURN BOOLEAN;
+	FUNCTION warn_activo RETURN BOOLEAN;
+	FUNCTION info_activo RETURN BOOLEAN;
+	FUNCTION debug_activo RETURN BOOLEAN;
+
+	PROCEDURE set_nivel_none;
+	PROCEDURE set_nivel_fatal;
+	PROCEDURE set_nivel_error;
+	PROCEDURE set_nivel_warn;
+	PROCEDURE set_nivel_info;
+	PROCEDURE set_nivel_debug;
+	PROCEDURE set_nivel_all;
+
+    PROCEDURE set_maquina_log(ev_maq VARCHAR2) ;
+	PROCEDURE set_programa_log(ev_prog VARCHAR2);
+
+	PROCEDURE fatal(ev_msg VARCHAR2);
+	PROCEDURE error(ev_msg VARCHAR2);
+	PROCEDURE warn(ev_msg VARCHAR2);
+	PROCEDURE info(ev_msg VARCHAR2);
+	PROCEDURE DEBUG(ev_msg VARCHAR2);
+
+    PROCEDURE fatal(ev_msg VARCHAR2, ev_maq VARCHAR2, ev_prog VARCHAR2);
+    PROCEDURE error(ev_msg VARCHAR2, ev_maq VARCHAR2, ev_prog VARCHAR2);
+    PROCEDURE warn(ev_msg VARCHAR2, ev_maq VARCHAR2, ev_prog VARCHAR2);
+    PROCEDURE info(ev_msg VARCHAR2, ev_maq VARCHAR2, ev_prog VARCHAR2);
+    PROCEDURE DEBUG(ev_msg VARCHAR2, ev_maq VARCHAR2, ev_prog VARCHAR2);
+END;
+/
+SHOW ERRORS

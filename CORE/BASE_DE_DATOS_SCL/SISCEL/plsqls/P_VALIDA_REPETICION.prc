@@ -1,0 +1,33 @@
+CREATE OR REPLACE PROCEDURE        P_VALIDA_REPETICION(
+  V_SERIE IN GA_ABOCEL.NUM_SERIE%TYPE ,
+  V_ERROR IN OUT CHAR )
+IS
+    VAR1 GA_ABOCEL.NUM_SERIE%TYPE;
+BEGIN
+    SELECT NUM_SERIE
+    INTO VAR1
+    FROM GA_ABOCEL
+    WHERE NUM_SERIE = V_SERIE
+	AND COD_SITUACION not in ( 'BAA','BAP')
+	AND COD_USO <> 3;
+    V_ERROR := '2';
+EXCEPTION
+   WHEN NO_DATA_FOUND THEN
+   		begin
+       			SELECT NUM_SERIE
+       			INTO VAR1
+       			FROM GA_ABOAMIST
+	   			WHERE NUM_SERIE = V_SERIE
+	   			AND COD_SITUACION not in ( 'BAA','BAP');
+       			V_ERROR := '2';
+   		exception
+   	   		When no_data_found then
+          		V_ERROR := '0';
+   		end;
+   WHEN TOO_MANY_ROWS THEN
+        V_ERROR := '2';
+   WHEN OTHERS THEN
+        V_ERROR := '4';
+END;
+/
+SHOW ERRORS

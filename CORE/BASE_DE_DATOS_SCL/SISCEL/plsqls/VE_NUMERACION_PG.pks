@@ -1,0 +1,277 @@
+CREATE OR REPLACE PACKAGE VE_Numeracion_Pg
+/*
+<Documentación
+  TipoDoc = "Procedimiento">
+   <Elemento
+      Nombre = "PV_NUMERACION_PG"
+      Lenguaje="PL/SQL"
+      Fecha="15-09-2008"
+      Versión="1.0"
+      Diseñador="**"
+      Programador="**"
+      Ambiente Desarrollo="BD">
+      <Retorno>NA</Retorno>
+      <Descripción>  Contiene todas las operaciones de numeración automatica y manual </Descripción>
+      <Parámetros>
+         <Entrada>
+            <>
+         </Entrada>
+         <Salida>
+
+         </Salida>
+      </Parámetros>
+   </Elemento>
+</Documentación>
+*/
+AS
+
+   gv_error_others        CONSTANT NUMBER                            := '156';
+   gv_error_no_clasif     CONSTANT VARCHAR2 (100)                    := 'Error no Clasificado';
+   gn_largoerrtec         CONSTANT NUMBER (3)                        := 500;
+   gn_largodesc           CONSTANT NUMBER (3)                        := 100;
+   GV_COD_MODULO          CONSTANT VARCHAR2 (2)                      := 'GA';
+   GV_COD_MODULO_GE       CONSTANT VARCHAR2 (2)                      := 'GE';
+   GN_COD_PRODUCTO        CONSTANT NUMBER                            := 1;
+
+   TYPE refcursor IS REF CURSOR;
+
+
+PROCEDURE VE_NUMERACION_AUTOMATICA_PR(
+           EV_CeldNue        IN GE_CELDAS.COD_CELDA%TYPE,
+           EV_CentNue        IN GA_CELNUM_REUTIL.COD_CENTRAL%TYPE,
+           EV_CodUsoNue      IN GA_CELNUM_REUTIL.COD_USO%TYPE,
+           EV_Cod_Actabo     IN GA_ACTABO.COD_ACTABO%TYPE,
+           SV_CodSubalmNue      OUT NOCOPY VARCHAR2,
+           SV_NumCelular       OUT NOCOPY VARCHAR2,
+           SV_Tabla             OUT NOCOPY VARCHAR2,
+           SV_CodCatNue         OUT NOCOPY VARCHAR2,
+           SV_FecBaja           OUT NOCOPY VARCHAR2,
+           SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+           SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+           SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+
+  );
+
+PROCEDURE VE_NUMERACION_RANGO_PR(
+          EV_COD_CAT        IN VARCHAR2,
+          EV_COD_USO        IN GA_CELNUM_USO.COD_USO%TYPE,
+          EV_CENTRAL        IN GA_CELNUM_USO.COD_CENTRAL%TYPE,
+          EV_COD_SUBALM     IN GA_CELNUM_USO.COD_SUBALM%TYPE,
+          EV_LIMITE_INF        IN GA_CELNUM_REUTIL.NUM_CELULAR%TYPE,
+          EV_LIMITE_MAX        IN GA_CELNUM_REUTIL.NUM_CELULAR%TYPE,
+          EN_CANT_NUM_CEL   IN  NUMBER,
+          SC_BLOQ_NUMEROS   OUT NOCOPY REFCURSOR,
+          SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+PROCEDURE VE_NUMERACION_RESERVA_PR(
+          EV_COD_CLIENTE        IN GA_RESERVA.COD_CLIENTE%TYPE,
+          EV_COD_VENDEDOR        IN GA_RESERVA.COD_VENDEDOR%TYPE,
+          EV_COD_USOLINEA       IN GA_RESERVA.COD_USO%TYPE,
+          EV_COD_CAT            IN  VARCHAR2,
+          EN_CANT_NUM_CEL       IN  NUMBER,
+          EN_COD_VENDEALER      IN  VE_VENDEALER.COD_VENDEALER%TYPE,
+          EN_COD_CENTRAL        IN  ICG_CENTRAL.COD_CENTRAL%TYPE,
+          SC_BLOQ_NUMEROS         OUT NOCOPY REFCURSOR,
+          SN_COD_RETORNO        OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO       OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO         OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+
+
+ PROCEDURE VE_NUMERACION_DISPONIBLE_PR(
+          EV_COD_CAT        IN VARCHAR2,
+          EV_COD_USO        IN GA_CELNUM_REUTIL.COD_USO%TYPE,
+          EV_CENTRAL        IN GA_CELNUM_REUTIL.COD_CENTRAL%TYPE,
+          EV_COD_SUBALM     IN GA_CELNUM_REUTIL.COD_SUBALM%TYPE,
+          EV_LIMITE_INF        IN GA_CELNUM_REUTIL.NUM_CELULAR%TYPE,
+          EV_LIMITE_MAX        IN GA_CELNUM_REUTIL.NUM_CELULAR%TYPE,
+          EN_CANT_NUM_CEL   IN  NUMBER,
+          SC_BLOQ_NUMEROS   OUT NOCOPY REFCURSOR,
+          SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+PROCEDURE VE_BUSCA_SUBALM_PR(
+          EV_COD_CELDA        IN GE_CELDAS.COD_CELDA%TYPE,
+          SV_COD_SUBALM        OUT NOCOPY GE_CELDAS.COD_SUBALM%TYPE,
+          SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+PROCEDURE VE_BUSCA_CENTAL_PR(
+          EV_COD_CENTRAL    IN ICG_CENTRAL.COD_CENTRAL%TYPE,
+          SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+
+PROCEDURE VE_CONS_NUM_CEL_REUTIL_PR(
+          EN_NUM_CELULAR        IN GA_CELNUM_REUTIL.NUM_CELULAR%TYPE,
+            SV_COD_SUBALM         OUT GA_CELNUM_REUTIL.COD_SUBALM%TYPE,
+            SN_COD_PRODUCTO       OUT GA_CELNUM_REUTIL.COD_PRODUCTO%TYPE,
+            SN_COD_CENTRAL        OUT GA_CELNUM_REUTIL.COD_CENTRAL%TYPE,
+            SN_COD_CAT            OUT GA_CELNUM_REUTIL.COD_CAT%TYPE,
+            SN_COD_USO            OUT GA_CELNUM_REUTIL.COD_USO%TYPE,
+            SN_IND_EQUIPADO       OUT GA_CELNUM_REUTIL.IND_EQUIPADO%TYPE,
+            SN_USO_ANTERIOR       OUT GA_CELNUM_REUTIL.USO_ANTERIOR%TYPE,
+            SN_COD_RETORNO           OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO          OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO            OUT NOCOPY GE_ERRORES_PG.EVENTO
+
+  );
+
+PROCEDURE VE_CONS_NUM_CEL_RESERVADO_PR(
+          EN_NUM_CELULAR        IN GA_RESNUMCEL.NUM_CELULAR%TYPE,
+            SV_COD_SUBALM         OUT GA_RESNUMCEL.COD_SUBALM%TYPE,
+            SN_COD_PRODUCTO       OUT GA_RESNUMCEL.COD_PRODUCTO%TYPE,
+            SN_COD_CENTRAL        OUT GA_RESNUMCEL.COD_CENTRAL%TYPE,
+            SN_COD_CAT            OUT GA_RESNUMCEL.COD_CAT%TYPE,
+            SN_COD_USO            OUT GA_RESNUMCEL.COD_USO%TYPE,
+          SV_IND_PROCNUM         OUT GA_RESNUMCEL.IND_PROCNUM%TYPE,
+          SN_COD_RETORNO           OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO          OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO            OUT NOCOPY GE_ERRORES_PG.EVENTO
+
+  );
+
+
+PROCEDURE VE_CONS_NUM_CEL_GA_HRESERVA_PR (
+          EN_NUM_CELULAR        IN GA_HRESERVA.NUM_CELULAR%TYPE,
+          SN_NUM_CELULAR        OUT GA_HRESERVA.NUM_CELULAR%TYPE,
+          SN_COD_RETORNO           OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO          OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO            OUT NOCOPY GE_ERRORES_PG.EVENTO
+
+  );
+
+PROCEDURE VE_DEL_NUM_CEL_RESERVADO_PR (
+          EN_NUM_CELULAR        IN GA_RESNUMCEL.NUM_CELULAR%TYPE,
+          SN_COD_RETORNO           OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO          OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO            OUT NOCOPY GE_ERRORES_PG.EVENTO
+
+  );
+
+PROCEDURE VE_INS_NUM_CEL_RESERVADO_PR(
+          EN_NUM_TRANSACCION     IN GA_RESNUMCEL.NUM_TRANSACCION%TYPE,
+          EN_NUM_LINEA             IN GA_RESNUMCEL.NUM_LINEA%TYPE,
+          EN_NUM_ORDEN             IN GA_RESNUMCEL.NUM_ORDEN%TYPE,
+          EN_NUM_CELULAR        IN GA_RESNUMCEL.NUM_CELULAR%TYPE,
+            EV_COD_SUBALM         IN GA_RESNUMCEL.COD_SUBALM%TYPE,
+            EN_COD_PRODUCTO       IN GA_RESNUMCEL.COD_PRODUCTO%TYPE,
+            EN_COD_CENTRAL        IN GA_RESNUMCEL.COD_CENTRAL%TYPE,
+            EN_COD_CAT            IN GA_RESNUMCEL.COD_CAT%TYPE,
+            EN_COD_USO            IN GA_RESNUMCEL.COD_USO%TYPE,
+          ---FEC_RESERVA
+          EV_NOM_USUARIO         IN GA_RESNUMCEL.NOM_USUARIO%TYPE,
+          EV_IND_PROCNUM         IN GA_RESNUMCEL.IND_PROCNUM%TYPE,
+          EV_FEC_BAJA           IN VARCHAR2,
+          SN_COD_RETORNO           OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO          OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO            OUT NOCOPY GE_ERRORES_PG.EVENTO
+);
+
+PROCEDURE VE_CONS_GA_TRANSACABO_PR(
+     EN_NUM_TRANSACCION                 IN    GA_TRANSACABO.NUM_TRANSACCION%TYPE,
+     SN_COD_RETORNO_TRANS  OUT NOCOPY GA_TRANSACABO.COD_RETORNO%TYPE,
+     SV_DES_CADENA_TRANS      OUT NOCOPY  GA_TRANSACABO.DES_CADENA%TYPE,
+      SN_COD_RETORNO               OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+    SV_MENS_RETORNO              OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+    SN_NUM_EVENTO                OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+
+PROCEDURE VE_P_REPONER_NUMERACION_PR(
+           EV_TABLA IN VARCHAR2 ,
+           EV_SUBALM IN VARCHAR2 ,
+           EV_CENTRAL IN VARCHAR2 ,
+           EV_CAT IN VARCHAR2 ,
+           EV_USO IN VARCHAR2 ,
+           EV_CELULAR IN VARCHAR2 ,
+           SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+           SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+           SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+PROCEDURE VE_P_NUMERACION_MANUAL_PR(
+           EV_TRANSAC IN VARCHAR2 ,
+           EV_TABLA IN VARCHAR2 ,
+           EV_SUBALM IN VARCHAR2 ,
+           EV_CENTRAL IN VARCHAR2 ,
+           EV_CAT IN VARCHAR2 ,
+           EV_USO IN VARCHAR2 ,
+           EV_CELULAR IN VARCHAR2 ,
+           SN_COD_RETORNO    OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+           SV_MENS_RETORNO   OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+           SN_NUM_EVENTO     OUT NOCOPY GE_ERRORES_PG.EVENTO
+  );
+
+PROCEDURE VE_CONS_NUM_CEL_GA_RESERVA_PR (
+          EN_NUM_CELULAR        IN GA_RESERVA.NUM_CELULAR%TYPE,
+          SN_COD_CLIENTE        OUT NOCOPY GA_RESERVA.COD_CLIENTE%TYPE,
+          SN_COD_VENDEDOR        OUT NOCOPY GA_RESERVA.COD_VENDEDOR%TYPE,
+          SV_ORIGEN                OUT NOCOPY GA_RESERVA.ORIGEN%TYPE,
+          SD_FEC_RESERVA         OUT NOCOPY GA_RESERVA.FEC_RESERVA%TYPE,
+          SV_COD_SUBALM            OUT NOCOPY GA_RESERVA.COD_SUBALM%TYPE,
+          SN_COD_PRODUCTO        OUT NOCOPY GA_RESERVA.COD_PRODUCTO%TYPE,
+          SN_COD_CENTRAL        OUT NOCOPY GA_RESERVA.COD_CENTRAL%TYPE,
+          SN_COD_CAT            OUT NOCOPY GA_RESERVA.COD_CAT%TYPE,
+          SN_COD_USO            OUT NOCOPY GA_RESERVA.COD_USO%TYPE,
+          SD_FEC_BAJA            OUT NOCOPY  GA_RESERVA.FEC_BAJA%TYPE ,
+          SN_IND_EQUIPADO        OUT NOCOPY GA_RESERVA.IND_EQUIPADO%TYPE,
+          SN_USO_ANTERIOR       OUT NOCOPY GA_RESERVA.USO_ANTERIOR%TYPE,
+          SN_COD_VENDEALER      OUT NOCOPY GA_RESERVA.COD_VENDEALER%TYPE,
+          SN_COD_RETORNO           OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO          OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO            OUT NOCOPY GE_ERRORES_PG.EVENTO
+      );
+
+
+PROCEDURE VE_CONS_GA_CELNUM_USO_PR (
+      EN_NUM_CELULAR                IN  GA_CELNUM_USO.NUM_DESDE%TYPE,
+      SV_COD_SUBALM                 OUT NOCOPY GA_CELNUM_USO.COD_SUBALM%TYPE,
+      SV_COD_CENTRAL                OUT NOCOPY GA_CELNUM_USO.COD_CENTRAL%TYPE,
+      SV_COD_CAT                    OUT NOCOPY GA_CELNUM_USO.COD_CAT%TYPE,
+      SV_COD_USO                    OUT NOCOPY GA_CELNUM_USO.COD_USO%TYPE,
+      SN_COD_RETORNO                   OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+      SV_MENS_RETORNO                  OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+      SN_NUM_EVENTO                    OUT NOCOPY GE_ERRORES_PG.EVENTO
+);
+PROCEDURE VE_OBTIENE_CATEGORIA_PR(
+          EV_COD_ACTABO              IN GA_ACTABO.COD_ACTABO%TYPE,
+          SC_BLOQ_CATEGORIAS       OUT NOCOPY REFCURSOR,
+          SN_COD_RETORNO               OUT NOCOPY GE_ERRORES_TD.COD_MSGERROR%TYPE,
+          SV_MENS_RETORNO              OUT NOCOPY GE_ERRORES_TD.DET_MSGERROR%TYPE,
+          SN_NUM_EVENTO                OUT NOCOPY GE_ERRORES_PG.EVENTO);
+PROCEDURE VE_VALIDA_NUMERACION_PR(    EV_NumFrecuente      IN TA_NUMNACIONAL.NUM_TDESDE%TYPE,
+                                       EV_CodOperadorMin     IN VARCHAR2,
+                                    EV_Procedencia       IN VARCHAR2,--(I,E)
+                                    EV_codCliente        IN GE_CLIENTES.COD_CLIENTE%TYPE,
+                                    SV_ROWID             OUT NOCOPY VARCHAR,
+                                    SN_cod_retorno         OUT NOCOPY ge_errores_pg.CodError,
+                                    SV_mens_retorno        OUT NOCOPY ge_errores_pg.MsgError,
+                                    SN_num_evento          OUT NOCOPY ge_errores_pg.Evento) ;
+PROCEDURE VE_VALIDA_NUMERACION_PR(    EV_NUMTELEFONO       IN GA_REFERCLI_TO.NUM_TELFIJO%TYPE,
+                                       EV_TipRed            IN VARCHAR2, --F: FIJO M:MOVIL
+                                    SN_cod_retorno         OUT NOCOPY ge_errores_pg.CodError,
+                                    SV_mens_retorno        OUT NOCOPY ge_errores_pg.MsgError,
+                                    SN_num_evento          OUT NOCOPY ge_errores_pg.Evento);
+
+PROCEDURE VE_VALIDA_NUMERACION_LDI_PR(    EV_NUMTELEFONO       IN GA_REFERCLI_TO.NUM_TELFIJO%TYPE,
+                                    SN_cod_retorno         OUT NOCOPY ge_errores_pg.CodError,
+                                    SV_mens_retorno        OUT NOCOPY ge_errores_pg.MsgError,
+                                    SN_num_evento          OUT NOCOPY ge_errores_pg.Evento);
+-----------------------------------------------------------------------------------------------------------
+--P-CSR-11002 JLGN 14-11-2011 
+PROCEDURE ve_val_disp_numero_pr(ev_numcelular   IN ga_abocel.num_celular%TYPE,
+                                sn_cod_retorno  OUT NOCOPY ge_errores_pg.CodError,
+                                sv_mens_retorno OUT NOCOPY ge_errores_pg.MsgError,
+                                sn_num_evento   OUT NOCOPY ge_errores_pg.Evento);  
+END VE_Numeracion_Pg;
+/

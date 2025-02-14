@@ -1,0 +1,23 @@
+CREATE OR REPLACE PROCEDURE        P_SERIE_INTARENT(
+  VP_ABONADO IN NUMBER ,
+  VP_SERIEHEX IN VARCHAR2 ,
+  VP_SERIEANTHEX IN VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+BEGIN
+  --
+  -- Procedimiento de Actualizacion de fechas de activacion/desactivacion
+  -- en central de abonados roaming visitantes.
+  --
+  BEGIN
+     UPDATE GA_INTARENT
+        SET NUM_SERIE = VP_SERIEHEX
+      WHERE NUM_ABONADO  = VP_ABONADO
+        AND NUM_SERIE = VP_SERIEANTHEX;
+  EXCEPTION
+     WHEN OTHERS THEN
+          VP_ERROR := 4;
+  END;
+END P_SERIE_INTARENT;
+/
+SHOW ERRORS

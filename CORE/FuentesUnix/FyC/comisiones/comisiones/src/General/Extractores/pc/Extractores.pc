@@ -1,0 +1,796 @@
+/*---------------------------------------------------------------------------*/
+/* Programa : Extractores.pc                                                 */
+/*            Programa encargado de ejecutar los extractores de Comisiones.  */
+/* Autora   : Fabián Aedo R.                                                 */
+/* Modificado por :                                                          */
+/* Fecha Ultimas Modificaciones:                                             */
+/*---------------------------------------------------------------------------*/
+#include "Extractores.h"
+#include "GEN_biblioteca.h"
+#include <geora.h>
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+EXEC SQL WHENEVER SQLERROR DO vSqlErrorNew();
+/*---------------------------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.                                */
+/*---------------------------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;     
+char    szhUser[30]="";         
+char    szhPass[30]="";         
+char    szhSysDate[17]="";        
+char    szFechaYYYYMMDD[9]="";  
+EXEC SQL END DECLARE SECTION;
+
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA MANEJO DE MENSAJES DE ERRORES ORACLE.                         */
+/*---------------------------------------------------------------------------*/
+void    vSqlErrorNew ()
+{
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    fprintf(pfLog, "\n[Extractor] Error ORACLE: \n");
+    fprintf(pfLog, "[Extractor] %s\n", sqlca.sqlerrm.sqlerrmc); 
+    fprintf(pfLog, "SE TERMINA LA EJECUCION DEL PROCESO.\n");
+}
+
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA MANEJO Y VALIDACION DE ARGUMENTOS INGRESADOS COMO PARAMETROS  */
+/* EXTERNOS.                                                                 */
+/*---------------------------------------------------------------------------*/
+void  vManejaArgsnew (int argc, char * const argv[])
+{
+    int         iOpt = 0;
+    extern char *optarg;
+    char        opstring[] = ":u:d:h:";
+    char        *szUserid_Aux;
+    char        userid[70];
+    char        szaux[10];
+
+	while((iOpt=getopt(argc, argv, opstring)) != EOF)
+    {
+    	switch(iOpt)
+        {
+			case 'u':
+            	if(stArgsNew.bFlagUser == FALSE)
+                {
+                	if(optarg[0]=='-')
+                    {
+                        fprintf(stderr, "\nOpcion -%c tiene argumento", optopt);
+                        fprintf(stderr," invalido. Se cancela.\n");
+                        fprintf(stderr, "%s\n\n", szUsonew);
+                        exit(EXIT_01);
+                    }
+                    sprintf(userid, optarg);
+                    if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+                    {
+                    	fprintf(stderr, "\nUsuario Oracle no es valido\n");
+                        fprintf(stderr, "%s\n\n", szUsonew);
+                        exit(EXIT_01);
+                    }
+                    else
+                    {
+                    	strncpy(stArgsNew.szUser, userid, szUserid_Aux-userid);
+                        strcpy(stArgsNew.szPass, szUserid_Aux+1);
+                    }
+       			}
+                else
+                {
+                	fprintf(stderr, "\nOpcion -%c duplicada.", optopt);
+                    fprintf(stderr," Se cancela.\n");
+                    fprintf(stderr, "%s\n\n", szUsonew);
+                    exit(EXIT_01);
+                }
+                stArgsNew.bFlagUser=TRUE;
+                break;
+
+			case 'd':
+				if(stArgsNew.bFlagFecDesde == FALSE)
+				{
+					if(optarg[0]=='-')
+					{
+					   fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+					   fprintf(stderr, "%s\n\n", szUsonew);
+					   exit(EXIT_01);
+					}
+					strcpy(stArgsNew.szFecDesde,optarg);
+				}
+				else
+				{
+					fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+					fprintf(stderr, "%s\n\n", szUsonew);
+					exit(EXIT_01);
+				}
+				stArgsNew.bFlagFecDesde = TRUE;
+				break;
+			
+			case 'h':
+				if(stArgsNew.bFlagFecHasta == FALSE)
+			 	{
+			    	if(optarg[0]=='-')
+			    	{
+				       	fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+				       	fprintf(stderr, "%s\n\n", szUsonew);
+				    	exit(EXIT_01);
+			    	}
+			    	strcpy(stArgsNew.szFecHasta,optarg);
+			 	}
+			 	else
+			 	{
+			    	fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+			    	fprintf(stderr, "%s\n\n", szUsonew);
+			    	exit(EXIT_01);
+			 	}
+			 	stArgsNew.bFlagFecHasta = TRUE;
+			 	break;
+
+			case '?':
+            	fprintf(stderr, "Opcion -%c no reconocida. Se cancela.\n", optopt);
+                fprintf(stderr, "%s\n\n", szUsonew);
+                exit(EXIT_01);
+		}  /* Fin switch */
+	}      /* Fin while  */
+
+/*---------------------------------------------------------------------------*/
+/* VALIDA LA RELACION DE LOS PARAMETROS...                                   */
+/*---------------------------------------------------------------------------*/
+    if (stArgsNew.bFlagUser == FALSE)
+    {
+    	fprintf(stderr, "%s\n", szRaya);
+        fprintf(stderr, "Se requiere argumento -u[Usuario/Password]\n");
+        fprintf(stderr, "%s\n", szRaya);
+        fprintf(stderr, "%s\n\n", szUsonew);
+        exit(EXIT_01);
+    }
+   if(stArgsNew.bFlagFecDesde == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -c[Fecha Desde <YYYYMMDD>]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUsonew);
+      exit(EXIT_01);
+   }
+   if(stArgsNew.bFlagFecHasta == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -c[Fecha Hasta <YYYYMMDD>]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUsonew);
+      exit(EXIT_01);
+   }
+}
+/*---------------------------------------------------------------------------*/
+/* CARGA ESTRUCTURA DE UNIVERSOS A PROCESAR                                  */
+/*---------------------------------------------------------------------------*/
+stProcesos * stfnCargaProcesos()
+{
+    stProcesos 	* qaux = NULL;
+    stProcesos 	* paux = NULL;
+    long    	iCantidad = 0; 
+	int         i; 
+	long        iLastRows    = 0;
+	int         iFetchedRows = MAXFETCH;
+	int         iRetrievRows = MAXFETCH;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhCodUniverso[MAXFETCH][7];
+		char	szhDesUniverso[MAXFETCH][51];
+		char    szhIndAfirmacion[2];
+		long	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+
+	lMaxFetch = MAXFETCH;
+	strcpy(szhIndAfirmacion,"S");
+	
+	EXEC SQL DECLARE CUR_PROCESOS CURSOR FOR
+		SELECT DISTINCT A.COD_UNIVERSO,
+                B.DES_UNIVERSO
+		FROM CM_ARCHIVOS_TD A,
+		     CMD_UNIVERSOS B
+		WHERE A.IND_EJECUCION = :szhIndAfirmacion
+		  AND A.COD_UNIVERSO = B.COD_UNIVERSO;
+		
+    EXEC SQL OPEN CUR_PROCESOS;     
+    
+	while(iFetchedRows == iRetrievRows)
+    {
+   		EXEC SQL for :lMaxFetch FETCH CUR_PROCESOS INTO :szhCodUniverso, :szhDesUniverso;
+   	     
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+                
+        for (i=0; i < iRetrievRows; i++)
+        {                
+			paux = (stProcesos *) malloc(sizeof(stProcesos));   	     
+			
+			strcpy(paux->szCodUniverso	, szfnTrim(szhCodUniverso[i]));
+			strcpy(paux->szDesUniverso	, szfnTrim(szhDesUniverso[i]));
+			paux->bFlgExisteProceso     = bGetNomProceso(paux->szCodUniverso, paux->szNomExe);
+			
+			paux->sgte                 	= qaux;
+			qaux                	    = paux;
+			iCantidad++;
+		}
+		
+	}
+	EXEC SQL CLOSE CUR_PROCESOS;
+    fprintf(pfLog ,"\n[stfnCargaProcesos] szhIndAfirmacion Indicador de Afirmacion query:[%s].\n", szhIndAfirmacion);
+    fprintf(pfLog ,"\n[stfnCargaProcesos] Cantidad de Procesos a Ejecutar:[%ld].\n", iCantidad);
+    fprintf(stderr,"\n[stfnCargaProcesos] Cantidad de Procesos a Ejecutar:[%ld].\n", iCantidad);
+    return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* ASOCIA EL  NOMBRE DEL EJECUTABLE AL UNIVERSO A PROCESAR                   */
+/*---------------------------------------------------------------------------*/
+int bGetNomProceso(char * pszCodUniverso, char * pszNombre)
+{
+	if (strcmp(pszCodUniverso, uniLISTOPACK)==0) 
+		strcpy(pszNombre, prcLISTOPACK);
+	else 
+		if (strcmp(pszCodUniverso, uniVENTAS)==0) 
+			strcpy(pszNombre, prcVENTAS);
+		else 
+			if (strcmp(pszCodUniverso, uniBAJAS)==0) 
+				strcpy(pszNombre, prcBAJAS);
+			else 
+				if (strcmp(pszCodUniverso, uniREDVEN)==0) 
+					strcpy(pszNombre, prcREDVEN);
+				else
+				{
+					fprintf(pfLog , "\n[szGetNomProceso] Error, UNIVERSO:[%s] No Reconocido.", pszCodUniverso);
+					fprintf(stderr, "\n[szGetNomProceso] Error, UNIVERSO:[%s] No Reconocido.", pszCodUniverso);
+					return FALSE;
+				}	
+	fprintf(pfLog , "\n[szGetNomProceso] UNIVERSO:[%s] ---> PROCESO:[%s]", pszCodUniverso, pszNombre);
+	fprintf(stderr, "\n[szGetNomProceso] UNIVERSO:[%s] ---> PROCESO:[%s]", pszCodUniverso, pszNombre);
+	return TRUE;
+	
+}
+
+/*---------------------------------------------------------------------------*/
+/* VALIDA SI SE ESTA EJECUTANDO EL PROCESO DE EXTRACCION                     */
+/*---------------------------------------------------------------------------*/
+int bfnGetStatusExtractor(char * szCodEstado, int * piSecuencia)
+{
+	int		bIndPrimera = FALSE;
+	EXEC SQL BEGIN DECLARE SECTION;
+		char 	szhCodEstaProc[2];
+		int	 	ihNumSeq;
+		char	szhFecDesde[9];
+		char	szhFecHasta[9];
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL SELECT 
+		COD_ESTAPROC, 
+		SEQ_PROCESO,
+		TO_CHAR(FEC_DESDE,'YYYYMMDD'),
+		TO_CHAR(FEC_HASTA,'YYYYMMDD')
+	INTO :szhCodEstaProc, :ihNumSeq, :szhFecDesde, :szhFecHasta
+	FROM CM_EJECUTA_PROCESOS_TD
+	WHERE SEQ_PROCESO = (SELECT MAX(SEQ_PROCESO)
+	                     FROM CM_EJECUTA_PROCESOS_TD);
+	
+    if (sqlca.sqlcode != SQLOK) 
+    {
+	    if (sqlca.sqlcode != SQLNOTFOUND) 
+	    {
+			fprintf(pfLog,"[bfnGetStatusExtractor] Error determinando estado de ejecución del Proceso Extractor.\n");
+			fprintf(stderr,"[bfnGetStatusExtractor] Error determinando estado de ejecución del Proceso Extractor.\n");
+			fprintf(stderr,"[bfnGetStatusExtractor]  [%s]\n", sqlca.sqlerrm.sqlerrmc);
+			vSqlErrorNew();
+			return FALSE;
+	    }
+	    else
+		{
+			fprintf(pfLog ,"[bfnGetStatusExtractor] Tabla de Ejecución de Procesos Vacía. Primera Ejecución.\n");
+			fprintf(stderr,"[bfnGetStatusExtractor] Tabla de Ejecución de Procesos Vacía. Primera Ejecución.\n");
+			bIndPrimera = TRUE;
+	    }
+	    
+	}
+	if (bIndPrimera)
+	{
+		sprintf(szCodEstado, "%c", extNoIniciado);
+		ihNumSeq = 0;
+		*piSecuencia = 1;
+	}
+	else
+	{
+		strcpy(szCodEstado, szhCodEstaProc);
+		*piSecuencia = ihNumSeq + 1;
+	}	
+	fprintf(pfLog ,"[bfnGetStatusExtractor] Secuencia Anterior:[%d] Status:[%s] Secuencia Nueva:[%d].\n", ihNumSeq, szCodEstado, *piSecuencia);
+	fprintf(stderr,"[bfnGetStatusExtractor] Secuencia Anterior:[%d] Status:[%s] Secuencia Nueva:[%d].\n", ihNumSeq, szCodEstado, *piSecuencia);
+
+	return TRUE;
+}
+/*---------------------------------------------------------------------------*/
+/* Inserta nuevo registro de trazas para control de ejecucion...             */
+/*---------------------------------------------------------------------------*/
+int bfnInsertaNuevaSecuencia(int iNumSeq)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int 	ihNumSeq;
+		char	szhCodEstProc[2];
+		char	szhFecDesde[10];
+		char	szhFecHasta[10];
+	EXEC SQL END DECLARE SECTION;
+
+	fprintf(pfLog ,"[bfnInsertaNuevaSecuencia] Crea Nueva Secuencia de Ejecución:[%d]\n", iNumSeq);
+	fprintf(stderr,"[bfnInsertaNuevaSecuencia] Crea Nueva Secuencia de Ejecución:[%d]\n", iNumSeq);
+	
+	ihNumSeq = iNumSeq;
+	sprintf(szhCodEstProc, "%c",extNoIniciado);
+	strcpy(szhFecDesde, stArgsNew.szFecDesde);
+	strcpy(szhFecHasta, stArgsNew.szFecHasta);
+		
+	EXEC SQL INSERT INTO CM_EJECUTA_PROCESOS_TD
+	(SEQ_PROCESO, COD_ESTAPROC, FEC_DESDE, FEC_HASTA, NOM_USUARIO )
+	VALUES (
+		:ihNumSeq, 
+		:szhCodEstProc, 
+		TO_DATE(:szhFecDesde,'YYYYMMDD'), 
+		TO_DATE(:szhFecHasta,'YYYYMMDD'),
+		USER);
+	
+    if (sqlca.sqlcode != SQLOK) 
+    {
+		fprintf(pfLog ,"[bfnInsertaNuevaSecuencia] Error Generando Secuencia de Ejecución.\n");
+		fprintf(stderr,"[bfnInsertaNuevaSecuencia] Error Generando Secuencia de Ejecución.\n");
+		fprintf(pfLog ,"[bfnInsertaNuevaSecuencia] Error:[%s]\n", sqlca.sqlerrm.sqlerrmc);
+		fprintf(stderr,"[bfnInsertaNuevaSecuencia] Error:[%s]\n", sqlca.sqlerrm.sqlerrmc);
+		return FALSE;
+	}
+	EXEC SQL COMMIT;
+	return TRUE;
+}
+/*---------------------------------------------------------------------------*/
+/* Ejecuta Proceso de Extracción                                             */
+/*---------------------------------------------------------------------------*/
+int bfnEjecutaExtractores()
+{
+	char 		szCodEstado[2];
+	int			iSeqProceso;
+	char 		szOK[20] = "Correctamente.";
+	char 		szErr[20] = "Con ERROR.";
+	
+	/* Primero, validamos el estado de ejecución del último proceso de extracción */
+	if (!(bfnGetStatusExtractor(szCodEstado, &iSeqProceso)))
+	{
+		fprintf(stderr,"[bfnEjecutaExtractores] Error determinando estado de ejecución del Proceso Extractor.\n");
+		fprintf(pfLog,"[bfnEjecutaExtractores] Error determinando estado de ejecución del Proceso Extractor.\n");
+		return FALSE;
+	}
+	/* si el último proceso se está ejecutando... */
+	if (szCodEstado[0] == extIniciado)
+	{
+		fprintf(stderr,"[bfnEjecutaExtractores] El Proceso Extractor está actualmente EJECUTANDOSE.\n");
+		fprintf(pfLog,"[bfnEjecutaExtractores] El Proceso Extractor está actualmente EJECUTANDOSE.\n");
+		return FALSE;
+	}
+	if ((szCodEstado[0] == extNoIniciado)&&(iSeqProceso > 1))
+	{
+		fprintf(stderr,"[bfnEjecutaExtractores] Error de Consistencia de la traza de Ejecucion.\n");
+		fprintf(pfLog ,"[bfnEjecutaExtractores] Error de Consistencia de la traza de Ejecucion.\n");
+		return FALSE;
+	}
+	
+	/* si el último proceso terminó su ejecución... */
+	if ((szCodEstado[0] == extTermOk)||(szCodEstado[0] == extTermError))
+	{
+		fprintf(stderr,"[bfnEjecutaExtractores] El último proceso de Extracción Terminó %s\n", (szCodEstado[0] == extTermOk)?szOK:szErr);
+		fprintf(pfLog ,"[bfnEjecutaExtractores] El último proceso de Extracción Terminó %s\n", (szCodEstado[0] == extTermOk)?szOK:szErr);
+	}
+	/* genera nueva secuencia de ejecucion de procesos */
+	if (!bfnInsertaNuevaSecuencia(iSeqProceso))
+	{
+		fprintf(stderr,"[bfnEjecutaExtractores] Error generando trazas de procesos nueva ejecucion.\n");
+		fprintf(pfLog ,"[bfnEjecutaExtractores] Error generando trazas de procesos nueva ejecucion.\n");
+		return FALSE;
+	}
+	if (!(bfnControlaEjecucion(iSeqProceso)))
+	{
+		fprintf(pfLog,"[bfnEjecutaExtractores] Error ejecutando proceso de Extracción.\n");
+		fprintf(pfLog,"[bfnEjecutaExtractores] Proceso se Cancela.\n");
+		fprintf(stderr,"[bfnEjecutaExtractores] Error ejecutando proceso de Extracción.\n");
+		fprintf(stderr,"[bfnEjecutaExtractores] Proceso se Cancela.\n");
+		return FALSE;
+	}
+	return TRUE;
+}
+/*---------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
+int bfnControlaEjecucion(int piSecuencia)
+{
+	stProcesos 	* paux;
+	int     bRes = FALSE;
+	EXEC SQL BEGIN DECLARE SECTION;
+		int	ihSecProceso;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihSecProceso = piSecuencia;
+    fprintf(pfLog ,"\n(bfnControlaEjecucion) Marca Estado de Trazas INICIO Extractor Secuencia:[%d].\n",ihSecProceso);
+    fprintf(stderr,"\n(bfnControlaEjecucion) Marca Estado de Trazas INICIO Extractor Secuencia:[%d].\n",ihSecProceso);
+	if (!bfnMarcaEstadoExtractor(ihSecProceso, extIniciado))																	
+	{                                                                                                                           
+		fprintf(stderr,"[bfnControlaEjecucion] No fue posible modificar estado de ejecución de proceso:[%d]\n", piSecuencia);   
+		fprintf(pfLog ,"[bfnControlaEjecucion] No fue posible modificar estado de ejecución de proceso:[%d]\n", piSecuencia);   
+		return FALSE;                                                                                                           
+	}                                                                                                                           
+	
+	lstProcesos = stfnCargaProcesos();
+	fprintf(stderr,"[bfnControlaEjecucion] Muestra Lista de Procesos a Ejecutar.\n");
+	fprintf(pfLog ,"[bfnControlaEjecucion] Muestra Lista de Procesos a Ejecutar.\n");
+	vMuestraProcesos();
+
+	for (paux = lstProcesos; paux != NULL; paux = paux->sgte)
+	{
+		if (paux->bFlgExisteProceso)
+		{
+		    fprintf(pfLog ,"\n(bfnControlaEjecucion) Actualiza Traza de Extractores(iCREATRAZA): Secuencia:[%d] Proceso:[%s].\n",ihSecProceso, paux->szDesUniverso);	
+		    fprintf(stderr,"\n(bfnControlaEjecucion) Actualiza Traza de Extractores(iCREATRAZA): Secuencia:[%d] Proceso:[%s].\n",ihSecProceso, paux->szDesUniverso);    
+			ifnActualizaTrazasExtractores(ihSecProceso, paux->szCodUniverso, 0, "X", iCREATRAZA);                                                                       
+
+			fprintf(stderr,"[bfnControlaEjecucion] Ejecutando Proceso de [%s][%s].\n", paux->szCodUniverso, paux->szDesUniverso);
+			fprintf(pfLog ,"[bfnControlaEjecucion] Ejecutando Proceso de [%s][%s].\n", paux->szCodUniverso, paux->szDesUniverso);
+	        if(!(bLanzaProceso(ihSecProceso, paux->szNomExe, paux->szCodUniverso)))
+	        {
+				fprintf(stderr,"[bfnControlaEjecucion] Error ejecutando Proceso de [%s][%s].\n", paux->szCodUniverso, paux->szDesUniverso);
+				fprintf(pfLog ,"[bfnControlaEjecucion] Error ejecutando Proceso de [%s][%s].\n", paux->szCodUniverso, paux->szDesUniverso);
+	            bRes = bfnMarcaEstadoExtractor(ihSecProceso, extTermError);
+	            return FALSE;
+	        }
+		}
+		else
+		{
+			fprintf(stderr,"[bfnControlaEjecucion] Archivos de Universo [%s] no tiene Proceso Asociado. No es Posible Ejecutar.\n", paux->szDesUniverso);
+			fprintf(stderr,"[bfnControlaEjecucion] Archivos de Universo [%s] no tiene Proceso Asociado. No es Posible Ejecutar.\n", paux->szDesUniverso);
+		}
+	}
+	fprintf(stderr,"[bfnControlaEjecucion] Termino Exitoso de Ejecución de Procesos.\n");
+	fprintf(pfLog ,"[bfnControlaEjecucion] Termino Exitoso de Ejecución de Procesos.\n");
+    bRes = bfnMarcaEstadoExtractor(ihSecProceso, extTermOk);
+    return TRUE;	
+}
+/* ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------------- */
+int bfnMarcaEstadoExtractor(int piSecuencia, char cNuevoEstado)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int 	ihSecProceso;
+		char 	szhCodEstaProc[2];
+		int	    bRes;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihSecProceso = piSecuencia;
+	sprintf(szhCodEstaProc, "%c", cNuevoEstado);
+	
+	EXEC SQL SELECT 
+		CM_EXTRACTORES_PG.CM_MarcaEstadoExtractor_FN(:ihSecProceso, :szhCodEstaProc)
+	INTO :bRes
+	FROM DUAL;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr, "\n[bfnMarcaEstadoExtractor] Error en Package:[%s]", sqlca.sqlerrm.sqlerrmc);
+		return FALSE;
+	}
+	if (bRes == 0)
+		return TRUE;
+	return FALSE;}
+/* ------------------------------------------------------------------------- */
+/* Valida el inicio de la ejecución del proceso XXX para la seq YYY          */
+/* ------------------------------------------------------------------------- */
+int bfnValidaInicioProceso(int piSecuencia, char * pszUniverso)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int 	ihSecProceso;
+		char 	szhCodUniverso[7];
+	EXEC SQL END DECLARE SECTION;
+	
+	ihSecProceso = piSecuencia;
+	
+	EXEC SQL SELECT NVL(COD_PROCESO, 'N')
+	INTO :szhCodUniverso
+	FROM CM_EJECUTA_PROCESOS_TD
+	WHERE SEQ_PROCESO = :ihSecProceso;
+	
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr,"[bfnValidaInicioProceso] No fue posible verificar inicio de ejecución de proceso:[%s]\n", pszUniverso);
+		fprintf(pfLog ,"[bfnValidaInicioProceso] No fue posible modificar estado de ejecución de proceso:[%s]\n", pszUniverso);
+		return FALSE;
+	}
+	/* el solo hecho de que se haya inscrito en la traza indica que ya partió... */
+	if (strcmp(pszUniverso,szfnTrim(szhCodUniverso))==0)
+		return TRUE;
+	return FALSE;
+}
+/* ------------------------------------------------------------------------- */
+/* Recupera Estado de Ejecución de un Proceso                                */
+/* ------------------------------------------------------------------------- */
+char cfnValidaEjecucionProceso(int piSecuencia, char * pszUniverso)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int 	ihSecProceso;
+		char 	szhCodUniverso[7];
+		char    szhCodEstadoEjec[2];
+	EXEC SQL END DECLARE SECTION;
+	
+	ihSecProceso = piSecuencia;
+	strcpy(szhCodUniverso, pszUniverso);
+	fprintf(stderr, "\n[cfnValidaEjecucionProceso] Validando Estado de Ejecucion Secuencia:[%d] Proceso:[%s]", ihSecProceso, szhCodUniverso);
+	fprintf(pfLog , "\n[cfnValidaEjecucionProceso] Validando Estado de Ejecucion Secuencia:[%d] Proceso:[%s]", ihSecProceso, szhCodUniverso);
+
+	EXEC SQL SELECT NVL(COD_ESTAEJEC, '')
+	INTO :szhCodEstadoEjec
+	FROM CM_EJECUTA_PROCESOS_TD
+	WHERE SEQ_PROCESO = :ihSecProceso
+	AND COD_PROCESO = :szhCodUniverso;
+	
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr,"\n[cfnValidaEjecucionProceso] Error determinando estado de ejecución de proceso:[%s]\n", pszUniverso);
+		fprintf(stderr,"\n[cfnValidaEjecucionProceso] [[%s]]\n", sqlca.sqlerrm.sqlerrmc);
+		fprintf(pfLog ,"\n[cfnValidaEjecucionProceso] Error determinando estado de ejecución de proceso:[%s]\n", pszUniverso);
+		fprintf(pfLog ,"\n[cfnValidaEjecucionProceso] [[%s]]\n", sqlca.sqlerrm.sqlerrmc);
+		return 0;
+	}
+	fprintf(stderr, "\n[cfnValidaEjecucionProceso] Estado de Ejecucion Secuencia:[%d] Proceso:[%s]   ----->[%s]", ihSecProceso, szhCodUniverso, szhCodEstadoEjec);
+	fprintf(pfLog , "\n[cfnValidaEjecucionProceso] Estado de Ejecucion Secuencia:[%d] Proceso:[%s]   ----->[%s]", ihSecProceso, szhCodUniverso, szhCodEstadoEjec);
+	
+	return szhCodEstadoEjec[0];
+}
+/* ------------------------------------------------------------------------- */
+/* MUESTRA LAESTRUCTURA DE BLOQUES Y PROCESOS EN PANTALLA                    */
+/* ------------------------------------------------------------------------- */
+void vMuestraProcesos()
+{
+	stProcesos 	* paux;
+	
+	fprintf(stderr,"\n---------------------------------------------\n");
+	fprintf(stderr,"UNIVERSOS DE DATOS A PROCESOS \n");
+	for (paux=lstProcesos;paux!=NULL;paux=paux->sgte)
+	{	
+		fprintf(stderr,"\n---------------------------------------------\n");
+		fprintf(stderr,"Universo de Datos       :[%s]\n",paux->szCodUniverso);
+		fprintf(stderr,"Descripción             :[%s]\n",paux->szDesUniverso);
+		fprintf(stderr,"Ejecutable Binario      :[%s]\n",paux->szNomExe);
+	}
+	fprintf(stderr,"\n---------------------------------------------\n");
+}
+/*---------------------------------------------------------------------------*/
+/* LANZA Y GESTIONA LA EJECUCION DE UN PROCESO DE COMISIONES....             */
+/*---------------------------------------------------------------------------*/
+int bLanzaProceso(int piSecuencia, char * pszNomExe, char * pszUniverso)
+{
+        char    szComandoUx[200];
+        char    szUser[30];
+        int     iRes;
+        char    szSysDate[30];
+        long    lhSecProceso;
+        char    cEstProceso;
+        long    i = 0;
+        int     bSaleLoop = FALSE;
+        
+        if (!strlen(stArgsNew.szPass))
+                strcpy(szUser,"");
+        else
+                strcpy(szUser, stArgsNew.szUser);
+
+        /* construye el comando a ejecutar... */
+        sprintf(szComandoUx, "%s/%s -u'%s/%s' -d%s -h%s -s%d&",
+                pszEnvExe, 
+                pszNomExe,
+                szUser,
+                stArgsNew.szPass,
+                stArgsNew.szFecDesde,
+                stArgsNew.szFecHasta,
+                piSecuencia);
+                
+        /* Registra ejecucion en el LOG */
+        fprintf(pfLog, "\n\n(bLanzaProceso)Preparando proceso a ejecutar: ");
+        fprintf(pfLog, "\n(bLanzaProceso) <<%s>> \n",szComandoUx);
+        fprintf(stderr,"\n\n(bLanzaProceso) Preparando proceso a ejecutar: ");   
+        fprintf(stderr,"\n(bLanzaProceso) <<%s>> \n",szComandoUx);        
+
+        /* Ejecuta el comando ... */
+        iRes=system(szComandoUx);
+/*                                                                                                */
+/*        i = 0;                                                                                  */
+/*        do                                                                                      */
+/*        {                                                                                       */
+/*            sleep(5);                                                                           */
+/*            fprintf(stderr, "\n(bLanzaProceso) Valida Inicio del Proceso:[%s]", pszNomExe);     */
+/*            fprintf(pfLog , "\n(bLanzaProceso) Valida Inicio del Proceso:[%s]", pszNomExe);     */
+/*            if (!(bfnValidaInicioProceso(piSecuencia, pszUniverso)))                            */
+/*            	i++;                                                                              */
+/*            else                                                                                */
+/*            	break;                                                                            */
+/*                                                                                                */
+/*        }while (i<7);                                                                           */
+/*        fprintf(stderr, "\n(bLanzaProceso) Iteración de Validacion:[%d]", i);                   */
+/*        fprintf(pfLog , "\n(bLanzaProceso) Iteración de Validacion:[%d]", i);                   */
+/*        if (i>=7)                                                                               */
+/*                return FALSE;																	  */
+/*                                                                                                */
+        /* El proceso partió Ok, ahora esperamos a que termine... */
+
+        i = 0;
+        do
+        {
+            cEstProceso = cfnValidaEjecucionProceso(piSecuencia, pszUniverso);
+            switch  (cEstProceso)
+            {
+                case extTermError:
+                    /* El proceso se cayo... salir con false... */
+                    fprintf(pfLog , "\n\n(bLanzaProceso)Error Ejecutando proceso [%s]. Revise el Log.\n",pszUniverso);
+                    fprintf(stderr, "\n\n(bLanzaProceso)Error Ejecutando proceso [%s]. Revise el Log.\n",pszUniverso);
+                    bSaleLoop = TRUE;
+                    break;
+                case extIniciado:
+                    /* El proceso se esta ejecutando... */
+                    sleep(10);
+                    i++;
+                    break;
+                case extTermOk:
+                    /* El proceso termino Ok... */
+                    fprintf(pfLog, "\n\n(bLanzaProceso)Proceso [%s] Termina sin errores.\n",pszUniverso);
+                    fprintf(stderr, "\n\n(bLanzaProceso)Proceso [%s] Termina sin errores.\n",pszUniverso);
+                    bSaleLoop = TRUE;
+                    break;
+                default:
+                    fprintf(pfLog, "\n\n(bLanzaProceso)Error determinando estado de ejecucion de Proceso [%s].\n",pszUniverso);
+                    fprintf(stderr, "\n\n(bLanzaProceso)Error determinando estado de ejecucion de Proceso [%s].\n",pszUniverso);
+                    bSaleLoop = TRUE;
+                    break;
+        	}
+        }while (!bSaleLoop);
+        if (cEstProceso!=extTermOk)
+                return FALSE;
+
+        return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* Rutina principal.                */
+/*---------------------------------------------------------------------------*/
+int     main (int argc, char *argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+    memset(&stArgsNew, 0, sizeof(rg_argumentosnew));
+    vManejaArgsnew(argc, argv);
+/*---------------------------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                                         */
+/*---------------------------------------------------------------------------------------------*/
+    strcpy(szhUser, stArgsNew.szUser);
+    strcpy(szhPass, stArgsNew.szPass);
+    if(fnOraConnect(szhUser, szhPass) == FALSE)
+    {
+            fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+            exit(EXIT_205);
+    }
+    else
+    {
+            fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");
+            fprintf(stderr, "Username: %s\n\n", szhUser);
+    }
+/*---------------------------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.                                 */
+/*---------------------------------------------------------------------------------------------*/
+    if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+    {
+            setlocale(LC_TIME, LC_TIME_SPANISH);
+    }
+/*---------------------------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                                       */
+/*---------------------------------------------------------------------------------------------*/
+    fprintf(stderr, "Preparando ambiente para archivos de log...\n");
+    if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)                                                      
+    {                                                                                                                         
+        exit(EXIT_03);     
+    }                                                                                                                         
+    fprintf(stderr, "Recupera Path de Procesos Ejecutables (Binarios) ...\n");
+    if((pszEnvExe = (char *)pszEnviron("XPCM_EXE", "")) == (char *)NULL)                                                      
+    {                                                                                                                         
+        exit(EXIT_03);     
+    }                                                                                                                         
+    fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);                                          
+    fprintf(stderr, "Directorio de Ejecutables  : [%s]\n", (char *)pszEnvExe);                                          
+/*---------------------------------------------------------------------------------------------*/
+/* Ingresa parametros para estructura que crea archivo de Log                                  */
+/*---------------------------------------------------------------------------------------------*/
+	fprintf(stderr, "Abriendo archivo de Log...");
+     strncpy(szhSysDate, pszGetDateLog(),16);                                                           
+
+    bGeneraArchivoExtractores(&pfLog, LOGNAME, pszEnvLog,szhSysDate,LOG,szLogName );                                                          
+    if(pfLog == NULL)                                                          
+    {                                                                                                        
+        fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", szLogName);                                 
+        fprintf(stderr, "Revise su existencia.\n");                                                          
+        fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                
+        fprintf(stderr, "Proceso finalizado con error.\n");
+        exit(EXIT_03);                                                  
+    }    
+/*---------------------------------------------------------------------------*/
+/* HEADER.                                                                   */
+/*---------------------------------------------------------------------------*/ 
+    vFechaHora();
+    fprintf(pfLog, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION             : [%s]\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision     : [%s]\n", LAST_REVIEW);
+	fprintf(pfLog, "Base de datos       : [%s]\n", (strcmp(getenv((const char *)"TWO_TASK"), "")!=0?getenv((const char *)"TWO_TASK"):getenv((const char *)"ORACLE_SID")));
+    fprintf(pfLog, "Usuario ORACLE      : [%s]\n",(char * )sysGetUserName()); 
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n[Extractores] Argumentos de Ejecucion\n");
+    fprintf(pfLog, "[Extractores]   Fecha de Inicio       	<%s>\n", stArgsNew.szFecDesde);
+    fprintf(pfLog, "[Extractores]   Fecha de Término    	    <%s>\n", stArgsNew.szFecHasta);
+
+    vFechaHora();
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(stderr, "%s\n", szRaya);                    
+    fprintf(stderr, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(stderr, "%s\n", GLOSA_PROG);                
+    fprintf(stderr, "VERSION             : [%s]\n", PROG_VERSION);      
+    fprintf(stderr, "Ultima Revision     : [%s]\n", LAST_REVIEW);
+	fprintf(stderr, "Base de datos       : [%s]\n", (strcmp(getenv((const char *)"TWO_TASK"), "")!=0?getenv((const char *)"TWO_TASK"):getenv((const char *)"ORACLE_SID")));
+    fprintf(stderr, "Usuario ORACLE      : [%s]\n",(char * )sysGetUserName()); 
+    fprintf(stderr, "%s\n\n", szRaya);                  
+
+    fprintf(stderr, "\n[Extractores] Argumentos de Ejecucion\n");
+    fprintf(stderr, "[Extractores]   Fecha de Inicio       	<%s>\n", stArgsNew.szFecDesde);
+    fprintf(stderr, "[Extractores]   Fecha de Término    	<%s>\n", stArgsNew.szFecHasta);
+
+/*---------------------------------------------------------------------------*/
+/* MODIFICACION DE CONFIGURACION AMBIENTAL, PARA MANEJO DE FECHAS EN ORACLE. */
+/*---------------------------------------------------------------------------*/
+        EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';
+/*---------------------------------------------------------------------------*/
+/*    INICIA PROCESAMIENTO PRINCIPAL.                                        */
+/*---------------------------------------------------------------------------*/
+        fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());     
+        fprintf(pfLog, "Inicio procesamiento principal ...\n\n");
+/*---------------------------------------------------------------------------*/
+/* EJECUTA LA CORRELACION DE PROCESOS DE COMISIONES                          */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+    fprintf(pfLog, "[Comisiones]Ejecuta la correlacion de procesos de Comisiones.\n\n");     
+    fprintf(pfLog, "[Comisiones]Ejecuta la correlacion de procesos de Comisiones.\n\n");     
+	bfnEjecutaExtractores();
+/*---------------------------------------------------------------------------*/
+
+    EXEC SQL COMMIT WORK RELEASE;
+    return(EXIT_0); /*EstadoProceso*/
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

@@ -1,0 +1,79 @@
+CREATE OR REPLACE PROCEDURE        P_SEGUNDO_NUMERO(
+  VP_CLIENTE IN NUMBER ,
+  VP_ABONADO IN NUMBER ,
+  VP_CELULAR IN NUMBER ,
+  VP_CICLO IN NUMBER ,
+  VP_CELDA IN VARCHAR2 ,
+  VP_FECSYS IN DATE ,
+  VP_PROC IN OUT VARCHAR2 ,
+  VP_TABLA IN OUT VARCHAR2 ,
+  VP_ACT IN OUT VARCHAR2 ,
+  VP_SQLCODE IN OUT VARCHAR2 ,
+  VP_SQLERRM IN OUT VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento que refleja el cambio y efectividad del nuevo segundo numero
+-- de celular en las tablas de interfase con Facturacion y Tarificacion
+--
+--            Los posibles retornos del procedimiento son :
+--                - '0' Actualizaciones realizadas correctamente
+--                - '4' Error en el proceso
+--
+   VAR1 NUMBER;
+   ERROR_PROCESO EXCEPTION;
+BEGIN
+   VP_PROC := 'P_SEGUNDO_NUMERO';
+   IF VP_CELULAR IS NULL THEN
+      P_BAJA_SEGNUM (VP_CLIENTE,VP_ABONADO,VP_FECSYS,VP_PROC,
+       VP_TABLA,VP_ACT,VP_SQLCODE,VP_SQLERRM,VP_ERROR);
+      IF VP_ERROR <> '0' THEN
+  RAISE ERROR_PROCESO;
+      END IF;
+      VP_PROC := 'P_SEGUNDO_NUMERO';
+   ELSE
+      BEGIN
+         SELECT NUM_ABONADO
+           INTO VAR1
+           FROM GA_INTARCEL
+          WHERE COD_CLIENTE = VP_CLIENTE
+            AND NUM_ABONADO = VP_ABONADO
+            AND IND_NUMERO = 1
+            AND VP_FECSYS BETWEEN FEC_DESDE
+                AND FEC_HASTA;
+     P_MODIFICA_SEGNUM (VP_CLIENTE,VP_ABONADO,VP_CELULAR,
+          VP_CICLO,VP_CELDA,VP_FECSYS,
+          VP_PROC,VP_TABLA,VP_ACT,
+          VP_SQLCODE,VP_SQLERRM,VP_ERROR);
+            IF VP_ERROR <> '0' THEN
+        RAISE ERROR_PROCESO;
+            END IF;
+            VP_PROC := 'P_SEGUNDO_NUMERO';
+      EXCEPTION
+  WHEN NO_DATA_FOUND THEN
+       P_ALTA_SEGNUM (VP_CLIENTE,VP_ABONADO,VP_CELULAR,VP_FECSYS,
+        VP_PROC,VP_TABLA,VP_ACT,VP_SQLCODE,
+        VP_SQLERRM,VP_ERROR);
+              IF VP_ERROR <> '0' THEN
+          RAISE ERROR_PROCESO;
+              END IF;
+              VP_PROC := 'P_SEGUNDO_NUMERO';
+         WHEN OTHERS THEN
+       VP_ERROR := '4';
+       RAISE ERROR_PROCESO;
+      END;
+   END IF;
+EXCEPTION
+   WHEN ERROR_PROCESO THEN
+ IF VP_SQLCODE IS NULL THEN
+    VP_SQLCODE := SQLCODE;
+    VP_SQLERRM := SQLERRM;
+        END IF;
+ VP_ERROR := '4';
+   WHEN OTHERS THEN
+ VP_SQLCODE := SQLCODE;
+ VP_SQLERRM := SQLERRM;
+        VP_ERROR := '4';
+END;
+/
+SHOW ERRORS

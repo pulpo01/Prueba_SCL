@@ -1,0 +1,299 @@
+function pfBorraArchTmp
+{
+   echo "sleep 1\nrm -f $szQUERY_O1 $szQUERY_O2 $szQUERY_O3 $szCOMANDOS"
+}
+
+function prObtieneSeq
+{      
+   aux=`basename $szQUERY_O2 ".sql"`
+   if [ $bReprocesar ] ;then
+      echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off
+      set feedback off;
+      SELECT ltrim(rtrim(max(distinct NVL(B.NUM_SECUINFO,0))))
+        FROM FAD_CTLINFHEADER A ,FAD_CTLIMPRES B
+       WHERE A.COD_INFORME   = B.COD_INFORME
+         AND A.NUM_SECUINFO  = B.NUM_SECUINFO
+         AND B.COD_TIPIMPRES = $iCOD_TIP_IMPRE
+         AND A.COD_CICLFACT  = $szCicloFact
+         AND A.IND_ACTIVO    = 1;
+      exit;
+      " > $szQUERY_O2
+else
+      echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off
+      set feedback off;
+      SELECT ltrim(rtrim(FA_SEQ_CTLINFORMES.NEXTVAL)) FROM DUAL;
+      exit;
+      " > $szQUERY_O2
+   fi
+#echo "\nsqlplus -s $szUserPasswd $aux ...\c"
+num_secuinfo=$(sqlplus -s $szUserPasswd @$aux)
+if [ `echo $num_secuinfo|grep -c "ERROR"` -ge 1 ] ;then
+   echo "prObtieneSeq retorno error .. chao"
+   exit
+fi
+echo "\nCorrelativo :$num_secuinfo"
+}
+
+function prObtieneTdocCdesp
+{
+    echo "
+    set pages 0;
+    set serverout on;
+    set verify off;
+    set lines 20;
+    set head off;
+    set feedback off;
+    select CAST(COLUMN_VALUE as VARCHAR2(9)) from table(FA_TRAZA_CICLO_PG.FA_OBTIENE_TDOCUM_CDESPACHO_FN($1, $2, $3, $4));
+     exit;
+    
+    " > ObtieneTdocCdesp.sql
+    parametros=$(sqlplus -s $szUserPasswd @ObtieneTdocCdesp.sql)
+    if [ `echo $parametros|grep -c "ERROR"` -ge 1 ] ;then
+       echo "prObtieneTdocCdesp retorno error .. ($parametros)"
+       rm -f ObtieneTdocCdesp.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f ObtieneTdocCdesp.sql > /dev/null 2>&1
+	
+}
+
+function fnHelp
+{
+szVer="ver: 23/04/2003 16:00"
+echo "
+User Commands              $szVer                         $0
+NAME
+     $0 - Ejecuta los subprocesos que cubren las Facturas de un ciclo dado.
+SYNOPSIS
+    $0  [-culrtdn] [ Argum ]
+DESCRIPTION
+     c cicle
+           Indica el ciclo cicle de las facturas a imprimir. El formato de este campo es
+           cmmyy, que indica ciclo, mes  y año.
+     u user/pass  
+           Usuario user y password pass de la base oracle en donde se ubiquen los 
+           documentos a imprimir.
+     l 1..5   
+           Indica el nivel de depuracion n opcional, con el que se ejecutaran los subproce-
+           sos de impresion de documentos. Por defecto es seteado en 3.
+     r     Reproceso de Impresion (opcional)
+     t     Tipo de Documento, si se quiere procesar un subproceso puntual
+     d     Codigo de Despacho, si se quiere procesar un subproceso puntual
+
+SAMPLE
+     $0 -u / -c 51101
+     $0 -u / -c 51101 -r
+     $0 -u / -n 1756682
+     $0 -u / -t 25
+     
+User Commands               $szVer                        $0
+"
+
+exit
+}
+
+#-----------------------------------------------------------------------------
+# DEFINICIO DE CONSTANTES GLOBALES :
+POR_PROCESAR=0
+iPROCESO_IMPRESION=5000
+FechaTermino="NULL"
+Programa="${HOME}/facturacion/exe/ImpresionScl"
+iCOD_TIP_IMPRE=1
+bReprocesar=$FALSE
+TRUE="1"
+FALSE=""
+szQUERY_O1="query_tipodocu_coddesp.sql"
+szQUERY_O2="query_secuencial.sql"
+szQUERY_O3="Resetprocimpresion.sql"
+szCOMANDOS="Comandos.sh"
+#-----------------------------------------------------------------------------
+# LECTURA DE PARAMETROS DE ENTRADA :
+
+icnt=0;for i in $@  ;do szPARAMETROS_ENTRADA[$icnt]="$i";icnt=`expr $icnt + 1 ` ;done
+
+if [ $icnt = 0 ] ;then
+    fnHelp
+fi
+
+#=============================================================================
+#
+icnt=0; while [ 1 ] ;do 
+    case ${szPARAMETROS_ENTRADA[$icnt]} in
+        #=============================================================================
+        # CICLO
+        "-c" | "-C" )
+            icnt=`expr $icnt + 1 `
+            szCicloFact=${szPARAMETROS_ENTRADA[$icnt]}
+            Procesa_Ciclo=$TRUE
+            ;;
+        #=============================================================================
+        # USUARIO
+        "-u" | "-U" )
+            icnt=`expr $icnt + 1 `
+            szUserPasswd=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        #=============================================================================
+        # REPROCESO
+        "-r" | "-R" )
+            bReprocesar=$TRUE;;
+        #=============================================================================
+        # NIVEL DE LOG    
+        "-l" | "-L" )
+            icnt=`expr $icnt + 1 `                   
+            iNivelLog=${szPARAMETROS_ENTRADA[$icnt]} 
+            ;;
+        #=============================================================================
+        # NIVEL DE LOG    
+        "-t" | "-T" )
+            icnt=`expr $icnt + 1 `                   
+            iTipDocum=${szPARAMETROS_ENTRADA[$icnt]} 
+            bSubProc_puntual=$TRUE                   
+            ;;
+        #=============================================================================
+        # NIVEL DE LOG    
+        "-d" | "-D" )
+            icnt=`expr $icnt + 1 `                   
+            szCod_Despacho=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        "" )
+            break
+           ;;
+        * )
+           echo "Argumento Desconocido : NO es un archivo :(${szPARAMETROS_ENTRADA[$icnt]})" 
+           fnHelp                                                      
+           ;;
+    esac
+icnt=`expr $icnt + 1 `;done
+szUserPasswd=${szUserPasswd:?$(fnHelp $0)}
+iNivelLog=${iNivelLog:-3}
+
+echo "\nLa base de datos por defecto es : ($ORACLE_SID) ...\n"
+
+HostId=$(head -1 ${XPF_CFG}/host_id.dat) > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "No existe el Archivo de Configuracion ${XPF_CFG}/host_id.dat"
+fi
+if [ -z "$HostId" ];then
+    szRangoClientes=0
+else
+    szRangoClientes=1
+fi
+
+#-----------------------------------------------------------------------------
+# INICIALIZACION DE VARIABLES GLOBALES :
+estado=$POR_PROCESAR
+Fecha="TO_Date( '$(date "+%m/%d/%Y %H:%M:%S")', 'MM/DD/YYYY HH24:MI:SS')"
+szCicloFact=${szCicloFact:?$(fnHelp $0)}
+szTablaFacturas="FA_FACTDOCU_${szCicloFact}"
+
+echo "DELETE FROM FA_TRAZAPROC WHERE COD_CICLFACT=${szCicloFact} AND COD_PROCESO=${iPROCESO_IMPRESION} AND ((HOST_ID = '${HostId}') OR (1 <> ${szRangoClientes}));\ncommit;\n" > $szQUERY_O3
+#-----------------------------------------------------------------------------
+# 
+
+	if [ -z "$szCod_Despacho" ]; then
+    	szhCodDespa="NULL"
+    else
+    	szhCodDespa="'"$szCodDespa"'"
+    fi
+
+	if [ -z "$iTipDocum" ]; then
+	    szhTipoDocumento="NULL"
+	else
+		szhTipoDocumento=$szTipoDocumento
+	fi
+	
+	if [ -z "$HostId" ];then
+	    hHostId="NULL"
+	else
+		hHostId="'"$HostId"'"
+	fi
+    
+    echo "\nObteniendo Correlativo para indentificar los documentos a generar ...\c" 
+	prObtieneSeq
+
+    
+    
+    echo "Asume procesamiento por defecto para ..."
+    echo "----------------------------------------------------"    
+        
+    prObtieneTdocCdesp $szCicloFact $szhTipoDocumento $szhCodDespa $hHostId
+    echo "[$parametros]"
+    
+    comando="'nohup $Programa -u $szUserPasswd -c $szCicloFact -l $iNivelLog -t tip_docum -d cod_despacho -s $num_secuinfo'"
+    
+    echo "
+set pages 0;
+set serverout on;
+set verify off;
+set lines 20;
+set head off;
+set feedback off;
+DECLARE
+LN_COD_ERROR NUMBER;
+
+PROCEDURE Ejecuta_PL(SN_COD_ERROR OUT NUMBER ) is 
+BEGIN
+	FA_TRAZA_CICLO_PG.FA_TRATA_TRAZA_IMPCICLO_FN ( $szCicloFact, $szhTipoDocumento, $szhCodDespa, $hHostId, $comando, SN_COD_ERROR);
+	END; 
+
+BEGIN
+
+ 	Ejecuta_PL(LN_COD_ERROR);
+ 	
+ 	
+ 	if LN_COD_ERROR = 1 then
+ 		DBMS_OUTPUT.PUT_LINE ( 'ERROR');
+ 		rollback;
+ 	else
+ 		DBMS_OUTPUT.PUT_LINE ( 'OK');
+ 		commit;
+ 	end if;
+ 	
+End;
+/
+exit;
+	    " > FaTrataTrazaImpCiclo.sql
+	    Resp_PL=$(sqlplus -s $szUserPasswd @FaTrataTrazaImpCiclo.sql)
+	    rm -f FaTrataTrazaImpCiclo.sql
+	    
+	    if [ `echo $Resp_PL|grep -c "ERROR"` -ge 1 ] ;then
+	    	  echo "No se pudo Insertar traza en la tabla FA_PROCIMPRESION_TD  ..."
+        	  echo "--------------------------------------------------------------"    
+        	  exit
+	    else
+	    	  echo "Trazas Insertardas correctamente en FA_PROCIMPRESION_TD  ..."
+        	  echo "------------------------------------------------------------"    
+	    fi
+#-----------------------------------------------------------------------------
+#  
+
+> $szCOMANDOS; chmod 777 $szCOMANDOS
+
+#-----------------------------------------------------------------------------
+#     
+echo "\nGenerando Script Insercion de subprocesos ...\c"
+icnt=0; for i in $parametros ;do
+    tip_docum=$(echo $i|awk -F"|" '{print $1}')
+    cod_despacho=$(echo $i|awk -F"|" '{print $2}')
+    screen="./ImpresionScl_${tip_docum}_${cod_despacho}.scr"
+    comando="'nohup $Programa -u $szUserPasswd -c $szCicloFact -l $iNivelLog -t $tip_docum -d $cod_despacho -s $num_secuinfo  >$screen&'"
+    if [ $icnt != 0 ] ;then
+        echo "sleep 4" >> $szCOMANDOS
+    fi
+    echo $comando|sed "s/'//g" >> $szCOMANDOS
+icnt=`expr $icnt + 1 `;done
+
+echo "\nEjecutando subprocesos de impresion ..."
+pfBorraArchTmp >>$szCOMANDOS
+cat $szCOMANDOS
+$szCOMANDOS &

@@ -1,0 +1,4 @@
+GRANT   SELECT                                                            ON SP_OBSERVACIONES_ORDEN_TH TO SISCEL_SELECT
+/
+GRANT   SELECT, INSERT, UPDATE, DELETE           ON SP_OBSERVACIONES_ORDEN_TH TO SISCEL_ST
+/

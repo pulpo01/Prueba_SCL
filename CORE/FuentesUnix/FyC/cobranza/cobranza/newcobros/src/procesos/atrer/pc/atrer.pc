@@ -1,0 +1,1147 @@
+/* ============================================================================= 
+	Tipo        :	COLA DE PROCESO
+	
+	Nombre      :	atrer.pc
+	
+	Descripcion :	vacia datos de morosos a tabla de consulta y archivo plano
+	
+	Recibe      :	Usuario/Password. ( por defecto asume los de la cuenta )
+					Nivel de Log ( por defecto asume 3 : Log Normal ) 
+	        
+	        
+	Devuelve    :	Valor entero para indicar el status de termino.
+					Interactua con la Base de Datos, archivo plano y el archivo de Log 
+					para registrar como se desarrolla su ejecucion.
+	
+	Autor       :	Manuel Garcia G.
+	Fecha       :	Agosto 2001.
+	
+	Modificaciones
+	
+	12-09-2002		(MGG) Se agrega funcionalidad para Ley Vida Privada.
+	
+============================================================================= */
+
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+
+#include "atrer.h"
+
+LINEACOMANDO  stLineaComando;	/* Datos con los que se invoco al proceso */
+char	szgCodProceso[6] = "";
+char	szgModGener[4] = "";
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	reg_Atrer		stAtrer[SIZE_ATRER];
+	reg_hAbonados	sthAbonados;
+	reg_hAtrer		sthAtrer;
+EXEC SQL END DECLARE SECTION;
+
+int main( int argc,char *argv[] )
+{
+	char	modulo[] = "main";
+    int 	iResult = 0;
+
+    fprintf( stdout, "\n%s ATRER pid(%ld)\n", szGetTime(1), getpid() );
+    fflush ( stdout );
+
+	memset( &stLineaComando, 0, sizeof( LINEACOMANDO ) );
+	
+    if( ifnValidaParametros( argc, argv, &stLineaComando ) != 0 )    
+    {
+        fprintf( stdout, "\n\tError >> Fallo la Validacion de Parametros \n" );
+        fflush( stdout );
+        iResult = 1; /* Fallo validacion */
+    }
+	else
+	{
+		if( ifnConexionDB( &stLineaComando ) != 0 ) /* se conecta a Base de Datos */
+		{   
+            fprintf( stdout, "\n\tError >> Fallo la Conexion a la Base \n" );
+            fflush( stdout );
+            iResult = 2; /* Fallo conexion */
+		}
+		else
+		{
+			if( ifnPreparaArchivoLog( &stLineaComando ) != 0 )
+			{
+	            fprintf( stdout, "\n\tError >> Error ifnPreparaArchivoLog\n" );
+	            fflush( stdout );
+	            iResult = 3; /* Fallo conexion */
+			}
+			else
+			{
+				/*- Ejecuta el proceso propiamente tal -*/
+				if( !bfnEjecutaAtrer() != 0 )
+				{
+					fprintf( stdout, "\n\tError >> Fallo el proceso \n" );
+					fflush( stdout );
+					iResult = 4; /* Fallo Proceso */
+				}
+                vfnCierraArchivoLog();
+	
+				if( !bfnOraCommit() )    
+				{    
+					ifnTrazasLog( modulo, "En Commit : %s", LOG00, SQLERRM );
+					if( !bfnOraRollBack() ) 
+						ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+					iResult = 5;    
+				}
+			}
+		}
+	}
+	return 0;
+} /* int main( int argc, char *argv[] ) */
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    char modulo[] = "ifnValidaParametros";
+
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+	extern	char	*optarg;
+	extern	int		optopt;
+            int		iOpt = 0;
+			char	opt[] = ":u:l:p:e:";
+
+	char	*psztmp = "";
+	int		Userflag = 0;	/* flag */
+	int		Logflag = 0;	/* flag */
+
+    stStatus.iLogNivel = iLOGNIVEL_DEF ;
+    strcpy( szgCodProceso, "ATRER" );	/* valor por defecto es "ATRER" por ORATRER */
+
+    if( argc == 1 ) /* si se invoca sin parametros asume valores por defecto */
+    	return 0;
+
+	while( ( iOpt = getopt( argc, argv, opt ) ) != EOF ) /* analisis de argumentos de entrada */
+	{
+		switch( iOpt ) 
+		{
+			case 'u':	/*-- Usuario/Password --*/
+				if( !Userflag ) 
+				{
+					strcpy( pstLC->szUsuarioOra, optarg );
+
+					Userflag = 1;
+					if( ( psztmp = (char *)strchr( pstLC->szUsuarioOra, '/' ) ) == (char *)NULL ) 
+					{
+						fprintf( stderr, "\n\tError >> Usuario no valido. Requiere '/' \n" );
+						fflush( stderr );
+						return -1;
+					}
+					else 
+					{
+						strncpy( pstLC->szOraAccount, pstLC->szUsuarioOra, psztmp-pstLC->szUsuarioOra );
+						strcpy( pstLC->szOraPasswd, psztmp + 1 );
+					}
+				}
+				else 
+				{
+					fprintf( stderr, "\n\tError >> opcion '-%c' duplicada\n", optopt );
+					fflush( stderr );
+					return -1;
+				}
+				break;
+
+			case 'l': /*-- Nivel de Log --*/
+				if( !Logflag ) 
+				{
+					stStatus.iLogNivel = ( atoi( optarg ) > 0 ) ? atoi( optarg ) : iLOGNIVEL_DEF;
+					Logflag = 1;
+				}
+				else 
+				{
+					fprintf( stderr, "\n\tError >> opcion '-%c' duplicada\n", optopt );
+					fflush( stderr );
+					return -1;
+				}
+				break;
+
+			case 'p': /*-- Nombre de la Cola (codigo del proceso) --*/
+				strcpy( szgCodProceso, optarg );
+				break;
+
+			case 'e': /*-- Compatibilidad con Facturacion --*/
+				strcpy( szgModGener, optarg );
+				break;
+
+			case '?':
+				fprintf( stderr, "\n\tError >> opcion '-%c' es desconocida\n", optopt );
+				fflush( stderr );
+				return -1;
+
+			case ':':
+				fprintf( stderr, "\n\tError >> falta argumento para opcion '-%c'\n", optopt );
+				fflush( stderr );
+				return -1;
+		} /* switch (iOpt) */
+	} /* while ((iOpt = getopt(argc, argv, opt)) != EOF) */
+
+    if( Userflag == 0 )
+	{
+		fprintf( stderr, "\n\tError >> Falta definir parametro de Usuario.\n" );
+		fflush( stderr );
+		return -1;
+	}	
+
+	return 0;
+} /* bfnValidaParamatros */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB( LINEACOMANDO *pstLC )
+{
+    char modulo[] = "ifnConexionDB";
+    
+    if ( bfnOraConnect(pstLC->szOraAccount,pstLC->szOraPasswd) == FALSE  )
+    {
+        fprintf( stderr, "\nNo hay conexion a ORACLE \n" );
+        fflush( stderr);
+        return -1;
+    }
+    return 0;
+}
+
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog( LINEACOMANDO *pstLC )
+{
+    char modulo[]="ifnPreparaArchivoLog";
+
+    /* char *szAux; */
+    int sts = 0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+    EXEC SQL END DECLARE SECTION;
+ 
+    sprintf( stStatus.szFileName, "%s", szgCodProceso );
+
+	sprintf( szhPathLogSched, "%s/Atrer", getenv("XPC_LOG") );
+    
+    sprintf( stStatus.szLogPathGene, "%s", szhPathLogSched );
+    sts = ifnAbreArchivoLog(1); 
+    return sts;
+} /* end ifnPreparaArchivoLog */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* if iCreaDir != 0 : crear directorio antes que el archivo                      */
+/* ============================================================================= */
+int ifnAbreArchivoLog( int iCrearDir )
+{
+    char modulo[]="ifnAbreArchivoLog";
+    char szArchivoLog[256]=""; /* log */
+    char szArchivoErr[256]=""; /* errores */
+    char szArchivoEst[256]=""; /* estadisticas */
+    char szComando[256]="";
+    static char szAux[9];
+
+    memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log */         
+    memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores */     
+    memset(szArchivoEst,0,sizeof(szArchivoEst)); /* estadisticas */
+
+    strcpy (szAux,(char *)szSysDate("YYYYMMDD")); /* obtiene fecha actual */
+
+	sprintf(szComando,"/usr/bin/mkdir -p %s/%s", stStatus.szLogPathGene, szAux );
+
+	fprintf( stderr, "%s %s/%s\n",szComando, stStatus.szLogPathGene, szAux );
+
+    if( system( szComando ) !=0 )  /* no pudo crear el directorio */
+    {
+        fprintf (stderr,"Error al intentar crear directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+    sprintf(szArchivoLog,"%s/%s/%s.log",stStatus.szLogPathGene, szAux, stStatus.szFileName );
+    sprintf(szArchivoErr,"%s/%s/%s.err",stStatus.szLogPathGene, szAux, stStatus.szFileName );
+    sprintf(szArchivoEst,"%s/%s/%s.est",stStatus.szLogPathGene, szAux, stStatus.szFileName );
+
+    if((stStatus.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Log\n");
+        fflush  (stderr);
+        return -1;    
+    }
+
+    if((stStatus.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Errores\n");
+        fflush  (stderr);
+        return -1;    
+    }
+
+    if((stStatus.EstFile = fopen(szArchivoEst,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Estadisticas\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    ifnTrazasLog(modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n", INFALL, szSysDate("[DD-MON-YYYY][HH24:MI:SS]"), getpid() );
+	return 0;
+}/* end ifnAbreArchivoLog */
+
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs  */
+/* ============================================================================= */
+void vfnCierraArchivoLog( void )
+{
+    char modulo[] = "vfnCierraArchivoLog";
+
+    ifnTrazasLog( modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n", INFALL, szSysDate("[DD-MON-YYYY][HH24:MI:SS]"), getpid() );
+
+    if( fclose(stStatus.LogFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Log\n");
+        fflush  (stderr);
+    }
+
+    if( fclose(stStatus.ErrFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Errores\n");
+        fflush  (stderr);
+    }
+
+    if( fclose(stStatus.EstFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Estadisticas\n");
+        fflush  (stderr);
+    }
+    return;    
+} /* end vfnCierraArchivoLog */
+/* ============================================================================= */
+
+BOOL bfnEjecutaAtrer()
+{
+	char 	modulo[] = "intEjecutaAtrer";
+	char	szFechaActual[9], szFechaActualCorta[7];
+	long 	lTotalRows = 0, lCumplenCrit = 0;
+	char	szIniProc[9], szFinProc[9], szTmpProc[9];
+	int 	iDifSegs = 0;
+
+	ifnTrazasLog(modulo,"ATRER VERSION [%s]\n",LOG03, szVERSION);
+   	
+   	/* Carga de datos de uso general */
+	if( !bfnObtieneDatosGenerales() )
+	{
+	    ifnTrazasLog( modulo, "Error al realizar carga de bfnObtieneDatosGenerales().", LOG03 );
+	    return -1;
+	}
+
+    sprintf( szIniProc, "%s", szSysDate( "HH24:MI:SS" ) );
+
+	memset( szFechaActual, '\0', sizeof( szFechaActual ) );
+	strcpy( szFechaActual, (char *)szSysDate( "DDMMYYYY" ) ); /* obtiene fecha actual */
+	
+	memset( szFechaActualCorta, '\0', sizeof( szFechaActualCorta ) );
+	strcpy( szFechaActualCorta, (char *)szSysDate( "DDMMYY" ) ); /* obtiene fecha actual */
+
+	if( !bfnObtenerMorosos( &lTotalRows ) )
+	{	
+		ifnTrazasLog( modulo, "Error en bfnObtenerMorosos.", LOG02 );  
+		return FALSE;
+	}
+
+	if( !bfnProcesarMorosos( lTotalRows, &lCumplenCrit ) )
+	{	
+		ifnTrazasLog( modulo, "Error en bfnObtenerPendientes.", LOG02 );  
+		return FALSE;
+	}
+
+	if( lCumplenCrit ) /* solo si hay realmente rut que enviar */
+	{
+		if( !bfnDeleteErdAtrer() )
+		{	
+			ifnTrazasLog( modulo, "Error en bfnDeleteErdAtrer.", LOG02 );  
+			return FALSE;
+		}
+
+		if( !bfnInsertaErdAtrer( lTotalRows, szFechaActual ) )
+		{	
+			ifnTrazasLog( modulo, "Error en bfnInsertaAtrer.", LOG02 );  
+			return FALSE;
+		}
+	
+		if( !bfnCargaArchivo( lTotalRows, szFechaActual, szFechaActualCorta ) )
+		{	
+			ifnTrazasLog( modulo, "Error en bfnCargaArchivo.", LOG02 );  
+			return FALSE;
+		}
+	}
+	
+	if( !bfnUpdateFaIntqueproc() ) 
+	{	
+		ifnTrazasLog( modulo, "Error en bfnUpdateFaIntqueproc.", LOG02 );  
+		return FALSE;
+	}
+	
+	sprintf(szFinProc,"%s",szSysDate("HH24:MI:SS"));
+	
+	/* Informacion Estadistica */
+	if( ( iDifSegs = ifnRestaHoras( szIniProc, szFinProc, szTmpProc ) ) >= 0 )
+	{
+		ifnTrazasLog( modulo,"\n\t RESUMEN DEL PROCESO ATRER"
+							 "\n\t       HORA INICIO  : %s "
+							 "\n\t       HORA TERMINO : %s "
+							 "\n\t       TIEMPO TOTAL : %s  (%d segs)"
+							 "\n",EST00
+							 ,szIniProc, szFinProc, szTmpProc, iDifSegs );
+	}
+	
+	ifnTrazasLog(modulo,"saliendo de %s",LOG05,modulo);
+
+	return TRUE;
+}	
+
+/* ==================================================================================== */
+/* Obtiene los potenciales clientes de Envio a Atrer, considerados morosos				*/
+/* ==================================================================================== */
+BOOL bfnObtenerMorosos( long *lCntTotalRows )
+{
+	char modulo[] = "bfnObtenerRut";
+	 int iRetSQLCODE, iLenAux = 0, iLenRut = 0;
+	long i, lTotalRows = 0, lRowsThisLoop = 0, lRowsProcessed = 0, lCntRows = 0, lReg = 0;
+	char szNumIdentAux[iLENNUMIDENT], szNumIdentAuxCorte[iLENNUMIDENT], szNumIdentAuxSmall[iLENNUMIDENT], szCadenaAux[iLENNUMIDENT];
+	
+	memset ( szNumIdentAux, '\0', sizeof( szNumIdentAux ) );
+	memset ( &stAtrer, 0, sizeof( reg_Atrer ) );
+	memset ( &sthAtrer, 0, sizeof( reg_hAtrer ) );
+
+	EXEC SQL DECLARE coMorosos CURSOR FOR
+	SELECT 	NUM_IDENT,
+			NUM_IDENT_AUX,
+			COD_TIPIDENT,
+			ORIGEN,
+			DEUDA
+	FROM	(				 
+				SELECT 	C.NUM_IDENT, 										/* consideramos los clientes morosos actuales */
+						LPAD( C.NUM_IDENT, 12, '0' ) NUM_IDENT_AUX, 
+						C.COD_TIPIDENT COD_TIPIDENT,
+						'M' ORIGEN,
+						0 DEUDA
+				FROM    CO_DICOM C
+				WHERE   C.NUM_IDENT IN (	SELECT 	NUM_IDENT
+											FROM	CO_MOROSOS
+											WHERE 	C.NUM_IDENT = NUM_IDENT
+											AND		C.COD_TIPIDENT = COD_TIPIDENT )
+				AND		C.COD_MOVIMIENTO <> 'B'
+				AND		C.COD_ENVIO <> 'B'
+			)
+	ORDER BY NUM_IDENT DESC;
+	
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error CURSOR coMorosos %s.", LOG00, SQLERRM );  
+		return FALSE;
+	}	
+	
+	EXEC SQL OPEN coMorosos;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error OPEN coMorosos %s.", LOG00, SQLERRM );  
+		return FALSE;
+	}	
+
+	lReg = 0;
+	
+	while( 1 ) 
+	{
+
+		EXEC SQL FETCH	coMorosos
+				 INTO 	sthAtrer;
+
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+		{
+			ifnTrazasLog( modulo, "\tAl recuperar del coMorosos\n\t %s", LOG01, SQLERRM );
+			lReg = -1;
+			break;
+		}
+
+		lTotalRows = SQLROWS;    /* Total de filas recuperadas */
+       	iRetSQLCODE = SQLCODE;
+       	
+       	lRowsThisLoop = ( lTotalRows - lRowsProcessed );    /* filas recuperadas en esta iteracion (Total-Procesadas) */
+
+		ifnTrazasLog( modulo, "\tlTotalRows = [%d], lRowsThisLoop = [%d]\n\t", LOG03, lTotalRows, lRowsThisLoop );
+
+		for( i = 0; i < lRowsThisLoop; i++ )
+		{
+			rtrim( sthAtrer.szNumIdent[i] );
+			
+			if( strcmp( szNumIdentAux, sthAtrer.szNumIdent[i] ) != 0 ) /* si cambio el rut */
+			{
+				strcpy( stAtrer[lCntRows].szNumIdent, sthAtrer.szNumIdent[i] );
+				strcpy( stAtrer[lCntRows].szNumIdentAux, sthAtrer.szNumIdentAux[i] );
+				strcpy( stAtrer[lCntRows].szCodTipIdent, sthAtrer.szCodTipIdent[i] );
+				
+				strcpy( stAtrer[lCntRows].szTipEnvio, "N" );
+				stAtrer[lCntRows].dMontoDeuda = 0.0;
+				strcpy( stAtrer[lCntRows].szCntFacturas, "00000000" );
+				stAtrer[lCntRows].iCntFacturas = 0;
+				strcpy( stAtrer[lCntRows].szTipDeuda, "V" );
+				strcpy( stAtrer[lCntRows].szFecVencimie, "00000000" );
+				strcpy( stAtrer[lCntRows].szOrigen, sthAtrer.szOrigen[i] );
+			
+				/* comprobamos si el cliente es natural o juridico */
+				memset( szNumIdentAuxCorte, '\0', sizeof( szNumIdentAuxCorte ) );
+				memset( szCadenaAux, '\0', sizeof( szCadenaAux ) );
+				memset( szNumIdentAuxSmall, '\0', sizeof( szNumIdentAuxSmall ) );
+	
+				strcpy( szNumIdentAuxCorte, stAtrer[lCntRows].szNumIdent );
+				rtrim( szNumIdentAuxCorte );
+	
+				if( strstr( szNumIdentAuxCorte, "-" ) != NULL )
+				{
+					sprintf( szCadenaAux, "%s\0", strstr( &szNumIdentAuxCorte[0], "-" ) );
+					iLenAux = strlen( szCadenaAux );
+					iLenRut = strlen( szNumIdentAuxCorte );
+					strncpy( szNumIdentAuxSmall, &szNumIdentAuxCorte[0], iLenRut - iLenAux );
+				}
+				else
+				{
+					sprintf( szNumIdentAuxSmall, "%s\0", szNumIdentAuxCorte );
+				}
+	
+				rtrim( szNumIdentAuxSmall );
+	
+				if( atol( szNumIdentAuxSmall ) < RUT_NATURAL ) /* si es persona natural */
+					strcpy( stAtrer[lCntRows].szTipoCliente, "N" );
+				else
+					strcpy( stAtrer[lCntRows].szTipoCliente, "J" );
+				
+				memset( szNumIdentAux, '\0', sizeof( szNumIdentAux ) );
+				strcpy( szNumIdentAux, sthAtrer.szNumIdent[i] );
+				lCntRows++;
+			}
+	
+			lReg++;								
+		}
+
+		ifnTrazasLog( modulo, "\tRut revisados = [%d], recuperados = [%d]\n\t", LOG03, lReg, lCntRows );
+
+        lRowsProcessed = lTotalRows; /* Resetea Contador, Total las filas recuperadas se han procesado */
+   		
+   		if ( iRetSQLCODE == SQLNOTFOUND )
+   		{
+			ifnTrazasLog( modulo, "\tAlcanzando Fin de Datos coMorosos\n\t", LOG03 );
+   			break;
+		}
+	} 
+
+	ifnTrazasLog( modulo, "\tTotal Clientes revisados = [%ld], recuperados = [%d], \n\t", 
+						  LOG03, lReg, lCntRows );
+
+	EXEC SQL CLOSE coMorosos;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error CLOSE coMorosos %s.", LOG00, SQLERRM );  
+		return FALSE;
+	}	
+
+	if( lReg < 0 )
+		return FALSE;
+		
+	/*--------------------------------------------------------------------------------------*/
+	/* Controla las dimensiones del arreglo stAtrer[]	                                    */
+	/*--------------------------------------------------------------------------------------*/
+	if( lReg > SIZE_ATRER )
+	{
+		ifnTrazasLog( modulo, "\tRedefina el arreglo stAtrer[%d] para almacenar los %d Reg...\n", LOG03, SIZE_ATRER, lReg );
+		return FALSE;
+	}
+	
+	*lCntTotalRows = lCntRows;
+	return TRUE;
+} /* BOOL bfnObtenerMorosos() */
+
+/* ============================================================================= */
+/* Verifica si todos los abonados del Rut, tienen Cod_Situacion = 'BAA'			 */
+/* y ademas estan dentro de las Causas de Baja consideradas ( 90, 43, 83, 19 )   */ 
+/* ============================================================================= */
+BOOL bfnProcesarMorosos( long lTotalRows, long *lCntRows )
+{
+	char	modulo[] = "bfnProcesarMorosos";
+	BOOL	bError = FALSE, bOKRut;
+	char	szCodSituacion[4], szTipEnvio[2], szFecVencimie[9], szFecBajaCliente[9];
+	int		iCntFacturasVenc = 0;
+	double	dDeuVencida = 0;
+	long	i, lCntCumplen = 0;
+	
+	for( i = 0; i < lTotalRows; i++ )
+	{
+		bOKRut = FALSE;
+		
+		memset( szCodSituacion, '\0', sizeof( szCodSituacion ) );
+		memset( szTipEnvio, '\0', sizeof( szTipEnvio ) );
+		memset( szFecVencimie, '\0', sizeof( szFecVencimie ) );
+		memset( szFecBajaCliente, '\0', sizeof( szFecBajaCliente ) );
+
+		/* comprobamos si el rut tiene todos sus abonados de baja */
+		if( !bfnRevisaAbonados( stAtrer[i].szNumIdent, stAtrer[i].szCodTipIdent, szCodSituacion, szTipEnvio, &stAtrer[i].lFecBajaCliente ) )
+		{
+			bError = TRUE;
+			break;
+		}
+
+		sprintf( szFecBajaCliente, "%d", stAtrer[i].lFecBajaCliente );
+		strncat( stAtrer[i].szFecBajaCliente, &szFecBajaCliente[6], 2 );
+		strncat( stAtrer[i].szFecBajaCliente, &szFecBajaCliente[4], 2 );
+		strncat( stAtrer[i].szFecBajaCliente, &szFecBajaCliente[0], 4 );
+		stAtrer[i].szFecBajaCliente[9] = '\0';
+		
+		strcpy( stAtrer[i].szTipEnvio, szTipEnvio ); /* P=Sit. Pendiente, M=Moroso, N=No encontro CB(90,43,83,19) */
+			
+		/* si estan todos los abonados de Baja y ademas tienen situacion Moroso o Pendiente */	
+		if( strcmp( szCodSituacion, "BAA" ) == 0 &&	strcmp( szTipEnvio, "N" ) != 0 )			 
+		{
+			if( !bfnBuscaSaldoRut( stAtrer[i].szNumIdent, stAtrer[i].szCodTipIdent, &dDeuVencida, &iCntFacturasVenc, szFecVencimie ) )
+			{
+				bError = TRUE;
+				break;
+			}	
+			
+			if( dDeuVencida >= 5000 ) /* si tiene deuda vencida suficiente para enviarlo */
+			{
+				stAtrer[i].iCntFacturas = iCntFacturasVenc;
+				sprintf( stAtrer[i].szCntFacturas, "%08d", iCntFacturasVenc );
+				stAtrer[i].dMontoDeuda = dDeuVencida;
+				strcpy( stAtrer[i].szFecVencimie, szFecVencimie );
+				bOKRut = TRUE;
+				lCntCumplen++;
+			} /* if( dDeuVencida >= 5000 ) */
+		} /* if( strcmp( szCodSituacion, "BAA" ) == 0 ) */
+		
+		if( !bOKRut ) /* No se envia el Rut, no cumple todos los criterios */
+			strcpy( stAtrer[i].szTipEnvio, "N" );
+		
+		if ( lCntCumplen && (lCntCumplen % 1000 ) == 0 )
+			ifnTrazasLog( modulo, "\tRut Cumplen Criterios ==>  %d de  ==>  %d rut revisados, \n\t", LOG03, lCntCumplen, i );
+
+		if ( ( i % 5000 ) == 0 )
+			ifnTrazasLog( modulo, "Procesados [%d] Registros de => [%d].", LOG03, i, lTotalRows );
+	
+	} /* for( i = 0; i < iTotalRows; i++ ) */
+
+	ifnTrazasLog( modulo, "\tRut Cumplen Criterios ==>  %d de  ==>  %d rut revisados.", LOG03, lCntCumplen, i );
+	ifnTrazasLog( modulo, "Procesados [%d] Registros de => [%d].", LOG03, i - 1, lTotalRows );
+
+	if( bError )
+		return FALSE;
+		
+	*lCntRows = lCntCumplen;
+	return TRUE;
+}
+
+/* ============================================================================= */
+/* Revisa si los abonados del Rut estan de Baja									 */
+/* ============================================================================= */
+BOOL bfnRevisaAbonados( char *szNumIdent, char *szCodTipIdent, char *szCodSit, char *szTipEnv, long *lFechaBaja )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    	char	szhNumIdent[iLENNUMIDENT];
+        char	szhCodTipIdent[3];
+    EXEC SQL END DECLARE SECTION;
+    
+	char modulo[] = "bfnRevisaAbonados";
+	BOOL bError = FALSE;
+	char szCodSituacion[4], szTipEnvio[2];
+	 int iContBloque = 0, i, iFilasRecupera = 0, iLong = 0, rr, iCntSitPnd = 0, iCntSitMor = 0; 
+	long lFecBajaNewMore = 19000101;
+			
+	memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+	memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+	memset( szCodSituacion, '\0', sizeof( szCodSituacion ) );
+	memset( szTipEnvio, '\0', sizeof( szTipEnvio ) );
+	
+	strcpy( szhNumIdent, szNumIdent );
+	strcpy( szhCodTipIdent, szCodTipIdent );
+	strcpy( szCodSituacion, "BAA" );
+	strcpy( szTipEnvio, "N" );
+	
+	ifnTrazasLog( modulo, "Procesando Abonados szhNumIdent %s.", LOG05, szhNumIdent );  
+
+	/* se consideran solo los abonados celular */
+	EXEC SQL DECLARE coAbonados CURSOR FOR
+	SELECT COD_SITUACION, 
+		   NVL( COD_CAUSABAJA, '00' ),
+	       TO_NUMBER( NVL( TO_CHAR( FEC_BAJA, 'yyyymmdd' ), '00000000' ) ),
+	       NVL( TO_CHAR( FEC_BAJA, 'ddmmyyyy' ), '00000000' ),
+	       COD_PRODUCTO
+	  FROM GA_ABOCEL
+	 WHERE COD_CLIENTE IN  (   SELECT COD_CLIENTE FROM GE_CLIENTES
+								WHERE COD_TIPIDENT = :szhCodTipIdent
+								  AND NUM_IDENT	= :szhNumIdent );
+	
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "szhNumIdent [%s]. Error CURSOR coAbonados %s.", LOG00, szhNumIdent, SQLERRM );  
+		return FALSE;
+	}	
+	
+	EXEC SQL OPEN coAbonados;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "szhNumIdent [%s]. Error OPEN coAbonados %s.", LOG00, szhNumIdent, SQLERRM );  
+		return FALSE;
+	}	
+
+	while( 1 ) 
+	{
+		EXEC SQL FETCH	coAbonados
+				 INTO 	:sthAbonados;
+		
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+		{
+			ifnTrazasLog( modulo, "\tszhNumIdent [%s]. Al recuperar del coAbonados\n\t %s", LOG01, szhNumIdent, SQLERRM );
+			bError = TRUE;
+			break;
+		}
+
+		iFilasRecupera = iFilasRecupera + sqlca.sqlerrd[2] - iContBloque; 
+
+		ifnTrazasLog( modulo, "\tiFilasRecupera = [%d], iContBloque = [%d], \n\t",  LOG05, iFilasRecupera, iContBloque );
+
+		for( i = 0; i < iFilasRecupera - iContBloque; i++ )
+		{
+			if( sthAbonados.iCodProducto[i] == 1 ) /* si es celular plan */
+			{
+				rtrim( sthAbonados.szCodSituacion[i] );
+				rtrim( sthAbonados.szCodCausaBaja[i] );
+	
+				if( strcmp( sthAbonados.szCodSituacion[i], "BAA" ) == 0 ) /* si los abonados estan de baja */
+				{	
+					if( strcmp( sthAbonados.szCodCausaBaja[i], "83" ) == 0 || 
+						strcmp( sthAbonados.szCodCausaBaja[i], "19" ) == 0 ) /* baja por fraude o adul. de documentos */
+					{	
+						iCntSitPnd = 2;
+					}	
+					else	/* el resto de los motivos de baja, da lo mismo */
+					{	
+						iCntSitMor = 1;
+					}	
+					
+					/* recuperamos la fecha de baja mas reciente */
+					lFecBajaNewMore = ( sthAbonados.lFechaBaja[i] > lFecBajaNewMore ) ? sthAbonados.lFechaBaja[i] : lFecBajaNewMore;
+				}
+				else	/* si no estan de baja, se termina el ciclo */
+				{
+					strcpy( szCodSituacion, "AAA" );
+					break;
+				}	
+			} /* if( sthAbonados.iCodProducto[i] == 1 ) */
+    	}
+
+		iContBloque = sqlca.sqlerrd[2];
+
+		if( ( iContBloque % SIZE_HABON ) != 0 || strcmp( szCodSituacion, "AAA" ) == 0 )
+			break;
+	} /* while( 1 ) */ 
+
+	EXEC SQL CLOSE coAbonados;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error CLOSE coAbonados %s.", LOG00, SQLERRM );  
+		bError = TRUE;
+	}	
+
+	if( bError )
+		return FALSE;
+		
+	if( strcmp( szCodSituacion, "BAA" ) == 0 )	/* solo si todos los abonados estan de baja ) */
+	{
+		switch( iCntSitMor + iCntSitPnd )
+		{
+			case 0 :
+						strcpy( szTipEnvio, "N" );
+						break;
+			case 1 :
+						strcpy( szTipEnvio, "M" );
+						break;
+			case 2:
+						strcpy( szTipEnvio, "S" );
+						break;
+			case 3:
+						strcpy( szTipEnvio, "S" );
+						break;
+		}			
+	}
+	else
+	{
+		strcpy( szTipEnvio, "N" );
+	}	
+		
+	ifnTrazasLog( modulo, "szhNumIdent %s. szTipEnvio = %s. szCodSituacion %s.", 
+						   LOG05, szhNumIdent, szTipEnvio, szCodSituacion );  
+		
+	strcpy( szCodSit, szCodSituacion );
+	strcpy( szTipEnv, szTipEnvio );
+	*lFechaBaja = lFecBajaNewMore;
+	return TRUE;
+}
+	
+/* ============================================================================= */
+/* Revisa el Saldo Vencido de un Rut, de acuerdo a parametros					 */
+/* ============================================================================= */
+BOOL bfnBuscaSaldoRut( char *szNumIdent, char *szCodTipIdent, double *dDeuVenc, int *iCntFacturas, char *szFecVencimie )	
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    	char	szhNumIdent[iLENNUMIDENT];
+        char	szhCodTipIdent[3];
+		char	szhFecVencimiento[9];
+		double	dhDeuVencida = 0;
+		int		ihCntFacturas = 0;
+    EXEC SQL END DECLARE SECTION;
+
+	char	modulo[] = "bfnBuscaSaldoRut";
+	
+	memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+	memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+	memset( szhFecVencimiento, '\0', sizeof( szhFecVencimiento ) );
+	
+	strcpy( szhNumIdent, szNumIdent );
+	strcpy( szhCodTipIdent, szCodTipIdent );
+
+	ifnTrazasLog( modulo, "Procesando Saldo szhNumIdent %s.", LOG05, szhNumIdent );  
+	
+	EXEC SQL
+	SELECT 	NVL( SUM( NVL(C.IMPORTE_DEBE, 0 ) ), 0 ),
+			COUNT(*), 
+			NVL( TO_CHAR( MIN( C.FEC_VENCIMIE ), 'ddmmyyyy'), '00000000' )
+	INTO	:dhDeuVencida,
+			:ihCntFacturas,
+			:szhFecVencimiento
+	FROM 	CO_DICOMDOC C
+	WHERE 	C.NUM_IDENT = :szhNumIdent
+	AND		C.COD_TIPIDENT = :szhCodTipIdent
+	AND     C.FEC_VENCIMIE >= TO_DATE( '01-01-2000', 'DD-MM-YYYY' )
+	AND     C.NUM_FOLIO IN ( 	SELECT NUM_FOLIO
+								FROM   CO_CARTERA 
+								WHERE  C.COD_CLIENTE = COD_CLIENTE
+								AND    C.NUM_FOLIO = NUM_FOLIO
+								AND    C.COD_TIPDOCUM = COD_TIPDOCUM );
+								
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error CURSOR coAbonados %s.", LOG00, SQLERRM );  
+		return FALSE;
+	}	
+
+	if( SQLCODE != SQLNOTFOUND )
+	{
+		*dDeuVenc = dhDeuVencida;
+		*iCntFacturas = ihCntFacturas;
+		strcpy( szFecVencimie, szhFecVencimiento );
+		ifnTrazasLog( modulo, "szhNumIdent %s. dhDeuVencida %.0f. 	 %d. szhFecVencimiento %s", 
+							   LOG05, szhNumIdent, dhDeuVencida, ihCntFacturas, szhFecVencimiento );  
+	}
+
+	return TRUE;
+}
+
+/* ============================================================================= */
+/* Borra los datos de la tabla ERD_ATRER, para nueva carga						 */
+/* ============================================================================= */
+BOOL bfnDeleteErdAtrer()
+{
+	char	modulo[] = "bfnDeleteErdAtrer";
+	
+	EXEC SQL 
+	DELETE FROM ERD_ATRER;
+
+	if( !bfnOraCommit() )    
+	{    
+		ifnTrazasLog( modulo, "En Commit : %s", LOG00, SQLERRM );
+		if( !bfnOraRollBack() ) 
+			ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* ============================================================================= */
+/* Inserta los registros creados en la tabla ERD_ATRER							 */
+/* ============================================================================= */
+BOOL bfnInsertaErdAtrer( long lTotalRows, char *szFechaHoy )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhNumIdent[iLENNUMIDENT];
+		char	szhTipEnvio[2];
+		char	szhCntFacturas[11];
+		double	dhMontoDeuda;
+		char	szhTipDeuda[2];
+		char	szhFecVencimie[9];
+		char	szhFecPublic[9];
+	EXEC SQL END DECLARE SECTION;
+
+	char	modulo[] = "bfnInsertaErdAtrer";
+	BOOL	bError = FALSE;
+	long	i, lCntEnviados = 0;
+	
+	strcpy( szhFecPublic, szFechaHoy );
+	
+	for( i = 0; i < lTotalRows; i++ )
+	{
+		if( strcmp( stAtrer[i].szTipEnvio, "N" ) != 0 )	/* es Situacion Pendiente o Moroso */
+		{
+			strcpy( szhNumIdent, stAtrer[i].szNumIdent );
+			strcpy( szhTipEnvio, stAtrer[i].szTipEnvio );
+			strcpy( szhCntFacturas, stAtrer[i].szCntFacturas );
+			dhMontoDeuda = stAtrer[i].dMontoDeuda;
+			strcpy( szhTipDeuda, stAtrer[i].szTipDeuda );
+
+			if( !strcmp( stAtrer[i].szTipoCliente, "N" ) ) /* Si es cliente natural, es la fecha de baja mas reciente */
+				strcpy( szhFecVencimie, stAtrer[i].szFecBajaCliente );
+			else /* si no es la fecha de vencimiento mas antigua */
+				strcpy( szhFecVencimie, stAtrer[i].szFecVencimie );
+				
+			ifnTrazasLog( modulo, "Valores antes de transformer dhMontoDeuda = [%.4f].", LOG05, dhMontoDeuda );  
+			dhMontoDeuda = fnCnvDouble( dhMontoDeuda, 0 );
+			ifnTrazasLog( modulo, "Valores despues de transformer dhMontoDeuda = [%.4f].", LOG05, dhMontoDeuda );
+
+			ifnTrazasLog( modulo, " Campos a Insertar.\n"   
+								  "\t\t	szhNumIdent    = [%s],\n"
+								  "\t\t	szhTipEnvio    = [%s],\n"
+								  "\t\t	szhCntFacturas = [%s],\n"
+								  "\t\t	dhMontoDeuda   = [%.0f],\n"
+								  "\t\t	szhTipDeuda    = [%s],\n"
+								  "\t\t	szhFecVencimie = [%s],\n"
+								  "\t\t	szhFecPublic   = [%s],\n",
+									LOG05,
+									szhNumIdent,
+									szhTipEnvio,
+									szhCntFacturas,
+									dhMontoDeuda,
+									szhTipDeuda,
+									szhFecVencimie,
+									szhFecPublic );
+
+	   		EXEC SQL
+	   		INSERT INTO ERD_ATRER 	
+	   				(
+						NUM_IDENT_CLIENTE,
+						TIP_ENVIO,
+						COD_EMPRESA,
+						CNT_FACTURAS,
+						MTO_DEUDA,
+						TIP_DEUDA,
+						FEC_VENCIMIE,
+						FEC_PUBLIC
+	   				)
+	   		VALUES
+	   				(
+						:szhNumIdent,
+						:szhTipEnvio,
+						'T',
+						:szhCntFacturas,
+						:dhMontoDeuda,
+						:szhTipDeuda,
+						TO_DATE( :szhFecVencimie, 'ddmmyyyy' ),
+						TO_DATE( :szhFecPublic, 'ddmmyyyy' )
+	   				);
+	   				
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "Error INSERT INTO ERD_ATRER [%s].", LOG00, SQLERRM );  
+				bError = TRUE;
+				break;
+			}	
+
+			lCntEnviados++;
+			
+			if( ( lCntEnviados % 3000 ) == 0 )
+				ifnTrazasLog( modulo, "Registros Insertados ERD_ATRER ==>  '%d'", LOG03, lCntEnviados );
+
+		}
+   	} /* for( i = 0; i < iTotalRows; i++ ) */
+	
+	ifnTrazasLog( modulo, "Registros Insertados ERD_ATRER ==>  '%d'", LOG03, lCntEnviados );
+
+	if( bError )
+		return FALSE;
+
+	if( !bfnOraCommit() )	/* grabamos los datos, es mejor tenerlos */    
+	{    
+		ifnTrazasLog( modulo, "En Commit : %s", LOG00, SQLERRM );
+		if( !bfnOraRollBack() ) 
+			ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+		return FALSE;
+	}
+		
+	return TRUE;
+}
+
+/* ============================================================================= */
+/* Vacia los datos de la estructura al Archivo de Envio							 */
+/* ============================================================================= */
+BOOL bfnCargaArchivo( long lTotalRows, char *szFechaHoy, char *szFechaHoyCorta )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char 	szArchivo[200];
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "bfnCargaArchivo";
+	BOOL bError = FALSE;
+	long i, lCntEnviados = 0;
+	FILE *fa = (FILE *)NULL;
+	char szPathArchivo[255], szhNombreArchivo[31], szFecPublic[9];
+	
+	memset( szPathArchivo, '\0', sizeof( szPathArchivo ) );
+	memset( szhNombreArchivo, '\0', sizeof( szhNombreArchivo ) );
+	memset( szArchivo, '\0', sizeof( szArchivo ) );
+	memset( szFecPublic, '\0', sizeof( szFecPublic ) );
+
+	strcpy( szFecPublic, szFechaHoy );
+	
+	sprintf( szhNombreArchivo, "AT%s.txt", szFechaHoyCorta );
+	rtrim( szhNombreArchivo );
+	sprintf( szPathArchivo, "%s/Atrer/", getenv( "XPC_DAT" ) );
+	rtrim( szPathArchivo );
+    sprintf( szArchivo, "mkdir -p %s", szPathArchivo );
+	rtrim( szArchivo );
+	
+	if( system( szArchivo ) != 0 ) 
+	{
+		ifnTrazasLog( modulo, "Fallo la creacion del directorio del archivo de salida '%s'", LOG01, szPathArchivo );
+		return FALSE; 
+	}
+
+	memset( szArchivo, '\0', sizeof( szArchivo ) );
+	sprintf( szArchivo, "%s%s", szPathArchivo, szhNombreArchivo );
+	rtrim( szArchivo );
+
+	if( ( fa = fopen( szArchivo, "w" ) ) == (FILE *)NULL )
+	{
+		ifnTrazasLog( modulo, "Fallo la apertura del archivo '%s'", LOG01, szArchivo );
+		return FALSE;
+	}
+
+	for( i = 0; i < lTotalRows; i++ )
+	{
+		if( strcmp( stAtrer[i].szTipEnvio, "N" ) != 0 )	/* es Situacion Pendiente o Moroso */
+		{
+			rtrim( stAtrer[i].szNumIdentAux );
+			rtrim( stAtrer[i].szFecBajaCliente );
+			rtrim( stAtrer[i].szFecVencimie );
+			rtrim( stAtrer[i].szTipEnvio );
+			rtrim( stAtrer[i].szTipDeuda );
+			rtrim( szFecPublic );
+						
+			if( !strcmp( stAtrer[i].szTipoCliente, "N" ) ) /* Si es cliente natural, se enmascara en achivo */
+			{
+				fprintf( fa,"%-12s"     
+							"%-1s"       
+							"%-1s"    
+							"%010d"     
+							"%010d"    
+							" "
+							"%-8s"     
+							"%-8s\n",
+							stAtrer[i].szNumIdentAux,
+							" ",
+							"T",	
+							0,
+							0,
+							stAtrer[i].szFecBajaCliente, /* es la fecha mas reciente de baja del cliente */
+							szFecPublic
+					);
+			}
+			else /* es persona juridica, se sigue como antes */
+			{
+				fprintf( fa,"%-12s"
+							"%-1s"
+							"%-1s"
+							"%010d"
+							"%010.0f"
+							"%-1s"
+							"%-8s"
+							"%-8s\n",
+							stAtrer[i].szNumIdentAux,
+							stAtrer[i].szTipEnvio,
+							"T",
+							stAtrer[i].iCntFacturas,
+							stAtrer[i].dMontoDeuda,
+							stAtrer[i].szTipDeuda,
+ 							stAtrer[i].szFecVencimie, /* es la fecha de vencimiento mas antigua */
+							szFecPublic
+						);
+			} /* if( !strcmp( stAtrer[i].szTipoCliente, "N" ) ) */
+						
+			lCntEnviados++;
+
+			if( ( lCntEnviados % 3000 ) == 0 )
+				ifnTrazasLog( modulo, "Registros Impresos Archivo ==>  '%d'", LOG03, lCntEnviados );
+
+		} /* if( strcmp( szTipEnvio, "N" ) != 0 ) */
+   	} /* for( i = 0; i < iTotalRows; i++ ) */
+	
+	ifnTrazasLog( modulo, "Registros Impresos Archivo ==>  '%d'", LOG03, lCntEnviados );
+
+	if( fclose( fa ) )
+	{
+		ifnTrazasLog( modulo, "Fallo el cierre del archivo '%s'", LOG01, szArchivo );
+		bError = TRUE; /* termina el proceso */
+	}
+
+	if( bError )
+		return FALSE;
+	
+	ifnTrazasLog( modulo, "Registros Enviados '%d'", LOG03, lCntEnviados );
+	return TRUE;
+}
+
+/* ============================================================================= */
+/* Para compatibilidad con Facturacion												 */
+/* ============================================================================= */
+BOOL bfnUpdateFaIntqueproc()
+{
+	char	modulo[] = "bfnUpdateFaIntqueproc";
+
+	EXEC SQL 
+	UPDATE 	FA_INTQUEUEPROC
+	SET 	COD_ESTADO = 1 
+	WHERE 	COD_MODGENER = 'ERG'
+	AND 	COD_PROCESO = 930
+	AND 	COD_ESTADO = 3;
+	
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error UPDATE FA_INTQUEUEPROC [%s].", LOG00, SQLERRM );  
+		return FALSE;
+	}	
+	
+	return TRUE;
+} 
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

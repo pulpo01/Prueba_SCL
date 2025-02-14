@@ -1,0 +1,1145 @@
+/*******************************************************************************************
+Fichero		: DepTecas.pc
+Modulo		: COBROS
+Proceso		: Procesar un fichero TECA
+Fecha		: 07-07-1998
+Autor		: Miguel Acero
+Fecha Modificacion: 23-11-2000
+Modificado  : Victor Reveco G
+Descripcion	: Este programa procesa los pagos incluidos en un fichero TECA03.
+Descripcion : Toma un archivo pasado como parametro y se procesa grabandolo
+			  en tres archivos  :
+			  CO_DEPOSITO_EXT      ... encabezado
+			  CO_DEPOSITO_EXTDEP   ... detalle
+			  CO_DEPOSITO_EXTANOM  ... registros que no fueron grabados en CO_DEPOSITO_EXT 
+			  por venir con datos inconsistentes.
+*******************************************************************************************/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include <GenTypes.h>
+#include <GenORA.h>
+#include <coerr.h>
+#include <coanom.h>
+#include "DepTecas.h"
+char g_usuario[30] = "";
+char g_password[30] = "";
+char szEmpresa[10]="";
+char szUsuario[70] = ""	;
+char *pszTmp		 = ""	;
+int giCarrier = 0;
+int	 ihCodOriPago  ;
+double gdImpPago = 0;
+
+/************************************************************************/
+
+EXEC SQL INCLUDE sqlca;
+	EXEC SQL BEGIN DECLARE SECTION;
+		int  ihTipAnomalia;
+		long lhNumConse;
+		char szhValor[117]; EXEC SQL VAR szhValor IS STRING(117);
+		long lhCodRecExt;
+		char szhNomFich[81]; EXEC SQL VAR szhNomFich IS STRING(81);
+		char szhFecValor[9]; EXEC SQL VAR szhFecValor IS STRING(9);
+		char szhNomUsu[31];  EXEC SQL VAR szhNomUsu IS STRING(31);
+		long lhNumReg;
+		long lhNumAnom;	
+		int	 ihCodTipDocum	  ;
+		int	 ihCodCentrEmi	  ;
+		long	lhNumSecuenci	  ;
+		long	lhCodAgente		 ;
+		long	lhCodCliente		;
+		double dhImpPago			;
+		char  *szhCodCaja			 ; EXEC SQL VAR szhCodCaja IS STRING(5);
+		short  shIndCodCaja		;
+/*		char  *szhFecValor		 ; EXEC SQL VAR szhFecValor IS STRING(9); */
+		char  *szhNomUsuarOra	 ; EXEC SQL VAR szhNomUsuarOra IS STRING(31);
+		short  shIndContado		;
+	                   
+		int	 ihCodSisPago		;
+		int	 ihCodCauPago		;
+		char  *szhCodBanco		 ; EXEC SQL VAR szhCodBanco IS STRING(4);
+		short  shIndCodBan		 ;
+		char  *szhCodSucursal	 ; EXEC SQL VAR szhCodSucursal IS STRING(5);
+		short  shIndCodSuc		 ;
+		char  *szhCtaCorriente	; EXEC SQL VAR szhCtaCorriente IS STRING(16);
+		short  shIndCtaCor		 ;
+		char  *szhCodTipTarjeta  ; EXEC SQL VAR szhCodTipTarjeta IS STRING(4);
+		short  shIndCodTipTar	 ;
+		char  *szhNumTarjeta	  ; EXEC SQL VAR szhNumTarjeta IS STRING(21);
+		short  shIndNumTar		 ;
+		char  szhDesPago[41]	  ; EXEC SQL VAR szhDesPago IS STRING(41);
+		char szhPathLog[384];	 EXEC SQL VAR szhPathLog IS STRING(384);
+		char szhPathTec[384];	 EXEC SQL VAR szhPathTec IS STRING(384);
+		int  ihCodPago;
+		char szhLetra[2];		  EXEC SQL VAR szhLetra IS STRING(2);
+		char szhOficinaRExt[3];  EXEC SQL VAR szhOficinaRExt IS STRING(3);
+		int  ihSisPagoRExt;
+		int  ihOriPagoRExt;
+		int  ihCauPagoRExt;
+		int  ihProdGeneral; 
+		int  ihDocPago;
+
+/*  victor */
+        char sRegistro_szAux[Tam_Reg];  
+        int iLargoRegistro = Tam_Reg -1;  
+        char sNumCtaCte[13];
+
+	EXEC SQL END DECLARE SECTION;
+
+double rint(double);
+ 
+ BOOL bResulLeer;
+
+DATREG	stDatReg;
+DATGEN	stDatGen;
+DATREGC	stDatRegC;
+DATCONT stDatCont;
+char	szTraza[81];
+char	pLog[384];
+FILE	*salida;
+int		g_contador_pagos=0;
+long	g_total_anomalia=0;
+
+void TRAZA(char *);
+
+/******************************************************************************/
+main(int argc, char *argv[])
+{
+	int	  iResul;
+	BOOL	 bResul;
+	int	  iRet;
+	int	  iDis;
+	char	 szDia[5];
+	char	 szhFecArchivo[9];
+/*	long	 lhCodRecExt = 0; */
+	long	 lNumReg = 0;
+	long	 lContReg = 0;
+	int	  res;
+	char	 szTotRegAux[11];
+	char	 szImpReg[11];
+	double  dImpReg;
+	char	 szTotImpCon[21];
+	double  dTotImpCon = 0.00;
+	double  dTotImpReg = 0.00;
+	DATANOM stDatAnom;
+	ARRANOM stArrAnom; /* Array de las anomalias definidas				  */
+
+
+	printf( "\n" );
+	printf( "\n" );
+	printf( "\n" );
+	printf( "INICIO DEL PROCESO DEPOSITO PAGOS EXTERNOS\n" );
+	printf( "         VERSION ==> [%s].\n", szVERSION );
+	printf( "\n" );
+	printf( "\n" );
+	printf( "\n" );
+
+	if (argc != 4)
+	{
+		printf("Numero de parametros no valido\n");
+		printf("OPCION1:%s user/password fichero_DEPOSITOS empresa\n",argv[0]);
+		printf("OPCION2:%s / fichero_DEPOSITOS empresa\n",argv[0]);
+		return ERR_PARAME;
+	}
+
+	
+/* CAMBIO USUARIO */
+
+	 strcpy( szUsuario, argv[1]);
+
+	 if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL)
+		{
+			printf("error en usuario %s\n", szUsuario);
+			return (1);
+		}
+	else
+		{
+			strncpy (g_usuario ,szUsuario,pszTmp-szUsuario);
+			strcpy  (g_password, pszTmp+1)					  ;
+		}
+
+	if (fnOraConnect(g_usuario, g_password) == NOT_FOUND  )
+		{
+		  printf("no hay conexion a ORACLE \n");
+			return ERR_CONEXION;
+		}
+
+	printf("Conectado a ORACLE \n");
+	strcpy(stDatGen.szUsuario, g_usuario);
+	strcpy(stDatGen.szNomFich, argv[2]);
+	strcpy( szEmpresa, argv[3]);
+
+
+	/*obtenemos los datos generales*/
+	bResul = bfnDBObtDatGen(argv[2]);
+	if (!bResul)
+	{
+		printf("\nERROR en bfnDBObtDatGen\n");
+		return ERR_DATGEN; 
+	}
+
+	iResul = ibfnGetNextVal();
+	if (iResul != OK)
+	{
+		iResul = ifnExitInstance();
+		vfnLiberarAnom(&stArrAnom);
+		fprintf(stDatGen.pLog,"\n\n\nERROR : en ibfnGetNextVal\n");
+    	fflush(stDatGen.pLog);
+		return ERR_SECUENCIA;
+	}
+
+	lhCodRecExt = stDatGen.lCodRecExt;
+	strcpy(szhNomFich, stDatGen.szNomFich);
+	strcpy(szhNomUsu, stDatGen.szUsuario);
+	lhNumReg = stDatCont.lContReg;
+	lhNumAnom = stDatCont.lContErr;
+
+
+	/* valida que el archivo no sa haya procesado anteriormente */
+	lhCodRecExt=0;
+	EXEC SQL
+	SELECT	NVL(COD_RECEXT,0),
+		to_char(FEC_VALOR,'dd.mm.yyyy')
+	INTO	lhCodRecExt,
+		szhFecArchivo
+	FROM	CO_DEPOSITO_EXT
+	WHERE	NOM_FICHERO = :stDatGen.szNomFich
+	and fec_valor > sysdate -364;
+	if (lhCodRecExt > 0)
+	{
+		printf( "\n\n\nERROR : este archivo fue procesado el %s con COD_RECEXT %d.\n",szhFecArchivo,lhCodRecExt);
+		fprintf(stDatGen.pLog,"\n\n\nERROR : este archivo fue procesado el %s con COD_RECEXT %d.\n",szhFecArchivo,lhCodRecExt);
+    		fflush(stDatGen.pLog);
+		return ERR_FICHPRO; 
+	}
+
+
+  /********** a Cabecera de Anomalias *************/ 
+	bResul = bfnInsCabAnomalias();
+	if (bResul == 0)
+	{
+		fprintf(stDatGen.pLog,"\nERROR al Insertar la cabecera de anomalias\n");
+    	fflush(stDatGen.pLog);
+		return ERR_INSCABANOM;
+	}
+	printf("GRABE EN CO_DEPOSITO_EXT \n");
+	EXEC SQL COMMIT;
+
+
+  /********** Lamada a la funcion de Proceso de la TECA *************/ 
+	iResul = ifnLeerFich(&stDatAnom,&stArrAnom);
+		
+	if (iResul == OK)
+	{
+			EXEC SQL COMMIT; 
+	}
+	else
+	{
+		EXEC SQL ROLLBACK;
+	}
+
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stDatGen.pLog,"iRet commit %s\n",sqlca.sqlerrm.sqlerrmc);
+		fflush(stDatGen.pLog);
+		iResul = ifnExitInstance();
+		vfnLiberarAnom(&stArrAnom);
+		return ERR_COMMIT;
+	}
+
+	printf("Fin Proceso Fichero TECA03\n");
+	/*Devolvemos el retorno para informar al cliente */
+
+	printf("\n");
+	printf("\n");
+	printf("\n");
+	printf("FIN DEL PROCESO	TECAS\n");
+	printf("\n");
+	printf("\n");
+	printf("\n");
+
+	iResul = ifnExitInstance();
+/*	vfnLiberarAnom(&stArrAnom); */
+	return iResul;
+
+} /* Fin main() */
+/******************************************************************************/
+int ifnExitInstance(void)
+{
+	int iDis;
+
+	/* Desconexion de la Base de Datos. */
+	 EXEC SQL COMMIT WORK RELEASE;
+
+
+	fclose(stDatGen.pFile);
+	fclose(stDatGen.pLog);
+
+	return OK;
+
+}/* Fin ifnExitInstance() */
+/******************************************************************************/
+BOOL bfnDBObtDatGen(char *NomFich)
+{
+	EXEC SQL 
+	SELECT PATHLOG,
+		   PATHTECA
+	  INTO :szhPathLog,
+		   :szhPathTec
+	  FROM CO_DATGEN;
+
+	if( sqlca.sqlcode )
+	{
+		fprintf( stdout, "\n %d", sqlca.sqlcode );  /*victor */
+		fprintf( stdout, "ERROR select de CO_DATGEN %s\n", sqlca.sqlerrm.sqlerrmc);
+		return FALSE;
+	}
+
+	fprintf( stdout, "Rescate Datos Generales \n" );
+	strcpy(stDatGen.szPathLog,szhPathLog);
+	strcpy(stDatGen.szPathTec,szhPathTec);
+
+	fprintf( stdout, "Empresa >[%s]<\n", szEmpresa );
+	
+	if( strcmp(szEmpresa,"CTC") == 0 )
+	{
+		ihCodOriPago	= 2;
+	}
+	else
+		if (!strcmp(szEmpresa,"GLOBAL"))
+		{
+			ihCodOriPago	= 51;
+		}
+		else
+		if (!strcmp(szEmpresa,"ORSAN"))
+		{
+			ihCodOriPago	= 50;
+		}
+		else 
+		if (!strcmp(szEmpresa,"ASERFIN"))
+		{
+			ihCodOriPago	= 58;
+		}
+		else
+		if (!strcmp(szEmpresa,"PROPAGO"))
+		{
+
+			ihCodOriPago	= 59;
+		}
+		else
+		if (!strcmp(szEmpresa,"PTT"))
+		{
+			ihCodOriPago	= 61;
+		}
+		else
+		if (!strcmp(szEmpresa,"REDEL"))
+		{
+			ihCodOriPago	= 62;
+		}
+		else 
+			{
+			printf("NO EXISTE EMPRESA ...............[%s]\n",szEmpresa);
+			return FALSE;
+			}
+						
+
+	fprintf( stdout, "\n#Ruta LOG: %s\n", stDatGen.szPathLog );
+	fprintf( stdout, "\n#Ruta FIC: %s\n", stDatGen.szPathTec );
+	
+	fflush( stdout );
+	
+	/*  AQUI SE CREAN LOS DIRECTORIOS */
+	if (!bfnDBCreaDirPath("PATHLOG", stDatGen.szPathLog ))
+		return -1;
+
+	sprintf(pLog,"%s/%sTECA03.LOG",stDatGen.szPathLog, stDatGen.szNomFich);
+	/*abrimos fichero de log*/
+	printf("\nArchivo de Log : %s\n",pLog);
+	if ((stDatGen.pLog=fopen(pLog,"w")) == (FILE *)NULL)
+	{
+		printf("ERROR abriendo fichero log\n");
+		return ERR_ABRIRFICH;
+	}
+
+	sprintf(pLog,"%s%s",stDatGen.szPathTec,NomFich);
+	/*abrimos fichero de DEPOSITOS externos*/
+	if ((stDatGen.pFile=fopen(pLog,"r")) == (FILE *)NULL)
+	{
+		fprintf(stDatGen.pLog,"\n#Error abriendo fichero DEPOSITOS, %d\n");
+    		fflush(stDatGen.pLog);
+		return FALSE;
+	}
+
+	fprintf( stDatGen.pLog, "==========================================\n" );
+	fprintf( stDatGen.pLog, "INICIO DEL PROCESO DEPOSITO PAGOS EXTERNOS\n" );
+	fprintf( stDatGen.pLog, "          VERSION ==> [%s].\n", szVERSION );
+	fprintf( stDatGen.pLog, "==========================================\n" );
+
+	fprintf(stDatGen.pLog,"\n#Ruta LOG: %s\n", stDatGen.szPathLog);
+	fprintf(stDatGen.pLog,"\n#Ruta FIC: %s\n", stDatGen.szPathTec);
+	fflush(stDatGen.pLog);
+
+	return TRUE;
+
+}/*fin bfnDBObtDatGen*/
+
+
+/******************************************************************************/
+/* victor :  */
+/*  Inserta registro inconsistente en CO_DEPOSITO_EXTANOM (anomalias), recibe el codigo de error */
+BOOL bfnDBInsDepAnomalia(char sCodigoErrorAnomalia[4])
+{
+
+			g_total_anomalia = g_total_anomalia + gdImpPago;
+        	EXEC SQL
+					UPDATE	CO_DEPOSITO_EXT
+					SET	NUM_ANOMALIAS = NUM_ANOMALIAS + 1,
+					                   IMP_VALOR_ANOM=NVL(IMP_VALOR_ANOM,0) + :gdImpPago,
+					                   COD_ORIPAGO=:ihCodOriPago
+					WHERE	COD_RECEXT = :stDatGen.lCodRecExt;
+					if (sqlca.sqlcode)
+					{
+						fprintf(stDatGen.pLog,"ERROR al actualizar numero de anomalias en CO_DEPOSITO_EXT, %s\n", sqlca.sqlerrm.sqlerrmc);
+				    		fflush(stDatGen.pLog);
+					}
+
+   			EXEC SQL
+    				INSERT INTO CO_DEPOSITO_EXTANOM
+    				(
+    			    COD_RECEXT       ,
+					COD_BANCO        ,
+					NUM_CUENTACTE    ,
+					NUM_BOLETA       ,
+					NUM_DOCUMDEP     ,
+					COD_TIPDOCUM     ,
+					COD_EMPCTC       ,
+					COD_ZONAREC      ,
+					COD_NIVEL        ,
+					COD_LOCAL        ,
+					COD_USUARIO      ,
+					COD_RECAUDADOR   ,
+					COD_LOTE         ,
+					FEC_PAGO         ,
+					FEC_COBRANZA   ,
+					IMP_DEPOSITO  ,
+					COD_ANOMALIA     ,
+					REG_ANOMALIA     ,
+					NUM_LARGO_REG
+				)
+				VALUES
+				(
+				:stDatGen.lCodRecExt		,
+				:stDatRegC.szBanco	        ,
+				:stDatRegC.szNoCuenta	, 
+				:stDatRegC.szNumBolet		,
+				:stDatRegC.szNumDocum		,
+				:stDatRegC.szTipDoc	        ,
+				:stDatRegC.szEmpCtc	        ,
+				:stDatRegC.szZona   	        ,
+				:stDatRegC.szNivel	        ,
+				:stDatRegC.szLocal	        ,
+				:stDatRegC.szUsuario	        ,		
+				:stDatRegC.szRecaudad	        ,
+				:stDatRegC.szLote		,
+				to_date(:stDatRegC.szFechaPag, 'YYYYMMDD')	        ,
+				to_date(:stDatRegC.szFechaCob, 'YYYYMMDD') ,	
+				:gdImpPago,
+                :sCodigoErrorAnomalia,
+                :sRegistro_szAux,   
+				:iLargoRegistro 
+				); 
+
+
+				if (sqlca.sqlcode)
+    				{       
+		     		fprintf(stDatGen.pLog,"\nERROR al Insertar anomalia en CO_DEPOSITO_EXTANOM\n");
+				   	fflush(stDatGen.pLog);  
+				  /* return ERR_INSANOMALIA;*/
+                    return FALSE; 
+					}
+                 else
+    				{       
+                     return TRUE; 
+					}
+}/*fin bfnDBInsDepAnomalia */
+
+/******************************************************************************/
+/* victor :    */
+/* Valida que cod_banco exista en GE_BANCOS */
+BOOL bfnDBCodBanco()
+{
+	EXEC SQL BEGIN DECLARE SECTION;	
+		char	szhCodBanco[4];
+	EXEC SQL END DECLARE SECTION;	
+
+	BOOL bResulB;
+	char sCodError[4];
+	
+	memset( szhCodBanco, '\0', sizeof( szhCodBanco ) );
+	
+	EXEC SQL
+	SELECT 	cod_banco 
+	INTO	:szhCodBanco
+	FROM 	GE_BANCOS
+	WHERE 	COD_BANCO = :stDatRegC.szBanco ;
+
+	if (sqlca.sqlcode)  
+	    if (sqlca.sqlcode = 1403)   /* NOTFOUND = 1403 */
+	       {
+		    fprintf(stDatGen.pLog,"ERROR codigo banco no existe en tabla GE_BANCOS %s\n", sqlca.sqlerrm.sqlerrmc);
+        	fflush(stDatGen.pLog);
+	    	return FALSE;
+           }
+        else
+		   {
+		    fprintf(stDatGen.pLog,"ERROR al leer tabla GE_BANCOS %s\n", sqlca.sqlerrm.sqlerrmc);
+        	fflush(stDatGen.pLog);
+	    	return FALSE;
+           }
+
+  return TRUE; 
+}/*fin */
+
+/******************************************************************************/
+/* victor :   */
+/* Valida que num_cuenta_cte exista en GE_BANCO_CTA_CTE, a la ves que rescato el NUM_CTA_CTE  */
+BOOL bfnDBNumCtaCte()
+{
+  BOOL bResulC;
+  char sCodError[4];
+
+
+	EXEC SQL
+	SELECT	B.NUM_CTA_CTE INTO :sNumCtaCte 
+	FROM	GE_BANCO_CTA_CTE B,(
+		SELECT COD_BANCO,NUM_CTA_CTE,COD_CTA_CTE FROM GE_BANCO_CTA_CTE
+		UNION ALL
+		SELECT COD_BANCO,REPLACE(NUM_CTA_CTE,'-',''),COD_CTA_CTE FROM GE_BANCO_CTA_CTE
+		UNION ALL
+		SELECT COD_BANCO,'0'||REPLACE(NUM_CTA_CTE,'-',''),COD_CTA_CTE FROM GE_BANCO_CTA_CTE
+		UNION ALL
+		SELECT COD_BANCO,'00'||REPLACE(NUM_CTA_CTE,'-',''),COD_CTA_CTE FROM GE_BANCO_CTA_CTE
+		UNION ALL
+		SELECT COD_BANCO,'000'||REPLACE(NUM_CTA_CTE,'-',''),COD_CTA_CTE FROM GE_BANCO_CTA_CTE
+		UNION ALL
+		SELECT COD_BANCO,'0000'||REPLACE(NUM_CTA_CTE,'-',''),COD_CTA_CTE FROM GE_BANCO_CTA_CTE
+	) A
+	WHERE A.NUM_CTA_CTE = LPAD( REPLACE( :stDatRegC.szNoCuenta, ' ', '' ), 12, '0' ) 
+	  AND A.COD_BANCO   = B.COD_BANCO
+	  AND A.COD_BANCO   = :stDatRegC.szBanco
+	  AND A.COD_CTA_CTE = B.COD_CTA_CTE;
+
+
+	if (sqlca.sqlcode)
+	  {
+	    if (sqlca.sqlcode = 1403)    /* NOT_FOUND = 1403 */
+	       {
+		    fprintf(stDatGen.pLog,"ERROR. Num Cta Cte no existe en tabla GE_BANCO_CTA_CTE %s\n", sqlca.sqlerrm.sqlerrmc);
+    	    fflush(stDatGen.pLog);
+         	return FALSE;
+			}
+        else  
+		   {
+		    fprintf(stDatGen.pLog,"ERROR al leer tabla GE_BANCO_CTA_CTE %s\n", sqlca.sqlerrm.sqlerrmc);
+    	    fflush(stDatGen.pLog);
+         	return FALSE;
+           }
+      }
+	/* strcpy(stDatRegC.szNoCuenta,xx); */
+   return TRUE; 
+}/*fin */
+
+/******************************************************************************/
+
+int ifnLeerFich(DATANOM *stDatAnom,ARRANOM *stArrAnom)
+{
+	int iRet;
+	int iRetRead;
+	int iI;
+	int iResul;
+	int iCodTipDocum;
+	int iCodCentrEmi;
+	char szLetra[2];
+	long lNumSecuenci;
+	
+	BOOL bResul;
+	int iSalir;
+    char szAux[Tam_Reg];
+    int iAux=0;
+/* victor */
+	char sCodError[4];
+    char sRegistro[Tam_Reg];  
+
+
+	while (TRUE)
+	{
+		/* Save point para las transaciones */
+		EXEC SQL SAVEPOINT SP_TECA;
+
+    	fprintf(stDatGen.pLog, "\n#.......Lectura del Archivo...........");
+    
+        /* intenta leer cada Tam_Reg caracteres o hasta '\n' */
+        memset(szAux,'\0',sizeof(szAux));
+        
+        if ( (char *)NULL == fgets(szAux,Tam_Reg*2,stDatGen.pFile) ) 
+        {   /* fallo la lectura del archivo */
+            if (feof(stDatGen.pFile)) /*porque se alcanzó el fin del archivo */
+            {
+				fprintf(stDatGen.pLog, "\n#Final del Fichero. \n");
+            	fflush(stDatGen.pLog);
+                break;
+            }
+            else /* porque se produjo un error de lectura */
+            {
+       			if (stDatCont.lContReg == 0) /* no he leido ningun registro aun */
+    			{
+    				fprintf(stDatGen.pLog, "\n#ERROR al Leer fichero.\n");
+                	fflush(stDatGen.pLog);
+    				stDatCont.lContErr++;
+    				return ERR_LEERFICH;
+    			}
+    			else  /* he leido al menos una linea correctamente antes */
+    			{
+	                fprintf(stDatGen.pLog, "\n#ERROR Leyendo fichero.\n");
+    				stDatCont.lContErr++;
+    				return ERR_LEERFICH;    			
+    		    }
+            }
+        }
+
+        /* Se logro leer correctamente una linea del archivo */
+		stDatCont.lContReg++;
+    
+        iAux = strlen(szAux);
+        if (  iAux < (Tam_Reg-1) )
+        {
+            fprintf(stDatGen.pLog, "\n#ERROR REGISTRO ANOMALO : contiene MENOS caracteres de lo esperado.(%d) \n",iAux);
+            stDatCont.lContFallos++;
+        }
+        else if (iAux > Tam_Reg)
+        {
+            fprintf(stDatGen.pLog, "\n#ERROR REGISTRO ANOMALO : contiene MAS caracteres de lo esperado.(%d) \n",iAux);
+            stDatCont.lContFallos++;
+        }
+        else /* La lectura ha sido correcta */
+		{
+		
+			memcpy(&stDatReg,szAux, iAux); 
+			
+			stDatRegC.szZona[2] 	= '\0';	
+			stDatRegC.szNivel[3] 	= '\0';	
+			stDatRegC.szEmpCtc[2]	= '\0';	  	
+			stDatRegC.szTipDoc[2] 	= '\0';		
+			stDatRegC.szLocal[4] 	= '\0';		
+			stDatRegC.szUsuario[4]	= '\0';	
+			stDatRegC.szRecaudad[4] = '\0';	
+			stDatRegC.szLote[4]	= '\0';	
+			stDatRegC.szFechaPag[8] = '\0';	
+			stDatRegC.szFechaCob[8] = '\0';	
+			stDatRegC.szBanco[3]	= '\0';	
+			stDatRegC.szNoCuenta[12]= '\0';	
+			stDatRegC.szNumBolet[12]= '\0';	
+			stDatRegC.szNumDocum[9]	= '\0';	
+			stDatRegC.szMonto[14]	= '\0';	
+			stDatRegC.szCuenta[9] 	= '\0';	
+					
+   			stDatGen.szValor[100] = '\0';
+/*   			printf("\n cadena %s\n",stDatGen.szValor); */
+                        
+                        memcpy(stDatRegC.szZona   	,stDatReg.szZona   	 ,      2);
+                        memcpy(stDatRegC.szNivel	,stDatReg.szNivel	  ,     3);
+                        memcpy(stDatRegC.szEmpCtc	,stDatReg.szEmpCtc	  ,     2);
+                        memcpy(stDatRegC.szTipDoc	,stDatReg.szTipDoc	  ,     2);
+                        memcpy(stDatRegC.szLocal	,stDatReg.szLocal	  ,     4);
+                        memcpy(stDatRegC.szUsuario	,stDatReg.szUsuario	  ,     4);
+                        memcpy(stDatRegC.szRecaudad	,stDatReg.szRecaudad	  ,     4);
+                        memcpy(stDatRegC.szLote		,stDatReg.szLote	  ,	4);     
+                        memcpy(stDatRegC.szFechaPag	,stDatReg.szFechaPag	  ,      8);
+                        memcpy(stDatRegC.szFechaCob	,stDatReg.szFechaCob	  ,      8);
+                        memcpy(stDatRegC.szBanco	,stDatReg.szBanco	  ,      3);
+                        memcpy(stDatRegC.szNoCuenta	,stDatReg.szNoCuenta	  ,      12);
+                        memcpy(stDatRegC.szNumBolet	,stDatReg.szNumBolet	  ,      12);
+                        memcpy(stDatRegC.szNumDocum	,stDatReg.szNumDocum	  ,      9);
+                        memcpy(stDatRegC.szMonto	,stDatReg.szMonto	  ,      12);
+                        memcpy(stDatRegC.szCuenta	,stDatReg.szCuenta	  ,      9);
+                               
+                                   
+    		fprintf (stDatGen.pLog, "\n#.......Datos de la Lectura:..........");
+    		fprintf	(stDatGen.pLog, "\n#Zona en que se ingreso 	%s", stDatRegC.szZona   		);
+    		        fprintf (stDatGen.pLog, "\n#Nivel que lo ingreso 	%s", stDatRegC.szNivel	        );
+    		        fprintf (stDatGen.pLog, "\n#Empresa CTC 		%s", stDatRegC.szEmpCtc	        );   
+    		        fprintf (stDatGen.pLog, "\n#Tipo de Documento 		%s", stDatRegC.szTipDoc	        );
+    		        fprintf (stDatGen.pLog, "\n#Local 			%s", stDatRegC.szLocal	        );               
+    		        fprintf (stDatGen.pLog, "\n#Usuario 			%s", stDatRegC.szUsuario	        );     
+    		        fprintf (stDatGen.pLog, "\n#Recaudador 			%s", stDatRegC.szRecaudad	);    
+    		        fprintf (stDatGen.pLog, "\n#lote 			%s", stDatRegC.szLote		);                  
+    		        fprintf (stDatGen.pLog, "\n#Fecha de Pago 		%s", stDatRegC.szFechaPag	); 
+    		        fprintf (stDatGen.pLog, "\n#Fecha de Cobranza 		%s", stDatRegC.szFechaCob	);
+    		        fprintf	(stDatGen.pLog, "\n#Banco 			%s", stDatRegC.szBanco	        );             
+    		        fprintf (stDatGen.pLog, "\n#Número Cuenta del Dpto. 	%s", stDatRegC.szNoCuenta	);
+    		        fprintf (stDatGen.pLog, "\n#Número de Boleta 		%s", stDatRegC.szNumBolet	);
+    		        fprintf (stDatGen.pLog, "\n#Número del Documento 	%s", stDatRegC.szNumDocum	);
+    		        fprintf (stDatGen.pLog, "\n#Monto del Dpto.             %s", stDatRegC.szMonto	        );
+    		        fprintf (stDatGen.pLog, "\n#Cuenta Contable             %s", stDatRegC.szCuenta	        );    		          		
+           	fflush(stDatGen.pLog);
+    		gdImpPago = atol(stDatRegC.szMonto);
+
+ /*  -------------------------------------------------------------------------------------------*/   		
+    	    strcpy(sRegistro_szAux,szAux);
+			sRegistro_szAux[Tam_Reg - 1] = '\0'; 
+
+          /* printf("%d\n",strlen(sRegistro_szAux)); */
+          /* printf("%s\n",sRegistro_szAux);  */
+
+            bResul = bfnDBInconsistencia(sCodError);
+            if (!bResul)   /* if inconsistencia */
+	  			     {
+			          fprintf(stDatGen.pLog,"ERROR. No hizo INSERT DE deposito en CO_DEPOSITO_EXTDEP por inconsistencia. \n");
+					  bResul = bfnDBInsDepAnomalia(sCodError);
+				     }
+            else     /* no hay inconsistencia */
+			   {
+    			EXEC SQL
+    				INSERT INTO CO_DEPOSITO_EXTDEP
+    				(
+    				COD_RECEXT       ,
+					COD_BANCO        ,
+					NUM_CUENTACTE    ,
+					NUM_BOLETA       ,
+					NUM_DOCUMDEP     ,
+					COD_TIPDOCUM     ,
+					COD_EMPCTC       ,
+					COD_ZONAREC      ,
+					COD_NIVEL        ,
+					COD_LOCAL        ,
+					COD_USUARIO      ,
+					COD_RECAUDADOR   ,
+					COD_LOTE         ,
+					FEC_PAGO         ,
+					FEC_COBRANZA     ,
+					IMP_DEPOSITO     
+				)
+				VALUES
+				(
+				:stDatGen.lCodRecExt		,
+				:stDatRegC.szBanco	        ,
+				/* :stDatRegC.szNoCuenta	,   :sNumCtaCte, */
+				replace(:sNumCtaCte,' ',''),  
+				:stDatRegC.szNumBolet		,
+				:stDatRegC.szNumDocum		,
+				:stDatRegC.szTipDoc	        ,
+				:stDatRegC.szEmpCtc	        ,
+				:stDatRegC.szZona   	    ,
+				:stDatRegC.szNivel	        ,
+				:stDatRegC.szLocal	        ,
+				:stDatRegC.szUsuario	        ,		
+				:stDatRegC.szRecaudad	        ,
+				:stDatRegC.szLote		,
+				to_date(:stDatRegC.szFechaPag, 'YYYYMMDD')	        ,
+				to_date(:stDatRegC.szFechaCob, 'YYYYMMDD')	        ,
+				:gdImpPago
+				);
+
+/*---------------------------------------------------- */
+/* victor   */
+		        if (sqlca.sqlcode)
+                   {       
+                   /* printf("ERROR al INSERT de deposito en CO_DEPOSITO_EXTDEP : %d ---  %s\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);  */
+     	             if (sqlca.sqlcode == -1)  /* registro ya existe  PK DUPLICADA*/
+		               {
+                         sprintf(sCodError,"%d%c", ERR_INSDEPEXTDEPEXISTE,'\0');
+                         bResul = bfnDBInsDepAnomalia(sCodError);
+                       }
+   		             else
+			    	   {
+                       /*  bResul = bfnDBInconsistencia(sCodError);
+                         if (!bResul)  
+	  			           {
+			                fprintf(stDatGen.pLog,"ERROR INSERT DE deposito en CO_DEPOSITO_EXTDEP, %s\n",sqlca.sqlerrm.sqlerrmc);
+					        bResul = bfnDBInsDepAnomalia(sCodError);
+				           }
+                        */ 
+	      	 		   } /* else */
+		           } /* if (sqlca.sqlcode) */
+			    else     /* no hay error */
+	     	       {
+		    	 		EXEC SQL        
+		    				UPDATE	CO_DEPOSITO_EXT
+		    				SET	NUM_REGISTROS = NUM_REGISTROS + 1 ,
+		    				                   IMP_VALOR             = NVL(IMP_VALOR,0) +  :gdImpPago,
+		    				                   COD_ORIPAGO=:ihCodOriPago
+		    				WHERE	COD_RECEXT = :stDatGen.lCodRecExt;
+		    				if (sqlca.sqlcode)
+		    				{       
+		    				    fprintf(stDatGen.pLog,"ERROR al actualizar registros en CO_DEPOSITO_EXT, %s\n",sqlca.sqlerrm.sqlerrmc);
+		    				}       
+		    		} /* fin else  (sqlca.sqlcode) */
+
+			    EXEC SQL COMMIT;
+
+               } /* endif  inconsistencia */
+
+		} /* endif (iRetRead != 1) */
+	} /* while (TRUE) */
+
+	return OK;
+} /* Fin ifnLeerFich */
+/****************************************************************************/
+
+
+/******************************************************************************/
+/* victor :  */
+/*  Verifica datos inconsistente : datos nulos,   */
+/*  existencia de codigo banco en tabla ge_bancos y existencia de cta cte en tabla ge_banco_cta_cte  */
+/*  Devuelve en sCodError el codigo del primer error  */
+
+BOOL bfnDBInconsistencia(char sCodError[4])
+
+{	
+
+	BOOL bResul;
+
+				if (stDatGen.lCodRecExt	== NULL)
+				  {
+                    sprintf(sCodError,"%d%c", A_RecExtNull,'\0');
+					return FALSE;
+                  }
+                else if 	(stDatRegC.szBanco == NULL)	  
+				  {
+                    sprintf(sCodError,"%d%c", A_BancoNull,'\0');
+					return FALSE;
+                   }
+                else if 	(stDatRegC.szNoCuenta == NULL)  
+				  {
+                    sprintf(sCodError,"%d%c",A_NoCuentaNull,'\0');
+					return FALSE;
+                   }
+                else if 	(stDatRegC.szNumBolet == NULL)  
+				  {
+                    sprintf(sCodError,"%d%c",A_NumBoletaNull,'\0');
+					return FALSE;
+                   }
+                else if  (stDatRegC.szNumDocum == NULL) 
+				  {
+                    sprintf(sCodError,"%d%c",A_NumDocumNull,'\0');
+					return FALSE;
+                   }
+                else if  (stDatRegC.szTipDoc == NULL) 	   
+				  {
+                    sprintf(sCodError,"%d%c",A_TipDocNull,'\0');
+					return FALSE;
+                   }
+                else if  (stDatRegC.szFechaPag == NULL) 
+				  {
+                    sprintf(sCodError,"%d%c",A_FechaPagNull,'\0');
+					return FALSE;
+                   }
+                else if  (stDatRegC.szFechaCob == NULL)
+				  {
+                    sprintf(sCodError,"%d%c",A_FechaCobNull,'\0');
+					return FALSE;
+                   }
+                else if  (gdImpPago == NULL) 
+				  {
+                    sprintf(sCodError,"%d%c",A_ImpPagoNull,'\0');
+					return FALSE;
+                   }
+                else if (stDatRegC.szBanco != NULL)	
+				  {
+                   	bResul = bfnDBCodBanco();
+                       if (!bResul)  
+	  			        {
+                         sprintf(sCodError,"%d%c",A_BancoNoExiste,'\0');
+					     return FALSE;
+                        }
+                      else if (stDatRegC.szNoCuenta != NULL) 
+				       {
+                        bResul = bfnDBNumCtaCte();
+                        if (!bResul)  
+	  			         {
+                          sprintf(sCodError,"%d%c",A_CtaCteNoExiste,'\0');
+					      return FALSE;
+                         }
+                       }
+                   }
+  return TRUE;
+} /*fin bfnDBInconsistencia */ 
+ /*  -----------------------------------------------------------------------------------------------------*/  
+
+
+
+/*******************************************************************/
+/* NO SE USA ???? */
+BOOL bfnDBInsAnomalia(ARRANOM *stArrAnom,DATANOM *stDatAnom,int *iSalir)
+/**
+Descripcion: Inserta una anomalia y comprueba el indice de gravedad
+					para abortar o no el proceso
+Salida	  : TRUE si todo va bien
+				 FALSE si falla algo
+**/
+{
+	ihTipAnomalia = stDatAnom->iCodAnom;
+	lhNumConse = stDatCont.lContReg;
+	strcpy(szhValor,stDatGen.szValor);
+
+	g_total_anomalia = g_total_anomalia + gdImpPago;
+	EXEC SQL
+	UPDATE	CO_DEPOSITO_EXT
+	SET	NUM_ANOMALIAS = NUM_ANOMALIAS + 1,
+	                   IMP_VALOR_ANOM=NVL(IMP_VALOR_ANOM,0) + :gdImpPago,
+	                   COD_ORIPAGO=:ihCodOriPago
+	WHERE	COD_RECEXT = :stDatGen.lCodRecExt;
+	if (sqlca.sqlcode)
+	{
+		fprintf(stDatGen.pLog,"ERROR al actualizar numero de anomalias en CO_DEPOSITO_EXTDEP, %s\n", sqlca.sqlerrm.sqlerrmc);
+    	fflush(stDatGen.pLog);
+		return FALSE;
+	}
+
+	fprintf(stDatGen.pLog,"*\n** ANOMALIA : %d\n*\n", stDatAnom->iCodAnom);
+
+	if ( OK == ifnGetAnom(stDatAnom,stArrAnom))
+	{
+		*iSalir = stDatAnom->iIndGravedad;
+		fprintf(stDatGen.pLog,"*\n** [%s] **  \n",stDatAnom->szDesAnom);
+    	fflush(stDatGen.pLog);
+	}
+	else
+	{
+		fprintf(stDatGen.pLog,"\n** [ANOMALIA NO TABULADA] **\n");
+    	fflush(stDatGen.pLog);
+		*iSalir = 0;
+	}
+
+	return TRUE;
+
+}/* Fin bfnDBInsAnomalia() */
+/***************************************************************************/
+int iCmpArrayAnom(const void* vpCad1,const void* vpCad2)
+/**
+Descripcion: Funcion que compara dos cadenas pasadas como parametro.
+				 El array de Anomalias esta ordenado por codigo de anomalia
+Entrada:	  vpCad1, Cadena 1 a ser comparada.
+				 vpCad2, Cadena 2 a ser comparada.
+Salida:		Entero que indica si dichas cadena son o no iguales.
+**/
+{
+	int iRes;
+
+	if (((DATANOM*)vpCad1)->iCodAnom == ((DATANOM*)vpCad2)->iCodAnom)
+		 iRes = 0;
+	else
+	  if (((DATANOM*)vpCad1)->iCodAnom > ((DATANOM*)vpCad2)->iCodAnom)
+		 iRes = 1;
+	  else
+		  iRes = -1;
+
+	return iRes;
+
+}/*iCmpArrayAnom() */
+
+/***************************************************************************/
+int ifnGetAnom(DATANOM *stDatAnom,ARRANOM *stArrAnom)
+/**
+Descripcion: Funcion que devuelve la anomalia.
+Entrada:	  stDatAnom, estructura de una anomalia.
+				 stArrAnom, es la estructura array de tipo de anomalia
+Salida:		OK, si todo va bien.
+				 ERR_xxx, si no lo encuentra.
+**/
+{
+  BOOL	 bResul;
+  DATANOM	 stDat;
+  DATANOM	 *pDatAnom = NULL;
+
+  stDat.iCodAnom = stDatAnom->iCodAnom;
+
+  pDatAnom = (DATANOM*) bsearch(&stDat,(void*) stArrAnom->stDatAnom,
+							 stArrAnom->iCont,sizeof(DATANOM),&iCmpArrayAnom);
+  if (pDatAnom == NULL)
+	  return ERR_ANOMALIA;
+
+  stDatAnom->iCodAnom = pDatAnom->iCodAnom;
+  strcpy(stDatAnom->szDesAnom,pDatAnom->szDesAnom);
+  stDatAnom->iIndGravedad = pDatAnom->iIndGravedad;
+
+  return OK;
+}/*Fin ifnGetAnom() */
+
+/***************************************************************************/
+void vfnLiberarAnom(ARRANOM *stArrAnom)
+{
+  DATANOM* pActual;
+
+  pActual = stArrAnom->stDatAnom;
+
+  if (pActual != NULL)
+  {
+	free(pActual);
+	stArrAnom->iCont = 0;
+  }
+
+} /* Fin vfnLiberarAnom() */
+
+/***************************************************************************/
+
+
+/***************************************************************************/
+int ibfnGetNextVal()
+/* Funcion que recupera el valor de la secuencia de CO_SEQ_RECAUDAEXT */
+{
+
+
+	EXEC SQL
+		SELECT nvl(MAX(COD_RECEXT),0)+1 INTO :lhCodRecExt
+			FROM CO_DEPOSITO_EXT;
+	
+	if (sqlca.sqlcode)
+	{
+		fprintf(stDatGen.pLog,"ERROR obtreniendo Secuencia %s\n", sqlca.sqlerrm.sqlerrmc);
+    	fflush(stDatGen.pLog);
+		return FALSE;
+	}
+	stDatGen.lCodRecExt = lhCodRecExt;
+
+	return OK;
+} /* FIN de ibfnNextVal */
+/***************************************************************************/
+
+BOOL bfnInsCabAnomalias()
+/* Insertamos en el fich de cabecera de DEPOSITOS.. nos servira 
+para relacionar cada una de las anomalias que pertenecen a una Teca */		
+{
+
+/*
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhCodRecExt;
+		char szhNomFich[81]; EXEC SQL VAR szhNomFich IS STRING(81);
+		char szhFecValor[9]; EXEC SQL VAR szhFecValor IS STRING(9);
+		char szhNomUsu[31];  EXEC SQL VAR szhNomUsu IS STRING(31);
+		long lhNumReg;
+		long lhNumAnom;	
+	EXEC SQL END DECLARE SECTION;
+*/
+
+	int iRet;
+
+
+	printf("\nNombre del fichero: %s\n", stDatGen.szNomFich);
+	printf("CODRECEXT: %ld\n", stDatGen.lCodRecExt);
+	printf("Usuario: %s\n", stDatGen.szUsuario);
+	printf("lhCodRecExt : %ld\n",stDatGen.lCodRecExt);
+	printf("szhNomFich  : %s\n",szhNomFich);
+	printf("szhNomUsu  : %s\n",szhNomUsu);
+	printf("ihCodOriPago  : %ld\n",ihCodOriPago);
+
+	EXEC SQL
+		INSERT INTO CO_DEPOSITO_EXT
+				(COD_RECEXT,
+				NOM_FICHERO,
+				COD_ORIPAGO,
+				FEC_VALOR,
+				NUM_REGISTROS,
+				IMP_VALOR,
+				NUM_ANOMALIAS,
+				IMP_VALOR_ANOM,
+				FEC_IMPUTCONTABLE,
+				NOM_USUARIO)
+				VALUES (
+				:stDatGen.lCodRecExt,
+				:szhNomFich,
+				:ihCodOriPago,
+				SYSDATE,
+				0,
+				0,
+				0,
+				0,
+				NULL,
+				:szhNomUsu);
+				
+	if (sqlca.sqlcode)
+	{
+		fprintf(stDatGen.pLog,"ERROR insertando CO_DEPOSITO_EXT %s\n", sqlca.sqlerrm.sqlerrmc);
+    	fflush(stDatGen.pLog);
+		return FALSE;
+	}
+
+	return TRUE;	
+
+} /* FIN bfnInsCabAnomalias */
+/****************************************************************************/
+void TRAZA(char *szTraza)
+/**
+Descripcion : Escribe es el fichero de Log en caso de que esta activada
+					dicha opcion.
+**/
+{
+		  fprintf(stDatGen.pLog,"%s",szTraza);
+
+} /* Fin TRAZA() */
+
+/****************************************************************************/
+/*BOOL bfnOraConnecta( char *szUser, char *szPasw )
+{
+
+  EXEC SQL BEGIN DECLARE SECTION;
+       char hszConnectStr[129]; EXEC SQL VAR hszConnectStr IS STRING(129);
+       char szhUser[30]; EXEC SQL VAR szhUser IS STRING(30);
+  EXEC SQL END DECLARE SECTION;
+
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+
+  Ora.Connected=FALSE;
+  strcpy(hszConnectStr,szUser);
+  strcat(hszConnectStr,"/");
+  strcat(hszConnectStr,szPasw);
+
+  fprintf (stdout,"\n\t<< Ejecucion sin parametros : Asume valores por defecto >>\n");
+
+  EXEC SQL CONNECT :hszConnectStr;
+  if(sqlca.sqlcode<0)
+      return (FALSE);
+  
+  Ora.Connected=TRUE;
+
+  EXEC SQL SELECT USER INTO :szhUser FROM DUAL;   
+*/  
+/*   strcpy(szUser,szhUser); 
+  
+  if((szPasw) || (szUser)) 
+    return fnOraActivaRoles(szUser);
+  else
+      return (TRUE); */
+  
+/* Solicitado el 16-07-2002 */      
+/*  EXEC SQL SET ROLE ALL;
+} */  
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

@@ -1,0 +1,411 @@
+/* ============================================================================= */
+/*
+    Tipo        :  ACCION (REVERSA)
+ 
+    Nombre      :  DesBloquea.pc ("DESBL"->szfnDesBloquea)
+
+    Descripcion :  DesBloquea todos los abonados (Celular y Beeper) del cliente dado
+
+    Recibe      :  by Val -> Cod Cliente 
+
+    Devuelve    :  "PND"  -> Ocurrio un error de oracle ( queda registrado en el log )
+                   "OK"   -> La accion se ejecuto correctamente
+
+    Autor       :  Roy Barrera Richards
+    Fecha       :  10 - Agosto - 2000 
+
+==============================================================
+Modificacion    :  12-11-2004
+						 Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "DesBloquea.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* funcion de DesBloquea todos los abonados de un cliente */
+/* ============================================================================= */
+char  *szfnDesBloquea(FILE **ptArchLog, long lCliente, sql_context ctxCont) 
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long 	lhCodCliente       = 0  ;
+		long 	lhCodCiclFact      = 0  ;
+		int 	ihProducto         = 0  ;
+		int 	ihAnulacionBaja    = 6  ;
+		char 	szhCadena [1024]   =""  ; EXEC SQL VAR szhCadena IS STRING (1024);
+		int  	iCuentaAboCelu = 0;
+		int  	iCuentaAboBeep = 0;   
+		int	ihRetPL;
+		long	lhNumAbonado;                         
+		char	szhUser[15]; EXEC SQL VAR szhUser IS STRING (15);
+		
+		/* Vbles Bind */
+		char  szhBAA  [4]; EXEC SQL VAR szhBAA IS STRING (4);
+		int   ihValor_cero = 0;
+		int   ihValor_uno  = 1;
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[]="szfnDesBloqueo";
+	int	 iError = 0;
+	FILE *pfLog=*ptArchLog;
+	sql_context CXX;
+	struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;    
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+
+  	lhCodCliente = lCliente;
+	iAboCeluGlobal = 0;
+	iAboBeepGlobal = 0;
+  	strcpy(szhBAA,"BAA");
+    
+	/* valida que el cliente tenga el ciclo actual de la fa_ciclfact en la ga_infaccel o ga_infacbeep jlr_15.03.01 */
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT COUNT(*)
+	  INTO :iCuentaAboCelu
+	  FROM GA_ABOCEL
+	 WHERE COD_CLIENTE = :lhCodCliente
+	   AND COD_SITUACION != :szhBAA;
+	if (sqlca.sqlcode)
+	{
+		ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] Select Ga_AboCel %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+	if ( iCuentaAboCelu > 0 )
+	{
+		sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL
+		SELECT  COUNT(*)
+		INTO    :iCuentaAboCelu
+		FROM    GA_INFACCEL
+		WHERE   COD_CLIENTE = :lhCodCliente
+		AND     COD_CICLFACT IN (   SELECT  COD_CICLFACT
+									FROM    FA_CICLFACT 
+									WHERE   IND_FACTURACION = :ihValor_cero
+									AND     SYSDATE BETWEEN FEC_DESDELLAM AND FEC_HASTALLAM )
+		AND 	NUM_ABONADO != :ihValor_cero; 
+
+		if (sqlca.sqlcode)
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] Select Ga_InfacCel %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		if ( iCuentaAboCelu == 0 )
+		{
+			/*ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] No tiene el ciclo actual abierto en ga_infaccel %s ",LOG02,lhCodCliente,sqlca.sqlerrm.sqlerrmc ); (Homol. CH-1721 GAC)  */
+			return "PND";
+		}
+	}
+
+/*	EXEC SQL
+	SELECT COUNT(*)
+	  INTO :iCuentaAboBeep
+	  FROM GA_ABOBEEP
+	 WHERE COD_CLIENTE = :lhCodCliente
+	   AND COD_SITUACION != :szhBAA;
+
+    fprintf( stdout, "pasamos 3.1" );
+	fflush(stdout);
+	
+	if (sqlca.sqlcode)
+	{
+	    ifnTrazaHilos( modulo,&pfLog, "pasamos 3.1.", LOG03 );
+		ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] Select Ga_AboBeep %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+    ifnTrazaHilos( modulo,&pfLog, "pasamos 3.2.", LOG03 );
+
+	if ( iCuentaAboBeep > 0 )
+	{
+		sqlca.sqlcode=0; / se resetea la vble sql para evitar rebalsamiento de memoria/
+		EXEC SQL
+		SELECT  COUNT(*)
+		INTO    :iCuentaAboBeep
+		FROM    GA_INFACBEEP
+		WHERE   COD_CLIENTE = :lhCodCliente
+		AND     COD_CICLFACT IN (   SELECT  COD_CICLFACT
+									FROM    FA_CICLFACT
+									WHERE   IND_FACTURACION = :ihValor_cero
+									AND     SYSDATE BETWEEN FEC_DESDELLAM AND FEC_HASTALLAM )
+		AND 	NUM_ABONADO != :ihValor_cero; 
+
+		if (sqlca.sqlcode)
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] Select Ga_InfacBeep %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		if ( iCuentaAboBeep == 0 )
+		{
+			/ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] No tiene el ciclo actual abierto en ga_infacbeep %s ",LOG02,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  (Homol. CH-1721 GAC)  /
+			return "PND";
+		}
+	}
+*/
+    sprintf(szhCadena, " SELECT '1', A.COD_CICLFACT "
+                       " FROM GA_INFACCEL B, FA_CICLFACT A "
+                       " WHERE B.COD_CLIENTE = :v1 "
+                       " AND B.COD_CICLFACT = A.COD_CICLFACT "
+                       " AND A.IND_FACTURACION = :v2 "
+					   " AND SYSDATE BETWEEN A.FEC_DESDELLAM AND A.FEC_HASTALLAM " /* jlr_08.08.01 */
+                       " UNION ALL "
+                       " SELECT '2', C.COD_CICLFACT "
+                       " FROM GA_INFACBEEP D, FA_CICLFACT C "
+                       " WHERE D.COD_CLIENTE = :v3 "
+                       " AND D.COD_CICLFACT = C.COD_CICLFACT "
+                       " AND C.IND_FACTURACION = :v4 "
+					   " AND SYSDATE BETWEEN C.FEC_DESDELLAM AND C.FEC_HASTALLAM ");
+
+    ifnTrazaHilos( modulo,&pfLog, "\n%s\n",LOG05,szhCadena);  
+
+    sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+    EXEC SQL PREPARE sqlDinamico FROM :szhCadena;
+    if (sqlca.sqlcode != SQLOK)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Prepare %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+    }
+
+    sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+    EXEC SQL DECLARE curCiclos CURSOR FOR sqlDinamico;
+    if (sqlca.sqlcode != SQLOK)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Declare %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+    }
+
+    sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+    EXEC SQL OPEN curCiclos USING :lhCodCliente, :ihValor_cero, :lhCodCliente, :ihValor_cero ;
+    if (sqlca.sqlcode != SQLOK)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Open %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+    }
+
+    for(;;) /* forever */
+    {
+        sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+        EXEC SQL FETCH curCiclos INTO :ihProducto, lhCodCiclFact;
+        if (sqlca.sqlcode) 
+        {
+            iError=1;
+            break;  /* fin del ciclo */
+        }
+          
+        if (ihProducto == 1 ) /* Celular */  
+        {
+           sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+           EXEC SQL
+		     UPDATE GA_INFACCEL
+			SET   IND_BLOQUEO = :ihValor_cero
+			WHERE COD_CLIENTE = :lhCodCliente 
+			AND   COD_CICLFACT = :lhCodCiclFact
+			AND   IND_ACTUAC != :ihAnulacionBaja
+			AND   IND_BLOQUEO = :ihValor_uno;
+
+			iAboCeluGlobal = iAboCeluGlobal + sqlca.sqlerrd[2]; /* Nro. de Registros actualizados */
+        }
+        else
+        {
+           sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+           EXEC SQL
+		UPDATE GA_INFACBEEP
+			SET   IND_BLOQUEO = :ihValor_cero
+			WHERE COD_CLIENTE = :lhCodCliente 
+			AND   COD_CICLFACT = :lhCodCiclFact
+			AND   IND_ACTUAC != :ihAnulacionBaja
+			AND   IND_BLOQUEO = :ihValor_uno;
+
+			  iAboBeepGlobal = iAboBeepGlobal + sqlca.sqlerrd[2]; /* Nro. de Registros actualizados */
+        }
+        
+        if (sqlca.sqlcode) 
+        {
+            iError=2;
+            break;
+        }
+    }
+ 
+    if (sqlca.sqlcode == SQLNOTFOUND)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "Ok. Alcanzado fin de datos ",LOG05);  
+    }
+    else
+    {
+        if (iError=1)
+        {
+            ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fetch %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        }
+        else 
+        {
+            ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) UPDATE %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        }
+        return "PND";
+   }
+    
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL CLOSE curCiclos ;
+   if (sqlca.sqlcode)
+   {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Close %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+   }
+ 
+/* Inicio Requerimiento de Soporte - #34247 20-09-2006 capc *
+	* PL que recarga minutos para los abonados del cliente, con plan total despues que se desbloquean *
+	sqlca.sqlcode=0; * se resetea la vble sql para evitar rebalsamiento de memoria*
+	EXEC SQL DECLARE curAbon CURSOR FOR
+	SELECT NUM_ABONADO,
+			 USER
+	FROM	 GA_ABOCEL
+	WHERE  COD_CLIENTE = :lhCodCliente;
+   if (sqlca.sqlcode)
+   {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) DECLARE curAbon %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+   }
+		
+	sqlca.sqlcode=0; * se resetea la vble sql para evitar rebalsamiento de memoria*
+	EXEC SQL OPEN curAbon;	
+   if (sqlca.sqlcode)
+   {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) OPEN curAbon %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+   }
+
+	iError = 0;
+	
+	while( 1 )
+	{
+		sqlca.sqlcode=0; * se resetea la vble sql para evitar rebalsamiento de memoria*
+		EXEC SQL 
+		FETCH curAbon
+		INTO	:lhNumAbonado,
+				:szhUser;
+				 
+	    if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	    {
+	        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) FETCH curAbon %s. ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc  );  
+	        iError = 1;
+	        break;
+	    }
+	    if( sqlca.sqlcode == SQLNOTFOUND )
+	    {
+	        ifnTrazaHilos( modulo,&pfLog,  "(Cliente:%ld) FETCH curAbon, termino de datos.", LOG05, lhCodCliente );  
+	        break;
+	    }
+		
+		ihRetPL = 0;
+	      ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) PL CO_P_RECARGA( [%ld], [%s], [%d] ) ", LOG03, lhCodCliente, lhNumAbonado, szhUser, ihRetPL );  
+
+		sqlca.sqlcode=0; * se resetea la vble sql para evitar rebalsamiento de memoria*
+		EXEC SQL EXECUTE
+			BEGIN
+				CO_P_RECARGA ( :lhNumAbonado, :szhUser, :ihRetPL );
+			END;
+		END-EXEC;                                        
+		
+		if( ihRetPL == 2 )	* hubo un error *
+		{
+	      ifnTrazaHilos( modulo,&pfLog, "Error en PL CO_P_RECARGA => [%s].", LOG00, sqlca.sqlerrm.sqlerrmc  );  
+			iError = ihRetPL; 
+			break;
+		}
+
+	} * while( 1 ) *
+
+	sqlca.sqlcode=0; * se resetea la vble sql para evitar rebalsamiento de memoria*
+	EXEC SQL CLOSE curAbon;	
+   if (sqlca.sqlcode)
+   {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) CLOSE curAbon %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+   }
+
+   if( iError == 2 )
+   {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) PL CO_P_RECARGA, codigo error [%d] ", LOG00, lhCodCliente, iError );  
+        return "PND";
+   }
+	* Fin Requerimiento de Soporte - #34247 20-09-2006 capc */
+	
+	/*- MGG 01/03/2001, Se cuenta la cantidad total a la fecha, de abonados celulares y -*/
+	/*- beepers afectados por la accion, para guardar estadistica en la tabla co_morosos-*/ 
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL 
+	SELECT count(*)
+	INTO   :iCuentaAboCelu
+	FROM   ga_infaccel
+	WHERE  cod_cliente   = :lhCodCliente
+	AND    cod_ciclfact  = :lhCodCiclFact
+	AND    ind_actuac   != :ihAnulacionBaja
+	AND    ind_bloqueo   = :ihValor_cero
+	AND    num_abonado  != :ihValor_cero; 
+			 
+    if (sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND) 
+    {
+        ifnTrazaHilos( modulo,&pfLog, "Recuperando abonados Desbloqueados GA_INFACCEL (Cliente:%ld) %s"
+                           ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );
+        return "PND";
+    }
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL 
+	SELECT count(*)
+	INTO   :iCuentaAboBeep
+	FROM   ga_infacbeep
+	WHERE  cod_cliente   = :lhCodCliente
+	AND    cod_ciclfact  = :lhCodCiclFact
+	AND    ind_actuac   != :ihAnulacionBaja
+	AND    ind_bloqueo   = :ihValor_cero
+	AND    num_abonado  != :ihValor_cero;
+	
+    if (sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND) 
+    {
+        ifnTrazaHilos( modulo,&pfLog, "Recuperando abonados Desbloqueados GA_INFACBEEP (Cliente:%ld) %s"
+                           ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc );
+        return "PND";
+    }
+
+	iAboCeluGlobal = iCuentaAboCelu;
+	iAboBeepGlobal = iCuentaAboBeep;
+	iMRAboCeluGlobal = iCuentaAboCelu;
+	iMRAboBeepGlobal = iCuentaAboBeep;
+   ifnTrazaHilos( modulo,&pfLog, "Cliente:[%ld] se DESBLOQUEO AboCelu:[%ld] AboBeep:[%d]",LOG03,lhCodCliente,iAboCeluGlobal,iAboBeepGlobal);
+
+    return "OK";   
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

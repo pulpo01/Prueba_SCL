@@ -1,0 +1,28 @@
+CREATE OR REPLACE TRIGGER SC_TECN_AFIN_TG
+AFTER INSERT ON AL_TECNOLOGIA
+REFERENCING OLD AS OLD NEW AS NEW
+FOR EACH ROW
+DECLARE
+v_codigo NUMBER(2);
+v_largo NUMBER(2);
+BEGIN
+       SELECT cod_dominio_cto, nvl(len_concepto,6)
+       INTO v_codigo, v_largo
+       FROM SC_DOMINIO_CTO
+       WHERE DES_DOMINIO_CTO = 'AL_TECNOLOGIA';
+
+       IF v_codigo > 0  THEN
+
+          INSERT INTO SC_CONCEPTO
+          	 (COD_DOMINIO_CTO,COD_CONCEPTO,IND_CONTABILIZA,DES_CONCEPTO)
+          VALUES (v_codigo, LPAD(:NEW.COD_TECNOLOGIA,v_largo,'0'),0,:NEW.DES_TECNOLOGIA);
+
+       END IF;
+EXCEPTION
+               WHEN NO_DATA_FOUND THEN
+                         v_codigo := 0;
+               WHEN OTHERS THEN
+                         RAISE_APPLICATION_ERROR  (-20002,'ERROR INESPERADO EN TRIGGER : ORA-'||TO_CHAR(SQLCODE)||'.',TRUE);
+END;
+/
+SHOW ERRORS

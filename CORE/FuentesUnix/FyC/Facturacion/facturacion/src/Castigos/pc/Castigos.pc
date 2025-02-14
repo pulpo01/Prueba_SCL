@@ -1,0 +1,964 @@
+/* *********************************************************************** */
+/* *  Fichero : Castigo.pc                                               * */
+/* *  Castigo a cliente                                                  * */
+/* *  Autor : Nelson Contreras Helena                                    * */
+/* *********************************************************************** */
+/* Modificado 14-07-2003 : A peticion de Solange Quintanilla               */
+/* En registro CO_PAGOS :                                                  */
+/*  COD_ORIPAGO=  39       -- CASTIGO CONTABLE                             */
+/*  COD_CAUPAGO=  39       -- CASTIGO CONTABLE                             */
+/***************************************************************************/
+
+
+#include <deftypes.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include "Castigos.h"
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+
+EXEC SQL INCLUDE sqlca;
+
+long    lContDoc		= 0;
+long    lContDocCastigados	= 0;
+long    lContDocRechazados	= 0;
+long    lContDocumentos;
+int	iContInsert;
+
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+	char modulo[]="main";
+
+    extern  char *optarg             ;
+/*    char    opt[]=":u:l" ;*/
+    char    opt[]="u:l:" ;	/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+    int     iOpt =0                  ;
+    char    szaux     [10]           ;
+    char    *szDirLogs               ;
+    char    *szDirDats               ;
+    char    *szNomArchivo            ;
+    char    *szLogName;
+    char    szComando[1024] = ""     ;
+    BOOL    bRetorno = FALSE         ;
+    int      sts;
+     
+	/*Se agrega versión al proceso*/
+	/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+	fprintf( stdout, "\nPROCESO => Castigos VERSION => %s.\n", szVERSION ); 
+    memset(&stLineaComando,0    ,sizeof(CASTIGOSLINEACOMANDO));
+    
+    
+    while ( (iOpt = getopt(argc,argv,opt)) != EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':
+                    if (strlen (optarg))
+                    {
+                        strcpy(stLineaComando.szUsuario, optarg);
+                        fprintf (stdout," -u %s ", stLineaComando.szUsuario);
+                    }
+                    break;
+            case 'l':
+                    if (strlen (optarg))
+                    {
+                        stStatus.LogNivel =(atoi (optarg) > 0)? atoi (optarg):iLOGNIVEL_DEF ;
+                        fprintf (stdout,"-l %d ", stStatus.LogNivel)     ;
+                    }
+                    break;
+            
+        }/*End Switch */
+        
+    } /* End While */
+    fprintf (stdout,"\n");
+
+    if (stStatus.LogNivel <= 0) stStatus.LogNivel = iLOGNIVEL_DEF     ;
+
+    stLineaComando.iNivLog = stStatus.LogNivel;
+
+    if(!bfnConnectORA(stLineaComando.szUser,stLineaComando.szPass))
+    {
+        fprintf(stderr, "\n\tUsuario/Passwd Invalido\n\t\t"
+                        "Usuario  <%s> Password <XXXX> \n",stLineaComando.szUser);
+        return (2);
+    }
+    else
+    {
+        printf( "\n\t-------------------------------------------------------"
+                "\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx "
+                "\n\t-------------------------------------------------------\n",
+                stLineaComando.szUser);
+    }
+
+    if (!bGetDatosGener (&stDatosGener, szSysDate))
+        return FALSE;
+
+    
+    
+    /**************************************************************************************/
+    /* Crear archivos y directorios de log y errores */
+     
+    sts = ifnAbreArchivosLog();
+    if ( sts != 0 ) return sts;
+
+    
+    
+    /*********************************************************************************************/
+    
+    vDTrazasLog  ( modulo ,"\n\n\t*************************************"
+                           "\n\n\t****        Log   Castigos        **"
+                           "\n\n\t*************************************"
+                           ,LOG03);
+
+    vDTrazasLog  ( modulo ,"\n\t\t***  Parametro de Entrada Castigos  ***"
+                           "\n\t\t=> Usuario               [%s]"
+                           "\n\t\t=> Niv.Log               [%d]"
+                           ,LOG03
+                           ,stLineaComando.szUser
+                           ,stLineaComando.iNivLog);
+    
+    /************************************************************************************/
+    /*			Proceso Principal						*/
+    /************************************************************************************/
+    
+    strcpy(modulo,"bProcesaCastigos");
+    
+    vDTrazasLog  ( modulo ,"\n\t\t***  Inicio Proceso principal  ***"
+                           ,LOG03);
+                           
+    bRetorno = bProcesaCastigos();	                         
+
+    
+    if(!bRetorno)
+    {
+        fnOraRollBack();
+        vDTrazasError( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado de Forma Irregular"
+                               " \n\t------------------------------------\n"
+                                    ,LOG03);
+        vDTrazasLog  ( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado de Forma Irregular"
+                               " \n\t------------------------------------\n"
+                               ,LOG03);
+        return 3;
+    }
+    else
+    {
+    	vDTrazasLog  ( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado Correctamente"
+                               " \n\t------------------------------------\n"
+                               ,LOG03);
+    	
+    	
+        vDTrazasError( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado Correctamente"
+                               " \n\t------------------------------------\n"
+                               ,LOG03);
+        if ( !fnOraCommit())
+        {
+
+            vDTrazasLog ( modulo , " \n\t------------------------------------"
+                                   " \n\tFallo en el Commit"
+                                   " \n\t------------------------------------"
+                                   ,LOG03);
+            vDTrazasError( modulo ," \n\t------------------------------------"
+                                   " \n\tFallo en el Commit"
+                                   " \n\t------------------------------------"
+                                   ,LOG03);
+            return 4;
+        }
+
+    }
+
+    if(!bfnDisconnectORA(0))
+    {
+    }
+    else
+    {
+      vDTrazasLog  ( modulo ,"\n\t--------------------------------------------"
+                             "\n\tDesconectado de  ORACLE"
+                             "\n\t--------------------------------------------\n"
+                             ,LOG03);
+      vDTrazasError( modulo ,"\n\t--------------------------------------------"
+                             "\n\tDesconectado de  ORACLE"
+                             "\n\t--------------------------------------------\n"
+                             ,LOG03);
+
+}
+
+	
+	vDTrazasLog  ( modulo ,"\n\t\t%s***  Estadisticas Finales  ***"
+                           "\n\t\t=> Documentos Procesados    [%d]"
+                           "\n\t\t=> Documentos Castigados    [%d]"
+                           "\n\t\t=> Documentos Rechazados    [%d]"
+                           ,LOG03
+                           ,cfnGetTime(3)
+                           ,lContDoc
+                           ,lContDocCastigados++
+                           ,lContDocRechazados);
+
+
+    return (0);
+}/* ********************* Fin Main * *************************************** */
+
+/********* Proceso de Castigos                         ****/
+
+
+int bProcesaCastigos()
+{
+int iRetorno;
+char modulo[]="bProcesaCastigos";
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lCuentaCastigo;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE Cursor_Cuentas CURSOR FOR
+	
+        SELECT
+        	COD_CUENTA,
+		COD_CLIENTE,
+		TIP_DOC,
+		FOLIO,
+		TO_NUMBER(TO_CHAR(FEC_EMI,'YYYYMMDD')),
+		DEBE,
+		HABER,
+		SALDO,
+		MONTO
+	FROM FA_CASTIGO
+	WHERE IND_CASTIGO IS NULL
+	ORDER BY COD_CUENTA;
+	
+	if (sqlca.sqlcode)
+	{
+		vDTrazasLog  ( modulo ,"\n\t\t** Error DECLARE cursor_Cuentas  ***"
+                           ,LOG03);
+		
+		vDTrazasError(modulo,"%s Error DECLARE cursor_Cuentasn%s\n",
+						LOG03, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+                
+                fnOraRollBack();
+		
+		return -1;
+	}
+	
+	
+	EXEC SQL OPEN Cursor_Cuentas;
+	
+	if (sqlca.sqlcode)
+	{
+		vDTrazasLog  ( modulo ,"\n\t\t** Error OPEN cursor_Cuentas  ***"
+                           ,LOG03);
+		
+		vDTrazasError(modulo,"%s Error OPEN cursor_Cuentasn%s\n",
+						LOG03, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+                
+                fnOraRollBack();
+		
+		return -1;
+	}
+	
+	
+	while(1)
+	{
+		iContInsert = 0 ;
+		
+		EXEC SQL FETCH Cursor_Cuentas
+		INTO :sthFaCastigo;
+		
+		if(sqlca.sqlcode == SQLNOTFOUND)
+		{
+			break;
+		}
+		else
+		{
+		      lContDoc ++;
+		 
+		      if(sqlca.sqlcode)
+		      {	
+		      	vDTrazasLog  ( modulo ,"\n\t\t** Error FETCH cursor_Cuentas  ***"
+                           ,LOG03);
+		
+			vDTrazasError(modulo,"%s Error FETCH cursor_Cuentasn%s\n",
+						LOG03, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+                
+                	fnOraRollBack();
+			
+			 return -3;
+		      }
+		      else
+		         {
+				iRetorno = bProcesaCuenta();
+				
+				if ( iRetorno > 0 )
+				{
+				   vDTrazasLog( modulo ," \n\tCuenta a Castigar : [%d]\n"
+                               		,LOG05,sthFaCastigo.lCodCuenta );
+					
+					
+					iRetorno = bCastigaCuenta(sthFaCastigo.lCodCuenta);	
+					if ( iRetorno < 0 )
+					{
+						
+					vDTrazasLog( modulo ," \n\t Error-> [%d] en castigar cuenta : [%d]\n"
+                               		,LOG05,iRetorno,sthFaCastigo.lCodCuenta );
+                               		
+                               		fnOraRollBack();
+                               		
+					}
+				}	
+				else
+				{	
+					bRechazaCuenta(sthFaCastigo.lCodCuenta,iRetorno);	
+				}			         	
+		         }
+		}
+		
+		
+	if ( !fnOraCommit())
+        {
+
+            vDTrazasLog ( modulo , " \n\t------------------------------------"
+                                   " \n\tFallo en el Commit por cuenta"
+                                   " \n\t------------------------------------"
+                                   ,LOG03);
+            vDTrazasError( modulo ," \n\t------------------------------------"
+                                   " \n\tFallo en el Commit por cuenta"
+                                   " \n\t------------------------------------"
+                                   ,LOG03);
+                                   
+            return -1;
+        }	
+	
+
+	}/* end while Cuentas  */
+	
+	
+}
+
+
+int bProcesaCuenta()
+{
+int     iRetorno;
+
+	char modulo[]="bProcesaCuenta";	
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		long            lbdCuentaCastigo;
+		double		lSaldo;  /* RA-200511080074 Soporte RyC 18-11-2005 capc */
+	EXEC SQL END DECLARE SECTION;
+
+	lbdCuentaCastigo = sthFaCastigo.lCodCuenta;
+
+	
+	/*******************************************************************************
+	No Valida Cuadratura de la Cuenta 
+	********************************************************************************
+	EXEC SQL 
+	SELECT SUM(importe_debe - importe_haber) 
+	INTO :lSaldo
+	FROM   co_cartera 
+	WHERE  cod_cliente in 
+		(select cod_cliente from ge_clientes  
+		 where cod_cuenta = :sthFaCastigo.lCodCuenta )
+	AND    cod_tipdocum in 
+		(select unique cod_tipdocummov 
+         from fa_tipdocumen
+         union 
+         select 5 from dual);
+	
+		
+	if ( SQLCODE == SQLOK )
+	{
+		if ( lSaldo != 	sthFaCastigo.lMonto )
+		{
+		
+							
+				return -30;
+		}
+	
+	}
+	else
+	{
+		vDTrazasLog  ( modulo ,"\n\t\t** Error SELECT CO_CARTERA  ***"
+                           ,LOG03);
+		
+		vDTrazasError(modulo,"%s Error SELECT CO_CARTERAn%s\n",
+						LOG03, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+                
+                fnOraRollBack();	
+		
+		
+	}
+	*******************************************************************************/
+    lSaldo = 	sthFaCastigo.lMonto;	
+	iRetorno = VerificaCtaCte(sthFaCastigo);
+
+    if (iRetorno < 0 )
+    {
+		vDTrazasLog  ( modulo ,"\n\t\t** Error en VerificaCtaCte ***"
+                           ,LOG03);
+		
+		vDTrazasError(modulo,"%s Error en VerificaCtaCte [%s]\n",
+						LOG03, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+                
+        fnOraRollBack();	
+	}
+
+	
+	return 1;
+	
+} /* Fin ProcesaCuenta */
+
+
+int VerificaCtaCte(sthFaCastigo)
+reg_fa_castigo  sthFaCastigo;
+{
+int 	iContador = 0 ;
+long	lSuma	  = 0 ; /* RA-200511080074 Soporte RyC 18-11-2005 capc */
+
+	char modulo[]="VerificaCtaCte";
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		reg_fa_castigo  stbdFaCastigo;
+		long	lbdCodCliente;
+		long    lbdTipoDoc;
+		long	lbdFolioDoc;
+		int	ibdFecEmi;   
+		
+		int	lCodVendedor;
+		char	szLetra	[2];
+		int     iCodCentremi;
+		int     iColumna;
+		int 	iCodProducto;
+		long	lDebe; /* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		long    lHaber; /* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		int	iIndContado;
+		int	iIndFacturado;
+		char    szFecVencimiento[15];
+		char    szFecCaducida	[15];
+		char    szFecAntiguedad	[15];
+		long	lNumAbonado;
+		long	lNumFolio;
+		char    szFecPago	[15];
+		long	lNumCuota;
+		long	lSecCuota;
+		long	lNumTrx;
+		long	lNumVenta;
+		char 	szNumFolioCtc	[12];
+		char    szPrefPlaza[11]  ;	EXEC SQL VAR szPrefPlaza IS STRING(11);		/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		char    szCodOperadoraScl[6];	EXEC SQL VAR szCodOperadoraScl IS STRING(6);	/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		char    szCodPlaza[6]      ;	EXEC SQL VAR szCodPlaza IS STRING(6);		/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+ 
+	EXEC SQL END DECLARE SECTION;
+	
+	
+	lbdCodCliente =  sthFaCastigo.lCodCliente;
+	lbdTipoDoc    =  sthFaCastigo.lTipoDoc;
+	lbdFolioDoc   =  sthFaCastigo.lFolioDoc;
+	ibdFecEmi     =  sthFaCastigo.iFecEmi;
+	
+	
+	EXEC SQL DECLARE CursorCoCartera CURSOR FOR
+	SELECT COD_VENDEDOR_AGENTE,
+	       LETRA,
+	       COD_CENTREMI,
+	       COLUMNA,
+	       COD_PRODUCTO,
+	       IMPORTE_DEBE,
+	       IMPORTE_HABER,
+	       IND_CONTADO,
+	       IND_FACTURADO,
+	       TO_CHAR(FEC_VENCIMIE,'YYYYMMDDHH24MISS'),
+	       TO_CHAR(FEC_CADUCIDA,'YYYYMMDDHH24MISS'),
+	       TO_CHAR(FEC_ANTIGUEDAD,'YYYYMMDDHH24MISS'),
+	       NUM_ABONADO,
+	       NUM_FOLIO,
+	       NVL(TO_CHAR(FEC_PAGO,'YYYYMMDDHH24MISS'),' '),
+	       NVL(NUM_CUOTA,0),
+	       NVL(SEC_CUOTA,0),
+	       NVL(NUM_TRANSACCION,0),
+	       NVL(NUM_VENTA,0),
+	       NVL(NUM_FOLIOCTC,0),
+	       NVL(COD_OPERADORA_SCL,' '),  	/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+	       NVL(COD_PLAZA,' '),		/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+	       NVL(PREF_PLAZA,' ')		/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+	FROM CO_CARTERA
+	WHERE COD_CLIENTE   = :lbdCodCliente AND
+	      COD_TIPDOCUM  = :lbdTipoDoc    AND
+	      NUM_FOLIO     = :lbdFolioDoc   AND
+	      TO_NUMBER(TO_CHAR(FEC_EFECTIVIDAD,'YYYYMMDD')) =
+	         :ibdFecEmi ;
+	         
+	EXEC SQL OPEN CursorCoCartera ;
+	
+	     	 		
+	while ( SQLCODE == SQLOK )
+	{
+		
+	EXEC SQL FETCH CursorCoCartera INTO 
+		:lCodVendedor,   
+	       	:szLetra,    
+		:iCodCentremi,   
+		:iColumna,       
+		:iCodProducto,   
+		:lDebe,         
+		:lHaber, 
+		:iIndContado,    
+		:iIndFacturado,  
+		:szFecVencimiento,
+		:szFecCaducida,	
+		:szFecAntiguedad,	
+		:lNumAbonado,    
+		:lNumFolio,      
+		:szFecPago,	
+	 	:lNumCuota,      
+		:lSecCuota,      
+		:lNumTrx,
+		:lNumVenta,      
+		:szNumFolioCtc,
+		:szCodOperadoraScl,		/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		:szCodPlaza,			/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		:szPrefPlaza;			/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		
+		
+	if ( SQLCODE == SQLOK )
+	{
+		
+		iContador ++;
+		lSuma  = lSuma + (lDebe - lHaber) ;
+		
+		
+		sthCoCartera.lCodCliente[iContInsert]	= lbdCodCliente;
+		sthCoCartera.iTipDoc[iContInsert]	= lbdTipoDoc;
+		sthCoCartera.lCodVendedor[iContInsert]	= lCodVendedor;
+		strcpy(sthCoCartera.szLetra[iContInsert],szLetra);		
+		sthCoCartera.lCodCentremi[iContInsert]	= iCodCentremi;
+		sthCoCartera.iColumna[iContInsert]	= iColumna;
+		sthCoCartera.lCodProducto[iContInsert]	= iCodProducto;
+		sthCoCartera.lHaber[iContInsert]	= lDebe - lHaber;
+		sthCoCartera.iIndContado[iContInsert]	= iIndContado;
+		sthCoCartera.iIndFacturado[iContInsert]	= iIndFacturado;
+		strcpy(sthCoCartera.szFecVencimiento[iContInsert],szFecVencimiento);
+		strcpy(sthCoCartera.szFecCaducida[iContInsert],szFecCaducida);	
+		strcpy(sthCoCartera.szFecAntiguedad[iContInsert],szFecAntiguedad);	
+		sthCoCartera.lNumAbonado[iContInsert]	= lNumAbonado;
+		sthCoCartera.lNumFolio[iContInsert]	= lNumFolio;
+		strcpy(sthCoCartera.szFecPago[iContInsert],szFecPago);	
+		sthCoCartera.lNumCuota[iContInsert]	= lNumCuota;
+		sthCoCartera.lSecCuota[iContInsert]	= lSecCuota;
+		sthCoCartera.lNumTrx	[iContInsert]	= lNumTrx;
+		sthCoCartera.lNumVenta[iContInsert]	= lNumVenta;
+		strcpy(sthCoCartera.szFolioCtc[iContInsert],szNumFolioCtc);
+
+		strcpy(sthCoCartera.szCodOperadoraScl[iContInsert],szCodOperadoraScl);	/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		strcpy(sthCoCartera.szCodPlaza[iContInsert],szCodPlaza);				/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		strcpy(sthCoCartera.szPrefPlaza[iContInsert],szPrefPlaza);				/* RA-200511080074 Soporte RyC 18-11-2005 capc */
+		iContInsert ++ ;
+	}
+		 
+	}/* END WHILE */
+	       
+	if ( lSuma == sthFaCastigo.lSaldo )
+	{	
+		lContDocCastigados ++;	
+		return 1;
+	}
+	else
+	{
+				
+		lContDocRechazados ++;
+		iContInsert = iContInsert - iContador;
+			
+		EXEC SQL
+		UPDATE FA_CASTIGO
+		SET IND_CUADRA2 = 'S'
+		WHERE  
+			COD_CUENTA    = :sthFaCastigo.lCodCuenta  AND
+			COD_CLIENTE   = :lbdCodCliente AND
+	      		TIP_DOC       = :lbdTipoDoc    AND
+	      		FOLIO         = :lbdFolioDoc   AND
+	      		TO_NUMBER(TO_CHAR(FEC_EMI,'YYYYMMDD')) =
+	         			:ibdFecEmi ;
+			
+			if ( SQLCODE != SQLOK )
+			{
+			vDTrazasLog(modulo, "%s << Error update FA_CASTIGO.IND_CUADRA2 >>", 
+			LOG05, cfnGetTime(1));
+			fnOraRollBack();
+				return -1;	
+			}
+			
+		
+	}
+}              
+
+               
+int bCastigaCuenta(lCuentaCastigo)
+long lCuentaCastigo;
+{              
+int i ;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lSecuenciaCastigo;
+		long lSecuenciaPago;
+	EXEC SQL END DECLARE SECTION;
+	
+
+	
+	for (i = 0 ; i< iContInsert ; i++)
+	{
+	
+	EXEC SQL
+	SELECT CO_SEQ_CASTCONTABLE.NEXTVAL
+	INTO :lSecuenciaCastigo 
+	FROM DUAL;
+	
+	if ( SQLCODE != SQLOK )
+	{
+		printf("Error en obtener secuencia castigo : %s\n",
+			sqlca.sqlerrm.sqlerrmc);
+		return ( -10);
+	}
+		
+	EXEC SQL
+	INSERT INTO CO_SECARTERA
+	VALUES
+	(
+	39,
+	:sthCoCartera.lCodVendedor[i],
+	:sthCoCartera.szLetra[i],
+	:sthCoCartera.lCodCentremi[i],
+	:lSecuenciaCastigo,
+	6,
+	:sthCoCartera.iColumna[i]
+	);
+		
+	if ( SQLCODE == SQLOK)
+	{
+	EXEC SQL
+	INSERT INTO CO_CARTERA
+	(
+	COD_CLIENTE, 
+	NUM_SECUENCI, 
+	COD_TIPDOCUM, 
+	COD_VENDEDOR_AGENTE, 
+	LETRA, 
+	COD_CENTREMI, 
+	COD_CONCEPTO, 
+	COLUMNA, 
+	COD_PRODUCTO, 
+	IMPORTE_DEBE, 
+	IMPORTE_HABER, 
+	IND_CONTADO, 
+	IND_FACTURADO, 
+	FEC_EFECTIVIDAD, 
+	FEC_VENCIMIE, 
+	FEC_CADUCIDA, 
+	FEC_ANTIGUEDAD, 
+	NUM_ABONADO, 
+	NUM_FOLIO, 
+	FEC_PAGO, 
+	NUM_CUOTA, 
+	SEC_CUOTA, 
+	NUM_TRANSACCION, 
+	NUM_VENTA, 
+	NUM_FOLIOCTC,
+	COD_OPERADORA_SCL,
+	COD_PLAZA,
+	PREF_PLAZA
+	)
+	VALUES
+	(
+	:sthCoCartera.lCodCliente[i],
+	:lSecuenciaCastigo,
+	39,
+	:sthCoCartera.lCodVendedor[i],
+	:sthCoCartera.szLetra[i],
+	:sthCoCartera.lCodCentremi[i],
+	6,
+	:sthCoCartera.iColumna[i],
+	:sthCoCartera.lCodProducto[i],
+	0,
+	:sthCoCartera.lHaber[i],
+	:sthCoCartera.iIndContado[i],
+	:sthCoCartera.iIndFacturado[i],
+	SYSDATE,
+	TO_DATE(:sthCoCartera.szFecVencimiento[i],'YYYYMMDDHH24MISS'),
+	TO_DATE(:sthCoCartera.szFecCaducida[i],'YYYYMMDDHH24MISS'),
+	TO_DATE(:sthCoCartera.szFecAntiguedad[i],'YYYYMMDDHH24MISS'),
+	:sthCoCartera.lNumAbonado[i],
+	:sthCoCartera.lNumFolio[i],
+	SYSDATE,
+	:sthCoCartera.lNumCuota[i],
+	:sthCoCartera.lSecCuota[i],
+	:sthCoCartera.lNumTrx[i],
+	:sthCoCartera.lNumVenta[i],
+	:sthCoCartera.szFolioCtc[i],
+	:sthCoCartera.szCodOperadoraScl[i],
+	:sthCoCartera.szCodPlaza[i],
+	:sthCoCartera.szPrefPlaza[i]
+	);
+	}
+	else
+	{
+		printf("Error en Insert en CO_SECARTERA : %s\n",
+				sqlca.sqlerrm.sqlerrmc);
+		return ( -11);
+	}
+	
+	/* Insert en CO_PAGOS  */
+	
+	if ( SQLCODE == SQLOK )
+	{
+	EXEC SQL
+	SELECT CO_SEQ_PAGO.NEXTVAL
+	INTO 
+	:lSecuenciaPago 	
+	FROM DUAL;
+	}
+	else
+	{
+		printf("Error al Insertar en CO_CARTERA : %s\n",
+			sqlca.sqlerrm.sqlerrmc);
+		return(-12);	
+	}
+	
+
+	if ( SQLCODE != SQLOK )
+	{
+		printf("Error en obtener secuencia de pago : %s\n",
+		sqlca.sqlerrm.sqlerrmc);
+		return(-13);
+	}
+
+	EXEC SQL
+	INSERT INTO CO_PAGOSCONC
+	(
+	COD_TIPDOCUM,
+	COD_CENTREMI,
+	NUM_SECUENCI,
+	COD_VENDEDOR_AGENTE,
+	NUM_SECUREL,
+	LETRA,
+	IMP_CONCEPTO,
+	COD_PRODUCTO,
+	COD_TIPDOCREL,
+	COD_AGENTEREL,
+	LETRA_REL,
+	COD_CENTRREL,	
+	COD_CONCEPTO,
+	NUM_ABONADO,
+	NUM_FOLIO,
+	NUM_CUOTA,
+	SEC_CUOTA,
+	NUM_FOLIOCTC,
+	COD_OPERADORA_SCL,
+	COD_PLAZA,
+	PREF_PLAZA	
+	)
+	VALUES
+	(
+	39,
+	1,
+	:lSecuenciaPago,
+	:sthCoCartera.lCodVendedor[i],
+	:sthCoCartera.lNumSec[i],
+	'X',
+	:sthCoCartera.lHaber[i],
+	1,
+	:sthCoCartera.iTipDoc[i],
+	:sthCoCartera.lCodVendedor[i],
+	:sthCoCartera.szLetra[i],
+	:sthCoCartera.lCodCentremi[i],
+	6,
+	:sthCoCartera.lNumAbonado[i],
+	:sthCoCartera.lNumFolio[i],
+	:sthCoCartera.lNumCuota[i],
+	:sthCoCartera.lSecCuota[i],
+	:sthCoCartera.szFolioCtc[i],
+	:sthCoCartera.szCodOperadoraScl[i],
+	:sthCoCartera.szCodPlaza[i],
+	:sthCoCartera.szPrefPlaza[i]
+	);
+	
+	if ( SQLCODE == SQLOK )
+	{
+	
+	EXEC SQL
+	INSERT INTO CO_PAGOS
+	(COD_TIPDOCUM,
+	 COD_CENTREMI,
+	 NUM_SECUENCI,
+	 COD_VENDEDOR_AGENTE,
+	 LETRA,
+	 COD_CLIENTE,
+	 IMP_PAGO,
+	 FEC_EFECTIVIDAD,
+	 FEC_VALOR,
+	 NOM_USUARORA,
+	 COD_FORPAGO,
+	 COD_SISPAGO,
+	 COD_ORIPAGO,
+	 COD_CAUPAGO,
+	 DES_PAGO,
+	 PREF_PLAZA	
+	)
+	VALUES
+	(39,
+	 1,
+	 :lSecuenciaPago,
+	 :sthCoCartera.lCodVendedor[i],
+	 'X',
+	 :sthCoCartera.lCodCliente[i],
+	 :sthCoCartera.lHaber[i],
+	 SYSDATE,
+	 TO_DATE(:sthCoCartera.szFecVencimiento[i],'YYYYMMDDHH24MISS'),
+	 :stLineaComando.szUser,
+	 0,
+	 1,
+	 39,
+	 39,
+	 'Castigo Contable',
+	 :sthCoCartera.szPrefPlaza[i]
+	);
+	
+	
+	}
+	else
+	{
+		printf("Error al insertar en CO_PAGOSCONC : %s\n",
+			sqlca.sqlerrm.sqlerrmc);
+		return(-15);	
+	}
+	
+	
+	       	
+	if ( SQLCODE != SQLOK )
+	{
+		printf("Error al insertar en CO_PAGOS : %s\n",
+			sqlca.sqlerrm.sqlerrmc);
+		return(-15);	
+	}
+	       	
+	}	    /* End For */	
+	
+	EXEC SQL
+	UPDATE FA_CASTIGO
+	SET    IND_CASTIGO = 'S'
+	WHERE  COD_CUENTA  = :lCuentaCastigo;
+	
+	if ( SQLCODE != SQLOK )
+	{
+		printf("Error Update FA_CASTIGO : %s\n",
+			sqlca.sqlerrm.sqlerrmc);
+		return(-16);
+	}
+	else
+		return(1);
+	
+}
+
+
+/* ******************************************************************************** */
+/* ifnAbreArchivosLog : Crea para escritura o appendea archivos de Log y de Errores */
+/* ******************************************************************************** */
+int ifnAbreArchivosLog()
+{
+	char modulo[]="ifnAbreArchivosLog";
+
+	char *pathDir;
+	char szArchivo[32]="";
+	char szPath[128]="";
+	char szComando[128]="";
+
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	sprintf(szArchivo,"Castigos"); /* 'FaSched' */
+
+	pathDir=(char *)malloc(128);
+	pathDir=szGetEnv("XPF_LOG");
+	sprintf(szPath,"%s/Castigos/%s",pathDir,cfnGetTime(2)); /* '....log/FaSched/YYYYMMDD/' */
+	free(pathDir);
+
+	fprintf(stdout, "\nCrea Directorio Log  : %s\n", szPath);
+	sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+
+	fprintf(stdout, "\nCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+	sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )/* "wb+" */
+	{	fprintf(stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		return -7;    }
+
+	vDTrazasError(modulo, "%s  << Abre Archivo de Errores >>", LOG04, cfnGetTime(1));
+
+	sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) /* "wb+" */
+	{	fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+		vDTrazasError(modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+		return -8;    }
+	vDTrazasLog(modulo,"\t PROCESO => Castigos VERSION => %s.\n",LOG03,szVERSION);  /* RA-200511080074 Soporte RyC 18-11-2005 capc */
+	vDTrazasLog(modulo, "%s << Abre Archivo de Log >>", LOG04, cfnGetTime(1));
+	vDTrazasLog(modulo, "%s << Inicio de Castigo >>" , LOG03, cfnGetTime(1));
+
+	return 0; /* RA-200511080074 Soporte RyC 18-11-2005 capc */
+
+}
+
+int bRechazaCuenta(lCuentaCastigo,iRetorno)
+long lCuentaCastigo;
+int  iRetorno;
+{
+
+char modulo[]="bRechazaCuenta";
+
+
+	EXEC SQL 
+	UPDATE	FA_CASTIGO	 
+	SET IND_CUADRA1 = 'S'
+	WHERE COD_CUENTA = :lCuentaCastigo;
+	
+	if ( SQLCODE != SQLOK )
+	{
+		
+	vDTrazasLog(modulo, "%s << Error update FA_CASTIGO.IND_CUADRA1 en Cuenta %d>>", 
+			LOG05, cfnGetTime(1),lCuentaCastigo);
+		return -1;
+	}
+	else
+		return 1;
+	
+
+} /* Fin bRechazaCuenta */
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

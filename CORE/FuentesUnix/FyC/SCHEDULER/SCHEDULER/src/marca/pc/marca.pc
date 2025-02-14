@@ -1,0 +1,182 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sqlda.h>
+
+#define INI_JOB 	0
+#define END_JOB  	1
+#define ERR_JOB		2
+#define INI_PROFILE 	3
+#define END_PROFILE	4
+#define ERR_PROFILE	5
+
+exec sql include sqlca;
+
+void fnMsgError(char *szMsg, int iErrNum, int bRollCom)
+{
+char msg[200];
+/*size_t buf_len, msg_len;
+buf_len = sizeof (msg);	
+
+        if (iErrNum != SqlNull) {
+                printf("Aqui 1\n");
+                if ((iErrNum != SqlOk) and (iErrNum != SqlNotFound)) {
+                        printf("ERROR SQL : %d EN %s \n",iErrNum,szMsg);
+                        sqlglm(msg, &buf_len, &msg_len);
+                        printf("%.*s\n\n", msg_len, msg);
+                        if (bRollCom)
+                                exec sql rollback work;
+                        exit(1);
+                }
+        }
+*/
+}
+
+int main (int argc, char **argv)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+char uid[20]; exec sql var uid is string(20);
+char pwd[20]; exec sql var pwd is string(20);
+char cod_proc[11]; exec sql var cod_proc is string(11);
+char cod_spro[11]; exec sql var cod_spro is string(11);
+char cod_scri[10]; exec sql var cod_scri is string(10);
+long int num_jobs; 
+EXEC SQL END DECLARE SECTION;
+
+
+
+char acc;
+
+	strcpy(uid,argv[1]);
+	strcpy(pwd,argv[2]);
+
+	strcpy(cod_proc,argv[3]);
+	strcpy(cod_spro,argv[4]);
+	num_jobs=atol(argv[5]);
+	acc=atoi(argv[6]);
+	strcpy(cod_scri,argv[7]);
+/*
+	strcpy(uid,"tarifica");
+	strcpy(pwd,"tarifica");
+*/
+
+	EXEC SQL CONNECT :uid IDENTIFIED BY :pwd;
+
+	switch(acc) {
+	case INI_JOB:
+
+			EXEC SQL 
+			INSERT INTO SCH_JOBS (COD_PROC,
+					      COD_SUBPRO, 
+				              COD_SCRIPT,
+					      NUM_JOBS,
+					      FEC_INIEXEC,
+					      TPO_ESTIMADO,
+					      NRO_PID,
+					      NRO_PPID,
+					      COD_ESTADO,
+					      IND_REG,
+					      NOM_ARCHLOG,
+					      GLS_SCRIPT)
+
+			VALUES (:cod_proc, 
+				:cod_spro, 
+				:cod_scri, 
+				:num_jobs,
+				sysdate,
+				0,
+				0,
+				0,
+				'PLAY',
+				'',
+				'',
+				'');
+			EXEC SQL COMMIT;
+
+			fnMsgError("sql sch_jobs" , sqlca.sqlcode,0);
+
+			break;
+
+	case END_JOB:
+
+			EXEC SQL 
+			UPDATE SCH_JOBS
+			SET     FEC_TEREXEC = sysdate,
+				COD_ESTADO  = 'STOP'
+			WHERE   trim(COD_PROC)    = :cod_proc AND
+				trim(COD_SUBPRO)  = :cod_spro AND
+				trim(COD_SCRIPT)  = :cod_scri AND
+				trim(NUM_JOBS)    = :num_jobs;
+
+			fnMsgError("sql sch_jobs" , sqlca.sqlcode,0);
+		
+			EXEC SQL COMMIT;
+
+			break;
+
+	case ERR_JOB:
+
+                        EXEC SQL
+                        UPDATE SCH_JOBS
+                        SET     FEC_TEREXEC = sysdate,
+                                COD_ESTADO  = 'ERROR'
+                        WHERE   trim(COD_PROC)    = :cod_proc AND
+                                trim(COD_SUBPRO)  = :cod_spro AND
+                                trim(COD_SCRIPT)  = :cod_scri AND
+                                trim(NUM_JOBS)    = :num_jobs;
+
+                        fnMsgError("sql sch_jobs" , sqlca.sqlcode,0);
+
+                        EXEC SQL COMMIT;
+
+                        break;
+
+	case INI_PROFILE:
+
+			EXEC SQL
+			UPDATE SCH_PROFILE
+			SET     FEC_TER		= sysdate,
+				COD_ESTADO	= 'PLAY'
+
+			WHERE  	trim(COD_PROC)	 = :cod_proc AND
+				trim(COD_SUBPRO) = :cod_spro AND
+				trim(NUM_JOBS)   = :num_jobs;
+
+			EXEC SQL COMMIT;
+
+			fnMsgError("sql sch_profile" , sqlca.sqlcode,0);
+
+			break;
+
+	case END_PROFILE:	
+			EXEC SQL
+			UPDATE SCH_PROFILE
+			SET    	FEC_TER     = sysdate,
+				COD_ESTADO  = 'STOP'
+
+			WHERE	trim(COD_PROC)    = :cod_proc AND
+				trim(COD_SUBPRO)  = :cod_spro AND
+				trim(NUM_JOBS)    = :num_jobs;
+
+			fnMsgError("sql sch_profile" , sqlca.sqlcode,0);
+			EXEC SQL COMMIT;
+			break;
+
+	case ERR_PROFILE:
+
+                        EXEC SQL
+                        UPDATE SCH_PROFILE
+                        SET     FEC_TER		= sysdate,
+                                COD_ESTADO	= 'ERROR'
+                        WHERE   trim(COD_PROC)   = :cod_proc AND
+                                trim(COD_SUBPRO) = :cod_spro AND
+                                trim(NUM_JOBS)   = :num_jobs;
+
+                        EXEC SQL COMMIT;
+
+                        fnMsgError("sql sch_profile" , sqlca.sqlcode,0);
+
+	}
+	
+	return(0);
+}

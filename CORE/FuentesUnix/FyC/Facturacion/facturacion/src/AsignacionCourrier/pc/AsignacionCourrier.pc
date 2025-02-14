@@ -1,0 +1,1426 @@
+/****************************************************************************/
+/* Fichero    : AsignacionCourrier.pc                                       */
+/* Descripcion: Programa Proncipal                                          */
+/* Fecha      : 16-06-2009                                                  */
+/* Autor      : Jorge Hernan Toro Omar                                      */
+/****************************************************************************/
+
+#define _ASIGNACIONCOURRIER_C_
+
+#include "AsignacionCourrier.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+     char    szUsuarioPasswd[80]   ="";	
+EXEC SQL END DECLARE SECTION;
+
+int  igLogLevel;
+
+/* iPROC_ASIGNACIONCOURRIER = 4500 */
+
+/****************************************************************************/
+/*  FUNCION     : bfnCargaDatosGenerales()                                  */
+/*  DESCRIPCION : Obtiene Datos Generales una sola vez		            */
+/****************************************************************************/
+int main ( int argc, char *argv[])
+{
+    char modulo[]="main";
+
+    long lCodCicloFact;
+    char szOraAccount[32];
+    char szOraPasswd[32];
+
+    PARAMETROSENTRADA 	stParametrosIn;
+
+    /*** Inicializacion de Variables ***/
+    igLogLevel = 3;
+    memset(szOraAccount,'\0',sizeof(szOraAccount));
+    memset(szOraPasswd,'\0',sizeof(szOraPasswd));
+
+    fprintf(stderr,"\n  Asignación Courrier versión " __DATE__ " " __TIME__ " TMG\n");
+    
+    memset(&stParametrosIn,0,sizeof(PARAMETROSENTRADA));
+    
+    /*** Validación de Parámetros Ingresados ***/ 
+    if (!bfnValidaParametrosIn (argc, argv, szOraAccount, szOraPasswd, &stParametrosIn, &igLogLevel)) 
+    {
+	 return (ERROR_PARAMETROS);
+    }
+
+    /* Obtencion de usuario/password como cadena conjunta */
+    sprintf(szUsuarioPasswd,"%s/%s", szOraAccount, szOraPasswd);
+
+    /*** Apertura de Archivos LOG ***/ 
+    if (!bfnAbreArchivosLog(igLogLevel))
+    {
+	 return (ERROR_ARCHIVOSLOG);
+    }		
+		
+    vDTrazasLog  (modulo, "\n Asignación Courrier versión " __DATE__ " " __TIME__ " TMG\n",LOG03);
+
+    if (!ifnAcessoOracle(szOraAccount,szOraPasswd))
+    {
+	 return (ERROR_ACCESSORA);
+    }
+
+    vDTrazasLog  (modulo, "\n\t**  Parametros de Entrada : Asignación Courrier ***",LOG03); 
+    vDTrazasLog  (modulo, "\t\t=> Cod. Ciclo Fact  [%ld]",LOG03, stParametrosIn.lCodCicloFact); 
+	
+    /*** Se Obtiene el Ciclo de Facturacion ***/
+    if(!bfnGetCicloFact(&stParametrosIn))
+    {
+        vDTrazasError(modulo," Error, en bfnGetCicloFact\n", LOG01);
+        vDTrazasLog  (modulo," Error, en bfnGetCicloFact\n", LOG01);
+        return FALSE;
+    }
+
+    /*** Se inicaliza el Proceso de Traza de Procesos ***/
+    if (!bfnAsignacionCourrier(&stParametrosIn))
+    {
+         vDTrazasError(modulo, " \n------------------------------------"
+                               " \nProceso Terminado de Forma Irregular"
+                               " \n------------------------------------"
+                               ,LOG03);
+         vDTrazasLog  (modulo, " \n------------------------------------"
+                               " \nProceso Terminado de Forma Irregular"
+                               " \n------------------------------------"
+                               ,LOG03);
+    } 
+    else
+    {
+         vDTrazasError(modulo, " \n------------------------------------"
+                               " \nProceso Terminado de Forma Regular"
+                               " \n------------------------------------"
+                               ,LOG03);
+         vDTrazasLog  (modulo, " \n------------------------------------"
+                               " \nProceso Terminado de Forma Regular"
+                               " \n------------------------------------"
+                               ,LOG03);
+    }
+
+    if ( bfnDisconnectORA(0))
+    {
+         vDTrazasLog  (modulo, "\n------------------------------------"
+                               "\nDesconectado de  ORACLE"
+                               "\n------------------------------------"
+                               ,LOG04);
+
+         vDTrazasError(modulo, "\n------------------------------------"
+                               "\nDesconectado de  ORACLE"
+                               "\n------------------------------------"
+                               ,LOG04);
+    }
+
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+    
+    fprintf(stderr,"\n  Termino del Proceso Asignación Courrier %s\n",cfnGetTime(1));   
+    
+    return 0;
+
+} /*** Fin main() ***/
+
+/***************************  Fin  Bloque Principal  ***************************/
+
+/* ******************************************************************************** */
+/* FUNCION     : bfnValidaParametrosIn                                              */
+/* DESCRIPCION : verifica los parametros de la invocacion                           */
+/* ******************************************************************************** */
+BOOL bfnValidaParametrosIn (int               argc,
+                            char              *argv[],
+                            char              *szOraAccount ,
+                            char              *szOraPasswd,
+			    PARAMETROSENTRADA *stParametrosIn,
+                            int               *igLogLevel)
+{
+    char        modulo[]="bfnValidaParametrosIn";
+    extern char *optarg;
+    extern int  opterr, optopt;
+    char        opt[] = "u:c:l:i:f:";
+    int         iOpt=0;
+    char        *psztmp = "";
+    char        szUser[64];
+
+    BOOL bUserFlag     = FALSE;
+    BOOL bCodCicloFlag = FALSE;
+    BOOL bLogFlag      = FALSE;
+    BOOL bClieIniFlag  = FALSE;
+    BOOL bClieFinFlag  = FALSE;        
+
+    memset(szUser,'\0',sizeof(szUser));
+    opterr=0;
+
+    if(argc == 1)
+    {
+        fprintf (stderr,"\n\t<< Error : Parametros insuficientes >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    while ( (iOpt = getopt(argc, argv , opt) ) != EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':
+                if(bUserFlag==FALSE)
+                {
+                    strcpy(szUser, optarg);
+                    bUserFlag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'c':
+                if(bCodCicloFlag==FALSE)
+                {
+                    stParametrosIn->lCodCicloFact=atol(optarg);
+                    bCodCicloFlag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'l':
+                if(bLogFlag==FALSE)
+                {
+                    *igLogLevel=atoi(optarg);
+                    bLogFlag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+                
+            case 'i':
+                stParametrosIn->lCodClienteIni = atol(optarg);
+                bClieIniFlag = TRUE;
+                break;
+
+            case 'f':
+                stParametrosIn->lCodClienteFin = atol(optarg);
+                bClieFinFlag = TRUE;
+                break;                
+
+            case '?':
+                fprintf(stdout,"\n\t<< Error: opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+                return (FALSE);
+
+            case ':':
+                fprintf(stdout,"\n\t<< Error: falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+                return (FALSE);
+        }/* endswitch */
+    } /* enwhile */
+
+    if ( bUserFlag==TRUE )
+    {
+        if ( (psztmp=(char *)strstr(szUser,"/") )==(char *)NULL )
+        {
+            fprintf (stderr,"\n\t<< Error : usuario no valido. Requiere \"/\" >>\n%s\n",szUsage);
+            return (FALSE);
+        }
+        else
+        {
+            strncpy (szOraAccount,szUser,psztmp-szUser);
+            strcpy  (szOraPasswd, psztmp+1);
+        }
+    }
+
+    if ( bCodCicloFlag==FALSE )
+    {
+       fprintf (stderr,"\n\t<< Error : falta opcion '-c' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    if(bLogFlag==FALSE)
+    {
+        fprintf (stderr,"\n\t<< Error : falta opcion '-l' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+    
+    if ((bClieIniFlag==FALSE) && (bClieFinFlag==FALSE))
+    {
+    	stParametrosIn->bRngClientes = FALSE;
+    }
+    else
+    {
+        if(((bClieIniFlag==TRUE) && (bClieFinFlag==FALSE)) ||
+	   ((bClieIniFlag==FALSE) && (bClieFinFlag==TRUE)))
+        {
+             fprintf (stderr,"\n\t<< Error : Rango de Clientes Invalido, debe indicar Cliente Inicial y Clinte Final >>\n%s\n"
+                            , szUsage);
+             return (FALSE);
+        }
+    }
+
+    if((bClieIniFlag==TRUE) && (bClieFinFlag==TRUE))
+    {
+	 stParametrosIn->bRngClientes = TRUE;    
+    }
+
+    return (TRUE); /* Validacion ok */
+
+} /******************************  Fin  bfnValidaParametros  *****************************/
+
+/* ************************************************************************************* */
+/* FUNCION     : bfnAbreArchivosLog                                                      */
+/* DESCRIPCION : Abre Archivos de LOG y ERRORES                                          */
+/* ************************************************************************************* */
+BOOL bfnAbreArchivosLog(int igLogLevel)
+{
+    char modulo[]   ="bfnAbreArchivosLog";
+    char *pathDir       ;
+    char szArchivo  [52];
+    char szPath    [128];
+    char szComando [128];
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"AsignacionCourrier_%s",cfnGetTime(5));
+
+    pathDir=(char *)malloc(128);
+    pathDir=szGetEnv("XPF_LOG");
+    memset(szPath,'\0',sizeof(szPath));
+    sprintf(szPath,"%s/AsignacionCourrier",pathDir);
+    free(pathDir);
+
+    fprintf( stdout, "\n\tCrea Directorio Log  : %s\n", szPath);
+    memset(szComando,'\0',sizeof(szComando));
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    fprintf( stdout, "\n\tCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+    stStatus.LogNivel = igLogLevel;
+
+    sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )/* "wb+" */
+    {
+        fprintf( stderr, "\n\t<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+        return (FALSE);
+    }
+
+    vDTrazasError(modulo, "%s << Abre Archivo de Errores >>", LOG03, cfnGetTime(1));
+
+    sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+    if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) /* "wb+" */
+    {
+        fprintf(stderr, "\n\t<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+        vDTrazasError(modulo, " << No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+        return (FALSE);
+    }
+
+    vDTrazasLog(modulo, "%s << Abre Archivo de Log >>", LOG03, cfnGetTime(1));
+
+    return (TRUE);
+
+} /****************************    Fin bfnAbreArchivosLog   ******************************/
+
+/* ******************************************************************************** */
+/* FUNCION     : ifnAcessoOracle                                                    */
+/* DESCRIPCION : Se conecta y trabaja sobre la base de Datos                        */
+/* ******************************************************************************** */
+BOOL ifnAcessoOracle(char    *szOraAccount,
+                     char    *szOraPasswd)
+{
+    char    modulo[]="ifnAcessoOracle";
+    char    szUsuario[64];
+    char    szAux[16];
+    char    *psztmp = "";
+    char    szhNomUsuarOra[32];
+    char    szhPasUsuarOra[32];
+
+    memset(szhNomUsuarOra,'\0',sizeof(szhNomUsuarOra));
+    strcpy(szhNomUsuarOra,szOraAccount);
+    memset(szhPasUsuarOra,'\0',sizeof(szhPasUsuarOra));
+    strcpy(szhPasUsuarOra,szOraPasswd);
+
+    /*  Formateo adecuado del Usuario/Password recuperado de la base */
+    memset(szUsuario,'\0',sizeof(szUsuario));
+
+    if ( (psztmp=(char *)strstr(szhNomUsuarOra,"\\$") )!=(char *)NULL )
+    {
+        sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+    else if ((psztmp=(char *)strchr(szhNomUsuarOra,'$') )!=(char *)NULL )
+    {
+        memset(szAux,'\0',sizeof(szAux));
+        strncpy (szAux,szhNomUsuarOra,psztmp-szhNomUsuarOra);
+        sprintf (szUsuario,"%s\\%s/%s",szAux,psztmp,szhPasUsuarOra);
+    }
+    else
+    {
+        sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+
+    if (!fnOraConnect(szOraAccount,szOraPasswd))
+    {
+        vDTrazasError(modulo, " No Hay Conexion a la Base de Datos", LOG01);
+        return (FALSE);
+    }
+
+    vDTrazasLog(modulo,"%s Conectado a la Base de Datos", LOG03, cfnGetTime(1));
+
+    return (TRUE);
+
+} /*********************************  Fin  ifnAcessoOracle *******************************/
+
+/* ******************************************************************************** */
+/* FUNCION     : bfnAsignacionCourrier                                              */
+/* DESCRIPCION : Función de llamadas principales                                    */
+/* ******************************************************************************** */
+int bfnAsignacionCourrier (PARAMETROSENTRADA *stParametrosIn)
+{
+    char  modulo[]="bfnAsignacionCourrier";
+
+    int   iSqlCodeInt    = SQLOK;	
+    long  lCodCicloFact         ;
+    char  szFecha           [15];
+    BOOL  bRptFnc           = TRUE;
+    int   iInd              = iINI_INDICE;
+    int   iCountClientes    = iINI_COUNTCLIENTES;
+    int   iIndEsp           = iINI_INDICE;
+    int   iCountClientesEsp = iINI_COUNTCLIENTES;    
+
+     memset(szFecha,'\0',sizeof(szFecha));
+
+    /*** Validacion de TRaza de Proceso ***/
+    if (!bfnValidaTrazaProc(stParametrosIn->lCodCicloFact, 
+                            iPROC_ASIGNACIONCOURRIER, 
+                            iIND_FACT_ENPROCESO))
+        return (FALSE);
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnValidaTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnValidaTrazaProc", LOG01);
+        return (FALSE);
+    }
+
+    bfnSelectTrazaProc ( stParametrosIn->lCodCicloFact, iPROC_ASIGNACIONCOURRIER, &stTrazaProc);
+
+    bPrintTrazaProc(stTrazaProc);
+    
+    vDTrazasLog  (modulo, "\n\n\t** INICIO PROCESO CLIENTES COURRIER **\n"
+                          "\t======================================\n"
+                        , LOG03);
+
+    /*** Carga Clientes a procesar ****/
+    if( ifnOpenClientesCourrier(stParametrosIn) == SQLOK )
+    { 
+    	if( ifnFetchClientesCourrier(&iInd, &iCountClientes) == SQLOK )
+    	{    		
+    	    if ( !bfnCloseClientesCourrier())
+    	    {     return (FALSE); }  
+    	}
+    	else
+    	{   return (FALSE); }
+    }
+    else
+    {  	return (FALSE); }
+
+    /* Proceso Asignación Cód. Courrier a Clientes */
+    bRptFnc = bfnProcesaClientesCourrier(iInd, iCountClientes);
+
+    if (!bfnSelectSysDate(szFecha))
+    {
+        return FALSE;
+    }
+
+    if (!bRptFnc)
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Asignación/Clientes Especiales con Error");
+    }
+    else 
+    {
+        vDTrazasLog  (modulo, "\n\n\t** INICIO PROCESO CLIENTES ESPECIALES COURRIER **\n"
+                              "\t=================================================\n"
+                            , LOG03);    	
+        /*** Carga Clientes Especiales a procesar ****/
+        if( ifnOpenClientesEspeciales(stParametrosIn) == SQLOK )
+        { 
+    	    if( ifnFetchClientesEspeciales(&iIndEsp, &iCountClientesEsp) == SQLOK )
+    	    {    		
+    	        if ( !bfnCloseClientesEspeciales())
+    	        {     return (FALSE); }  
+    	    }
+    	    else
+    	        {   return (FALSE); }
+        }
+        else
+           {  	return (FALSE); }    	
+    	
+    	/* Proceso Asignación Cód. Courrier Clientes Especiales */
+        bRptFnc = bfnProcesaClientesEspeciales(iIndEsp, iCountClientesEsp);
+    	
+    	if (!bRptFnc)
+    	{
+            stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+            strcpy(stTrazaProc.szFecTermino,szFecha);
+            strcpy(stTrazaProc.szGlsProceso,"Proceso Asignación/Clientes Especiales con Error");    		
+    	}
+    	else
+    	{
+            stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+            strcpy(stTrazaProc.szFecTermino,szFecha);
+            strcpy(stTrazaProc.szGlsProceso,"Proceso Asignación/Clientes Especiales OK");
+        }
+    }
+
+    bPrintTrazaProc(stTrazaProc);
+
+    if(!bfnUpdateTrazaProc(stTrazaProc))
+    {
+        return (FALSE);
+    }
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnUpdateTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnUpdateTrazaProc", LOG01);
+        return FALSE;
+    }
+
+    return (TRUE);
+
+} /******************************  Fin  bfnAsignacionCourrier ***************************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnGetCicloFact()                                         */
+/*  DESCRIPCION : Obtiene Ciclo de Facturacion   		            */
+/****************************************************************************/
+BOOL bfnGetCicloFact (PARAMETROSENTRADA *stParametrosIn)
+{
+    char modulo[]   = "bfnGetCicloFact";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+	 long lhCodCiclFact  = stParametrosIn->lCodCicloFact;
+	 int  ihCodCiclo;
+	 char szhFecEmision [10+1]; EXEC SQL VAR szhFecEmision    IS STRING(10+1) ;
+    EXEC SQL END DECLARE SECTION;
+
+    memset(szhFecEmision,'\0',sizeof(szhFecEmision));
+
+    vDTrazasLog (modulo,"\n\t** Parametros Entrada a bfnGetCicloFact\n"
+			"\t\t=> Cod.CiclFact [%ld]\n",
+			LOG05, 
+			stParametrosIn->lCodCicloFact);
+
+    EXEC SQL
+	 SELECT COD_CICLO, TO_CHAR(TRUNC(FEC_EMISION),'DD-MM-YYYY')
+	 INTO   :ihCodCiclo, :szhFecEmision
+	 FROM   FA_CICLFACT
+	 WHERE  COD_CICLFACT  = :lhCodCiclFact
+	 AND    IND_FACTURACION < 2;
+
+    if (SQLCODE != SQLOK)
+    {
+	iDError (szExeName,ERR000,vInsertarIncidencia,"Select->Fa_CiclFact",szfnORAerror());
+	return (FALSE);
+    }
+
+    stParametrosIn->iCodCiclo = ihCodCiclo;
+    strcpy(stParametrosIn->szFecEmision,szhFecEmision);
+    
+    return (TRUE);
+}/******************** Fin bfnGetCicloFact *********************/
+
+/****************************************************************************/
+/*  FUNCION     : ifnOpenClientesCourrier()                                 */
+/*  DESCRIPCION : Abre cursor Clientes          		            */
+/****************************************************************************/
+int ifnOpenClientesCourrier(PARAMETROSENTRADA *stParamIn)
+{
+    char modulo[]   = "ifnOpenClientesCourrier";
+
+    static char szCadenaSQL[2048];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         long lhCodCicloFact  = stParamIn->lCodCicloFact;
+         int  ihCodCiclo      = stParamIn->iCodCiclo;
+         long lhCodClienteIni ;
+         long lhCodClienteFin ;
+	 char szhFecEmision [10+1]; EXEC SQL VAR szhFecEmision    IS STRING(10+1) ;         
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo, "\n\t** Parametros entrada a ifnOpenClientesCourrier\n"
+			  "\t\t=> Cod_CiclFact   [%ld]\n"
+			  "\t\t=> Cod Ciclo      [%d]\n"
+			  "\t\t=> Fec Emision    [%s]\n"
+			, LOG03
+			, stParamIn->lCodCicloFact
+			, stParamIn->iCodCiclo
+			, stParamIn->szFecEmision);
+
+    memset(szCadenaSQL,0,sizeof(szCadenaSQL));
+    
+    memset(szhFecEmision,0,sizeof(szhFecEmision));
+    
+    strcpy(szhFecEmision,stParamIn->szFecEmision);    
+       
+    if (stParamIn->bRngClientes)
+    { 	
+    	/* Con Rango de Clientes */
+        lhCodClienteIni = stParamIn->lCodClienteIni;
+        lhCodClienteFin = stParamIn->lCodClienteFin;    	        
+
+        vDTrazasLog ( modulo, "\n\t** Con Rango de Clientes : Cliente Inicial [%ld] **\n"
+                              "  \t**                         Cliente Final   [%ld] **\n"
+                            , LOG05
+                            , lhCodClienteIni
+                            , lhCodClienteFin);   
+        
+        sprintf(szCadenaSQL, " SELECT\n"
+		         "\t  DISTINCT CLI.COD_CLIENTE,\n"
+		         "\t  NVL(DIRE.COD_CIUDAD,' '),\n"
+		         "\t  NVL(DIRE.COD_PROVINCIA,' '),\n"
+		         "\t  NVL(DIRE.COD_REGION,' ')\n"
+		         "\t FROM \n"
+		         "\t  FA_CICLOCLI CLI,\n"
+		         "\t  GA_DIRECCLI DIR,\n"
+		         "\t  GE_DIRECCIONES DIRE,\n"		        
+		         "\t  FA_CLIENTESCOURRIER COU\n"		         
+		         "\t WHERE\n"
+		         "\t     CLI.COD_CICLO = %d\n"
+		         "\t AND CLI.COD_CLIENTE = DIR.COD_CLIENTE\n"
+		         "\t AND DIR.COD_TIPDIRECCION = %d\n"
+		         "\t AND DIR.COD_DIRECCION = DIRE.COD_DIRECCION\n"
+		         "\t AND CLI.COD_CLIENTE   = COU.COD_CLIENTE(+)\n"
+		         "\t AND NVL(COU.FEC_VIGENCIA,TO_DATE('01011900','DDMMYYYY')) < TO_DATE(:szhFecEmision,'DD-MM-YYYY')\n"
+		         "\t AND CLI.COD_CLIENTE >= %ld\n"
+		         "\t AND CLI.COD_CLIENTE <= %ld\n"
+		       , ihCodCiclo
+		       , iTIPODIRECCION
+		       , lhCodClienteIni
+		       , lhCodClienteFin);
+    }
+    else
+    {
+        vDTrazasLog ( modulo, "\n\t** Sin Rango de Clientes **\n"
+                            , LOG05);    	
+    	/* Sin Rango de Clientes */
+        sprintf(szCadenaSQL, " SELECT\n"
+		         "\t  DISTINCT CLI.COD_CLIENTE,\n"
+		         "\t  NVL(DIRE.COD_CIUDAD,' '),\n"
+		         "\t  NVL(DIRE.COD_PROVINCIA,' '),\n"
+		         "\t  NVL(DIRE.COD_REGION,' ')\n"
+		         "\t FROM \n"
+		         "\t  FA_CICLOCLI CLI,\n"
+		         "\t  GA_DIRECCLI DIR,\n"
+		         "\t  GE_DIRECCIONES DIRE,\n"		        
+		         "\t  FA_CLIENTESCOURRIER COU\n"
+		         "\t WHERE\n"
+		         "\t     CLI.COD_CICLO = %d\n"
+		         "\t AND CLI.COD_CLIENTE = DIR.COD_CLIENTE\n"
+		         "\t AND DIR.COD_TIPDIRECCION = %d\n"
+		         "\t AND DIR.COD_DIRECCION = DIRE.COD_DIRECCION\n"
+		         "\t AND CLI.COD_CLIENTE   = COU.COD_CLIENTE(+)\n"		         
+		         "\t AND NVL(COU.FEC_VIGENCIA,TO_DATE('01011900','DDMMYYYY')) < TO_DATE(:szhFecEmision,'DD-MM-YYYY')\n"		         
+		       , ihCodCiclo
+		       , iTIPODIRECCION);    	
+    }
+
+    /*** FIN Declara Cursor ***/
+
+    vDTrazasLog ( modulo,"\n\t** Query for cCursor_Clientes_Courrier \n\t [%s]\n"
+                        ,LOG05, alltrim(szCadenaSQL));
+
+    EXEC SQL PREPARE stQueryDinamica FROM :szCadenaSQL;
+
+    if (SQLCODE) 
+    {
+	vDTrazasError  (modulo,"<< Fallo en 'PREPARE' de la Query Dinamica >>"
+			       "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	vDTrazasLog  (modulo,"<< Fallo en 'PREPARE' de la Query Dinamica >>"
+			     "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	return (SQLCODE);
+    }
+
+    EXEC SQL DECLARE cCursor_Clientes_Courrier CURSOR FOR stQueryDinamica;
+
+    if (SQLCODE) 
+    {
+	vDTrazasError  (modulo,"<< Fallo en 'DECLARE' del Cursor  cCursor_Clientes_Courrier >>"
+			       "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	vDTrazasLog  (modulo,"<< Fallo en 'DECLARE' del Cursor  cCursor_Clientes_Courrier >>"
+			     "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	return (SQLCODE);
+    }
+
+    EXEC SQL OPEN cCursor_Clientes_Courrier USING :szhFecEmision;
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+       vDTrazasLog  (modulo," ** No Existen Datos en cCursor_Clientes_Courrier **",LOG01);
+       vDTrazasError(modulo," ** No Existen Datos en cCursor_Clientes_Courrier **",LOG01);
+       return (SQLCODE);
+    }
+    
+    if(SQLCODE != SQLOK)
+    {
+       vDTrazasError(modulo, " en Open cCursor_Clientes_Courrier **"
+                             "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+       vDTrazasLog  (modulo, " en Open cCursor_Clientes_Courrier **"
+                             "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    }
+
+    return (SQLOK);
+
+}/******************** Fin ifnOpenClientesCourrier ********************/
+
+/****************************************************************************/
+/*  FUNCION     : ifnFetchClientesCourrier()                                */
+/*  DESCRIPCION : Fetch Clientes            		                    */
+/****************************************************************************/
+int ifnFetchClientesCourrier( int *iInd,
+			      int *iCountClientes)
+{
+    char modulo[]   = "ifnFetchClientesCourrier";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+	 long    lhCodCliente;
+	 char    szhCodCiudad    [5+1]; EXEC SQL VAR szhCodCiudad    IS STRING(5+1) ;
+	 char    szhCodProvincia [5+1]; EXEC SQL VAR szhCodProvincia IS STRING(5+1) ;
+	 char    szhCodRegion    [5+1]; EXEC SQL VAR szhCodRegion    IS STRING(3+1) ;	 
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo,"\n\t** Parametros entrada a ifnFetchClientesCourrier\n"
+			 "\t\t=> CountClientes [%d]\n"
+			 "\t\t=> Ind registro  [%d]\n",
+			 LOG03,
+			 *iCountClientes,
+			 *iInd);					 
+
+    while (SQLCODE == SQLOK)
+    {
+           EXEC SQL 
+                FETCH cCursor_Clientes_Courrier
+                INTO  :lhCodCliente,
+                      :szhCodCiudad,
+                      :szhCodProvincia,
+                      :szhCodRegion;
+
+           if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+           {
+               vDTrazasError(modulo," en Fetch Cursor cCursor_Clientes_Courrier %s ",LOG01,SQLERRM);
+               vDTrazasLog  (modulo," en Fetch Cursor cCursor_Clientes_Courrier %s ",LOG01,SQLERRM);
+           }
+
+           if( SQLCODE == SQLOK )
+	   {
+   	       (*iCountClientes)++; 
+	       memset(&stClientesInd[*iCountClientes],0,sizeof(CLIENTESIND));       
+	       stClientesInd[*iCountClientes].lCodCliente   = lhCodCliente;
+               strcpy(stClientesInd[*iCountClientes].szCodCiudad , szhCodCiudad);
+	       strcpy(stClientesInd[*iCountClientes].szCodProvincia , szhCodProvincia);
+	       strcpy(stClientesInd[*iCountClientes].szCodRegion , szhCodRegion);
+	       stClientesInd[*iCountClientes].iIndFin       = *iInd;
+
+	       (*iInd)++;
+	   }
+       
+
+    } /*** Fin del While ***/
+ 
+    if ( SQLCODE == SQLNOTFOUND)
+    {
+         vDTrazasLog  (modulo,"\n\t en Fetch se cargaron [%d] Clientes ",LOG03,*iInd);
+         SQLCODE = SQLOK;    
+         return (SQLCODE);
+    }
+    else
+    {
+    	return (FALSE);
+    }
+
+}/************************* Fin ifnFetchClientesCourrier *************************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnCloseClientesCourrier()                                */
+/*  DESCRIPCION : Cierra Cursor de Clientes    		                    */
+/****************************************************************************/
+BOOL bfnCloseClientesCourrier()
+{
+    char modulo[]   = "bfnCloseClientesCourrier";
+
+    EXEC SQL CLOSE cCursor_Clientes_Courrier;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/******************** Fin bfnCloseClientesCourrier *******************/
+
+/****************************************************************************/
+/*  FUNCION : bfnProcesaClientesCourrier()                                  */
+/****************************************************************************/
+BOOL bfnProcesaClientesCourrier( int  iInd,
+				 int  iCountClientes)
+{
+    char    modulo[]          = "bfnProcesaClientesCourrier";
+    int     iCountAux            ;
+    int     iClientesUpdate   = 0;
+    int     iClientesNoUpdate = 0;    
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+         long lhCodCliente         ;
+         char szhCodCourrier [10+1]; EXEC SQL VAR szhCodCourrier  IS STRING(10+1) ;
+         char szhCodCiudad    [5+1]; EXEC SQL VAR szhCodCiudad    IS STRING(5+1) ;
+         char szhCodProvincia [5+1]; EXEC SQL VAR szhCodProvincia IS STRING(5+1) ;
+         char szhCodRegion    [3+1]; EXEC SQL VAR szhCodRegion    IS STRING(3+1) ;                           
+    EXEC SQL END DECLARE SECTION;
+    
+    
+
+    vDTrazasLog  (modulo,"\n\t** Parametros entrada a bfnProcesaClientesCourrier\n"
+			 "\t\t CountClientes  [%d]\n"
+			 "\t\t Ind registro   [%d]\n",
+			 LOG03,
+			 iCountClientes,
+			 iInd);
+    
+    for ( iCountAux = 0; iCountAux <= iCountClientes; iCountAux++)
+    { 
+    	  /* inicializando variables*/
+    	  memset(szhCodCourrier,0,sizeof(szhCodCourrier));
+    	  memset(szhCodCiudad,0,sizeof(szhCodCiudad));
+    	  memset(szhCodProvincia,0,sizeof(szhCodProvincia));
+    	  memset(szhCodRegion,0,sizeof(szhCodRegion));
+    	  
+    	  /* asignando valores */
+    	  lhCodCliente          = stClientesInd[iCountAux].lCodCliente;
+    	  strcpy(szhCodCiudad   , stClientesInd[iCountAux].szCodCiudad);
+    	  strcpy(szhCodProvincia, stClientesInd[iCountAux].szCodProvincia);
+    	  strcpy(szhCodRegion   , stClientesInd[iCountAux].szCodRegion); 	      
+    	      	      	  
+    	  if (bfnBuscaCodCourrier( szhCodCiudad,
+    	                           szhCodProvincia,
+    	                           szhCodRegion,
+    	                           szhCodCourrier))
+    	  {
+    	  	
+    	      if (bfnProcesoUpdateClientes( lhCodCliente , szhCodCourrier))
+    	      {
+    	      	  iClientesUpdate++;
+    	      }
+    	      else
+    	      {
+                  vDTrazasLog  (modulo,"\n\t WARNING Problemas para actualizar Cliente [%ld]", LOG06,lhCodCliente);    	      	  
+    	      	  iClientesNoUpdate++;
+    	      }    	  	
+    	  }
+    }
+    
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo,"\nen Commit bfnUpdateClientesCourrier", LOG01);
+        vDTrazasLog  (modulo,"\n\t ERROR en Commit bfnUpdateClientesCourrier", LOG01);
+        return FALSE;
+    }
+    
+    vDTrazasLog  (modulo,"\n\t** Proceso Clientes Courrier **\n", LOG03);
+    vDTrazasLog  (modulo,"\t===============================", LOG03);
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes Actualizados    [%d] **", LOG03,iClientesUpdate);
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes No Actualizados [%d] **", LOG03,iClientesNoUpdate);    
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes Procesados      [%d] **", LOG03,iCountAux);
+    
+    return (TRUE);      
+}/********************* Fin bfnProcesaClientesCourrier **********************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnBuscaCodCourrier                                       */
+/****************************************************************************/
+BOOL bfnBuscaCodCourrier( char *szCodCiudad,
+                          char *szCodProvincia,
+                          char *szCodRegion,
+                          char *szCodCourrier)
+{
+    char modulo[]   = "bfnBuscaCodCourrier";
+
+    static char szCadenaSQL[2048];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+	 char    szhCodCourrier [10+1]; EXEC SQL VAR szhCodCourrier  IS STRING(10+1) ;
+	 char    szhCodCiudad    [5+1]; EXEC SQL VAR szhCodCiudad    IS STRING(5+1) ;
+	 char    szhCodProvincia [5+1]; EXEC SQL VAR szhCodProvincia IS STRING(5+1) ;
+	 char    szhCodRegion    [3+1]; EXEC SQL VAR szhCodRegion    IS STRING(3+1) ;	 	 	 
+    EXEC SQL END DECLARE SECTION;
+
+    memset(szhCodCourrier,0,sizeof(szhCodCourrier));
+    memset(szhCodCiudad,0,sizeof(szhCodCiudad));
+    memset(szhCodProvincia,0,sizeof(szhCodProvincia));
+    memset(szhCodRegion,0,sizeof(szhCodRegion));
+
+    strcpy(szhCodCiudad,szCodCiudad);
+    strcpy(szhCodProvincia,szCodProvincia);
+    strcpy(szhCodRegion,szCodRegion);        
+						 
+    EXEC SQL
+	 SELECT COD_COURRIER
+	 INTO   :szhCodCourrier
+	 FROM   FA_COURRIERDISTRIB
+	 WHERE  COD_CIUDAD    = :szhCodCiudad
+	 AND    COD_PROVINCIA = :szhCodProvincia 
+	 AND    COD_REGION    = :szhCodRegion;
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+	iDError (szExeName,ERR000,vInsertarIncidencia,"Select->FA_COURRIERDISTRIB",szfnORAerror());
+        vDTrazasLog  (modulo,"\n\t ERROR en SELECT -> FA_COURRIERDISTRIB : %d  %s ",LOG06,SQLCODE,SQLERRM);	
+        vDTrazasError(modulo,"\n\t en SELECT -> FA_COURRIERDISTRIB : %d  %s **",LOG06,SQLCODE,SQLERRM);
+    }
+    
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        return (FALSE);    	
+    }
+    
+    strcpy(szCodCourrier,szhCodCourrier);
+    
+    return (TRUE);
+
+}/************************* Fin bfnBuscaCodCourrier *************************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnProcesoUpdateClientes                                  */
+/*  DESCRIPCION : Actualiza Tabla FA_CICLOCLI con el Cod. Courrier asignado */
+/****************************************************************************/
+BOOL bfnProcesoUpdateClientes( long lCodCliente,
+                                char *szCodCourrier)
+{
+    char modulo[]   = "bfnProcesoUpdateClientes";
+    
+    static char szCadenaSQL[2048];    	
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         long    lhCodCliente         ;
+	 char    szhCodCourrier    [10+1]; EXEC SQL VAR szhCodCourrier    IS STRING(10+1) ;
+	 char    szhCodCourrierSql [10+1]; EXEC SQL VAR szhCodCourrierSql IS STRING(10+1) ;
+    EXEC SQL END DECLARE SECTION;
+    
+    memset(szhCodCourrier,0,sizeof(szhCodCourrier));    
+
+    lhCodCliente = lCodCliente;
+    strcpy(szhCodCourrier,szCodCourrier);    
+    
+    vDTrazasLog  (modulo,"\n\t** Parametros entrada a bfnProcesoUpdateClientes\n"
+			 "\t\t=> Cod. Cliente         [%ld]\n"
+			 "\t\t=> Cod. Courrier(input) [%s]\n",
+			 LOG03,
+			 lhCodCliente,
+			 szhCodCourrier);
+			 
+    sprintf(szCadenaSQL, " SELECT\n"
+		         "\t  NVL(COD_COURRIER,' ')\n"
+		         "\t FROM \n"
+		         "\t  FA_CICLOCLI CLI\n"
+		         "\t WHERE\n"
+		         "\t     COD_CLIENTE = %ld\n"
+		       , lhCodCliente);	
+		       
+    vDTrazasLog ( modulo,"\n\t** Query for cCursor_CicloCli \n\t [%s]\n"
+                        ,LOG05, alltrim(szCadenaSQL));
+
+    EXEC SQL PREPARE stQueryDinamica FROM :szCadenaSQL;	
+    
+    if (SQLCODE) 
+    {
+	vDTrazasError  (modulo,"<< Fallo en 'PREPARE' de la Query Dinamica >>"
+			       "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	vDTrazasLog  (modulo,"<< Fallo en 'PREPARE' de la Query Dinamica >>"
+			     "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	return (SQLCODE);
+    }
+
+    EXEC SQL DECLARE cCursor_CicloCli CURSOR FOR stQueryDinamica;
+
+    if (SQLCODE) 
+    {
+	vDTrazasError  (modulo,"<< Fallo en 'DECLARE' del Cursor  cCursor_CicloCli >>"
+			       "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	vDTrazasLog  (modulo,"<< Fallo en 'DECLARE' del Cursor  cCursor_CicloCli >>"
+			     "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	return (SQLCODE);
+    }
+
+    EXEC SQL OPEN cCursor_CicloCli;
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+       vDTrazasLog  (modulo,"\t ** No Existen Datos en cCursor_CicloCli **\n",LOG01);
+       vDTrazasError(modulo,"\t ** No Existen Datos en cCursor_CicloCli **\n",LOG01);
+       return (SQLCODE);
+    }
+    
+    if(SQLCODE != SQLOK)
+    {
+       vDTrazasError(modulo, " en Open cCursor_CicloCli **"
+                             "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+       vDTrazasLog  (modulo, " en Open cCursor_CicloCli **"
+                             "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    } 
+    
+    while (SQLCODE == SQLOK)
+    {
+    	
+           memset(szhCodCourrierSql,0,sizeof(szhCodCourrierSql));    	
+    	
+           EXEC SQL 
+                FETCH cCursor_CicloCli
+                INTO  :szhCodCourrierSql;
+
+           if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+           {
+               vDTrazasError(modulo,"\t en Fetch Cursor cCursor_CicloCli %s \n",LOG01,SQLERRM);
+               vDTrazasLog  (modulo,"\t en Fetch Cursor cCursor_CicloCli %s \n",LOG01,SQLERRM);
+           }
+
+           if( SQLCODE == SQLOK )
+	   {
+               if (!strcmp(szhCodCourrier,szhCodCourrierSql)==0)
+               {               	   
+               	   if (!bfnUpdateCodZonaCourrier(lhCodCliente,szhCodCourrier))
+               	   {
+               	       return (FALSE);               	   
+               	   }
+               	   break;
+               }
+	   }
+    } /*** Fin del While ***/    
+    
+    EXEC SQL CLOSE cCursor_CiCloCli;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (modulo," en Close de Cursor cCursor_CiCloCli : %d  %s **\n",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo," en Close de Cursor cCursor_CiCloCli : %d  %s **\n",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }    
+        
+    return (TRUE);
+    
+}/********************** Fin bfnProcesoUpdateClientes ***********************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnUpdateClientesCourrier                                 */
+/*  DESCRIPCION : Actualiza Tabla FA_CICLOCLI con el Cod. Courrier asignado */
+/****************************************************************************/
+BOOL bfnUpdateClientesCourrier( long lCodCliente,
+                                char *szCodCourrier)
+{
+    char modulo[]   = "bfnUpdateClientesCourrier";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         long    lhCodCliente         ;
+	 char    szhCodCourrier [10+1]; EXEC SQL VAR szhCodCourrier  IS STRING(10+1) ;	 	 	 
+    EXEC SQL END DECLARE SECTION;
+
+    memset(szhCodCourrier,0,sizeof(szhCodCourrier));
+
+    lhCodCliente = lCodCliente;
+    strcpy(szhCodCourrier,szCodCourrier);
+						 
+    EXEC SQL
+	 UPDATE FA_CICLOCLI
+	        SET COD_COURRIER = :szhCodCourrier
+	 WHERE  COD_CLIENTE    = :lhCodCliente;
+
+    if (SQLCODE != SQLOK)
+    {
+	iDError (szExeName,ERR000,vInsertarIncidencia,"Update->FA_CICLOCLI",szfnORAerror());
+        vDTrazasLog  (modulo,"\n\t ERROR en UPDATE -> FA_CICLOCLI : %d  %s ",LOG06,SQLCODE,SQLERRM);	
+        vDTrazasError(modulo,"\n\t en UPDATE -> FA_CICLOCLI : %d  %s **",LOG06,SQLCODE,SQLERRM);
+    }
+    
+    return (TRUE);
+
+}/************************* Fin bfnUpdateClientesCourrier *************************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnUpdateCodZonaCourrier                                 */
+/*  DESCRIPCION : Actualiza Tabla FA_CICLOCLI con el Cod. Courrier asignado */
+/****************************************************************************/
+BOOL bfnUpdateCodZonaCourrier( long lCodCliente,
+                                char *szCodCourrier)
+{
+    char modulo[]   = "bfnUpdateCodZonaCourrier";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         long    lhCodCliente         ;
+	 char    szhCodCourrier [10+1]; EXEC SQL VAR szhCodCourrier  IS STRING(10+1) ;	 	 	 
+    EXEC SQL END DECLARE SECTION;
+
+    memset(szhCodCourrier,0,sizeof(szhCodCourrier));
+
+    lhCodCliente = lCodCliente;
+    strcpy(szhCodCourrier,szCodCourrier);
+						 
+    EXEC SQL
+	 UPDATE FA_CICLOCLI
+	        SET COD_COURRIER = :szhCodCourrier,
+	            COD_ZONACOURRIER = NULL
+	 WHERE  COD_CLIENTE    = :lhCodCliente;
+
+    if (SQLCODE != SQLOK)
+    {
+	iDError (szExeName,ERR000,vInsertarIncidencia,"Update->FA_CICLOCLI",szfnORAerror());
+        vDTrazasLog  (modulo,"\n\t ERROR en UPDATE -> FA_CICLOCLI : %d  %s ",LOG06,SQLCODE,SQLERRM);	
+        vDTrazasError(modulo,"\n\t en UPDATE -> FA_CICLOCLI : %d  %s **",LOG06,SQLCODE,SQLERRM);
+    }
+    
+    return (TRUE);
+
+}/************************* Fin bfnUpdateCDodZonaCourrier *************************/
+
+
+/****************************************************************************/
+/*  FUNCION : bfnProcesaClientesEspeciales()                                */
+/****************************************************************************/
+BOOL bfnProcesaClientesEspeciales( int  iIndEsp,
+				   int  iCountClientesEsp)
+{
+    char    modulo[]           = "bfnProcesaClientesEspeciales";
+    int     iCountAux             ;
+    int     iClientesUpdate    = 0;
+    int     iClientesNoUpdate  = 0;
+    int     iClientesEspNoFind = 0;       
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+         long lhCodCliente         ;
+         char szhCodCourrier [10+1]; EXEC SQL VAR szhCodCourrier  IS STRING(10+1) ;
+    EXEC SQL END DECLARE SECTION;
+    
+    
+
+    vDTrazasLog  (modulo,"\n\t** Parametros entrada a bfnProcesaClientesEspeciales\n"
+			 "\t\t CountClientes  [%d]\n"
+			 "\t\t Ind registro   [%d]\n",
+			 LOG03,
+			 iCountClientesEsp,
+			 iIndEsp);
+    
+    for ( iCountAux = 0; iCountAux <= iCountClientesEsp; iCountAux++)
+    { 
+    	  /* inicializando variables*/
+    	  memset(szhCodCourrier,0,sizeof(szhCodCourrier));
+    	  
+    	  /* asignando valores */
+    	  lhCodCliente          = stClientesEspInd[iCountAux].lCodCliente;
+    	  strcpy(szhCodCourrier   , stClientesEspInd[iCountAux].szCodCourrier);
+    	      	      	  
+    	  if (bfnBuscaClienteCourrier( lhCodCliente) )
+    	  {
+    	      if (bfnProcesoUpdateClientes( lhCodCliente , szhCodCourrier))
+    	      {
+    	      	  iClientesUpdate++;
+    	      }
+    	      else
+    	      {
+                  vDTrazasLog  (modulo,"\n\t WARNING Problemas para actualizar Cliente [%ld]", LOG06,lhCodCliente);    	      	  
+    	      	  iClientesNoUpdate++;
+    	      }    	  	    	  	    	  	
+    	  }
+    	  else
+    	  {
+                  vDTrazasLog  (modulo,"\n\t ** WARNING No existe Cliente [%ld] **", LOG06,lhCodCliente);    	  	
+    	  	  iClientesEspNoFind++;
+    	  }
+    }
+    
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo,"\nen Commit bfnUpdateClientesCourrier (Especiales)", LOG01);
+        vDTrazasLog  (modulo,"\n\t ERROR en Commit bfnUpdateClientesCourrier (Especiales)", LOG01);
+        return FALSE;
+    }
+    
+    vDTrazasLog  (modulo,"\n\t**   Proceso Clientes Especiales   **\n", LOG03);
+    vDTrazasLog  (modulo,"\t=====================================", LOG03);
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes Actualizados    [%d] **", LOG03,iClientesUpdate);
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes No Actualizados [%d] **", LOG03,iClientesNoUpdate);
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes No Encontrados  [%d] **", LOG03,iClientesEspNoFind);    
+    vDTrazasLog  (modulo,"\n\t\t=> Clientes Procesados      [%d] **", LOG03,iCountAux);
+    
+    return (TRUE);      
+}/********************* Fin bfnProcesaClientesEspeciales **********************/
+
+
+/****************************************************************************/
+/*  FUNCION     : bfnBuscaClienteCourrier                                    */
+/****************************************************************************/
+BOOL bfnBuscaClienteCourrier( long lCodCliente)
+{
+    char modulo[]   = "bfnBuscaClienteCourrier";
+
+    static char szCadenaSQL[2048];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         long    lhCodCliente         ;
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodCliente = lCodCliente;
+						 
+    EXEC SQL
+	 SELECT DISTINCT COD_CLIENTE
+	 INTO   :lhCodCliente
+	 FROM   FA_CICLOCLI
+         WHERE  COD_CLIENTE    = :lhCodCliente;
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+	iDError (szExeName,ERR000,vInsertarIncidencia,"Select->FA_CICLOCLI",szfnORAerror());
+        vDTrazasLog  (modulo,"\n\t ERROR en SELECT -> FA_CICLOCLI : %d  %s ",LOG06,SQLCODE,SQLERRM);	
+        vDTrazasError(modulo,"\n\t en SELECT -> FA_CICLOCLI : %d  %s **",LOG06,SQLCODE,SQLERRM);
+    }
+    
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        return (FALSE);    	
+    }
+    
+    return (TRUE);
+
+}/************************* Fin bfnBuscaClienteCourrier *************************/
+
+
+/****************************************************************************/
+/*  FUNCION     : ifnOpenClientesEspeciales()                               */
+/*  DESCRIPCION : Abre cursor Clientes Especiales      		            */
+/****************************************************************************/
+int ifnOpenClientesEspeciales( PARAMETROSENTRADA *stParamIn )
+{
+    char modulo[]   = "ifnOpenClientesEspeciales";
+    static char szCadenaSQL[2048];
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+	 char szhFecEmision [10+1]; EXEC SQL VAR szhFecEmision    IS STRING(10+1) ;
+         long lhCodClienteIni ;
+         long lhCodClienteFin ;	 
+    EXEC SQL END DECLARE SECTION;    
+
+    memset(szCadenaSQL,0,sizeof(szCadenaSQL));
+    memset(szhFecEmision,0,sizeof(szhFecEmision));
+    
+    strcpy(szhFecEmision,stParamIn->szFecEmision);
+
+    vDTrazasLog ( modulo, "\n\t** Fecha Emision : [%s] \n"
+                        , LOG05
+                        , szhFecEmision);
+                        
+    if (stParamIn->bRngClientes)
+    {
+    	/* Con Rango de Clientes */
+        lhCodClienteIni = stParamIn->lCodClienteIni;
+        lhCodClienteFin = stParamIn->lCodClienteFin;                         
+        
+        vDTrazasLog ( modulo, "\n\t** Con Rango de Clientes : Cliente Inicial [%ld] **\n"
+                              "  \t**                         Cliente Final   [%ld] **\n"
+                            , LOG05
+                            , lhCodClienteIni
+                            , lhCodClienteFin);        
+
+        sprintf(szCadenaSQL, " SELECT\n"
+	    	             "\t  COD_CLIENTE,\n"
+		             "\t  NVL(COD_COURRIER,' ')\n"
+		             "\t FROM \n"
+		             "\t  FA_CLIENTESCOURRIER\n"		        
+		             "\t WHERE\n"
+		             "\t     TO_DATE(:szhFecEmision,'DD-MM-YYYY') <= TRUNC(FEC_VIGENCIA)\n"		             
+		             "\t AND COD_CLIENTE >= %ld\n"
+		             "\t AND COD_CLIENTE <= %ld\n"
+		           , lhCodClienteIni
+		           , lhCodClienteFin);
+    }		             		             
+    else
+    {
+    	/* Sin Rango de Clientes */  
+        vDTrazasLog ( modulo, "\n\t** Sin Rango de Clientes **\n" , LOG05);    	  	
+        sprintf(szCadenaSQL, " SELECT\n"
+	    	             "\t  COD_CLIENTE,\n"
+		             "\t  NVL(COD_COURRIER,' ')\n"
+		             "\t FROM \n"
+		             "\t  FA_CLIENTESCOURRIER\n"		        
+		             "\t WHERE\n"
+		             "\t     TO_DATE(:szhFecEmision,'DD-MM-YYYY') <= TRUNC(FEC_VIGENCIA)\n");    	    	
+    }		             
+		         
+
+    /*** FIN Declara Cursor ***/
+
+    vDTrazasLog ( modulo,"\n\t** Query for cCursor_Clientes_Especiales \n\t [%s]\n"
+                        ,LOG05, alltrim(szCadenaSQL));
+
+    EXEC SQL PREPARE stQueryDinamica FROM :szCadenaSQL;
+
+    if (SQLCODE) 
+    {
+	vDTrazasError  (modulo,"<< Fallo en 'PREPARE' de la Query Dinamica >>"
+			       "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	vDTrazasLog  (modulo,"<< Fallo en 'PREPARE' de la Query Dinamica >>"
+			     "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	return (SQLCODE);
+    }
+
+    EXEC SQL DECLARE cCursor_Clientes_Especiales CURSOR FOR stQueryDinamica;
+
+    if (SQLCODE) 
+    {
+	vDTrazasError  (modulo,"<< Fallo en 'DECLARE' del Cursor  cCursor_Clientes_Especiales >>"
+			       "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	vDTrazasLog  (modulo,"<< Fallo en 'DECLARE' del Cursor  cCursor_Clientes_Especiales >>"
+			     "\n\t[%d] : [%s]",LOG01,SQLCODE,SQLERRM);
+	return (SQLCODE);
+    }
+
+    EXEC SQL OPEN cCursor_Clientes_Especiales USING :szhFecEmision;
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+       vDTrazasLog  (modulo," ** No Existen Datos en cCursor_Clientes_Especiales **",LOG01);
+       vDTrazasError(modulo," ** No Existen Datos en cCursor_Clientes_Especiales **",LOG01);
+       return (SQLCODE);
+    }
+    
+    if(SQLCODE != SQLOK)
+    {
+       vDTrazasError(modulo, " en Open cCursor_Clientes_Especiales **"
+                             "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+       vDTrazasLog  (modulo, " en Open cCursor_Clientes_Especiales **"
+                             "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    }
+
+    return (SQLOK);
+
+}/******************** Fin ifnOpenClientesEspeciales ********************/
+
+/****************************************************************************/
+/*  FUNCION     : ifnFetchClientesEspeciales()                              */
+/*  DESCRIPCION : Fetch Clientes Especiales    		                    */
+/****************************************************************************/
+int ifnFetchClientesEspeciales( int *iIndEsp,
+			        int *iCountClientesEsp)
+{
+    char modulo[]   = "ifnFetchClientesEspeciales";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+	 long    lhCodCliente;
+	 char    szhCodCourrier [10+1]; EXEC SQL VAR szhCodCourrier    IS STRING(10+1) ;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo,"\n\t** Parametros entrada a ifnFetchClientesEspeciales\n"
+			 "\t\t=> CountClientes [%d]\n"
+			 "\t\t=> Ind registro  [%d]\n",
+			 LOG03,
+			 *iCountClientesEsp,
+			 *iIndEsp);					 
+
+    while (SQLCODE == SQLOK)
+    {
+           EXEC SQL 
+                FETCH cCursor_Clientes_Especiales
+                INTO  :lhCodCliente,
+                      :szhCodCourrier;
+
+           if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+           {
+               vDTrazasError(modulo," en Fetch Cursor cCursor_Clientes_Especiales %s ",LOG01,SQLERRM);
+               vDTrazasLog  (modulo," en Fetch Cursor cCursor_Clientes_Especiales %s ",LOG01,SQLERRM);
+           }
+
+           if( SQLCODE == SQLOK )
+	   {
+   	       (*iCountClientesEsp)++; 
+	       memset(&stClientesEspInd[*iCountClientesEsp],0,sizeof(CLIENTESESPIND));       
+	       stClientesEspInd[*iCountClientesEsp].lCodCliente   = lhCodCliente;
+               strcpy(stClientesEspInd[*iCountClientesEsp].szCodCourrier , szhCodCourrier);
+	       stClientesEspInd[*iCountClientesEsp].iIndFin       = *iIndEsp;
+
+	       (*iIndEsp)++;
+	   }
+    } /*** Fin del While ***/
+ 
+    if ( SQLCODE == SQLNOTFOUND)
+    {
+         vDTrazasLog  (modulo,"\n\t en Fecht se cargaron [%d] Clientes Especiales ",LOG03,*iIndEsp);
+         SQLCODE = SQLOK;    
+         return (SQLCODE);
+    }
+    else
+    {
+    	return (FALSE);
+    }
+
+}/************************* Fin ifnFetchClientesEspeciales *************************/
+
+/****************************************************************************/
+/*  FUNCION     : bfnCloseClientesEspeciales()                              */
+/*  DESCRIPCION : Cierra Cursor de Clientes Especiales                      */
+/****************************************************************************/
+BOOL bfnCloseClientesEspeciales()
+{
+    char modulo[]   = "bfnCloseClientesEspeciales";
+
+    EXEC SQL CLOSE cCursor_Clientes_Especiales;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/******************** Fin bfnCloseClientesEspeciales *******************/
+
+/*** Funciones para Manejo de Strings ***/
+
+#ifndef isnull
+    #define isnull(name) (name==(char )NULL )
+#endif
+#ifndef strnull
+    #define strnull(name) (name==(char *)NULL || name[0]==(char)NULL)
+#endif
+
+char *ltrim(char *s)
+{
+    char *p=s;
+    if( strnull(s) )
+        return(s);
+    while( *p<=32 && *p>1 )
+        p++;
+    strcpy(s,p);
+    return(s);
+} /*** FIN ltrim ***/
+
+char *rtrim(char *s)
+{
+    char *p=NULL;
+    if( strnull(s) )
+        return(s);
+    p=(s+strlen(s)-1);
+    while( *p<=32 && *p>1 )
+        p--;
+    *(++p)=0;
+    return(s);
+} /*** FIN rtrim ***/
+
+char *alltrim(char *s)
+{
+    return(ltrim(rtrim(s)));
+} /*** FIN alltrim ***/
+
+/*** FIN alltrim ***/

@@ -1,0 +1,1046 @@
+package com.tmmas.cl.scl.customerdomain.businessobject.dto;
+
+import java.io.Serializable;
+
+public class AbonadoDTO implements Serializable{
+
+	private static final long serialVersionUID = 1L;
+	
+	private long   numAbonado;
+	private long   numCelular;
+	private int    codProducto;
+	private long   codCliente;
+	private long   codCuenta;
+	private String codSubCuenta;
+	private long   codUsuario;
+	private String codRegion;
+	private String codProvincia;
+	private String codCiudad;
+	private String codCelda;
+	private int	   codCentral;
+	private int	   codUsoSimcard;
+	private int    codUsoTerminal;
+	private String codSituacion;
+	private String indProcAlta;
+	private long   codVendedor;
+	private long   codVendedorAgente;
+	private String tipPlantarif;
+	private	String tipTerminal;
+	private String codPlanTarif;
+	private String codCargoBasico;
+	private String codPlanServ;
+	private String codLimConsumo;
+	private String numSerieSimcard;
+	private String numSerieTerminal;
+	private String numSerieHex;
+	private String nomUsuarOra;
+	private String fecAlta;
+	private int    numPerContrato;
+	private String codEstadoSimcard;
+	private String codEstadoTerminal;
+	private String numSerieMec;
+	private long   codHolding;
+	private long   codEmpresa;
+	private String codGrpSrv;
+	private int	   indSuperTel;
+	private String numTeleFija;
+	private long   codOpRedFija;
+	private long   codCarrier;
+	private	int	   indPrepago;
+	private int	   indPlexSys;
+	private int	   codCentralPlex;
+	private long   numCelularPlex;
+	private long   numVenta;
+	private long   codModVenta;
+	private String codTipContrato;
+	private String numContrato;
+	private String numAnexo;
+	private String FecCumPlan;
+	private String codCredMor;
+	private String codCredCon;
+	private int    codCiclo;
+	private int	   codFactur;
+	private int    indSuspen;
+	private int    indReHabi;
+	private int    insGuias;
+	private String fecFinContra;
+	private String fecRecDocu;
+	private String fecCumplimen;
+	private String fecAcepVenta;
+	private String fecActCen;
+	private String fecBaja;
+	private String fecBajaCen;
+	private String fecUltMod;
+	private String codCausaBaja;
+	private String numPersonal;
+	private int    indSeguro;
+	private String claseServicio;
+	private String perfilAbonado;
+	private String numMin;
+	private long   codVendealer;
+	private int	   indDisp;
+	private String codPassword;
+	private String indPassword;
+	private String codAfinidad;
+	private String fecProrroga;
+	private String indEqPrestadoSimcard;
+	private String indEqPrestadoTerminal;
+	private String flgContDigi;
+	private String fecAltanTras;
+	private int    codIndemnizacion;
+	private String numImei;
+	private String codTecnologia;
+	private String numMinMdn;
+	private String FecActivacion;
+	private int    indTelefono;
+	private String codOficinaPrincipal;
+	private String codCausaVenta;
+	private String codOperacion;
+	private String codBodegaTerminal;
+	private String codBodegaSimcard;
+	private long   tipoStockSimcard;
+	private long   tipoStockTerminal;
+	private String indicadorEquiAcc;
+	private String tipTerminalSimcard;
+	private String tipTerminalEquipo;
+	private int    codCuota;
+	private String indComodato;
+	private int codUso;
+	private String indProcEqTerminal;
+	private String indProcEqSimcard;
+	private String codigoArticuloTerminal;
+	private String tipoArticuloTerminal;
+	private String codigoArticuloSimcard;
+	private String tipoArticuloSimcard;
+	private String capcodeTerminal;
+	private String capcodeSimcard;
+	private String desArticuloTerminal;
+	private String desArticuloSimcard;
+	private String indPropiedad;
+	private String codigoEstado;
+	private String indEqAcc;
+
+	/*-- para la actualizacion de stock--*/
+	private long   tipoStock;
+	private String codigoBodega;
+	private String codigoArticulo;
+	private String numeroSerie;
+	private long   tipoStockOriginal;
+	private String codigoBodegaActual;
+	private String numeroMovimiento;
+	
+	private String codigoSecuencia;
+	
+	/*Utilizados para almacenar la garantia del abonado*/
+	private float montoGarantia;
+	private int indicadorPago;
+	
+	/*Datos nuevos GUATEMALA - EL SALVADOR */
+	private String codTipoPrestacion;
+	private String codGrpPrestacion;
+	private double montoPreautorizado;
+	private String codMoneda;
+	private String obsInstancia;
+	private double valorRefXMinuto;
+	private String origen;
+	private long rowNum;
+	private String tipoPrimariaCarrier;
+	private double impCargo;
+	private double impLimiteConsumo;
+	
+	/*-- para la solicitud de la mac address --*/
+	private int indMacAddress;
+	private String wimaxMacAddress;	
+	private String codGrpPrestacionWM;
+	
+	//Datos nuevos para prepago
+	private double carga;
+	private String codSubAlm; 
+	
+	private String desSituacion;
+	
+	//Inicio MA-180654 HOM
+	private String strEstadoVenta;
+	//Fin MA-180654 HOM
+	
+	
+	//Inicio P-CSR-11002 JLGN 25-05-2011
+	//private int indRenovacion;
+	private String indRenovacion;
+	private long numFax;
+
+	public long getNumFax() {
+		return numFax;
+	}
+	public void setNumFax(long numFax) {
+		this.numFax = numFax;
+	}
+	//Inicio P-CSR-11002 JLGN 25-05-2011
+	/*public int getIndRenovacion() {
+		return indRenovacion;
+	}
+	public void setIndRenovacion(int indRenovacion) {
+		this.indRenovacion = indRenovacion;
+	}Fin P-CSR-11002 JLGN 25-05-2011*/
+	public String getDesSituacion() {
+		return desSituacion;
+	}
+	public void setDesSituacion(String desSituacion) {
+		this.desSituacion = desSituacion;
+	}
+	public double getCarga() {
+		return carga;
+	}
+	public void setCarga(double carga) {
+		this.carga = carga;
+	}
+	public String getCodSubAlm() {
+		return codSubAlm;
+	}
+	public void setCodSubAlm(String codSubAlm) {
+		this.codSubAlm = codSubAlm;
+	}
+	public String getObsInstancia() {
+		return obsInstancia;
+	}
+	public void setObsInstancia(String obsInstancia) {
+		this.obsInstancia = obsInstancia;
+	}
+	public int getIndicadorPago() {
+		return indicadorPago;
+	}
+	public void setIndicadorPago(int indicadorPago) {
+		this.indicadorPago = indicadorPago;
+	}
+	public float getMontoGarantia() {
+		return montoGarantia;
+	}
+	public void setMontoGarantia(float montoGarantia) {
+		this.montoGarantia = montoGarantia;
+	}
+	public String getCodigoSecuencia() {
+		return codigoSecuencia;
+	}
+	public void setCodigoSecuencia(String codigoSecuencia) {
+		this.codigoSecuencia = codigoSecuencia;
+	}
+	public String getCodigoEstado() {
+		return codigoEstado;
+	}
+	public void setCodigoEstado(String codigoEstado) {
+		this.codigoEstado = codigoEstado;
+	}
+	public String getIndPropiedad() {
+		return indPropiedad;
+	}
+	public void setIndPropiedad(String indPropiedad) {
+		this.indPropiedad = indPropiedad;
+	}
+	public String getDesArticuloSimcard() {
+		return desArticuloSimcard;
+	}
+	public void setDesArticuloSimcard(String desArticuloSimcard) {
+		this.desArticuloSimcard = desArticuloSimcard;
+	}
+	public String getDesArticuloTerminal() {
+		return desArticuloTerminal;
+	}
+	public void setDesArticuloTerminal(String desArticuloTerminal) {
+		this.desArticuloTerminal = desArticuloTerminal;
+	}
+	public String getCodBodegaSimcard() {
+		return codBodegaSimcard;
+	}	
+	public String getIndComodato() {
+		return indComodato;
+	}
+	public void setIndComodato(String indComodato) {
+		this.indComodato = indComodato;
+	}
+	public String getClaseServicio() {
+		return claseServicio;
+	}
+	public void setClaseServicio(String claseServicio) {
+		this.claseServicio = claseServicio;
+	}
+	public String getCodAfinidad() {
+		return codAfinidad;
+	}
+	public void setCodAfinidad(String codAfinidad) {
+		this.codAfinidad = codAfinidad;
+	}
+	public String getCodCargoBasico() {
+		return codCargoBasico;
+	}
+	public void setCodCargoBasico(String codCargoBasico) {
+		this.codCargoBasico = codCargoBasico;
+	}
+	public long getCodCarrier() {
+		return codCarrier;
+	}
+	public void setCodCarrier(long codCarrier) {
+		this.codCarrier = codCarrier;
+	}
+	public String getCodCausaBaja() {
+		return codCausaBaja;
+	}
+	public void setCodCausaBaja(String codCausaBaja) {
+		this.codCausaBaja = codCausaBaja;
+	}
+	public String getCodCausaVenta() {
+		return codCausaVenta;
+	}
+	public void setCodCausaVenta(String codCausaVenta) {
+		this.codCausaVenta = codCausaVenta;
+	}
+	public String getCodCelda() {
+		return codCelda;
+	}
+	public void setCodCelda(String codCelda) {
+		this.codCelda = codCelda;
+	}
+	public int getCodCentral() {
+		return codCentral;
+	}
+	public void setCodCentral(int codCentral) {
+		this.codCentral = codCentral;
+	}
+	public int getCodCentralPlex() {
+		return codCentralPlex;
+	}
+	public void setCodCentralPlex(int codCentralPlex) {
+		this.codCentralPlex = codCentralPlex;
+	}
+	public int getCodCiclo() {
+		return codCiclo;
+	}
+	public void setCodCiclo(int codCiclo) {
+		this.codCiclo = codCiclo;
+	}
+	public String getCodCiudad() {
+		return codCiudad;
+	}
+	public void setCodCiudad(String codCiudad) {
+		this.codCiudad = codCiudad;
+	}
+	public long getCodCliente() {
+		return codCliente;
+	}
+	public void setCodCliente(long codCliente) {
+		this.codCliente = codCliente;
+	}
+	public String getCodCredCon() {
+		return codCredCon;
+	}
+	public void setCodCredCon(String codCredCon) {
+		this.codCredCon = codCredCon;
+	}
+	public String getCodCredMor() {
+		return codCredMor;
+	}
+	public void setCodCredMor(String codCredMor) {
+		this.codCredMor = codCredMor;
+	}
+	public long getCodCuenta() {
+		return codCuenta;
+	}
+	public void setCodCuenta(long codCuenta) {
+		this.codCuenta = codCuenta;
+	}
+	public long getCodEmpresa() {
+		return codEmpresa;
+	}
+	public void setCodEmpresa(long codEmpresa) {
+		this.codEmpresa = codEmpresa;
+	}
+	public int getCodFactur() {
+		return codFactur;
+	}
+	public void setCodFactur(int codFactur) {
+		this.codFactur = codFactur;
+	}
+	public String getCodGrpSrv() {
+		return codGrpSrv;
+	}
+	public void setCodGrpSrv(String codGrpSrv) {
+		this.codGrpSrv = codGrpSrv;
+	}
+	public long getCodHolding() {
+		return codHolding;
+	}
+	public void setCodHolding(long codHolding) {
+		this.codHolding = codHolding;
+	}
+	public int getCodIndemnizacion() {
+		return codIndemnizacion;
+	}
+	public void setCodIndemnizacion(int codIndemnizacion) {
+		this.codIndemnizacion = codIndemnizacion;
+	}
+	public String getCodLimConsumo() {
+		return codLimConsumo;
+	}
+	public void setCodLimConsumo(String codLimConsumo) {
+		this.codLimConsumo = codLimConsumo;
+	}
+	public long getCodModVenta() {
+		return codModVenta;
+	}
+	public void setCodModVenta(long codModVenta) {
+		this.codModVenta = codModVenta;
+	}
+	public String getCodOficinaPrincipal() {
+		return codOficinaPrincipal;
+	}
+	public void setCodOficinaPrincipal(String codOficinaPrincipal) {
+		this.codOficinaPrincipal = codOficinaPrincipal;
+	}
+	public String getCodOperacion() {
+		return codOperacion;
+	}
+	public void setCodOperacion(String codOperacion) {
+		this.codOperacion = codOperacion;
+	}
+	public long getCodOpRedFija() {
+		return codOpRedFija;
+	}
+	public void setCodOpRedFija(long codOpRedFija) {
+		this.codOpRedFija = codOpRedFija;
+	}
+	public String getCodPassword() {
+		return codPassword;
+	}
+	public void setCodPassword(String codPassword) {
+		this.codPassword = codPassword;
+	}
+	public String getCodPlanServ() {
+		return codPlanServ;
+	}
+	public void setCodPlanServ(String codPlanServ) {
+		this.codPlanServ = codPlanServ;
+	}
+	public String getCodPlanTarif() {
+		return codPlanTarif;
+	}
+	public void setCodPlanTarif(String codPlanTarif) {
+		this.codPlanTarif = codPlanTarif;
+	}
+	public int getCodProducto() {
+		return codProducto;
+	}
+	public void setCodProducto(int codProducto) {
+		this.codProducto = codProducto;
+	}
+	public String getCodProvincia() {
+		return codProvincia;
+	}
+	public void setCodProvincia(String codProvincia) {
+		this.codProvincia = codProvincia;
+	}
+	public String getCodRegion() {
+		return codRegion;
+	}
+	public void setCodRegion(String codRegion) {
+		this.codRegion = codRegion;
+	}
+	public String getCodSituacion() {
+		return codSituacion;
+	}
+	public void setCodSituacion(String codSituacion) {
+		this.codSituacion = codSituacion;
+	}
+	public String getCodSubCuenta() {
+		return codSubCuenta;
+	}
+	public void setCodSubCuenta(String codSubCuenta) {
+		this.codSubCuenta = codSubCuenta;
+	}
+	public String getCodTecnologia() {
+		return codTecnologia;
+	}
+	public void setCodTecnologia(String codTecnologia) {
+		this.codTecnologia = codTecnologia;
+	}
+	public String getCodTipContrato() {
+		return codTipContrato;
+	}
+	public void setCodTipContrato(String codTipContrato) {
+		this.codTipContrato = codTipContrato;
+	}
+	public long getCodUsuario() {
+		return codUsuario;
+	}
+	public void setCodUsuario(long codUsuario) {
+		this.codUsuario = codUsuario;
+	}
+	public long getCodVendealer() {
+		return codVendealer;
+	}
+	public void setCodVendealer(long codVendealer) {
+		this.codVendealer = codVendealer;
+	}
+	public long getCodVendedor() {
+		return codVendedor;
+	}
+	public void setCodVendedor(long codVendedor) {
+		this.codVendedor = codVendedor;
+	}
+	public long getCodVendedorAgente() {
+		return codVendedorAgente;
+	}
+	public void setCodVendedorAgente(long codVendedorAgente) {
+		this.codVendedorAgente = codVendedorAgente;
+	}
+	public String getFecAcepVenta() {
+		return fecAcepVenta;
+	}
+	public void setFecAcepVenta(String fecAcepVenta) {
+		this.fecAcepVenta = fecAcepVenta;
+	}
+	public String getFecActCen() {
+		return fecActCen;
+	}
+	public void setFecActCen(String fecActCen) {
+		this.fecActCen = fecActCen;
+	}
+	public String getFecActivacion() {
+		return FecActivacion;
+	}
+	public void setFecActivacion(String fecActivacion) {
+		FecActivacion = fecActivacion;
+	}
+	public String getFecAlta() {
+		return fecAlta;
+	}
+	public void setFecAlta(String fecAlta) {
+		this.fecAlta = fecAlta;
+	}
+	public String getFecAltanTras() {
+		return fecAltanTras;
+	}
+	public void setFecAltanTras(String fecAltanTras) {
+		this.fecAltanTras = fecAltanTras;
+	}
+	public String getFecBaja() {
+		return fecBaja;
+	}
+	public void setFecBaja(String fecBaja) {
+		this.fecBaja = fecBaja;
+	}
+	public String getFecBajaCen() {
+		return fecBajaCen;
+	}
+	public void setFecBajaCen(String fecBajaCen) {
+		this.fecBajaCen = fecBajaCen;
+	}
+	public String getFecCumPlan() {
+		return FecCumPlan;
+	}
+	public void setFecCumPlan(String fecCumPlan) {
+		FecCumPlan = fecCumPlan;
+	}
+	public String getFecCumplimen() {
+		return fecCumplimen;
+	}
+	public void setFecCumplimen(String fecCumplimen) {
+		this.fecCumplimen = fecCumplimen;
+	}
+	public String getFecFinContra() {
+		return fecFinContra;
+	}
+	public void setFecFinContra(String fecFinContra) {
+		this.fecFinContra = fecFinContra;
+	}
+	public String getFecProrroga() {
+		return fecProrroga;
+	}
+	public void setFecProrroga(String fecProrroga) {
+		this.fecProrroga = fecProrroga;
+	}
+	public String getFecRecDocu() {
+		return fecRecDocu;
+	}
+	public void setFecRecDocu(String fecRecDocu) {
+		this.fecRecDocu = fecRecDocu;
+	}
+	public String getFecUltMod() {
+		return fecUltMod;
+	}
+	public void setFecUltMod(String fecUltMod) {
+		this.fecUltMod = fecUltMod;
+	}
+	public String getFlgContDigi() {
+		return flgContDigi;
+	}
+	public void setFlgContDigi(String flgContDigi) {
+		this.flgContDigi = flgContDigi;
+	}
+	public int getIndDisp() {
+		return indDisp;
+	}
+	public void setIndDisp(int indDisp) {
+		this.indDisp = indDisp;
+	}
+	public String getIndEqprestadoSimcard() {
+		return indEqPrestadoSimcard;
+	}
+	public void setIndEqprestadoSimcard(String indEqprestadoSimcard) {
+		this.indEqPrestadoSimcard = indEqprestadoSimcard;
+	}
+	public String getIndPassword() {
+		return indPassword;
+	}
+	public void setIndPassword(String indPassword) {
+		this.indPassword = indPassword;
+	}
+	public int getIndPlexSys() {
+		return indPlexSys;
+	}
+	public void setIndPlexSys(int indPlexSys) {
+		this.indPlexSys = indPlexSys;
+	}
+	public int getIndPrepago() {
+		return indPrepago;
+	}
+	public void setIndPrepago(int indPrepago) {
+		this.indPrepago = indPrepago;
+	}
+	public String getIndProcAlta() {
+		return indProcAlta;
+	}
+	public void setIndProcAlta(String indProcAlta) {
+		this.indProcAlta = indProcAlta;
+	}
+	
+	public int getIndReHabi() {
+		return indReHabi;
+	}
+	public void setIndReHabi(int indReHabi) {
+		this.indReHabi = indReHabi;
+	}
+	public int getIndSeguro() {
+		return indSeguro;
+	}
+	public void setIndSeguro(int indSeguro) {
+		this.indSeguro = indSeguro;
+	}
+	public int getIndSuperTel() {
+		return indSuperTel;
+	}
+	public void setIndSuperTel(int indSuperTel) {
+		this.indSuperTel = indSuperTel;
+	}
+	public int getIndSuspen() {
+		return indSuspen;
+	}
+	public void setIndSuspen(int indSuspen) {
+		this.indSuspen = indSuspen;
+	}
+	public int getIndTelefono() {
+		return indTelefono;
+	}
+	public void setIndTelefono(int indTelefono) {
+		this.indTelefono = indTelefono;
+	}
+	public int getInsGuias() {
+		return insGuias;
+	}
+	public void setInsGuias(int insGuias) {
+		this.insGuias = insGuias;
+	}
+	public String getNomUsuarOra() {
+		return nomUsuarOra;
+	}
+	public void setNomUsuarOra(String nomUsuarOra) {
+		this.nomUsuarOra = nomUsuarOra;
+	}
+	public long getNumAbonado() {
+		return numAbonado;
+	}
+	public void setNumAbonado(long numAbonado) {
+		this.numAbonado = numAbonado;
+	}
+	public String getNumAnexo() {
+		return numAnexo;
+	}
+	public void setNumAnexo(String numAnexo) {
+		this.numAnexo = numAnexo;
+	}
+	public long getNumCelular() {
+		return numCelular;
+	}
+	public void setNumCelular(long numCelular) {
+		this.numCelular = numCelular;
+	}
+	public long getNumCelularPlex() {
+		return numCelularPlex;
+	}
+	public void setNumCelularPlex(long numCelularPlex) {
+		this.numCelularPlex = numCelularPlex;
+	}
+	public String getNumContrato() {
+		return numContrato;
+	}
+	public void setNumContrato(String numContrato) {
+		this.numContrato = numContrato;
+	}
+	public String getNumImei() {
+		return numImei;
+	}
+	public void setNumImei(String numImei) {
+		this.numImei = numImei;
+	}
+	public String getNumMin() {
+		return numMin;
+	}
+	public void setNumMin(String numMin) {
+		this.numMin = numMin;
+	}
+	public String getNumMinMdn() {
+		return numMinMdn;
+	}
+	public void setNumMinMdn(String numMinMdn) {
+		this.numMinMdn = numMinMdn;
+	}
+	public int getNumPerContrato() {
+		return numPerContrato;
+	}
+	public void setNumPerContrato(int numPerContrato) {
+		this.numPerContrato = numPerContrato;
+	}
+	public String getNumPersonal() {
+		return numPersonal;
+	}
+	public void setNumPersonal(String numPersonal) {
+		this.numPersonal = numPersonal;
+	}
+	public String getNumSerieHex() {
+		return numSerieHex;
+	}
+	public void setNumSerieHex(String numSerieHex) {
+		this.numSerieHex = numSerieHex;
+	}
+	public String getNumSerieMec() {
+		return numSerieMec;
+	}
+	public void setNumSerieMec(String numSerieMec) {
+		this.numSerieMec = numSerieMec;
+	}
+	public String getNumTeleFija() {
+		return numTeleFija;
+	}
+	public void setNumTeleFija(String numTeleFija) {
+		this.numTeleFija = numTeleFija;
+	}
+	public long getNumVenta() {
+		return numVenta;
+	}
+	public void setNumVenta(long numVenta) {
+		this.numVenta = numVenta;
+	}
+	public String getPerfilAbonado() {
+		return perfilAbonado;
+	}
+	public void setPerfilAbonado(String perfilAbonado) {
+		this.perfilAbonado = perfilAbonado;
+	}
+	public String getTipPlantarif() {
+		return tipPlantarif;
+	}
+	public void setTipPlantarif(String tipPlantarif) {
+		this.tipPlantarif = tipPlantarif;
+	}
+	public String getTipTerminal() {
+		return tipTerminal;
+	}
+	public void setTipTerminal(String tipTerminal) {
+		this.tipTerminal = tipTerminal;
+	}
+	
+	public String getIndicadorEquiAcc() {
+		return indicadorEquiAcc;
+	}
+	public void setIndicadorEquiAcc(String indicadorEquiAcc) {
+		this.indicadorEquiAcc = indicadorEquiAcc;
+	}
+	public long getTipoStockSimcard() {
+		return tipoStockSimcard;
+	}
+	public void setTipoStockSimcard(long tipoStockSimcard) {
+		this.tipoStockSimcard = tipoStockSimcard;
+	}
+	public String getTipTerminalEquipo() {
+		return tipTerminalEquipo;
+	}
+	public void setTipTerminalEquipo(String tipTerminalEquipo) {
+		this.tipTerminalEquipo = tipTerminalEquipo;
+	}
+	public String getTipTerminalSimcard() {
+		return tipTerminalSimcard;
+	}
+	public void setTipTerminalSimcard(String tipTerminalSimcard) {
+		this.tipTerminalSimcard = tipTerminalSimcard;
+	}
+	public int getCodUsoSimcard() {
+		return codUsoSimcard;
+	}
+	public void setCodUsoSimcard(int codUsoSimcard) {
+		this.codUsoSimcard = codUsoSimcard;
+	}
+	public int getCodUsoTerminal() {
+		return codUsoTerminal;
+	}
+	public void setCodUsoTerminal(int codUsoTerminal) {
+		this.codUsoTerminal = codUsoTerminal;
+	}
+	public int getCodCuota() {
+		return codCuota;
+	}
+	public void setCodCuota(int codCuota) {
+		this.codCuota = codCuota;
+	}
+	
+	public String getCapcodeSimcard() {
+		return capcodeSimcard;
+	}
+	public void setCapcodeSimcard(String capcodeSimcard) {
+		this.capcodeSimcard = capcodeSimcard;
+	}
+	public String getCapcodeTerminal() {
+		return capcodeTerminal;
+	}
+	public void setCapcodeTerminal(String capcodeTerminal) {
+		this.capcodeTerminal = capcodeTerminal;
+	}
+	public String getCodigoArticuloSimcard() {
+		return codigoArticuloSimcard;
+	}
+	public void setCodigoArticuloSimcard(String codigoArticuloSimcard) {
+		this.codigoArticuloSimcard = codigoArticuloSimcard;
+	}
+	public String getCodigoArticuloTerminal() {
+		return codigoArticuloTerminal;
+	}
+	public void setCodigoArticuloTerminal(String codigoArticuloTerminal) {
+		this.codigoArticuloTerminal = codigoArticuloTerminal;
+	}
+	public String getIndProcEqSimcard() {
+		return indProcEqSimcard;
+	}
+	public void setIndProcEqSimcard(String indProcEqSimcard) {
+		this.indProcEqSimcard = indProcEqSimcard;
+	}
+	public String getIndProcEqTerminal() {
+		return indProcEqTerminal;
+	}
+	public void setIndProcEqTerminal(String indProcEqTerminal) {
+		this.indProcEqTerminal = indProcEqTerminal;
+	}
+	public String getTipoArticuloSimcard() {
+		return tipoArticuloSimcard;
+	}
+	public void setTipoArticuloSimcard(String tipoArticuloSimcard) {
+		this.tipoArticuloSimcard = tipoArticuloSimcard;
+	}
+	public String getTipoArticuloTerminal() {
+		return tipoArticuloTerminal;
+	}
+	public void setTipoArticuloTerminal(String tipoArticuloTerminal) {
+		this.tipoArticuloTerminal = tipoArticuloTerminal;
+	}
+	public long getTipoStockTerminal() {
+		return tipoStockTerminal;
+	}
+	public void setTipoStockTerminal(long tipoStockTerminal) {
+		this.tipoStockTerminal = tipoStockTerminal;
+	}
+	public String getCodBodegaTerminal() {
+		return codBodegaTerminal;
+	}
+	public void setCodBodegaTerminal(String codBodegaTerminal) {
+		this.codBodegaTerminal = codBodegaTerminal;
+	}
+	public void setCodBodegaSimcard(String codBodegaSimcard) {
+		this.codBodegaSimcard = codBodegaSimcard;
+	}
+	public String getIndEqPrestadoTerminal() {
+		return indEqPrestadoTerminal;
+	}
+	public void setIndEqPrestadoTerminal(String indEqPrestadoTerminal) {
+		this.indEqPrestadoTerminal = indEqPrestadoTerminal;
+	}
+	public String getIndEqPrestadoSimcard() {
+		return indEqPrestadoSimcard;
+	}
+	public void setIndEqPrestadoSimcard(String indEqPrestadoSimcard) {
+		this.indEqPrestadoSimcard = indEqPrestadoSimcard;
+	}
+	public String getCodEstadoSimcard() {
+		return codEstadoSimcard;
+	}
+	public void setCodEstadoSimcard(String codEstadoSimcard) {
+		this.codEstadoSimcard = codEstadoSimcard;
+	}
+	public String getCodEstadoTerminal() {
+		return codEstadoTerminal;
+	}
+	public void setCodEstadoTerminal(String codEstadoTerminal) {
+		this.codEstadoTerminal = codEstadoTerminal;
+	}
+	public String getNumSerieSimcard() {
+		return numSerieSimcard;
+	}
+	public void setNumSerieSimcard(String numSerieSimcard) {
+		this.numSerieSimcard = numSerieSimcard;
+	}
+	public String getNumSerieTerminal() {
+		return numSerieTerminal;
+	}
+	public void setNumSerieTerminal(String numSerieTerminal) {
+		this.numSerieTerminal = numSerieTerminal;
+	}
+	public String getCodigoBodegaActual() {
+		return codigoBodegaActual;
+	}
+	public void setCodigoBodegaActual(String codigoBodegaActual) {
+		this.codigoBodegaActual = codigoBodegaActual;
+	}
+	public long getTipoStockOriginal() {
+		return tipoStockOriginal;
+	}
+	public void setTipoStockOriginal(long tipoStockOriginal) {
+		this.tipoStockOriginal = tipoStockOriginal;
+	}
+	public String getNumeroMovimiento() {
+		return numeroMovimiento;
+	}
+	public void setNumeroMovimiento(String numeroMovimiento) {
+		this.numeroMovimiento = numeroMovimiento;
+	}
+	public String getCodigoArticulo() {
+		return codigoArticulo;
+	}
+	public void setCodigoArticulo(String codigoArticulo) {
+		this.codigoArticulo = codigoArticulo;
+	}
+	public String getCodigoBodega() {
+		return codigoBodega;
+	}
+	public void setCodigoBodega(String codigoBodega) {
+		this.codigoBodega = codigoBodega;
+	}
+	public String getNumeroSerie() {
+		return numeroSerie;
+	}
+	public void setNumeroSerie(String numeroSerie) {
+		this.numeroSerie = numeroSerie;
+	}
+	public long getTipoStock() {
+		return tipoStock;
+	}
+	public void setTipoStock(long tipoStock) {
+		this.tipoStock = tipoStock;
+	}
+	public String getIndEqAcc() {
+		return indEqAcc;
+	}
+	public void setIndEqAcc(String indEqAcc) {
+		this.indEqAcc = indEqAcc;
+	}	
+	public String getCodMoneda() {
+		return codMoneda;
+	}
+	public void setCodMoneda(String codMoneda) {
+		this.codMoneda = codMoneda;
+	}
+	public double getMontoPreautorizado() {
+		return montoPreautorizado;
+	}
+	public void setMontoPreautorizado(double montoPreautorizado) {
+		this.montoPreautorizado = montoPreautorizado;
+	}
+	public int getCodUso() {
+		return codUso;
+	}
+	public void setCodUso(int codUso) {
+		this.codUso = codUso;
+	}
+	public double getValorRefXMinuto() {
+		return valorRefXMinuto;
+	}
+	public void setValorRefXMinuto(double valorRefXMinuto) {
+		this.valorRefXMinuto = valorRefXMinuto;
+	}
+	public String getCodTipoPrestacion() {
+		return codTipoPrestacion;
+	}
+	public void setCodTipoPrestacion(String codTipoPrestacion) {
+		this.codTipoPrestacion = codTipoPrestacion;
+	}
+	public String getCodGrpPrestacion() {
+		return codGrpPrestacion;
+	}
+	public void setCodGrpPrestacion(String codGrpPrestacion) {
+		this.codGrpPrestacion = codGrpPrestacion;
+	}
+	public String getOrigen() {
+		return origen;
+	}
+	public void setOrigen(String origen) {
+		this.origen = origen;
+	}
+	public long getRowNum() {
+		return rowNum;
+	}
+	public void setRowNum(long rowNum) {
+		this.rowNum = rowNum;
+	}
+	public String getTipoPrimariaCarrier() {
+		return tipoPrimariaCarrier;
+	}
+	public void setTipoPrimariaCarrier(String tipoPrimariaCarrier) {
+		this.tipoPrimariaCarrier = tipoPrimariaCarrier;
+	}
+	public double getImpCargo() {
+		return impCargo;
+	}
+	public void setImpCargo(double impCargo) {
+		this.impCargo = impCargo;
+	}
+	public double getImpLimiteConsumo() {
+		return impLimiteConsumo;
+	}
+	public void setImpLimiteConsumo(double impLimiteConsumo) {
+		this.impLimiteConsumo = impLimiteConsumo;
+	}
+	public int getIndMacAddress() {
+		return indMacAddress;
+	}
+	public void setIndMacAddress(int indMacAddress) {
+		this.indMacAddress = indMacAddress;
+	}
+	public String getWimaxMacAddress() {
+		return wimaxMacAddress;
+	}
+	public void setWimaxMacAddress(String wimaxMacAddress) {
+		this.wimaxMacAddress = wimaxMacAddress;
+	}
+	public String getCodGrpPrestacionWM() {
+		return codGrpPrestacionWM;
+	}
+	public void setCodGrpPrestacionWM(String codGrpPrestacionWM) {
+		this.codGrpPrestacionWM = codGrpPrestacionWM;
+	}
+	public String getIndRenovacion() {
+		return indRenovacion;
+	}
+	public void setIndRenovacion(String indRenovacion) {
+		this.indRenovacion = indRenovacion;
+	}
+	public String getStrEstadoVenta() {
+		return strEstadoVenta;
+	}
+	public void setStrEstadoVenta(String strEstadoVenta) {
+		this.strEstadoVenta = strEstadoVenta;
+	}			
+}

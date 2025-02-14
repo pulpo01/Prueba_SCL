@@ -1,0 +1,4106 @@
+/***************************************************************************************/
+/*
+   APLICACION  : FORFAC_2000.PC
+   AUTOR       : ROY BARRERA RICHARDS (K!)
+   FECHA       : 29 de OCTUBRE de 1999
+   DESCRIPCION : UNIFICACION DE APLICACIONES ANTERIORES FORFAC, FORDEV Y FORASG.
+                 SE ENCARGA DE LA RECOPILACION DE LA INFORMACION DE "LO FACTURADO",
+                 "LO DEVUELTO" Y "LO ASIGNADO" EN MATERIA DEL TRAFICO INTERNACIONAL
+                 CORRESPONDIENTE A UNA CINTA INGRESADA ANTES POR "FORTAS".
+
+   MODIFICACION : 05 DE NOVIEMBRE DE 1999  : CAMBIO EN LOS NOMBRES DE ARCHIVO. SE AGREGA
+                  HORA AL NOMBRE DE LOS ARCHIVOS CREADOS.
+                  DEBO MODIFICAR EL FMTO DE LA FECHA PARA SOPORTAR AÑO DE 4 DIGITOS EN LUGAR DE 2.
+
+   CORRECCIONES : CAMBIOS EN EL FORMATO DEFINIDO ORIGINALMENTE PRODUCTO DEL PRIMER ENVIO A CTC DE LOS
+                  ARCHIVOS. 2 CAMBIOS ACEPTADOS :
+                  EN VFNCABECERACLI   : POS 140-147 fecha de Vencimiento en formato DDMMYYYY
+                  EN VFNCLIENTEFORTAS : POS 135-136 codigo de trafico, antes en 139-140
+                                        POS : 92-93 codigo de servico esta mal mostrado.(revisar).
+                  Revision de los cambios 21-Enero-2000
+*/
+/*-------------------------------------------------------------------------------------*/
+/*
+    Version 4 - Revision 00.
+    Por William Sepulveda V.
+
+    Inicio: Martes 07 de marzo del 2000.
+    Fin   :
+
+    - Algunos cambios menores y esteticos.
+    - Se rebajan los acumuladores de aquellos clientes que tienen trafico contenido en
+      cintas que no fueron facturadas y se mueven los registros de detalle a nuevas
+      tablas de trafico liquidado no facturado.
+    - Se elimina generacion de archivos ordenados.
+    - Se crean nuevas funciones y hay un ordenamiento ostensible de todo el codigo.
+    - Se incluyen funciones propias del archivo "utils", en directorio "rutinasgen".
+    - Se modifican opciones de invocacion.
+    - Mejora la documentacion interna y el manejo de errores (sobre todo, de Oracle).
+*/
+/*-------------------------------------------------------------------------------------*/
+/*
+   Ultima Revision   : 28/Agosto/2001.  Roy Barrera Richards
+   Objetivo          : Se desea contabilizar las rebajas productos del no pago carrier ( lo devuelto )
+   Detalle :
+   - Se agregan 2 campos date en tabla FA_ACUMFORLIQ, las cuales se llenan en el insert con sysdate y null
+   - Se modifica el update en FA_ACUMFORLIQ para el concepto iva.
+   - Se aprovecha de eliminar el cuerpo de la funcion "cfnGetTime", por estar duplicada en rutinasgen.o y
+     ser esta última mas completa. Se debió cambiar el parámetro de invocacion de 1 a 5, para obtener el mismo
+     resultado ( Fecha en formato YYYYMMDD_HH24MISS, ej 19991231_153300 )
+
+   Todos los cambios estan marcados con el comentario "RBR 28/08/2001"
+*/
+/*****************************************************************************/
+/* -Modificaciones incorporadas por PGonzaleg                                */
+/* -Fecha: 28-10-2002                                                        */
+/*  Incoporacion de validacion en los registros que se insertan en la tabla  */
+/*  FA_DETFORLIQ. Si se insertan registros a esta tabla, se prosigue con las */
+/*  inserciones y actualizaciones a las tablas FA_ACUMFORLIQ, FA_DETFORFAC y */
+/*  FA_ACUMFORFAC, de lo contrario, se omiten estos pasos.                   */
+/*****************************************************************************/
+
+#define _FORFACC_C_
+#define _FORFAC_PC_
+
+#include "forfac_2000.h"
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+long    lhCodOperador;
+long    lhIndOrden;
+long    lhNumSecuencia;
+char    szhArchDatos[20];
+char    szhUserName[30]="";
+char    szhPassWord[30]="";
+
+rg_acum_forliq  sthAcumForLiq;
+EXEC SQL END DECLARE SECTION;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales.                                         */
+/*---------------------------------------------------------------------------*/
+BOOL bCabeceraCli = FALSE ;
+
+static char szEnvLog[PATH]="";
+static char szEnvDat[PATH]="";
+char    szBaseName[100]="";
+static int  v_reproceso;
+rg_argumentos   stArgs;
+
+int contador=1;
+
+static char szRaya[] = "----------------------------------------------------------------";
+
+static char szUso[]=
+    "\nUSO ES  : forfac_2000 [-u<usuario/password> | </> ] [-r] -i<ind_orden> \n"
+    "\nEJEMPLOS:  forfac_2000 -i999 "
+    "\n           forfac_2000 -u/ -i666 "
+    "\n           forfac_2000 -uscott/tiger -i345"
+    "\n           forfac_2000 -r -i999 \n"
+    "\nIMPORTANTE: La opcion \"-r\" indica reprocesar el archivo\n\n";
+
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de funciones y procedimientos usadas por todas las etapas.     */
+/*---------------------------------------------------------------------------*/
+
+/*****************************************************************************/
+/* Procedimiento encargado de manejar los mensajes de error, con fines de    */
+/* identificacion y exposicion en eventuales archivos de log.                */
+/*****************************************************************************/
+void    vSqlError ()
+{
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+    vFechaHora();
+    fprintf(stderr,"Error en ORACLE: ");
+    fprintf(stderr,"\n%s\n", sqlca.sqlerrm.sqlerrmc);
+
+    /*EXEC SQL ROLLBACK WORK RELEASE;*/
+    /* 20050113 CH-200411172369 Se reemplaza por funcion, porque desconecta de la BD */
+    fnOraRollBack();
+}
+
+/*****************************************************************************/
+/* Procedimiento encargado de recibir, manejar y evaluar los argumentos que  */
+/* se entregan externamente al programa.                                     */
+/*****************************************************************************/
+void    vManejaArgs (int argc, char * const argv[])
+{
+    extern char *optarg;
+    extern int  optind, optopt, opterr;
+    int             iOpt = 0;
+    char            opstring[] = ":u:i:r";
+    char            *szUserid_Aux;
+    char            userid[70];
+
+    while((iOpt=getopt(argc, argv, opstring)) != EOF)
+    {
+        switch(iOpt)
+        {
+        case 'u':
+            if(stArgs.bFlagUser == FALSE)
+            {
+                    if(optarg[0]=='-')
+                    {
+                        fprintf(stderr, "%s\n", szRaya);
+                        fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+                        fprintf(stderr, "%s\n", szRaya);
+                        fprintf(stderr, "%s\n\n", szUso);
+                        exit(1);
+                    }
+                strcpy(userid, optarg);
+                    if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+                    {
+                        fprintf(stderr, "%s\n", szRaya);
+                        fprintf(stderr, "\nUsuario Oracle no es valido\n");
+                        fprintf(stderr, "%s\n", szRaya);
+                        fprintf(stderr, "%s\n\n", szUso);
+                        exit(1);
+                    }
+                    else
+                    {
+                        strncpy(stArgs.szUsername, userid, szUserid_Aux-userid);
+                        strcpy(stArgs.szPassword, szUserid_Aux+1);
+                    }
+            }
+            else
+            {
+                fprintf(stderr, "\n%s\n", szRaya);
+                    fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+                    fprintf(stderr, "%s\n", szRaya);
+                    fprintf(stderr, "%s\n\n", szUso);
+                    exit(1);
+            }
+            stArgs.bFlagUser=TRUE;
+                break;
+
+        case 'i':
+            if(stArgs.bFlagIndOrden == FALSE)
+                {
+                    if(optarg[0]=='-')
+                    {
+                        fprintf(stderr, "%s\n", szRaya);
+                        fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+                        fprintf(stderr, "%s\n", szRaya);
+                        fprintf(stderr, "%s\n\n", szUso);
+                        exit(1);
+                    }
+                    stArgs.iIndOrden=atoi(optarg);
+                }
+                else
+                {
+                    fprintf(stderr, "'n%s\n", szRaya);
+                    fprintf(stderr, "Opcion -%c duplicada. Se cancela.\n", optopt);
+                    fprintf(stderr, "%s\n", szRaya);
+                    fprintf(stderr, "%s\n\n", szUso);
+                    exit(1);
+                }
+                stArgs.bFlagIndOrden=TRUE;
+                break;
+
+            case 'r':
+            if(stArgs.bFlagReproceso == TRUE)
+                {
+                    fprintf(stderr, "'n%s\n", szRaya);
+                    fprintf(stderr, "Opcion -%c duplicada. Se cancela.\n", optopt);
+                    fprintf(stderr, "%s\n", szRaya);
+                    fprintf(stderr, "%s\n\n", szUso);
+                    exit(1);
+                }
+                stArgs.bFlagReproceso=TRUE;
+                break;
+
+            case ':':
+                fprintf(stderr, "\n%s\n", szRaya);
+                fprintf(stderr, "Opcion -%c requiere argumento. Se cancela.\n", optopt);
+                fprintf(stderr, "%s\n", szRaya);
+                fprintf(stderr, "%s\n\n", szUso);
+                exit(1);
+
+            case '?':
+                fprintf(stderr, "\n%s\n", szRaya);
+                fprintf(stderr, "Opcion -%c no reconocida. Se cancela.\n", optopt);
+                fprintf(stderr, "%s\n", szRaya);
+                fprintf(stderr, "%s\n\n", szUso);
+                exit(1);
+        }   /* Fin switch */
+    }       /* Fin while  */
+
+    if(stArgs.bFlagIndOrden == FALSE)
+    {
+        fprintf(stderr, "%s\n", szRaya);
+        fprintf(stderr, "Se requiere argumento -i<Ind_Orden>\n");
+        fprintf(stderr, "%s\n", szRaya);
+        fprintf(stderr, "%s\n\n", szUso);
+        exit(1);
+    }
+}           /* Fin ManejaArgs */
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para actualizar el campo "seq_forfac" (secuencia)  */
+/* de la tabla FA_DETFORTAS.                                                 */
+/* Sirve para una actualizacion masiva de la tabla, a traves de la opcion de */
+/* ind_orden, o bien, una actualizacion puntual, a traves del rowid.         */
+/*                                                                           */
+/* Parametros:                                                               */
+/* iNumOrd: ind_orden para actualizacion masiva o -1 para que update puntual */
+/* szRowid: rowid del registro a actualizar, para update puntual.            */
+/* iSeq   : Valor con que sera actualizado el campo seq_forfac.              */
+/*****************************************************************************/
+BOOL    bfnOraUpdateDetFortas (int iNumOrd, char *szRowid, int iSeq)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szhRowid[19];
+    int ihNumOrden;
+    int ihSeqForFac;
+    EXEC SQL END DECLARE SECTION;
+
+    ihSeqForFac = iSeq;
+
+    if(iNumOrd != -1)
+    {
+        ihNumOrden = iNumOrd;
+
+        EXEC SQL UPDATE FA_DETFORTAS
+        SET SEQ_FORFAC  = :ihSeqForFac
+        WHERE IND_ORDEN = :ihNumOrden;
+    }
+    else
+    {
+        strcpy(szhRowid, szRowid);
+        EXEC SQL UPDATE FA_DETFORTAS
+        SET SEQ_FORFAC  = :ihSeqForFac
+        WHERE ROWID     = :szhRowid;
+    }
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        return(FALSE);
+    }
+
+    EXEC SQL COMMIT;
+    return(TRUE);
+}
+
+/*****************************************************************************/
+/* Funcion booleana usada para investigar si el proceso FORFAC ha sido       */
+/* ejecutado previamente, para el ind_orden en cuestion (parametro externo). */
+/*                                                                           */
+/* El campo seq_forfac de la tabla FA_DETFORTAS debe estar en 0 para que     */
+/* pueda ejecutarse el FORFAC. (De hecho, la opcion de reproceso actualiza   */
+/* ese campo con el valor 0.)                                                */
+/*****************************************************************************/
+BOOL    bfnOraSelectSecFortas ()
+{
+    EXEC SQL SELECT distinct SEQ_FORFAC
+    INTO :lhNumSecuencia
+    FROM FA_DETFORTAS
+    WHERE IND_ORDEN = :lhIndOrden;
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        fprintf(stderr,"Error en la verificacion previa sobre FA_DETFORTAS. Proceso se cancela.\n");
+        return(FALSE);
+    }
+    if(lhNumSecuencia != 0)
+    {
+        fprintf(stderr,"Error: Ya se ha ejecutado FORFAC para el ind_orden [%d].\n", lhIndOrden);
+        fprintf(stderr, "Proceso se cancela.\n");
+        return(FALSE);
+    }
+    return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para validar si la tabla de trazas de carrier      */
+/* (FA_TRAZAFORTAS) se encuentra en una estado apropiado para que se pueda   */
+/* ejecutar el proceso de FORFAC.                                            */
+/* Los estados adecuados varian, dependiendo de si se trata de una primera   */
+/* ejecucion o de un reproceso.                                              */
+/* Adicionalmente, se valida que el periodo haya sido facturado y cerrado,   */
+/* lo que se verifica en la tabla FA_TRAZAFORDET.                            */
+/*****************************************************************************/
+BOOL    bfnOraValidaTraza ()
+{
+    int iStatus = FALSE;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    static int  ihCodEstProc;
+    static char szhCodEstado[4];
+    static char szhCodEstadoDet[4];
+    static long lhCodCiclFact;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog("", "\nEntrando a validar la traza\n", LOG05);
+
+    EXEC SQL
+        SELECT COD_ESTADO, COD_ESTPROC, COD_CICLFACT
+          INTO :szhCodEstado, :ihCodEstProc, :lhCodCiclFact
+          FROM FA_TRAZAFORTAS
+         WHERE IND_ORDEN = :lhIndOrden;
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        fprintf(stderr, "Se produjo un error al intentar obtener registro de FA_TRAZAFORTAS.\n"
+                        "Proceso se cancela.\n");
+        vSqlError();
+        vDTrazasError("","\n<< ERROR : %s >>\n<< Al Validar FA_TRAZAFORTAS >>\n",LOG05,SQLERRM);
+        vDTrazasLog("","\n<< ERROR  Al Validar FA_TRAZAFORTAS >>\n",LOG05);
+        return(FALSE);
+    }
+
+    fprintf(stderr, "Proceso : [%s]\n", szhCodEstado);
+    fprintf(stderr, "Estado  :");
+    switch(ihCodEstProc)
+    {
+        case    PROC_EJ:
+                fprintf(stderr, "En Ejecucion [%d]\n", PROC_EJ);
+                break;
+
+        case    PROC_ERR:
+                fprintf(stderr, "Finalizado con error [%d]\n", PROC_ERR);
+                break;
+
+        case    PROC_OK:
+                fprintf(stderr, "Finalizado OK [%d]\n", PROC_OK);
+                break;
+
+        default:
+                fprintf(stderr, "No reconocido [%d]\n", ihCodEstProc);
+                break;
+    }
+    
+    if(stArgs.bFlagReproceso == FALSE)
+    {
+        if((strcmp(szhCodEstado,"TAS") == 0) && (ihCodEstProc == 3))
+        {
+            vDTrazasLog("","\nEstado previo : forTAS - 3 (terminado OK)\n",LOG05);
+            iStatus = TRUE;
+        }
+    }
+    else
+    {
+        if((strcmp(szhCodEstado,"FAC") == 0) || (strcmp(szhCodEstado,"DEV") == 0) ||
+          (strcmp(szhCodEstado,"ASG") == 0) || (strcmp(szhCodEstado,"REP") == 0))
+        {
+            vDTrazasLog("","\nEstado previo : for%s \n",LOG05,szhCodEstado);
+            iStatus = TRUE;
+        }
+    }
+     /* printf("iStatus %s \n",iStatus); */
+     printf("szhCodEstado %s\n",szhCodEstado);
+     
+    if (iStatus == TRUE )
+    {
+        vDTrazasLog("","\nVerifica ahora que el cod_ciclfact este cerrado antes de procesar\n",LOG05);
+        EXEC SQL
+            SELECT COD_ESTADO
+              INTO :szhCodEstadoDet
+              FROM FA_TRAZAFORDET
+             WHERE IND_ORDEN  = :lhIndOrden
+               AND COD_CICLFACT = :lhCodCiclFact;
+
+        if(sqlca.sqlcode != SQLOK)
+        {
+            fprintf(stderr, "Se produjo un error al intentar obtener registro de tabla FA_TRAZAFORDET.\n"
+                            "Proceso se cancela.\n");
+            vSqlError();
+            vDTrazasError("","\n<< ERROR : %s >>\n<< Al Validar FA_TRAZAFORDET >>\n",LOG05,SQLERRM);
+            vDTrazasLog("","\n<< ERROR Al Validar FA_TRAZAFORDET >>\n",LOG05,SQLERRM);
+            return(FALSE);
+        }
+
+        fprintf(stderr, "Estado del periodo en FA_TRAZAFORDET: [%s]\n", szhCodEstadoDet);
+        if(strcmp(szhCodEstadoDet,"CER") == 0)
+        {
+            /* Si esta marcado como cerrado */
+            vDTrazasLog("","\nEs procesable\n",LOG05);
+            return(TRUE);
+        }
+        else
+        {
+            fprintf(stderr,"No se encuentra cerrado el periodo [%d]. Proceso se cancela.\n", lhCodCiclFact);
+            vDTrazasError("","\n<< ERROR : Aun no se ha facturado el ciclo %ld >>\n",LOG05,lhCodCiclFact);
+            vDTrazasLog("","\n ERROR Aun no se ha facturado el ciclo \n",LOG05);
+            return(FALSE);
+        }
+    }
+    else
+    {
+        fprintf(stderr, "\nPeriodo [%d] se encuentra en un estado desconocido. Proceso se cancela.\n", lhCodCiclFact);
+        vDTrazasError("", "\n<< ERROR : El proceso no esta en un estado correcto [%s][%d]>>\n",LOG05,szhCodEstado,ihCodEstProc);
+        vDTrazasLog("","\n<< ERROR : El proceso no esta en un estado valido para proceder >>\n",LOG05,szhCodEstado,ihCodEstProc);
+        return(FALSE);
+    }
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana encargada de obtener el codigo de operador y algunos     */
+/* otros datos del archivo (cinta) cuya liquidacion se esta tratando de      */
+/* hacer. Accede a la tabla de trazas, FA_TRAZAFORTAS.                       */
+/*****************************************************************************/
+BOOL    bfnOraGetOperador   ()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    long    lhCantRegs;
+    float fhMtoNeto;
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL
+        SELECT COD_PORTADOR, NOM_ARCH, CANT_REGISTROS, MTO_NETO
+          INTO :lhCodOperador,  :szhArchDatos,  :lhCantRegs, :fhMtoNeto
+          FROM FA_TRAZAFORTAS
+         WHERE IND_ORDEN = :lhIndOrden;
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        fprintf(stderr, "Se produjo un error al intentar recuperar operador desde FA_TRAZAFORTAS.\n");
+        fprintf(stderr, "Proceso se cancela.\n");
+        vDTrazasError("", "\n << Error [%s] seleccionando el cod operador a partir del ind_orden >>", LOG01, SQLERRM);
+        vDTrazasLog("", "\n << Error al seleccionar el cod operador a partir del ind_orden >>", LOG03);
+        return(FALSE);
+    }
+
+    Reporte = (REPORTE*) malloc(7 * sizeof(Reporte));
+    Reporte[0].lLlam = lhCantRegs;
+    Reporte[0].fNeto = fhMtoNeto;
+
+    return(TRUE);
+} /* Fin de bfnOraGetOperador() */
+
+
+/*****************************************************************************/
+/* Funcion booleana encargada de actualizar el cod_estado de la tabla de     */
+/* traza, FA_TRAZAFORTAS, el cual recibe como parametro.                     */
+/* Asimismo, pone el estado del proceso en 1 (EN EJECUCION).                 */
+/*****************************************************************************/
+BOOL    bfnOraUpdateEstadoTraza (char *szCodEstado)  /* "FAC"; "DEV"; "ASG"; "REP" */
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szhCodEstado[4];
+    char    szhFecProc[26];
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhCodEstado, szCodEstado);
+
+    EXEC SQL UPDATE FA_TRAZAFORTAS
+    SET  COD_ESTADO = :szhCodEstado, FEC_PROCESO = SYSDATE, COD_ESTPROC = 1 /* procesando */
+    WHERE IND_ORDEN = :lhIndOrden;
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS. Proceso se cancela.\n"
+        				"\n<< ERROR : %s >>\n<< Al Actualizar Estado en FA_TRAZAFORTAS >>\n",SQLERRM);
+        vDTrazasLog("forfac", "No fue posible hacer update sobre FA_TRAZAFORTAS. Proceso se cancela.\n"
+				"\n<< ERROR : %s >>\n<< Al Actualizar Estado en FA_TRAZAFORTAS >>\n",LOG03,SQLERRM);        				
+        vDTrazasError("forfac","\n<< ERROR : %s >>\n<< Al Actualizar Estado en FA_TRAZAFORTAS >>\n",LOG05,SQLERRM);
+        EXEC SQL ROLLBACK WORK RELEASE;
+        return(FALSE);
+    }
+
+    fprintf(stderr, "Proceso Actualizado: [%s]\n"
+    				"Estado Actualizado : En Ejecucion.\n", szCodEstado);
+
+    EXEC SQL COMMIT;
+    return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana encargada de actualizar el cod_estproc (estado del       */
+/* proceso) de la tabla de traza, FA_TRAZAFORTAS, el cual recibe como        */
+/* parametro.                                                                */
+/*****************************************************************************/
+BOOL    bfnOraUpdateTraza (int iCodEstProc)  /* 2: Error  3: OK*/
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int ihCodEstProc;
+    EXEC SQL END DECLARE SECTION;
+
+    ihCodEstProc = iCodEstProc ;
+
+
+    fprintf(stderr, "Actualiza Traza Con estado [%d]\n",iCodEstProc);
+    EXEC SQL UPDATE FA_TRAZAFORTAS
+    SET COD_ESTPROC = :ihCodEstProc
+    WHERE IND_ORDEN = :lhIndOrden;
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        fprintf(stderr, "Error en Actualiza Traza Con estado [%d]\n"
+        				"\n<< ERROR : %s >>\n<< Al Actualizar FA_TRAZAFORTAS >>\n",iCodEstProc,SQLERRM);
+        vDTrazasLog("forfac", "Error en Actualiza Traza Con estado [%d]\n"				
+                				"\n<< ERROR : %s >>\n<< Al Actualizar FA_TRAZAFORTAS >>\n",LOG03,iCodEstProc,SQLERRM);
+                				
+        vDTrazasError("forfac","\n<< ERROR : %s >>\n<< Al Actualizar FA_TRAZAFORTAS >>\n",LOG03,SQLERRM);
+
+        return(FALSE);
+    }
+
+    fprintf(stderr, "Actualizando estado del proceso en FA_TRAZAFORTAS.\n"
+                    "Estado Actualizado: [%d]\n", ihCodEstProc);
+    EXEC SQL COMMIT;
+    fprintf(stderr, "Commit de Actualiza Traza Con estado [%d]\n",iCodEstProc);
+    return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Procedimiento encargado de inicializar a 0 las variables de acumulacion y */
+/* de estadisticas.                                                          */
+/*****************************************************************************/
+void    vfnResetCounters ()
+{
+    lTotReg    = 0;
+    dTotNet    = 0;
+    dTotIva    = 0;
+    dTotTot    = 0;
+    lTotSeg    = 0;
+    lTotMin    = 0;
+    dTotCliTot = 0;
+}
+
+
+/*****************************************************************************/
+/* main : programa principal                                                 */
+/*****************************************************************************/
+int     main (int argc, char *argv[])
+{
+   char szForFac[512]  = "";
+   char szForDev[512]  = "";
+   char szForAsg[512]  = "";
+   char szForRep[512]  = "";
+   char szForAnm[512]  = ""; /*CH-200503232763*/
+   int  iCantRegs = 0; /* Incorporado por PGonzaleg 28-10-2002 */
+   int  v_cod_estproc;
+   int  v_cuenta;
+   
+   
+   FILE *pFFac1;
+   FILE *pFAsg;
+    /*---------------------------------------------------------------------------*/
+    /* Inicializacion de estructura de argumentos externos.                      */
+    /*---------------------------------------------------------------------------*/
+    memset(&stArgs, 0, sizeof(rg_argumentos));
+
+    stArgs.bFlagUser      = FALSE;
+    stArgs.bFlagReproceso = FALSE;
+    stArgs.bFlagIndOrden  = FALSE;
+
+    /*---------------------------------------------------------------------------*/
+    /* Manejo de argumentos ingresados como parametros externos.                 */
+    /*---------------------------------------------------------------------------*/
+    vManejaArgs(argc, argv);
+
+    /*---------------------------------------------------------------------------*/
+    /* Header.                                                                   */
+    /*---------------------------------------------------------------------------*/
+    fprintf(stderr, "%s\n"
+                    "LIQUIDACION DE CARRIER (FORFAC)\n"
+                    "VERSION %s\n"
+                    "%s\n"
+                    "Username unix : %s   (id = %d)\n"
+                    "Base de datos : %s\n"
+                    , szAst, PROG_VERSION, szAst, getlogin(), getuid(), getenv("ORACLE_SID"));
+    fprintf(stderr,"\n  Forfac_2000 version " __DATE__ " " __TIME__ " TMC\n");
+
+    stStatus.LogNivel = 5;
+    strcpy(szTime, cfnGetTime(5)); /* para nombre de archivo (19991231_153300) */ /*RBR 28/08/2001*/
+
+    vFechaHora();
+    lhIndOrden = stArgs.iIndOrden;
+    v_reproceso =0;
+    if(stArgs.bFlagReproceso == FALSE )
+    {
+        strcpy(szModoProc, MODO_NORMAL);
+    }
+    else
+    {
+        strcpy(szModoProc, MODO_REPRO);
+        v_reproceso =1;
+
+    }
+    fprintf(stderr, "Argumentos\n"
+                    "----------\n"
+                    "Modo de Procesamiento      : [%s]\n"
+                    "Numero de Cinta (Ind_Orden): [%d]\n"
+                    , szModoProc, lhIndOrden );
+
+   /*---------------------------------------------------------------------------*/
+    /* Revision y preparacion del ambiente Unix pertinente.                      */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Preparando ambiente para archivos de log y de datos ...\n");
+    sprintf(szEnvLog,"%s",pszEnviron("XPF_LOG", "carrier"));
+    sprintf(szEnvDat,"%s",pszEnviron("XPF_DAT", "carrier/salida"));
+/*  if(strcmp(szEnvLog, (char *)NULL) == 0)
+    {
+        exit(2);
+    }
+    fprintf(stderr, "Directorio de logs : [%s]\n", szEnvLog);
+    if(strcmp(szEnvDat, (char *)NULL) == 0)
+    {
+        exit(2);
+    }
+
+    fprintf(stderr, "Directorio de datos: [%s]\n", szEnvDat);*/
+
+    /*---------------------------------------------------------------------------*/
+    /* Creacion de los directorios para archivos de log y de datos.              */
+    /*---------------------------------------------------------------------------*/
+    if(iMakeDir(szEnvLog) != 0)
+    {
+        exit(2);
+    }
+    if(iMakeDir(szEnvDat) != 0)
+    {
+        exit(2);
+    }
+    vFechaHora();
+    fprintf(stderr, "Creando directorio: %s ...\n"
+                    "Creando directorio: %s ...\n"
+                    , szEnvLog, szEnvDat);
+
+    /*---------------------------------------------------------------------------*/
+    /* Generacion de los nombres de archivos de log y de datos.                  */
+    /*---------------------------------------------------------------------------*/
+    sprintf(szBaseName, "forfac_%d_%s", lhIndOrden, szTime);
+    sprintf(stStatus.ErrName,"%s/%s.err", szEnvLog, szBaseName);
+    sprintf(stStatus.LogName,"%s/%s.log", szEnvLog, szBaseName);
+    sprintf(szForRep, "%s/%s.txt", szEnvDat, szBaseName);
+    sprintf(szForFac, "%s/%s.fac", szEnvDat, szBaseName);
+    sprintf(szForDev, "%s/%s.dev", szEnvDat, szBaseName);
+    sprintf(szForAsg, "%s/%s.asg", szEnvDat, szBaseName);
+    
+    /* Se agrega un string y pumtero para registrar las llamadas eliminadas  CH-200503232763*/
+    sprintf(szForAnm, "%s/%s.anm", szEnvDat, szBaseName); 
+
+   if((stStatus.ErrFile = fopen(stStatus.ErrName,"wb+")) == (FILE*)NULL )
+   {
+        fprintf(stderr, "No fue posible crear el archivo de errores %s ... \n", stStatus.ErrName);
+      exit(2);
+   }
+   if((stStatus.LogFile = fopen(stStatus.LogName,"wb+")) == (FILE*)NULL )
+   {
+      fprintf(stderr, "No fue posible crear el archivo de log %s ... \n", stStatus.LogName);
+      vDTrazasError("forfac", "\n<< No pudo crearse el archivo de log %s >>\n", LOG03, stStatus.LogName);
+      exit(2);
+   }
+
+   vDTrazasLog("forfac","%s\n Conectado: \n Usuario [%s]/ Passwd [xxxxxxxx] | Instancia %s\n%s",
+                          LOG05, szAst, szhUserName, getenv("ORACLE_SID"),szAst );
+
+   vDTrazasError("forfac"," %s \n Invocacion :\n forfac [%s]/[********] %ld \n %s ",
+                            LOG03, szAst, szhUserName, lhIndOrden, szAst );
+
+    fprintf(stderr, "\nArchivo de Logs         : [%s]"
+    				"\nArchivo de Errores      : [%s]"
+    				"\nArchivo de Datos        : [%s]"
+    				"\nArchivo de Facturados   : [%s]"
+    				"\nArchivo de Devueltos    : [%s]"
+    				"\nArchivo de Asignados    : [%s]"
+    				"\nArchivo de Anomalos     : [%s]\n"
+    				, stStatus.LogName, stStatus.ErrName, szForRep, szForFac, szForDev, szForAsg, szForAnm );
+
+    /*---------------------------------------------------------------------------*/
+    /* Conexion a la base de datos Oracle.                                       */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    strcpy(szhUserName, stArgs.szUsername);
+    strcpy(szhPassWord, stArgs.szPassword);
+    if(fnOraConnect(szhUserName, szhPassWord) == FALSE)
+    {
+        fprintf(stderr, "Usuario/Password Oracle no son validos. Se cancela.\n");
+        exit(3);
+    }
+    else
+    {
+        fprintf(stderr, "Conexion con la base de datos ha sido exitosa.\n");
+        fprintf(stderr, "Username Oracle: %s\n", szhUserName);
+    }
+    /* INCIDENCIA CH-200411172369-04022005 IMC */
+    if(stArgs.bFlagReproceso == TRUE)
+    {
+    	
+        EXEC SQL
+        update fa_trazafortas
+           set cod_estado  = 'TAS',
+               cod_estproc = 3
+         where ind_orden = :lhIndOrden;        
+
+         if(SQLCODE)
+         {
+             vDTrazasError("", "\n Error al actualizar Fa_Trazafortas : %s", LOG03, SQLERRM);
+             vDTrazasLog("", "\n <<Error al actualizar Fa_Trazafortas >>", LOG03);
+             return FALSE;
+         }
+         EXEC SQL SELECT COUNT(*)
+                 INTO :v_cuenta
+                 FROM  fa_detforliq
+                 WHERE ind_orden = :lhIndOrden;
+         if (v_cuenta > 0)
+         {
+           EXEC SQL
+            delete from fa_detforliq  
+            where  ind_orden = :lhIndOrden;
+           if(SQLCODE)
+           {
+             vDTrazasError("", "\n Error al Eliminar Fa_Detforliq : %s", LOG03, SQLERRM);
+             vDTrazasLog("", "\n <<Error al Eliminar Fa_Detforliq >>", LOG03);
+             return FALSE;
+           }
+         }  
+         EXEC SQL SELECT COUNT(*)
+                 INTO :v_cuenta
+                 FROM  fa_acumforliq
+                 WHERE ind_orden = :lhIndOrden;
+         if (v_cuenta > 0)
+         {         
+           EXEC SQL
+              delete from fa_acumforliq 
+              where  ind_orden = :lhIndOrden;           
+           if(SQLCODE)
+           {
+             vDTrazasError("", "\n Error al Eliminar Fa_Acumforliq : %s", LOG03, SQLERRM);
+             vDTrazasLog("", "\n <<Error al Eliminar Fa_Acumforliq >>", LOG03);
+             return FALSE;
+           } 
+         }  
+           stArgs.bFlagReproceso = FALSE;
+    }      
+    vFechaHora();
+    fprintf(stderr, "Validacion de registros en tabla de trazas.\n");
+    if(bfnOraValidaTraza() == FALSE)
+    {
+        exit(4);
+    }
+
+    /*---------------------------------------------------------------------------*/
+    /* Obtencion de datos generales desde tabla FA_DATOSGENER.                   */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Obtencion de parametros generales.\n");
+   if(bGetDatosGener(&stDatosGener, szSysDate) == FALSE)
+   {
+        exit(5);
+   }
+
+    /*---------------------------------------------------------------------------*/
+    /* Obtencion del codigo de operador.                                         */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Obtencion del codigo de operador.\n");
+    if(bfnOraGetOperador() == FALSE)
+    {
+        exit(6);
+    }
+    else
+    {
+        fprintf(stderr, "Operador : [%d]\n", lhCodOperador );
+   }
+
+   /*if(stArgs.bFlagReproceso == TRUE)*** Verifico por v_reproceso**CH-*2763*/
+   if(v_reproceso ==1)
+   {
+    if(bfnOraUpdateDetFortas(lhIndOrden, "", 0) == FALSE)
+    {
+        fprintf(stderr, "No fue posible hacer update sobre FA_DETFORTAS. Proceso se cancela.\n");
+        exit(7);
+    }
+    fprintf(stderr, "Se actualizo SEQ_FORFAC al valor 0 en FA_DETFORTAS.\n");
+   }
+   else
+    {
+        vFechaHora();
+        fprintf(stderr, "Verificacion de secuencia en tabla FA_DETFORTAS.\n");
+        if(bfnOraSelectSecFortas() == FALSE)
+        {
+            exit(7);
+        }
+    }
+
+    /*===========================================================================*/
+    /* PROCESAMIENTO PARA FORFAC.                                                */
+    /*===========================================================================*/
+    vFechaHora();
+    fprintf(stderr, "%s\n"
+    				"ETAPA 1: FORFAC\n"
+    				"%s\n", szAst, szAst);
+
+    vFechaHora();
+    fprintf(stderr, "Actualizando traza de proceso (FA_TRAZAFORTAS).\n");
+    if(bfnOraUpdateEstadoTraza(ESTADO_FAC) == FALSE)
+    {
+        exit(8);
+    }
+
+   vDTrazasLog ("", "---------------- Comienza a procesar FORFAC ----------------\n", LOG04);
+   if((pFFac = fopen(szForFac, "wb+")) == (FILE*)NULL )
+   {
+        fprintf(stderr,"No pudo crearse archivo de facturados [%s].\n"
+        			   "Proceso se cancela.\n", szForFac);
+        vDTrazasError("forfac","\n << No pudo crearse el archivo de 'lo facturado' %s >>\n", LOG03, szForFac);
+        vDTrazasLog("forfac","\n << No pudo crearse el archivo de 'lo facturado'>>\n", LOG03);
+        if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+            exit(10);
+        }
+        exit(9);
+   }
+
+   /*---------------------------------------------------------------------------*/
+    /* Obtencion del numero de secuencia.                                        */
+    /*---------------------------------------------------------------------------*/
+   vFechaHora();
+   fprintf(stderr, "Obtencion de numero de secuencia.\n");
+    if(bfnOraSacaSec() == FALSE)
+    {
+        if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+            exit(10);
+        }
+        exit(9);
+    }
+
+    /*---------------------------------------------------------------------------*/
+    /* Lee las fechas desde la base de datos una sola vez para el encabezado     */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Obtencion de rangos de fechas desde FA_TRAZAFORTAS.\n");
+    if(bfnOraLeeFechasTraza() == FALSE)
+    {
+        memset(szFecEnv,'\0',8);
+        memset(szFecRangod,'\0',8);
+        memset(szFecRangoh,'\0',8);
+    }
+
+	/* Escribe el primer registro del archivo ---------------------------------- */
+     fprintf(pFFac, "%156s\n", "");
+
+   /*---------------------------------------------------------------------------*/
+    /* Inicializacion de acumuladores y variables de estadistica.                */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Inicializacion de acumuladores y variables de estadistica.\n");
+    vfnResetCounters();
+
+    /*---------------------------------------------------------------------------*/
+    /* Procesamiento de clientes dados de baja.                                  */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Procesamiento de clientes dados de baja.\n");
+   	if(bfnOraCargaBaja())
+   	{
+    	fprintf(stderr, "Cantidad de clientes procesados: [%d]\n", lClientes);
+      	vDTrazasLog("","\n %s\n => Clientes procesados por Baja : [%ld]", LOG04, szAst, lClientes);
+   	}
+
+   /*---------------------------------------------------------------------------*/
+    /* Procesamiento de clientes facturados en ciclo.                            */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Procesamiento de clientes facturados en ciclo.\n");
+   	if(bfnOraCargaCiclo())
+   	{
+    	fprintf(stderr, "Cantidad de clientes procesados: [%d]\n", lClientes);
+    	vDTrazasLog("", "\n %s\n => Clientes procesados por Ciclo : [%d]", LOG04, szAst, lClientes);
+   	}
+   	else
+   	{
+    	if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+            exit(10);
+            
+        }
+    	exit(15);
+    }
+
+/* -      : Actualiza el primer registro del archivo y luego lo cierra------------------ */
+   /*---------------------------------------------------------------------------*/
+    /* Generacion de linea de cabecera en archivo.                               */
+    /*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Generacion de linea de cabecera.\n");
+       		  
+    EXEC SQL SELECT cod_estproc
+               INTO :v_cod_estproc
+               FROM  fa_trazafortas
+               WHERE ind_orden =:lhIndOrden;
+              
+    if (v_cod_estproc != 2) 
+   	vfnCabeceraEmp(1);
+    else
+      {
+       fclose(pFFac);	
+       pFFac = fopen(szForFac, "wb+");
+       	
+      }
+
+
+   	fclose(pFFac);
+        pFFac = (FILE*)NULL ; /* segunda prueba */
+
+    if(bfnOraUpdateTraza(PROC_OK) == FALSE)
+    {
+        fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+        exit(16);
+    }
+    vDTrazasLog ("", "\n---------------- Termina proceso FORFAC ----------------\n %s",LOG04,szAst);
+
+    /*===========================================================================*/
+    /* FIN DE PROCESAMIENTO PARA FORFAC.                                         */
+    /*===========================================================================*/
+/*
+    bfnOraCommit();
+    exit(1);
+*/
+
+/*************************************************************************************************/
+
+   /*===========================================================================*/
+   /* PROCESAMIENTO PARA FORDEV.                                                */
+   /*===========================================================================*/
+   vFechaHora();
+   fprintf(stderr, "%s\n"
+   				   "ETAPA 2: FORDEV\n"
+   				   "%s\n", szAst, szAst);
+
+   vFechaHora();
+   fprintf(stderr, "Actualizando traza de proceso (FA_TRAZAFORTAS).\n");
+   if(bfnOraUpdateEstadoTraza(ESTADO_DEV) == FALSE)
+   {
+      exit(8);
+   }
+   vDTrazasLog("", "---------------- Comienza a procesar FORDEV ----------------\n", LOG04);
+
+   if((pFFac = fopen(szForDev, "wb+")) == (FILE*)NULL )
+   {
+      fprintf(stderr, "No fue posible crear archivo de rechazados [%s].\n"
+      				  "Proceso se cancela.\n", szForDev);
+      vDTrazasError("forfac", "\n << No pudo crearse el archivo de 'lo devuelto' %s >>\n", LOG03, szForDev);
+      vDTrazasLog("forfac", "\n << No pudo crearse el archivo de 'lo devuelto' >>\n", LOG03);
+      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+      {
+         exit(10);
+      }
+      exit(9);
+   }
+    EXEC SQL SELECT cod_estproc
+               INTO :v_cod_estproc
+               FROM  fa_trazafortas
+               WHERE ind_orden =:lhIndOrden;
+    if (v_cod_estproc != 2)    /* No llena archico si hay errores IMC */           
+         fprintf(pFFac, "%156s\n", "");
+
+   vFechaHora();
+   fprintf(stderr, "Reinicializacion de acumuladores y variables de estadistica.\n");
+   vfnResetCounters();
+
+   vFechaHora();
+   fprintf(stderr, "Procesamiento de clientes no facturados en ciclo (Rechazos).\n");
+   if(bfnOraCargaCiclo2(DEV))
+   {
+      fprintf(stderr, "Cantidad de clientes procesados: [%d]\n", lClientes);
+      vDTrazasLog ("", "\n %s\n => Clientes procesados por Ciclo : [%d]",LOG04, szAst, lClientes);
+   }
+   else
+   {
+      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+      {
+         exit(10);
+      }
+      exit(15);
+   }
+
+   /* - : Actualiza el primer registro del archivo y luego lo cierra----------- */
+   /*---------------------------------------------------------------------------*/
+   /* Generacion de linea de cabecera en archivo.                               */
+   /*---------------------------------------------------------------------------*/
+   vFechaHora();
+   fprintf(stderr, "Generacion de linea de cabecera.\n");
+   
+    
+    
+                
+    if (v_cod_estproc != 2)    /* No llena archico si hay errores IMC */
+        vfnCabeceraEmp(2);
+   else
+      {
+       fclose(pFFac);	
+       pFFac = fopen(szForDev, "wb+");
+       pFFac1 = fopen(szForFac, "wb+");
+       fclose(pFFac1);	
+      } 
+   fclose(pFFac);
+   pFFac = (FILE*)NULL ;
+
+/*---------------------------------------------------------------------------*/
+/* Aqui se realiza el insert sobre las tablas de liquidacion de trafico      */
+/* carrier, el calculo de los acumuladores respectivos y la eliminacion de   */
+/* los registros facturados, desde la tabla FA_DETFORTAS.                    */
+/*                                                                           */
+/* 20031229  Incidencia CH-241120031523                                      */
+/*                                                                           */
+/*---------------------------------------------------------------------------*/
+   vFechaHora();
+   fprintf(stderr, "Insertando trafico facturado en la tabla FA_DETFORLIQ ...\n"); 
+   if(bfnOraInsertDetForLiq2(&iCantRegs) == FALSE)  /* Parametro incoporado por PGonzaleg 28-10-2002 */
+   {
+      vSqlError();
+      fprintf(stderr, "Error en insert 2 sobre FA_DETFORLIQ. Proceso se cancela.\n");
+      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+      {
+         fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+         exit(16);
+      }
+      exit(50);
+   }   
+   
+   if (iCantRegs > 0)  /* Condicion Incorporada por PGonzaleg 28-10-2002 */
+   {	   
+	   vFechaHora();
+	   fprintf(stderr, "Insertando acumuladores de trafico facturado en la tabla FA_ACUMFORLIQ ...\n"); 
+	   if(bfnOraInsertAcumForLiq2() == FALSE)
+	   {
+	      vSqlError();
+	      fprintf(stderr, "Error en insert sobre FA_ACUMFORLIQ. Proceso se cancela.\n");
+	      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+	      {
+	         fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+	         exit(16);
+	      }
+	      exit(51);
+	   }
+	   vFechaHora();
+	   fprintf(stderr, "Construyendo acumuladores de trafico facturado, por ind_orden, en la tabla FA_ACUMFORLIQ ...\n"); 
+	   if(bfnOraCalcAcumForLiq2() == FALSE)
+	   {
+	      vSqlError();
+	      fprintf(stderr, "Error en calculo de acumuladores de trafico facturado. Proceso se cancela.\n");
+	   
+	      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+	      {
+	         fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+	         exit(16);
+	      }
+
+	      exit(52);
+	   }
+/*	   
+	   
+	   vFechaHora();
+	   fprintf(stderr, "Eliminando trafico rechazado desde tabla FA_DETFORTAS ...\n"); 
+	   if(bfnOraDeleteDetFortas() == FALSE)
+	   {
+	      vSqlError();
+	      fprintf(stderr, "No fue posible borrar trafico rechazado desde FA_DETFORTAS. Proceso se cancela.\n");
+	      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+	      {
+	         fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+	         exit(16);
+	      }
+	      exit(53);
+	   }
+*/
+   }
+
+   /*---------------------------------------------------------------------------*/
+   /* Aqui se realiza el insert sobre las tablas de liquidacion de trafico      */
+   /* carrier, el calculo de los acumuladores respectivos y la eliminacion de   */
+   /* los registros rechazados, desde la tabla FA_DETFORTAS.                    */
+   /*---------------------------------------------------------------------------*/
+   vFechaHora();
+   fprintf(stderr, "Insertando trafico rechazado en la tabla FA_DETFORLIQ ...\n");
+   if(bfnOraInsertDetForLiq(&iCantRegs) == FALSE)  /* Parametro incoporado por PGonzaleg 28-10-2002 */
+   {
+      vSqlError();
+      fprintf(stderr, "Error en insert sobre FA_DETFORLIQ. Proceso se cancela.\n");
+      if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+      {
+         fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+         exit(16);
+      }
+      exit(50);
+   }
+
+   if (iCantRegs > 0)  /* Condicion Incorporada por PGonzaleg 28-10-2002 */
+   {
+       vFechaHora();
+       fprintf(stderr, "Insertando acumuladores de trafico rechazado en la tabla FA_ACUMFORLIQ ...\n");
+       if(bfnOraInsertAcumForLiq() == FALSE)
+       {
+          vSqlError();
+          fprintf(stderr, "Error en insert sobre FA_ACUMFORLIQ. Proceso se cancela.\n");
+          if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+          {
+             fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+             exit(16);
+          }
+          exit(51);
+       }
+
+       vFechaHora();
+       fprintf(stderr, "Construyendo acumuladores de trafico liquidado, por ind_orden, en la tabla FA_ACUMFORLIQ ...\n");
+       if(bfnOraCalcAcumForLiq() == FALSE)
+       {
+          vSqlError();
+          fprintf(stderr, "Error en calculo de acumuladores de trafico liquidado. Proceso se cancela.\n");
+          if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+          {
+             fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+             exit(16);
+          }
+          exit(52);
+       }
+
+       
+       /**************** SE COMENTA LA ELIMINACION DE LOS REGISTROS RECHAZADOS DESDE FA_DETFORTAS********************/      
+/*       
+       vFechaHora();
+       fprintf(stderr, "Eliminando trafico rechazado desde tabla FA_DETFORTAS ...\n");
+       if(bfnOraDeleteDetFortas() == FALSE)
+       {
+          vSqlError();
+          fprintf(stderr, "No fue posible borrar trafico rechazado desde FA_DETFORTAS. Proceso se cancela.\n");
+          if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+          {
+             fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+             exit(16);
+          }
+          exit(53);
+       }
+*/
+   }
+
+   if(bfnOraUpdateTraza(PROC_OK) == FALSE)
+   {
+      fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+      exit(16);
+   }
+   vDTrazasLog("", "\n---------------- Termina proceso FORDEV ----------------\n %s", LOG04, szAst);
+
+   /*===========================================================================*/
+   /* FIN DE PROCESAMIENTO PARA FORDEV.                                         */
+   /*===========================================================================*/
+    /*bfnOraCommit();
+    exit(1);*/
+
+/*************************************************************************************************/
+    /*===========================================================================*/
+    /* PROCESAMIENTO PARA FORASG.                                                */
+    /*===========================================================================*/
+    vFechaHora();
+    fprintf(stderr, "%s\n"
+    				"ETAPA 3: FORASG\n"
+    				"%s\n", szAst, szAst);
+
+    vFechaHora();
+    fprintf(stderr, "Actualizando traza de proceso (FA_TRAZAFORTAS).\n");
+    if(bfnOraUpdateEstadoTraza(ESTADO_ASG) == FALSE)
+    {
+        exit(8);
+    }
+
+    vDTrazasLog ("", "---------------- Comienza a procesar FORASG ----------------\n",LOG04);
+   	if((pFFac = fopen(szForAsg, "wb+")) == (FILE*)NULL )
+   	{
+        fprintf(stderr, "No fue posible crear archivo de asignados [%s].\n"
+        				"Proceso se cancela.\n", szForAsg);
+        vDTrazasError("forfac","\n << No pudo crearse el archivo de 'lo asignado' %s >>\n", LOG03, szForAsg);
+        vDTrazasLog("forfac","\n << No pudo crearse el archivo de 'lo asignado' >>\n", LOG03);
+        if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+            exit(10);
+        }
+        exit(9);
+   	}
+     EXEC SQL SELECT cod_estproc
+               INTO :v_cod_estproc
+               FROM  fa_trazafortas
+               WHERE ind_orden =:lhIndOrden;
+               
+/* -      : Escribe el primer registro del archivo ------------------------------------- */
+         if (v_cod_estproc != 2)
+   	    fprintf(pFFac,"%156s\n","");  /* Caratula del fichero */
+
+/* -      : Procesa Clientes por Ciclo de Facturacion -(escribe el archivo de salida)--- */
+    vFechaHora();
+    fprintf(stderr, "Reinicializacion de acumuladores y variables de estadistica.\n");
+    vfnResetCounters();
+
+    vFechaHora();
+    fprintf(stderr, "Procesamiento de clientes asignados en ciclo (Rechazos).\n");
+   	if(bfnOraCargaCiclo2(ASG))
+   	{
+    	fprintf(stderr, "Cantidad de clientes procesados: [%d]\n", lClientes);
+        vDTrazasLog ("", "\n %s\n => Clientes procesados por Ciclo : [%d]",LOG04, szAst, lClientes);
+   	}
+   	else
+   	{
+    	if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+            exit(10);
+        }
+    	exit(15);
+       }
+
+/* -      : Actualiza el primer registro del archivo y luego lo cierra------ */
+    vFechaHora();
+    fprintf(stderr, "Generacion de linea de cabecera.\n");
+    
+               
+    if (v_cod_estproc != 2)    /* No llena archico si hay errores IMC */
+   	vfnCabeceraEmp(3);
+    else
+      {
+       
+       pFAsg = fopen(szForAsg, "wb+");		
+       fclose(pFAsg);
+       	
+       pFFac  = fopen(szForDev, "wb+");
+       fclose(pFFac);
+       
+       pFFac1 = fopen(szForFac, "w+");
+       fclose(pFFac1);	
+      } 
+      
+    fclose(pFFac);
+    pFFac = (FILE*)NULL ;
+
+    if(bfnOraUpdateTraza(PROC_OK) == FALSE)
+    {
+        fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+        exit(16);
+    }
+
+    vDTrazasLog ("", "\n---------------- Termina proceso FORASG ----------------\n %s"
+    				 /*"\n---------------- Generando Reporte final ---------------\n %s"*/
+    				 ,LOG04,szAst,szAst);
+
+    /*===========================================================================*/
+    /* FIN DE PROCESAMIENTO PARA FORASG.                                         */
+    /*===========================================================================*/
+    /*bfnOraCommit();
+    exit(1);*/
+
+/****Llamada a funcion que detecta anomalos incidencia CH-200503232763****************************/
+     
+     vDTrazasLog("", "---------------- Comienza a procesar Anomalías ----------------\n", LOG04);
+
+   if((pFFac = fopen(szForAnm, "wb+")) == (FILE*)NULL )
+   {
+      fprintf(stderr, "No fue posible crear archivo de Anomalias [%s].\n"
+      				  "Proceso se cancela.\n", szForAnm);
+      vDTrazasError("forfac", "\n << No pudo crearse el archivo de Anomalias %s >>\n", LOG03, szForAnm);
+      vDTrazasLog("forfac", "\n << No pudo crearse el archivo de Anomalias >>\n", LOG03);
+   }
+     
+     
+     vFechaHora();
+     fprintf(pFFac, "%156s\n", " "); /************creo primera linea CH-200503232763 ********/
+     fprintf(stderr, "Registrando trafico rechazado desde tabla FA_DETFORTAS (Archivo de Anomalos) ...\n");
+     if(bfnOraSelectAnomalos (0) == FALSE)
+     {
+        vSqlError();
+        fprintf(stderr, "No fue posible registrar trafico rechazado desde FA_DETFORTAS. Proceso se cancela.\n");
+        if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+           fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+           exit(16);
+        }
+          exit(53);
+     }
+     else
+     {
+      EXEC SQL SELECT cod_estproc
+               INTO :v_cod_estproc
+               FROM  fa_trazafortas
+               WHERE ind_orden =:lhIndOrden;
+               
+      if (v_cod_estproc != 2)    /* No llena archico si hay errores IMC */
+   	 { 
+   	  vfnCabeceraEmp(4); /***crea cabecera archivo de Anomalias CH-200503232763*/
+   	 }
+      else
+       {
+       
+        pFAsg = fopen(szForAsg, "wb+");		
+        fclose(pFAsg);
+       	
+        pFFac  = fopen(szForDev, "wb+");
+        fclose(pFFac);
+        
+        pFFac  = fopen(szForAnm, "wb+");
+        fclose(pFFac);
+       
+        pFFac1 = fopen(szForFac, "w+");
+        fclose(pFFac1);	
+       } 
+      
+     fclose(pFFac);
+     pFFac = (FILE*)NULL; 
+    } 
+     
+     
+
+/***********************************************************************/
+    /*===========================================================================*/
+    /* PROCESAMIENTO FINAL Y GENERACION DE ARCHIVO DE REPORTES.                  */
+    /*===========================================================================*/
+    vFechaHora();
+    fprintf(stderr, "%s\n"
+    				"ETAPA 4: GENERACION DE REPORTES\n"
+    				"%s\n", szAst, szAst);
+
+    vFechaHora();
+    fprintf(stderr, "Actualizando traza de proceso (FA_TRAZAFORTAS).\n");
+    if(bfnOraUpdateEstadoTraza(ESTADO_REP) == FALSE)
+    {
+        exit(8);
+    }
+   	if((pFRep = fopen(szForRep, "wb+")) == (FILE*)NULL )
+   	{
+       	fprintf(stderr, "No fue posible crear el archivo de reporte [%s].\n"
+       					"Proceso se cancela.\n", szForRep);
+        vDTrazasError("forfac","\n << No pudo crearse el archivo de reporte %s >>\n", LOG03, szForRep);
+        vDTrazasLog("forfac","\n << No pudo crearse el archivo de reporte >>\n", LOG03);
+        if(bfnOraUpdateTraza(PROC_ERR) == FALSE)
+        {
+            exit(10);
+        }
+        exit(9);
+   }
+
+
+    vFechaHora();
+    fprintf(stderr, "Generando informe final.\n");
+    
+    EXEC SQL select cod_estproc
+                into :v_cod_estproc
+                from fa_trazafortas
+                where ind_orden = :lhIndOrden;
+
+                     
+    if (v_cod_estproc !=2)  /* No llena archico si hay errores IMC */
+   	vfnReporteFinal(); 
+    else
+      {
+       fclose(pFRep);
+       pFRep = fopen(szForRep, "wb+");
+       
+       pFAsg = fopen(szForAsg, "wb+");		
+       fclose(pFAsg);
+       	
+       pFFac  = fopen(szForDev, "wb+");
+       fclose(pFFac);
+       
+       pFFac  = fopen(szForAnm, "wb+");
+       fclose(pFFac);
+       
+       pFFac1 = fopen(szForFac, "wb+");
+       fclose(pFFac1);	
+      }
+      	
+   	
+    fprintf(stderr, "Termino de Generacion de informe final.\n");
+    fclose(pFRep);
+
+    fprintf(stderr, "Actualiza Traza en OK.\n");
+    if(bfnOraUpdateTraza(PROC_OK) == FALSE)
+    {
+        fprintf(stderr, "No fue posible hacer update sobre FA_TRAZAFORTAS.\n");
+        exit(16);
+    }
+    fprintf(stderr, "Cierra Archivos de Log y Error.\n");
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+    vFechaHora();
+    fprintf(stderr, "Proceso %s finalizado OK.\n"
+    				"%s\n", argv[0], szAst);
+    exit(0);
+
+    return 0;
+} /* main*/
+
+
+
+
+/* ----------------------------------------------------------------------------------- */
+/* ----------- FUNCIONES DE PROCESAMIENTO DE FORFAC ---------------------------------- */
+/* ----------------------------------------------------------------------------------- */
+
+/***************************************************************************************************/
+/* FUNCION bfnOraSelectAnomalos PERMITE REGISTRAR LAS LLAMADAS CON SEQ_FORFAC=-1 DESDE FA_DETFORTAS*/
+/* ***************************************RECHAZADAS CH-200503232763********************************/
+ 
+ BOOL    bfnOraSelectAnomalos(int iAlquiler)
+ {
+    int  iReg       = 0    ;
+    
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        static long lhCodCiclFact;
+        static int  ihIndAlquiler;
+    EXEC SQL END DECLARE SECTION  ;
+
+    vDTrazasLog("", "\n Anomalos >> Alquiler:[%d]",
+                    stStatus.LogNivel, iAlquiler);
+
+    dTotCliTot = 0;
+
+    ihIndAlquiler = iAlquiler;
+    lhCodCiclFact = stHistDocu.lCodCiclFact;
+    
+      
+    EXEC SQL DECLARE cAnomalo CURSOR FOR
+    	SELECT 
+    	       /*ROWID                        , ******No es necesario en formato .rec****/
+               /*COD_PERIODO                  , ******No es necesario en formato .rec****/
+               NUM_TERMINAL                 ,
+               IND_SALIDA                   ,
+               IND_ENTRADA                  ,
+               DES_ENTRADA                  ,
+               MOD_CALL                     ,
+               CLAVE_CALL                   ,
+               MINUTOS_TASADO               ,
+               DUR_CALL                     ,
+               COD_SERVICIO                 ,
+               ACUM_NETOLLAM                ,
+               ACUM_IVA                     ,
+               TOT_PAGAR                    ,
+               HORA_CALL                    ,
+               TO_CHAR(FEC_CALL,'YYYYMMDD') ,
+               COD_TRAFICO                  ,
+               /*IND_REFACTURA                ,*/
+               TIP_REG
+        FROM FA_DETFORTAS
+        WHERE IND_ORDEN   = :lhIndOrden
+           AND IND_ALQUILER = 0
+           AND COD_OPERADOR = :lhCodOperador
+           AND SEQ_FORFAC   = 0  	       /*Condicion de anomalia modificada*/
+        ORDER BY COD_CLIENTE, NUM_TERMINAL;
+    
+    vDTrazasError("", " %s"
+                       "\n Anomalo Det. Fortas >> Cliente:[%ld]  Periodo:[%ld]  Alquiler:[%d]  Operador:[%d]",
+                       LOG04, szAst,
+                       stHistDocu.lCodCliente ,
+                       stHistDocu.lCodCiclFact,
+                       iAlquiler, lhCodOperador);
+
+     vDTrazasLog("", " \n\t\t<< Reg en error Cod.Cliente  : %ld>>", LOG04,stHistDocu.lCodCliente );
+     
+
+    EXEC SQL OPEN cAnomalo;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al abrir el Cursor de Anomalias sobre FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%ld]  CICLFACT:[%ld]   ALQUILER:[%d]  OPERADOR:[%d]\n",
+                                           LOG03, SQLERRM,
+                                           stHistDocu.lCodCliente,
+                                           stHistDocu.lCodCiclFact,
+                                           iAlquiler, lhCodOperador);
+
+        vDTrazasLog("", "\n <<Error al abrir el Cursor de Anomalias sobre FA_DETFORTAS >>",LOG03);
+
+        return FALSE;
+    }
+    
+        
+    while (iReg == SQLOK)
+    {
+     	    
+         memset(&stAnomalos, 0, sizeof(stAnomalos));
+         
+            
+         EXEC SQL FETCH cAnomalo INTO
+            /*:stAnomalos.szROWID         ,******No es necesario en formato .rec****/
+            /*:stAnomalos.szCOD_PERIODO   ,******No es necesario en formato .rec****/
+            :stAnomalos.szNUM_TERMINAL  ,
+            :stAnomalos.szIND_SALIDA    :stAnomalos.ishIND_SALIDA    ,
+            :stAnomalos.szIND_ENTRADA   :stAnomalos.ishIND_ENTRADA   ,
+            :stAnomalos.szDES_ENTRADA   :stAnomalos.ishDES_ENTRADA   ,
+            :stAnomalos.szMOD_CALL      :stAnomalos.ishMOD_CALL      ,
+            :stAnomalos.szCLAVE_CALL    :stAnomalos.ishCLAVE_CALL    ,
+            :stAnomalos.lMINUTOS_TASADO :stAnomalos.ishMINUTOS_TASADO,
+            :stAnomalos.lDUR_CALL       :stAnomalos.ishDUR_CALL      ,
+            :stAnomalos.szCOD_SERVICIO  :stAnomalos.ishCOD_SERVICIO  ,
+            :stAnomalos.dACUM_NETOLLAM  :stAnomalos.ishACUM_NETOLLAM ,
+            :stAnomalos.dACUM_IVA       :stAnomalos.ishACUM_IVA      ,
+            :stAnomalos.dTOT_PAGAR      :stAnomalos.ishTOT_PAGAR     ,
+            :stAnomalos.szHORA_CALL     ,
+            :stAnomalos.szFEC_CALL      ,
+            :stAnomalos.szCOD_TRAFICO   :stAnomalos.ishCOD_TRAFICO   ,
+            /*:stAnomalos.szIND_REFACTURA :stAnomalos.ishIND_REFACTURA ,******No es necesario en con de formato .rec****/
+            :stAnomalos.szTIP_REG;
+         
+    
+    	if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n\n Error en el fetch de FA_DETFORTAS : %s"
+                                  "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]",
+                                  LOG03, SQLERRM,
+                                  stHistDocu.lCodCliente,
+                                  stHistDocu.lCodCiclFact,
+                                  iAlquiler, lhCodOperador);
+                vDTrazasLog("", "\n << Error en el fetch de FA_DETFORTAS >>",LOG03);
+                return FALSE;
+            }
+            iReg = SQLCODE    ;
+
+         if (SQLCODE == SQLOK)
+            {
+                stAnomalos.dACUM_NETOLLAM = fnCnvDouble (stAnomalos.dACUM_NETOLLAM , USO0);
+                stAnomalos.dACUM_IVA      = fnCnvDouble (stAnomalos.dACUM_IVA , USO0);
+
+                bCabeceraCli = TRUE;
+                                
+                vfnClienteAnm();
+
+                /* Acumulacion por operadora */
+                lTotReg++;
+                dTotNet += stAnomalos.dACUM_NETOLLAM ;
+                dTotIva += stAnomalos.dACUM_IVA      ;
+                dTotTot += stAnomalos.dTOT_PAGAR     ;
+                lTotSeg += stAnomalos.lDUR_CALL      ;
+                lTotMin += stAnomalos.lMINUTOS_TASADO;
+
+                /* Acumulacion por cliente */
+                dTotCliTot += stAnomalos.dTOT_PAGAR;
+    	    }
+    }/* Fin While*/
+     EXEC SQL CLOSE cAnomalo;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al cerrar el Cursor de Anomalos sobre FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%ld] CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]\n",
+                          LOG03, SQLERRM , stHistDocu.lCodCliente ,
+                          stHistDocu.lCodCiclFact, iAlquiler, lhCodOperador);
+        vDTrazasLog("", "\n <<Error al cerrar el Cursor de Anomalos sobre FA_DETFORTAS >>",LOG03);
+        return FALSE;
+    }
+
+    vDTrazasLog("","\n => Fin Cursor de Anomalos FA_DETFORTAS 2\n %s",LOG05,szAst);
+
+    return TRUE;
+ }
+
+/**** fin bfnOraSelectAnomalos CH-200503232763******************************************/
+
+/***************************************************************************************/
+/* bfnOraSacaSec() */
+/***************************************************************************************/
+ BOOL bfnOraSacaSec()
+ {
+    EXEC SQL 
+    	SELECT FA_SEQ_ORDEN.NEXTVAL
+   		  INTO :lhNumSecuencia
+   		  FROM DUAL;
+
+   	if(sqlca.sqlcode != SQLOK)
+   	{
+    	vSqlError();
+    	fprintf(stderr, "No fue posible obtener numero de secuencia. Proceso se cancela.\n");
+    	vDTrazasError("bfnOraSacaSec","\n << Error [%s] seleccionando la secuencia FA_SEQ_ORDEN >>",
+                      LOG03, SQLERRM);
+      	vDTrazasLog("", "\n << Error al seleccionar la secuencia FA_SEQ_ORDEN >>", LOG03);
+      	return(FALSE);
+   	}	
+
+   	fprintf(stderr, "Secuencia: [%d]\n", lhNumSecuencia);
+   	return(TRUE);
+ } /* bfnOraSacaSec() */
+
+
+/***************************************************************************************/
+/* bfnOraCargaClieFact() */
+/***************************************************************************************/
+BOOL bfnOraCargaClieFact()
+{
+    static BOOL bFinCursor = FALSE;
+    	   int  iReg = 0;
+    	int  iRes = 0;
+    	char szTabla[50]="" ;
+    	char szCadenaSQL[1024];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhIndOrdenTotal;
+        char szhFA_HISTCLIE  [41];EXEC SQL VAR szhFA_HISTCLIE IS STRING(41);
+        char szNOM_CLIENTE   [51];EXEC SQL VAR szNOM_CLIENTE    IS STRING(51);
+        char szNOM_CALLE     [51];EXEC SQL VAR szNOM_CALLE      IS STRING(51);
+        char szDES_CIUDAD    [31];EXEC SQL VAR szDES_CIUDAD     IS STRING(31);
+        char szNUM_IDENTTRIB [21];EXEC SQL VAR szNUM_IDENTTRIB  IS STRING(21);
+        long lhNumCelular=0      ;
+        short ishNumCelular=-1   ;
+        short ishNOM_CALLE       ;
+        short ishDES_CIUDAD      ;
+        short ishNUM_IDENTTRIB   ;
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL SELECT FA_HISTCLIE
+               INTO :szhFA_HISTCLIE
+               FROM FA_ENLACEHIST
+              WHERE COD_CICLFACT=:stHistDocu.lCodCiclFact ;
+
+    if (SQLCODE == SQLOK )
+    {
+        vDTrazasLog(""," %s"
+                        "\n CargaClieFact >> Tabla:[%s]  Cliente:[%ld]  CiclFact:[%ld]"
+                        "\n                  IndOrdenTotal:[%ld]",
+                        stStatus.LogNivel,szAst,
+                        szhFA_HISTCLIE,
+                        stHistDocu.lCodCliente,
+                        stHistDocu.lCodCiclFact,
+                        stHistDocu.szIndOrdenTotal );
+    }
+    else
+    {
+        vDTrazasError("", "\n Error al buscar nombre de tabla para"
+                          "FA_HISTCLIE con CicloFact: %ld\n IND_ORDENTOTAL: '%s'\n Error : %s",
+                          LOG05, stHistDocu.lCodCiclFact, stHistDocu.szIndOrdenTotal, SQLERRM);
+        vDTrazasLog("", "\n << Error al buscar nombre de tabla para FA_HISTCLIE >>",LOG05);
+        return FALSE;
+    }
+
+
+    if (pstHistClie != (struct HISTCLIE *)NULL)
+    {
+        free (pstHistClie);
+        pstHistClie = NULL;
+    }
+
+    lhIndOrdenTotal = atol(stHistDocu.szIndOrdenTotal);
+
+   	strcpy(szTabla,szhFA_HISTCLIE);
+
+   	memset(szCadenaSQL,'\0',1024);
+
+  	 sprintf(szCadenaSQL,"SELECT B.NOM_CLIENTE, "
+                              	"B.NOM_CALLE, "
+                   	           	"B.DES_CIUDAD, "
+                              	"B.NUM_IDENTTRIB "
+                           "FROM %s B "
+                          "WHERE B.IND_ORDENTOTAL = :lhIndOrdenTotal \0", szTabla);
+
+
+   	EXEC SQL PREPARE stConsDinamica FROM :szCadenaSQL;
+    if (SQLCODE)
+    {
+        vDTrazasError("", "\n Error en SQL-PREPARE stConsDinamica"
+                         "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+        vDTrazasLog("", "\n <<Error en SQL-PREPARE stConsDinamica>>", LOG05);
+        return  (FALSE);
+    }
+
+    EXEC SQL DECLARE Cclientes CURSOR FOR stConsDinamica;
+    if (SQLCODE)
+    {
+        vDTrazasError("","\n Error en SQL-DECLARE Cclientes"
+                         "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+        vDTrazasLog("","\n << Error en SQL-DECLARE Cclientes>>",LOG05);
+        return  (FALSE);
+    }
+
+    EXEC SQL OPEN Cclientes USING  :lhIndOrdenTotal;
+    if (SQLCODE)
+    {
+        vDTrazasError("","\n Error en SQL-OPEN CURSOR Cclientes"
+                         "\n [%d]  [%s] ", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog("","\n << Error en SQL-OPEN CURSOR Cclientes>>" ,LOG05);
+        return  (FALSE);
+    }
+
+    while (iRes == SQLOK)
+    {
+        memset(szNOM_CLIENTE  ,  0, sizeof(szNOM_CLIENTE  ));
+        memset(szNOM_CALLE    ,  0, sizeof(szNOM_CALLE    ));
+        memset(szDES_CIUDAD   ,  0, sizeof(szDES_CIUDAD   ));
+        memset(szNUM_IDENTTRIB,  0, sizeof(szNUM_IDENTTRIB));
+
+        EXEC SQL FETCH Cclientes INTO :szNOM_CLIENTE                   ,
+                                      :szNOM_CALLE    :ishNOM_CALLE    ,
+                                      :szDES_CIUDAD   :ishDES_CIUDAD   ,
+                                      :szNUM_IDENTTRIB:ishNUM_IDENTTRIB;
+
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+           vDTrazasError("", "\n Error en el fetch sobre Cursor Clientes "
+                             "\n Cliente : [%ld]\n [%s] ",
+                             LOG05, stHistDocu.lCodCliente, SQLERRM);
+           vDTrazasLog("", "\n << Error en el fetch sobre FA_HISTCLIE>>", LOG05);
+           return FALSE;
+        }
+
+        iRes = SQLCODE;
+
+        if (SQLCODE == SQLOK)
+        {
+            iReg++;
+            vDTrazasLog("","\tEncontrado Cliente [%s]",LOG05,szNOM_CLIENTE);
+
+            pstHistClie = (struct HISTCLIE*)
+                          realloc(pstHistClie, iReg * sizeof(struct HISTCLIE));
+
+            if(pstHistClie == (struct HISTCLIE *)NULL)
+            {
+               vDTrazasError("", "\n Error al reservar memoria en bfnOraCargaClieFact()", LOG05);
+               vDTrazasLog("", "\n << Error al reservar memoria en \"bfnOraCargaClieFact()\">>", LOG05);
+               return FALSE;
+            }
+
+            strncpy(pstHistClie[iReg-1].szNOM_CLIENTE  , szNOM_CLIENTE,25);
+            strcpy (pstHistClie[iReg-1].szNOM_CALLE    , szNOM_CALLE)     ;
+            strcpy (pstHistClie[iReg-1].szDES_CIUDAD   , szDES_CIUDAD)    ;
+            strcpy (pstHistClie[iReg-1].szNUM_IDENTTRIB, szNUM_IDENTTRIB) ;
+            pstHistClie[iReg-1].lNumCelular = (ishNumCelular == -1)?0:lhNumCelular;
+        }
+    }
+
+    EXEC SQL CLOSE Cclientes;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error al cerrar el Cursor sobre Fa_HistClie"
+                          "\n Cod.Cliente : [%ld]"
+                          "\n [%s] ",
+                          LOG05, stHistDocu.lCodCliente, SQLERRM);
+        vDTrazasLog("", "\n << Error al cerrar el Cursor sobre FA_HISTCLIE ", LOG05);
+        return FALSE;
+    }
+    return TRUE;
+} /* bfnOraCargaClieFact() */
+
+/***************************************************************************************/
+/* bfnOraCargaForTas() */
+/***************************************************************************************/
+BOOL bfnOraCargaForTas(int iAlquiler)  /* SIEMPRE SE ESTA INVOCANDO CON iAlquiler = 0 */
+{
+    BOOL bFinCursor = FALSE;
+    int  iReg       = 0    ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        static long lhCodCliente ;
+        static long lhCodCiclFact;
+        static int  ihIndAlquiler;
+    EXEC SQL END DECLARE SECTION  ;
+
+    vDTrazasLog("", "\n CargaForTas >> Alquiler:[%d]",
+                    stStatus.LogNivel, iAlquiler);
+
+    dTotCliTot = 0;
+
+    ihIndAlquiler = iAlquiler;
+    lhCodCiclFact = stHistDocu.lCodCiclFact;
+    lhCodCliente  = stHistDocu.lCodCliente;
+    
+        
+    if(v_reproceso == 1)
+    {
+    	
+    	vDTrazasLog("", "\n\t\t<< if v_reproceso == 1 >>", LOG04); 
+    	
+     EXEC SQL DECLARE cForTasR CURSOR FOR
+        SELECT ROWID                        ,
+               COD_PERIODO                  ,
+               NUM_TERMINAL                 ,
+               IND_SALIDA                   ,
+               IND_ENTRADA                  ,
+               DES_ENTRADA                  ,
+               MOD_CALL                     ,
+               CLAVE_CALL                   ,
+               MINUTOS_TASADO               ,
+               DUR_CALL                     ,
+               COD_SERVICIO                 ,
+               ACUM_NETOLLAM                ,
+               ACUM_IVA                     ,
+               TOT_PAGAR                    ,
+               HORA_CALL                    ,
+               TO_CHAR(FEC_CALL,'YYYYMMDD') ,
+               COD_TRAFICO                  ,
+               IND_REFACTURA                ,
+               TIP_REG
+          FROM FA_DETFORTAS
+         WHERE IND_ORDEN    = :lhIndOrden
+           AND COD_CLIENTE  = :lhCodCliente
+           AND IND_ALQUILER = :ihIndAlquiler
+           AND COD_OPERADOR = :lhCodOperador
+           AND COD_PERIODO =  :lhCodCiclFact /*se agrega condicion de codigo de ciclo a la consulta*/
+           ORDER BY COD_CLIENTE, NUM_TERMINAL;
+           
+     vDTrazasError("", " %s"
+                       "\n Det. Fortas >> Cliente:[%ld]  Periodo:[%ld]  Alquiler:[%d]  Operador:[%d]",
+                       LOG04, szAst,
+                       stHistDocu.lCodCliente ,
+                       stHistDocu.lCodCiclFact,
+                       iAlquiler, lhCodOperador);
+
+     vDTrazasLog("", "\n\t\t<< Reg en error Cod.Cliente  : %ld>>", LOG04,stHistDocu.lCodCliente );           
+     vDTrazasLog("", "\n 	>> Cliente:[%ld]  Periodo:[%ld]  Alquiler:[%d]  Operador:[%d]",
+                       LOG04, 
+                       stHistDocu.lCodCliente ,
+                       stHistDocu.lCodCiclFact,
+                       iAlquiler, lhCodOperador);
+     }
+     else
+     {
+     	vDTrazasLog("", "\n\t\t<< if v_reproceso != 1 o sea ELSE >>", LOG04); 
+     EXEC SQL DECLARE cForTas CURSOR FOR
+        SELECT ROWID                        ,
+               COD_PERIODO                  ,
+               NUM_TERMINAL                 ,
+               IND_SALIDA                   ,
+               IND_ENTRADA                  ,
+               DES_ENTRADA                  ,
+               MOD_CALL                     ,
+               CLAVE_CALL                   ,
+               MINUTOS_TASADO               ,
+               DUR_CALL                     ,
+               COD_SERVICIO                 ,
+               ACUM_NETOLLAM                ,
+               ACUM_IVA                     ,
+               TOT_PAGAR                    ,
+               HORA_CALL                    ,
+               TO_CHAR(FEC_CALL,'YYYYMMDD') ,
+               COD_TRAFICO                  ,
+               IND_REFACTURA                ,
+               TIP_REG
+          FROM FA_DETFORTAS
+         WHERE IND_ORDEN    = :lhIndOrden
+           AND COD_CLIENTE  = :lhCodCliente
+           AND IND_ALQUILER = :ihIndAlquiler
+           AND COD_OPERADOR = :lhCodOperador
+           AND COD_PERIODO =  :lhCodCiclFact /*se agrega condicion de codigo de ciclo a la consulta*/
+           AND SEQ_FORFAC   = 0  
+           ORDER BY COD_CLIENTE, NUM_TERMINAL;     	
+     vDTrazasError("", " %s"
+                       "\n Det. Fortas >> Cliente:[%ld]  Periodo:[%ld]  Alquiler:[%d]  Operador:[%d]",
+                       LOG04, szAst,
+                       stHistDocu.lCodCliente ,
+                       stHistDocu.lCodCiclFact,
+                       iAlquiler, lhCodOperador);
+
+     vDTrazasLog("", " \n\t\t<< Reg en error Cod.Cliente  : %ld>>", LOG04,stHistDocu.lCodCliente );
+     vDTrazasLog("", "\n 	>> Cliente:[%ld]  Periodo:[%ld]  Alquiler:[%d]  Operador:[%d]",
+                       LOG04, 
+                       stHistDocu.lCodCliente ,
+                       stHistDocu.lCodCiclFact,
+                       iAlquiler, lhCodOperador);
+     }
+
+    if(v_reproceso == 1)
+    {
+       EXEC SQL OPEN cForTasR;
+    }
+    else
+    {
+    	EXEC SQL OPEN cForTas;
+    }
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al abrir el Cursor sobre FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%ld]  CICLFACT:[%ld]   ALQUILER:[%d]  OPERADOR:[%d]\n",
+                                           LOG03, SQLERRM,
+                                           stHistDocu.lCodCliente,
+                                           stHistDocu.lCodCiclFact,
+                                           iAlquiler, lhCodOperador);
+
+        vDTrazasLog("", "\n <<Error al abrir el Cursor sobre FA_DETFORTAS >>",LOG03);
+
+        return FALSE;
+    }
+    while (iReg == SQLOK)
+    {
+        memset(&stForAdi, 0, sizeof(stForAdi));
+
+        if(v_reproceso == 1)
+        {
+         EXEC SQL FETCH cForTasR INTO
+            :stForTas.szROWID         ,
+            :stForTas.szCOD_PERIODO   ,
+            :stForTas.szNUM_TERMINAL  ,
+            :stForTas.szIND_SALIDA    :stForTas.ishIND_SALIDA    ,
+            :stForTas.szIND_ENTRADA   :stForTas.ishIND_ENTRADA   ,
+            :stForTas.szDES_ENTRADA   :stForTas.ishDES_ENTRADA   ,
+            :stForTas.szMOD_CALL      :stForTas.ishMOD_CALL      ,
+            :stForTas.szCLAVE_CALL    :stForTas.ishCLAVE_CALL    ,
+            :stForTas.lMINUTOS_TASADO :stForTas.ishMINUTOS_TASADO,
+            :stForTas.lDUR_CALL       :stForTas.ishDUR_CALL      ,
+            :stForTas.szCOD_SERVICIO  :stForTas.ishCOD_SERVICIO  ,
+            :stForTas.dACUM_NETOLLAM  :stForTas.ishACUM_NETOLLAM ,
+            :stForTas.dACUM_IVA       :stForTas.ishACUM_IVA      ,
+            :stForTas.dTOT_PAGAR      :stForTas.ishTOT_PAGAR     ,
+            :stForTas.szHORA_CALL     ,
+            :stForTas.szFEC_CALL      ,
+            :stForTas.szCOD_TRAFICO   :stForTas.ishCOD_TRAFICO   ,
+            :stForTas.szIND_REFACTURA :stForTas.ishIND_REFACTURA ,
+            :stForTas.szTIP_REG;
+         }
+         else
+         {
+         EXEC SQL FETCH cForTas INTO
+            :stForTas.szROWID         ,
+            :stForTas.szCOD_PERIODO   ,
+            :stForTas.szNUM_TERMINAL  ,
+            :stForTas.szIND_SALIDA    :stForTas.ishIND_SALIDA    ,
+            :stForTas.szIND_ENTRADA   :stForTas.ishIND_ENTRADA   ,
+            :stForTas.szDES_ENTRADA   :stForTas.ishDES_ENTRADA   ,
+            :stForTas.szMOD_CALL      :stForTas.ishMOD_CALL      ,
+            :stForTas.szCLAVE_CALL    :stForTas.ishCLAVE_CALL    ,
+            :stForTas.lMINUTOS_TASADO :stForTas.ishMINUTOS_TASADO,
+            :stForTas.lDUR_CALL       :stForTas.ishDUR_CALL      ,
+            :stForTas.szCOD_SERVICIO  :stForTas.ishCOD_SERVICIO  ,
+            :stForTas.dACUM_NETOLLAM  :stForTas.ishACUM_NETOLLAM ,
+            :stForTas.dACUM_IVA       :stForTas.ishACUM_IVA      ,
+            :stForTas.dTOT_PAGAR      :stForTas.ishTOT_PAGAR     ,
+            :stForTas.szHORA_CALL     ,
+            :stForTas.szFEC_CALL      ,
+            :stForTas.szCOD_TRAFICO   :stForTas.ishCOD_TRAFICO   ,
+            :stForTas.szIND_REFACTURA :stForTas.ishIND_REFACTURA ,
+            :stForTas.szTIP_REG;         	
+         }  
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n\n Error en el fetch de FA_DETFORTAS : %s"
+                                  "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]",
+                                  LOG03, SQLERRM,
+                                  stHistDocu.lCodCliente,
+                                  stHistDocu.lCodCiclFact,
+                                  iAlquiler, lhCodOperador);
+                vDTrazasLog("", "\n << Error en el fetch de FA_DETFORTAS >>",LOG03);
+                return FALSE;
+            }
+            iReg = SQLCODE    ;
+
+            if (SQLCODE == SQLOK)
+            {
+                stForTas.dACUM_NETOLLAM = fnCnvDouble (stForTas.dACUM_NETOLLAM , USO0);
+                stForTas.dACUM_IVA      = fnCnvDouble (stForTas.dACUM_IVA , USO0);
+
+                bCabeceraCli = TRUE;
+                vfnClienteForTas();
+            
+             
+                /* Acumulacion por operadora */
+                lTotReg++;
+                dTotNet += stForTas.dACUM_NETOLLAM ;
+                dTotIva += stForTas.dACUM_IVA      ;
+                dTotTot += stForTas.dTOT_PAGAR     ;
+                lTotSeg += stForTas.lDUR_CALL      ;
+                lTotMin += stForTas.lMINUTOS_TASADO;
+
+                /* Acumulacion por cliente */
+                dTotCliTot += stForTas.dTOT_PAGAR;
+
+
+                EXEC SQL
+                    UPDATE FA_DETFORTAS
+                       SET SEQ_FORFAC = :lhNumSecuencia
+                     WHERE ROWID = :stForTas.szROWID;
+
+                if(SQLCODE)
+                {
+                   vDTrazasError("", "\n Error al actualizar Fa_DetFortas : %s", LOG03, SQLERRM);
+                   vDTrazasLog("", "\n <<Error al actualizar Fa_DetFortas >>", LOG03);
+                   return FALSE;
+                }
+           }
+    }
+
+    if(v_reproceso == 1)
+    {
+     EXEC SQL CLOSE cForTasR;
+     stArgs.bFlagReproceso = FALSE;
+    }
+    else
+    {
+    	EXEC SQL CLOSE cForTas;
+    }
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al cerrar el Cursor de FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]\n",
+                          LOG03, SQLERRM         ,
+                          stHistDocu.lCodCliente ,
+                          stHistDocu.lCodCiclFact,
+                          iAlquiler, lhCodOperador);
+
+        vDTrazasLog("", "\n << Error al cerrar el Cursor sobre FA_DETFORTAS >>",LOG03);
+
+        return FALSE;
+    }
+
+    /*vDTrazasLog("","\n => Fin Cursor FA_DETFORTAS 1\n%s",LOG05,szAst);*/
+
+    return TRUE;
+} /* bfnOraCargaForTas() */
+
+/***************************************************************************************/
+/* bfnOraCargaForAdi() */
+/***************************************************************************************/
+BOOL bfnOraCargaForAdi(int iAlquiler)  /* SIEMPRE SE INVOCA CON iAlquiler = 0 */
+{
+    BOOL bFinCursor = FALSE;
+    int  iReg  = 0;
+
+    vDTrazasLog("", "\n CargaForAdi >> iAlquiler [%d]",
+                    stStatus.LogNivel, iAlquiler);
+
+    EXEC SQL DECLARE CForAdi CURSOR FOR
+        SELECT ROWID                      ,
+               TO_CHAR(IND_ORDEN    )     ,
+               NUM_TERMINAL               ,
+               NUM_DESTINO                ,
+               IMP_NETO                   ,
+               IMP_IVA                    ,
+               IMP_APAGAR                 ,
+               TO_CHAR(FEC_MOVIM,'YYMMDD'),
+               DES_MOVIM                  ,
+               COD_MOVIM                  ,
+               IND_REFACTURA              ,
+               TIP_REG                    ,
+               IND_ALQUILER               ,
+               COD_PERIODO                ,
+               NUM_ABONADO                ,
+               COD_CLIENTE
+          FROM FA_DETFORADI
+         WHERE COD_CLIENTE  = :stHistDocu.lCodCliente
+           AND IND_ALQUILER = :iAlquiler
+           AND COD_OPERADOR = :lhCodOperador
+           AND SEQ_FORFAC   = 0
+         ORDER BY COD_CLIENTE, NUM_TERMINAL;
+
+    EXEC SQL OPEN CForAdi;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error Open Fa_DetForadi : %s"
+                          "\n Cliente:[%ld]  CiclFact:[%ld]  Alquiler:[%d]\n",
+                          LOG03, SQLERRM,
+                          stHistDocu.lCodCliente ,
+                          stHistDocu.lCodCiclFact, iAlquiler);
+
+        vDTrazasLog("", "\n << Error Open del cursor sobre Fa_DetForadi >>",LOG03);
+
+        return FALSE;
+    }
+    while (iReg == SQLOK)
+    {
+        memset(&stForAdi, 0, sizeof(stForAdi));
+
+        EXEC SQL FETCH CForAdi INTO
+            :stForAdi.szROWID                             ,
+            :stForAdi.szIND_ORDEN                         ,
+            :stForAdi.szNUM_TERMINAL                      ,
+            :stForAdi.szNUM_DESTINO                       ,
+            :stForAdi.dIMP_NETO                           ,
+            :stForAdi.dIMP_IVA                            ,
+            :stForAdi.dIMP_APAGAR                         ,
+            :stForAdi.szFEC_MOVIM                         ,
+            :stForAdi.szDES_MOVIM                         ,
+            :stForAdi.lCOD_MOVIM                          ,
+            :stForAdi.szIND_REFACTURA                     ,
+            :stForAdi.sTIP_REG                            ,
+            :stForAdi.sIND_ALQUILER                       ,
+            :stForAdi.lCOD_PERIODO                        ,
+            :stForAdi.lNUM_ABONADO:stForAdi.ishNUM_ABONADO,
+            :stForAdi.lCOD_CLIENTE:stForAdi.ishCOD_CLIENTE;
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n\n Error al abrir elCursor sobre FA_DETFORADI : %s"
+                                  "\n CLIENTE:[%ld]  CICLFACT:[%ld]   ALQUILER:[%d]",
+                                  LOG03, SQLERRM, stHistDocu.lCodCliente,
+                                  stHistDocu.lCodCiclFact,iAlquiler);
+
+                vDTrazasLog("", "\n <<Error al abrir elCursor sobre FA_DETFORADI ", LOG03);
+
+                return FALSE;
+            }
+            iReg = SQLCODE;
+
+            if (SQLCODE == SQLOK)
+            {
+                vfnClienteForAdi();
+
+                /* Acumulacion por operadora */
+                lTotReg++;
+                dTotNet += stForAdi.dIMP_NETO;
+                dTotIva += stForAdi.dIMP_IVA;
+                dTotTot += stForAdi.dIMP_APAGAR;
+
+                /* Acumulacion por cliente */
+                dTotCliTot += stForAdi.dIMP_APAGAR;
+
+            }
+     }
+     EXEC SQL CLOSE CForAdi;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al cerrar el Cursor sobre FA_DETFORADI : %s"
+                          "\n CLIENTE:[%ld] CICLFACT:[%ld]  ALQUILER:[%d] \n",
+                          LOG03, SQLERRM, stHistDocu.lCodCliente,
+                          stHistDocu.lCodCiclFact,iAlquiler);
+        vDTrazasLog("", "\n <<Error al cerrar el Cursor sobre FA_DETFORADI >>",LOG03);
+
+        return FALSE;
+    }
+    return TRUE;
+} /* bfnOraCargaForAdi() */
+
+
+/* ----------------------------------------------------------------------------------- */
+/* ----------- FUNCIONES                                           ------------------- */
+/* ----------------------------------------------------------------------------------- */
+/***************************************************************************************/
+/* bfnOraCargaCiclo()                                                                  */
+/***************************************************************************************/
+BOOL    bfnOraCargaCiclo    ()
+{
+    BOOL    bFinCursor = FALSE;
+   	int  iReg = 0;
+   	char     szCli[6];
+
+   EXEC SQL BEGIN DECLARE SECTION;
+   	int      ihCodDocCiclo;
+    long    lhCodCiclFact;
+    long    lhIndOrdenTotal;
+    char    szhFecVencimien[9]="";
+   EXEC SQL END DECLARE SECTION;
+
+        lhIndOrdenTotal =0;
+   	lClientes = 0;
+   	lhCodCiclFact = iCOD_CICLFACT;
+   	ihCodDocCiclo = stDatosGener.iCodCiclo;
+
+        vDTrazasLog("", "\n CargaCiclo >> Cod.DocumCiclo:[%d] Cod.CiclFact:[%ld]",
+                        stStatus.LogNivel, ihCodDocCiclo, lhCodCiclFact);
+
+
+   	EXEC SQL DECLARE cCiclo CURSOR FOR
+	   	SELECT DISTINCT c.ROWID, c.COD_CLIENTE, c.NUM_FOLIO
+	   		   /* , c.pref_plaza */
+	   		   , c.IND_ORDENTOTAL, c.COD_CICLFACT,TO_CHAR(c.FEC_VENCIMIE,'YYYYMMDD')
+   		  FROM fa_histdocu c, fa_acumfortas b, fa_detfortas a, fa_tipdocumen d
+   		 WHERE a.ind_orden = :lhIndOrden
+   		   AND a.cod_cliente is not null
+   		   AND a.cod_periodo  = b.cod_periodo
+   		   AND a.cod_cliente  = b.cod_cliente
+   		   AND a.cod_cliente  = c.cod_cliente (+)
+   		   AND b.num_abonado  > 0
+   		   AND b.ind_alquiler > -1
+   		   AND b.num_proceso  = c.num_proceso
+   		   AND b.num_proceso  > 0
+   		   AND c.COD_TIPDOCUM = d.COD_TIPDOCUMMOV
+   		   AND d.IND_CICLO = 1
+   		   AND c.NUM_FOLIO    > 0;
+
+        EXEC SQL OPEN cCiclo;
+
+   	if(sqlca.sqlcode != 0)
+   	{
+    	vDTrazasError("", "\n => Error Open Fa_HistDocu : [%s] ",LOG03, SQLERRM);
+      	vDTrazasLog("", "\n << Error Open Fa_HistDocu >>",LOG03);
+        return(FALSE);
+   	}
+
+   	while (iReg == SQLOK)
+   	{
+         EXEC SQL FETCH cCiclo INTO
+                      :stHistDocu.szRowid       ,
+                      :stHistDocu.lCodCliente   ,
+                      :stHistDocu.lNumFolio     ,
+                      /* :stHistDocu.szPrefPlaza   ,*//*PHB:agregue pref_plaza*/
+                      :lhIndOrdenTotal          ,
+                      :stHistDocu.lCodCiclFact  ,
+                      :szhFecVencimien          ;   /* 'YYYYMMDD' */
+   
+        sprintf(stHistDocu.szIndOrdenTotal, "%12ld", lhIndOrdenTotal);
+
+        if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+      	{
+        	vDTrazasError("", "\n => Error Fetch Fa_HistDocu (Ciclo):[%s]",LOG03, SQLERRM);
+         	vDTrazasLog("", "\n << Error Fetch Fa_HistDocu (Ciclo)>>",LOG03);
+         	return(FALSE);
+      	}
+
+        iReg = sqlca.sqlcode;
+
+      	if(sqlca.sqlcode == SQLOK)
+      	{
+        	lClientes++ ;        	
+         	dTotCliTot = 0;
+
+         	if(bfnOraCargaClieFact() == FALSE)
+         	{
+            	return(FALSE);
+                }
+
+         	if(bfnOraCargaForTas(0) == FALSE)
+         	{
+         	 fnOraRollBack();
+            	 return(FALSE);
+         	}
+
+         	if(bfnOraCargaForAdi(0) == FALSE)
+         	{
+  		 fnOraRollBack();
+                 return(FALSE);
+         	}
+
+        	if(bCabeceraCli == TRUE)
+         	{
+            	 vDTrazasLog("", "\n\t\t=> Imprimiendo resumen del cliente %d",stHistDocu.lCodCliente);
+            	 strcpy(szFecVen,szhFecVencimien);
+            	 vfnCabeceraCli();
+            	 bCabeceraCli = FALSE;
+         	}
+         	if(bfnOraCommit() == FALSE)
+         	{
+            	return(FALSE);
+         	}
+        }
+    }/* Fin While */
+
+    EXEC SQL CLOSE cCiclo;
+
+    if(SQLCODE)
+   {
+        vDTrazasError("", "\n => Error Close Fa_HistDocu (Ciclo) : [%s]",LOG03, SQLERRM);
+      vDTrazasLog("", "\n << Error Close Fa_HistDocu (Ciclo) >>",LOG03);
+      return(FALSE);
+   }
+
+   return(TRUE);
+} /* bfnOraCargaCiclo() */
+
+
+/* ----------------------------------------------------------------------------------- */
+/* ----------- FUNCIONES DE PROCESAMIENTO COMUNES A FORDEV Y FORASG ------------------ */
+/* ----------------------------------------------------------------------------------- */
+
+/***************************************************************************************/
+/* bfnOraCargaCiclo2() */
+/***************************************************************************************/
+BOOL bfnOraCargaCiclo2(int opcion)
+{
+    BOOL bFinCursor = FALSE;
+    int  iReg       = 0;
+    static char szCli[6];
+
+    char szCadenaSQL[1024];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        static int  ihCodTipDocum ;
+        static long lhCodCiclFact ;
+    EXEC SQL END DECLARE SECTION  ;
+
+    lClientes     = 0;
+    lhCodCiclFact = iCOD_CICLFACT;
+    ihCodTipDocum = stDatosGener.iCodCiclo;
+
+    vDTrazasLog   ("", "\n CargaCiclo2 >> Cod.TipDocum:[%d]  Cod.CiclFact:[%ld]	opcion [%ld]",
+                        stStatus.LogNivel,
+                       ihCodTipDocum, lhCodCiclFact, opcion);
+
+
+/***************************************************************************************/
+    memset(szCadenaSQL,'\0',1024);
+
+    sprintf(szCadenaSQL, "SELECT unique a.COD_CLIENTE, "
+                                /* "00000000000, " */
+                                /* "'000',       " */
+                                "a.COD_PERIODO  "
+                           " FROM FA_ACUMFORTAS a, FA_DETFORTAS b " 
+ 			   " WHERE b.ind_orden = :lhIndOrden "
+                           " AND a.COD_PERIODO = b.cod_periodo "
+                           " AND a.num_abonado > 0 "
+                           " AND a.ind_alquiler > -1 ");
+
+    if (opcion == DEV)
+    {   sprintf(szCadenaSQL, "%s"
+                          " and a.cod_cliente != 1 "
+                          " and a.cod_cliente = b.cod_cliente "
+                          " AND a.NUM_PROCESO = 0 "  
+                          " AND B.SEQ_FORFAC  = 0 "
+                          " AND a.COD_OPERADOR = :lhCodOperador " , szCadenaSQL );
+    }
+    else if (opcion == ASG)
+    {   sprintf(szCadenaSQL, "%s"
+                          " and a.cod_cliente = 1 "
+                          " and a.cod_cliente = b.cod_cliente (+) "
+                          " AND a.NUM_PROCESO = 0 "
+                          " AND a.COD_OPERADOR = :lhCodOperador " , szCadenaSQL );
+    }
+    
+    
+     vDTrazasLog   ("", "\n SUPER QUERY	>> \n[%s]\n",
+                        stStatus.LogNivel,
+                       szCadenaSQL);
+
+    EXEC SQL PREPARE stConsCiclo2 FROM :szCadenaSQL;
+    if (SQLCODE)
+    {
+        vDTrazasError("", "\n Error en SQL-PREPARE stConsCiclo2"
+                         "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+
+        vDTrazasLog("", "\n << Error en SQL-PREPARE stConsCiclo2>>",LOG05);
+
+        return  (FALSE);
+    }
+
+    EXEC SQL DECLARE cCiclo2 CURSOR FOR stConsCiclo2;
+    if (SQLCODE)
+    {
+        vDTrazasError("","\n Error en SQL-DECLARE cCiclo2"
+                         "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+
+        vDTrazasLog("","\n << Error en SQL-DECLARE cCiclo2 >>",LOG05);
+
+        return  (FALSE);
+    }
+
+    EXEC SQL OPEN cCiclo2 USING  :lhIndOrden, :lhCodOperador;
+
+/***************************************************************************************/
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error Open Fa_AcumFortas : [%s] ",LOG03, SQLERRM);
+        vDTrazasLog("", "\n << Error Open Cursor Fa_AcumFortas >>",LOG03);
+        return FALSE;
+    }
+
+    while (iReg == SQLOK)
+    {
+            EXEC SQL FETCH cCiclo2 INTO
+                  :stHistDocu.lCodCliente    ,
+                  /* :stHistDocu.lNumFolio      , */
+                  /* :stHistDocu.szPrefPlaza    , *//*PHB:agregue pref_plaza*/
+                  :stHistDocu.lCodCiclFact   ;
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n Error Fetch Fa_acumfortas (Ciclo):[%s]",LOG03, SQLERRM);
+                vDTrazasLog("", "\n << Error Fetch Fa_acumfortas (Ciclo)>>",LOG03);
+                return FALSE ;
+            }
+
+            iReg = SQLCODE;
+
+            if (SQLOK == SQLCODE)
+            {
+            	stHistDocu.lNumFolio= 00000000000;
+            	
+                lClientes++   ;
+                dTotCliTot = 0;
+
+                if (!bfnOraCargaClieFact2())
+                {
+                    return FALSE;
+                }
+
+                if(!bfnOraCargaForTas2(0,opcion))
+                {
+                    fnOraRollBack();
+                    return FALSE    ;
+                }
+                if(!bfnOraCargaForAdi2(0,opcion))
+                {                 
+                    fnOraRollBack();
+                    return FALSE    ;
+                }
+            }
+    }/* Fin While */
+
+    EXEC SQL CLOSE cCiclo2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error Close Fa_acumfortas (Ciclo) : [%s]",LOG03, SQLERRM);
+        vDTrazasLog("", "\n << Error Close Fa_acumfortas (Ciclo)>>",LOG03);
+        return FALSE ;
+    }
+
+    
+    if(!bfnOraCargaDupTas2(0,opcion))
+    {
+        fnOraRollBack();
+        return FALSE ;
+    }
+
+    return TRUE;
+} /* bfnOraCargaCiclo2() */
+
+
+/***************************************************************************************/
+/* bfnOraCargaClieFact2() */
+/***************************************************************************************/
+BOOL bfnOraCargaClieFact2()
+{
+    BOOL bFinCursor = FALSE;
+
+    int  iReg = 0;
+    int  iRes = 0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhIndOrdenTotal[13]; EXEC SQL VAR szhIndOrdenTotal IS STRING(13);
+        char szNOM_CLIENTE   [51]; EXEC SQL VAR szNOM_CLIENTE    IS STRING(51);
+        char szNOM_CALLE     [51]; EXEC SQL VAR szNOM_CALLE      IS STRING(51);
+        char szDES_CIUDAD    [31]; EXEC SQL VAR szDES_CIUDAD     IS STRING(31);
+        char szNUM_IDENTTRIB [21]; EXEC SQL VAR szNUM_IDENTTRIB  IS STRING(21);
+
+        long lhNumCelular        ;
+        short ishNumCelular      ;
+        short ishNOM_CALLE       ;
+        short ishDES_CIUDAD      ;
+        short ishNUM_IDENTTRIB   ;
+     EXEC SQL END DECLARE SECTION ;
+
+
+    vDTrazasLog( "","\n %s\n CargaClieFact2 >> Cod.Cliente  [%ld]",
+                    stStatus.LogNivel, szAst, stHistDocu.lCodCliente );
+
+    if (pstHistClie != (struct HISTCLIE *)NULL)
+    {
+        free (pstHistClie);
+        pstHistClie = NULL;
+    }
+
+     EXEC SQL DECLARE Cclientes2 CURSOR FOR
+         SELECT A.NOM_CLIENTE ,
+                C.NOM_CALLE ,
+                D.DES_CIUDAD ,
+                A.NUM_IDENTTRIB ,
+                A.NUM_CELULAR
+           FROM GE_CLIENTES A, GA_DIRECCLI B, GE_DIRECCIONES C, GE_CIUDADES D
+          WHERE A.COD_CLIENTE = :stHistDocu.lCodCliente
+            AND A.COD_CLIENTE = B.COD_CLIENTE
+            AND B.COD_TIPDIRECCION  = 1
+            AND B.COD_DIRECCION = C.COD_DIRECCION
+            AND C.COD_CIUDAD = D.COD_CIUDAD;
+
+    EXEC SQL OPEN Cclientes2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error al abrir el Cursor sobre GE_CLIENTES : %s"
+                          "\n IND_ORDENTOTAL:[%s] \n",
+                          LOG05, SQLERRM, stHistDocu.szIndOrdenTotal);
+        vDTrazasLog("", "\n <<Error al abrir el Cursor sobre GE_CLIENTES >>",LOG05);
+        return FALSE;
+    }
+
+    while (iRes == SQLOK)
+    {
+        memset(szNOM_CLIENTE  ,  0, sizeof(szNOM_CLIENTE  ));
+        memset(szNOM_CALLE    ,  0, sizeof(szNOM_CALLE    ));
+        memset(szDES_CIUDAD   ,  0, sizeof(szDES_CIUDAD   ));
+        memset(szNUM_IDENTTRIB,  0, sizeof(szNUM_IDENTTRIB));
+
+        EXEC SQL FETCH Cclientes2 INTO :szNOM_CLIENTE                   ,
+                                       :szNOM_CALLE    :ishNOM_CALLE    ,
+                                       :szDES_CIUDAD   :ishDES_CIUDAD   ,
+                                       :szNUM_IDENTTRIB:ishNUM_IDENTTRIB,
+                                       :lhNumCelular   :ishNumCelular   ;
+
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+           vDTrazasError("", "\n=> Error en el fetch sobre GE_CLIENTES : [%s] "
+                             "\n Cod.Cliente : [%ld]",
+                             LOG05, SQLERRM, stHistDocu.lCodCliente);
+           vDTrazasLog("", "\n << Error en el fetch sobre GE_CLIENTES ", LOG05);
+           return FALSE;
+        }
+
+        iRes = SQLCODE;
+
+        if (SQLCODE == SQLOK)
+        {
+            iReg++;
+
+            vDTrazasLog("","\t\t=> Cliente Encontrado ",LOG05);
+
+            pstHistClie = (struct HISTCLIE*)
+                           realloc(pstHistClie, iReg * sizeof(struct HISTCLIE));
+
+            if(pstHistClie == (struct HISTCLIE *)NULL)
+            {
+               vDTrazasError("", "\n => Error al reservar memoria en bfnOraCargaClieFact2()", LOG05);
+               vDTrazasLog("", "\n << Error al reservar memoria en bfnOraCargaClieFact2()", LOG05);
+               return FALSE;
+            }
+
+            strncpy(pstHistClie[iReg-1].szNOM_CLIENTE  , szNOM_CLIENTE,25);
+            strcpy (pstHistClie[iReg-1].szNOM_CALLE    , szNOM_CALLE)     ;
+            strcpy (pstHistClie[iReg-1].szDES_CIUDAD   , szDES_CIUDAD)    ;
+            strcpy (pstHistClie[iReg-1].szNUM_IDENTTRIB, szNUM_IDENTTRIB) ;
+
+            pstHistClie [iReg-1].lNumCelular = (ishNumCelular == -1)?0: lhNumCelular ;
+
+        }
+    }/* While Fin */
+
+    EXEC SQL CLOSE Cclientes2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n => Error al cerrar el Cursor sobre GE_CLIENTES : [%s] "
+                          "\n Cod.Cliente : [%ld]",
+                          LOG05, SQLERRM, stHistDocu.lCodCliente);
+        vDTrazasLog("", "\n << Error al cerrar el Cursor sobre GE_CLIENTES >> ", LOG05);
+        return FALSE;
+    }
+    return TRUE;
+} /* bfnOraCargaClieFact2() */
+
+
+/***************************************************************************************/
+/* bfnOraCargaForTas2() */
+/***************************************************************************************/
+BOOL bfnOraCargaForTas2(int iAlquiler,int opcion) /* SIEMPRE VIENE EN CERO */
+{
+    BOOL bFinCursor = FALSE;
+    int  iReg = 0 ;
+
+    char szCadenaSQL[1024];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    static long lhCodCliente ;
+    static long lhCodCiclFact;
+    static int  ihIndAlquiler;
+    EXEC SQL END DECLARE SECTION  ;
+
+    ihIndAlquiler = iAlquiler ;
+    lhCodCiclFact = stHistDocu.lCodCiclFact;
+    lhCodCliente  = stHistDocu.lCodCliente ;
+
+    vDTrazasLog("", "\n CargaForTas2 >> CLIENTE:[%ld]   CICLOFACT:[%ld]  IND_ORDEN:[%ld] ",
+                    stStatus.LogNivel, stHistDocu.lCodCliente,
+                    stHistDocu.lCodCiclFact, lhIndOrden );
+
+    dTotCliTot = 0;
+
+/***************************************************************************************/
+        memset(szCadenaSQL,'\0',1024);
+
+        sprintf(szCadenaSQL,"SELECT ROWID, "
+                                   "COD_PERIODO,"
+                                   "NUM_TERMINAL, "
+                                   "IND_SALIDA, "
+                                   "IND_ENTRADA, "
+                                   "DES_ENTRADA, "
+                                   "MOD_CALL, "
+                                   "CLAVE_CALL, "
+                                   "MINUTOS_TASADO, "
+                                   "DUR_CALL, "
+                                   "COD_SERVICIO, "
+                                   "ACUM_NETOLLAM, "
+                                   "ACUM_IVA, "
+                                   "TOT_PAGAR, "
+                                   "HORA_CALL, "
+                                   "TO_CHAR(FEC_CALL,'YYYYMMDD'), "
+                                   "COD_TRAFICO, "
+                                   "IND_REFACTURA, "
+                                   "TIP_REG "
+                              "FROM FA_DETFORTAS "
+                             "WHERE IND_ORDEN = :lhIndOrden "
+                               "AND COD_CLIENTE = :lCodCliente "
+                               "AND COD_PERIODO = :lCodCiclFact "
+                               "AND COD_OPERADOR = :lhCodOperador ");
+
+    if (opcion == DEV)
+    {
+        sprintf(szCadenaSQL,"%s "
+                            "AND SEQ_FORFAC = 0 "
+                            "ORDER BY COD_CLIENTE, NUM_TERMINAL " , szCadenaSQL );
+    }
+    else if (opcion == ASG)
+    {
+        sprintf(szCadenaSQL,"%s "
+                            "ORDER BY COD_CLIENTE, NUM_TERMINAL " , szCadenaSQL );
+    }
+
+    EXEC SQL PREPARE stConsFortas2 FROM :szCadenaSQL ;
+    if (SQLCODE)
+    {
+        vDTrazasError("", "\n Error en SQL-PREPARE stConsFortas2"
+                          "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+        vDTrazasLog("", "\n << Error en SQL-PREPARE stConsFortas2>>",LOG05);
+        return  (FALSE);
+    }
+
+    EXEC SQL DECLARE cForTas2 CURSOR FOR stConsFortas2;
+    if (SQLCODE)
+    {
+        vDTrazasError("","\n Error en SQL-DECLARE cFortas2"
+                         "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+        vDTrazasLog("","\n << Error en SQL-DECLARE cFortas2 >>",LOG05);
+        return  (FALSE);
+    }
+
+/****************************************************************************/
+
+     vDTrazasError("", " %s"
+                       "\n Det. Fortas2 >> Cliente:[%ld]  Periodo:[%ld]  IndOrden:[%d]  Operador:[%d]",
+                       LOG04, szAst,
+                       stHistDocu.lCodCliente ,
+                       stHistDocu.lCodCiclFact,
+                       lhIndOrden,lhCodOperador);
+
+
+    EXEC SQL OPEN cForTas2 USING  :lhIndOrden,
+                                  :stHistDocu.lCodCliente,
+                                  :stHistDocu.lCodCiclFact,
+                                  :lhCodOperador;
+
+     /*vDTrazasLog("", " \n\t\t<< Error Cod.Cliente  : %ld>>", LOG04, stHistDocu.lCodCliente );*/
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error al abrir el Cursor sobre FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]",
+                           LOG03, SQLERRM, stHistDocu.lCodCliente,
+                           stHistDocu.lCodCiclFact, iAlquiler, lhCodOperador);
+
+        vDTrazasLog("", "\n <<Error al abrir el Cursor sobre FA_DETFORTAS >>",LOG03);
+
+        return FALSE;
+    }
+
+    while (iReg == SQLOK)
+    {
+        memset(&stForTas, 0, sizeof(stForTas));
+
+        EXEC SQL FETCH cForTas2 INTO
+            :stForTas.szROWID         ,
+            :stForTas.szCOD_PERIODO   ,
+            :stForTas.szNUM_TERMINAL  ,
+            :stForTas.szIND_SALIDA    :stForTas.ishIND_SALIDA    ,
+            :stForTas.szIND_ENTRADA   :stForTas.ishIND_ENTRADA   ,
+            :stForTas.szDES_ENTRADA   :stForTas.ishDES_ENTRADA   ,
+            :stForTas.szMOD_CALL      :stForTas.ishMOD_CALL      ,
+            :stForTas.szCLAVE_CALL    :stForTas.ishCLAVE_CALL    ,
+            :stForTas.lMINUTOS_TASADO :stForTas.ishMINUTOS_TASADO,
+            :stForTas.lDUR_CALL       :stForTas.ishDUR_CALL      ,
+            :stForTas.szCOD_SERVICIO  :stForTas.ishCOD_SERVICIO  ,
+            :stForTas.dACUM_NETOLLAM  :stForTas.ishACUM_NETOLLAM ,
+            :stForTas.dACUM_IVA       :stForTas.ishACUM_IVA      ,
+            :stForTas.dTOT_PAGAR      :stForTas.ishTOT_PAGAR     ,
+            :stForTas.szHORA_CALL     ,
+            :stForTas.szFEC_CALL      ,
+            :stForTas.szCOD_TRAFICO   :stForTas.ishCOD_TRAFICO   ,
+            :stForTas.szIND_REFACTURA :stForTas.ishIND_REFACTURA ,
+            :stForTas.szTIP_REG;
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n Error en el fetch de FA_DETFORTAS : %s"
+                                  "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]",
+                                  LOG03, SQLERRM, stHistDocu.lCodCliente,
+                                  stHistDocu.lCodCiclFact, iAlquiler, lhCodOperador);
+                vDTrazasLog("", "\n <<Error en el fetch de FA_DETFORTAS >>",LOG03);
+                return FALSE;
+            }
+
+            iReg = SQLCODE    ;
+
+            if (SQLCODE == SQLOK)
+            {
+                stForTas.dACUM_NETOLLAM = fnCnvDouble (stForTas.dACUM_NETOLLAM , USO0);
+                stForTas.dACUM_IVA      = fnCnvDouble (stForTas.dACUM_IVA , USO0);
+
+                bCabeceraCli = TRUE;
+                vfnClienteForTas();
+
+
+                /* Acumulacion por operadora */
+                lTotReg++;
+                dTotNet += stForTas.dACUM_NETOLLAM ;
+                dTotIva += stForTas.dACUM_IVA      ;
+                dTotTot += stForTas.dTOT_PAGAR     ;
+                lTotSeg += stForTas.lDUR_CALL      ;
+                lTotMin += stForTas.lMINUTOS_TASADO;
+
+                /* Acumulacion por cliente */
+                dTotCliTot += stForTas.dTOT_PAGAR;
+
+/***********************************************************************************/
+                if (opcion == DEV)
+                {
+                    EXEC SQL
+                        UPDATE FA_DETFORTAS
+                           SET SEQ_FORFAC = -1
+                         WHERE ROWID = :stForTas.szROWID;
+
+                    if(SQLCODE)
+                    {
+                       vDTrazasError("", "\n Error al actualizar Fa_DetFortas : %s", LOG03, SQLERRM);
+                       vDTrazasLog("", "\n <<Error al actualizar Fa_DetFortas >>", LOG03);
+                       return FALSE;
+                    }
+
+                }
+/***********************************************************************************/
+           }
+    } /* end while */
+
+    EXEC SQL CLOSE cForTas2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al cerrar el Cursor sobre FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%ld] CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]\n",
+                          LOG03, SQLERRM , stHistDocu.lCodCliente ,
+                          stHistDocu.lCodCiclFact, iAlquiler, lhCodOperador);
+        vDTrazasLog("", "\n <<Error al cerrar el Cursor sobre FA_DETFORTAS >>",LOG03);
+        return FALSE;
+    }
+
+    vDTrazasLog("","\n => Fin Cursor FA_DETFORTAS 2\n %s",LOG05,szAst);
+
+    return TRUE;
+} /* bfnOraCargaForTas2() */
+
+
+/***************************************************************************************/
+/* bfnOraCargaForAdi2() */
+/***************************************************************************************/
+BOOL bfnOraCargaForAdi2(int iAlquiler,int opcion) /* SIEMPRE iAlquiler = 0*/
+{
+    BOOL bFinCursor = FALSE;
+    int  iReg       = 0;
+
+    vDTrazasLog("", "\n CargaForAdi2 >>  iAlquiler:[%d]   CICLFACT:[%ld]   CLIENTE:[%ld]",
+                    stStatus.LogNivel, iAlquiler,
+                    stHistDocu.lCodCiclFact, stHistDocu.lCodCliente);
+
+    EXEC SQL DECLARE CForAdi2 CURSOR FOR
+        SELECT ROWID                        ,
+               TO_CHAR(IND_ORDEN    )       ,
+               NUM_TERMINAL                 ,
+               NUM_DESTINO                  ,
+               IMP_NETO                     ,
+               IMP_IVA                      ,
+               IMP_APAGAR                   ,
+               TO_CHAR(FEC_MOVIM,'YYYYMMDD'),
+               DES_MOVIM                    ,
+               COD_MOVIM                    ,
+               IND_REFACTURA                ,
+               TIP_REG                      ,
+               IND_ALQUILER                 ,
+               COD_PERIODO                  ,
+               NUM_ABONADO                  ,
+               COD_CLIENTE
+          FROM FA_DETFORADI
+         WHERE COD_CLIENTE  = :stHistDocu.lCodCliente
+           AND COD_PERIODO  = :stHistDocu.lCodCiclFact
+           AND IND_ALQUILER = :iAlquiler
+           AND COD_OPERADOR = :lhCodOperador
+           AND SEQ_FORFAC   = 0
+         ORDER BY COD_CLIENTE, NUM_TERMINAL;
+
+    EXEC SQL OPEN CForAdi2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n => Error Open Fa_DetForadi : %s"
+                          "\n Cliente:[%ld]  CiclFact:[%ld]  Alquiler:[%d]",
+                          LOG03, SQLERRM, stHistDocu.lCodCliente ,
+                          stHistDocu.lCodCiclFact, iAlquiler);
+        vDTrazasLog("", "\n << Error Open cursor Fa_DetForadi >>",LOG03);
+        return FALSE;
+    }
+
+    while (iReg == SQLOK)
+    {
+        memset(&stForAdi, 0, sizeof(stForAdi));
+
+        EXEC SQL FETCH CForAdi2 INTO
+            :stForAdi.szROWID ,
+            :stForAdi.szIND_ORDEN ,
+            :stForAdi.szNUM_TERMINAL ,
+            :stForAdi.szNUM_DESTINO ,
+            :stForAdi.dIMP_NETO ,
+            :stForAdi.dIMP_IVA ,
+            :stForAdi.dIMP_APAGAR ,
+            :stForAdi.szFEC_MOVIM ,
+            :stForAdi.szDES_MOVIM ,
+            :stForAdi.lCOD_MOVIM ,
+            :stForAdi.szIND_REFACTURA ,
+            :stForAdi.sTIP_REG ,
+            :stForAdi.sIND_ALQUILER ,
+            :stForAdi.lCOD_PERIODO ,
+            :stForAdi.lNUM_ABONADO:stForAdi.ishNUM_ABONADO ,
+            :stForAdi.lCOD_CLIENTE:stForAdi.ishCOD_CLIENTE ;
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n\n Error al abrir el Cursor sobre FA_DETFORADI : %s"
+                                  "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d] \n",
+                                  LOG03, SQLERRM,stHistDocu.lCodCliente,
+                                  stHistDocu.lCodCiclFact,iAlquiler);
+                vDTrazasLog("", "\n <<Error al abrir Cursor sobre FA_DETFORADI >>",LOG03);
+                return FALSE;
+            }
+            iReg = SQLCODE;
+
+            if (SQLCODE == SQLOK)
+            {
+
+                /* Acumulacion por operadora */
+                lTotReg++;
+                dTotNet += stForAdi.dIMP_NETO;
+                dTotIva += stForAdi.dIMP_IVA;
+                dTotTot += stForAdi.dIMP_APAGAR;
+
+                /* Acumulacion por cliente */
+                dTotCliTot += stForAdi.dIMP_APAGAR;
+
+/*****************************************************************************/
+                if (opcion == DEV)
+                {
+                    EXEC SQL
+                        UPDATE FA_DETFORADI
+                           SET SEQ_FORFAC = -1
+                         WHERE ROWID      = :stForAdi.szROWID;
+
+                    if(SQLCODE)
+                    {
+                        vDTrazasError("", "\n Error al actualizar FA_DETFORADI : %s"
+                                          "\n CLIENTE:[%ld]  CICLFACT:[%ld]  ALQUILER:[%d]",
+                                          LOG03, SQLERRM, stHistDocu.lCodCliente,
+                                          stHistDocu.lCodCiclFact, iAlquiler);
+                        vDTrazasLog("", "\n <<Error al actualizar FA_DETFORADI >>", LOG03);
+                        return FALSE;
+                     }
+                }
+
+/*****************************************************************************/
+            }
+     }
+     EXEC SQL CLOSE CForAdi2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n Error al cerrar el Cursor sobre FA_DETFORADI : %s"
+                          "\n CLIENTE:[%ld]  CICLFACT:[%ld]   ALQUILER:[%d]",
+                           LOG03, SQLERRM, stHistDocu.lCodCliente,
+                           stHistDocu.lCodCiclFact, iAlquiler);
+        vDTrazasLog("", "\n <<Error al cerrar el Cursor sobre FA_DETFORADI >>", LOG03);
+        return FALSE;
+    }
+    return TRUE;
+} /* bfnOraCargaForAdi2() */
+
+/***************************************************************************************/
+/* bfnOraCargaDupTas2() */  /* SIEMPRE SE INVOCA CON iAlquiler = 0*/
+/***************************************************************************************/
+BOOL bfnOraCargaDupTas2(int iAlquiler,int opcion)
+{
+    BOOL bFinCursor = FALSE;
+    int  iReg       = 0    ;
+
+    char szCadenaSQL[1024];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        static long lhCodCliente ;
+        static long lhCodCiclFact;
+        static int  ihIndAlquiler;
+    EXEC SQL END DECLARE SECTION  ;
+
+    ihIndAlquiler = iAlquiler              ;
+    lhCodCiclFact = stHistDocu.lCodCiclFact;
+    lhCodCliente  = stHistDocu.lCodCliente ;
+    vDTrazasLog("", "\n CargaDupTas2 >> IND_ORDEN:[%ld]  CICLFACT:[%ld]",
+                    LOG05, lhIndOrden, stHistDocu.lCodCiclFact);
+
+    memset(szCadenaSQL,'\0',1024);
+
+    sprintf(szCadenaSQL," SELECT ROWID,"
+                               " NUM_TERMINAL ,"
+                               " IND_SALIDA ,"
+                               " IND_ENTRADA ,"
+                               " DES_ENTRADA ,"
+                               " MOD_CALL ,"
+                               " CLAVE_CALL ,"
+                               " MINUTOS_TASADO ,"
+                               " DUR_CALL ,"
+                               " COD_SERVICIO ,"
+                               " ACUM_NETOLLAM ,"
+                               " ACUM_IVA ,"
+                               " TOT_PAGAR ,"
+                               " HORA_CALL ,"
+                               " TO_CHAR(FEC_CALL,'YYYYMMDD'),"
+                               " COD_TRAFICO ,"
+                               " IND_REFACTURA ,"
+                               " TIP_REG "
+                          " FROM FA_REGDUPTAS " 
+                         " WHERE IND_ORDEN = :lhIndOrden "
+                          );
+
+    if (opcion == DEV)
+    {
+        sprintf(szCadenaSQL,"%s"
+                            " AND ( COD_CLIENTE is null OR COD_CLIENTE != 1 ) "
+                            " AND COD_OPERADOR = :lhCodOperador "
+                          " ORDER BY COD_CLIENTE, NUM_TERMINAL " , szCadenaSQL );
+
+    }
+    else if (opcion == ASG)
+    {
+        sprintf(szCadenaSQL,"%s"
+                            " AND COD_CLIENTE = 1 "
+                            " AND COD_OPERADOR = :lhCodOperador "
+                          " ORDER BY COD_CLIENTE, NUM_TERMINAL ", szCadenaSQL );
+    }
+
+    vDTrazasLog("", "\n[%ld][%s] ",LOG05,strlen(szCadenaSQL),szCadenaSQL);
+
+    EXEC SQL PREPARE stConsDupTas2 FROM :szCadenaSQL;
+    if (SQLCODE)
+    {
+        vDTrazasError("", "\n Error en SQL-PREPARE stConsDupTas2"
+                          "\n [%d]  [%s] \n[%s]\n", LOG05,SQLCODE,SQLERRM,szCadenaSQL);
+        vDTrazasLog("", "\n << Error en SQL-PREPARE stConsDupTas2>>", LOG05);
+        return  (FALSE);
+    }
+
+    EXEC SQL DECLARE cDupTas2 CURSOR FOR stConsDupTas2;
+    if (SQLCODE)
+    {
+        vDTrazasError("","\n Error en SQL-DECLARE cDupTas2"
+                         "\n [%d]  [%s] ", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog("","\n << Error en SQL-DECLARE cDupTas2>>",LOG05);
+        return  (FALSE);
+    }
+
+
+     vDTrazasError("", " %s"
+                       "\n Det. Duptas2 >> Periodo:[%ld]  Operador:[%d]",
+                       LOG04,szAst,
+                       stHistDocu.lCodCiclFact,
+                       lhCodOperador);
+
+     vDTrazasLog("", "\n << Abriendo Cursor sobre FA_REGDUPTAS >>", LOG05);
+
+    EXEC SQL OPEN cDupTas2 USING  :lhIndOrden, :lhCodOperador;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al abrir el Cursor sobre FA_REGDUPTAS : %s"
+                          "\n CICLFACT:[%ld]  OPERADOR:[%d] \n",
+                          LOG03, SQLERRM, stHistDocu.lCodCiclFact,
+                          iAlquiler, lhCodOperador);
+        vDTrazasLog("", "\n <<Error al abrir el Cursor sobre FA_REGDUPTAS >>", LOG05);
+        return FALSE;
+    }
+
+    while (iReg == SQLOK)
+    {
+        memset(&stForTas, 0, sizeof(stForTas));
+        vDTrazasLog("", "\n\t\t<< Recorriendo el Cursor sobre FA_REGDUPTAS >>", LOG05);
+
+        EXEC SQL FETCH cDupTas2 INTO
+            :stForTas.szROWID         ,
+            :stForTas.szNUM_TERMINAL  ,
+            :stForTas.szIND_SALIDA    :stForTas.ishIND_SALIDA    ,
+            :stForTas.szIND_ENTRADA   :stForTas.ishIND_ENTRADA   ,
+            :stForTas.szDES_ENTRADA   :stForTas.ishDES_ENTRADA   ,
+            :stForTas.szMOD_CALL      :stForTas.ishMOD_CALL      ,
+            :stForTas.szCLAVE_CALL    :stForTas.ishCLAVE_CALL    ,
+            :stForTas.lMINUTOS_TASADO :stForTas.ishMINUTOS_TASADO,
+            :stForTas.lDUR_CALL       :stForTas.ishDUR_CALL      ,
+            :stForTas.szCOD_SERVICIO  :stForTas.ishCOD_SERVICIO  ,
+            :stForTas.dACUM_NETOLLAM  :stForTas.ishACUM_NETOLLAM ,
+            :stForTas.dACUM_IVA       :stForTas.ishACUM_IVA      ,
+            :stForTas.dTOT_PAGAR      :stForTas.ishTOT_PAGAR     ,
+            :stForTas.szHORA_CALL     ,
+            :stForTas.szFEC_CALL      ,
+            :stForTas.szCOD_TRAFICO   :stForTas.ishCOD_TRAFICO   ,
+            :stForTas.szIND_REFACTURA :stForTas.ishIND_REFACTURA ,
+            :stForTas.szTIP_REG;
+
+            vDTrazasLog("", "\n\t\t<< Fetch del Cursor sobre FA_REGDUPTAS >>", LOG05);
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasError("", "\n\n Error en el fetch de FA_REGDUPTAS : %s"
+                                  "\n CLIENTE:[%ld] CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]\n",
+                                  LOG03, SQLERRM,
+                                  stHistDocu.lCodCliente,
+                                  stHistDocu.lCodCiclFact,
+                                  iAlquiler, lhCodOperador);
+
+                vDTrazasLog("", "\n <<Error en el fetch de FA_REGDUPTAS >>", LOG05);
+                return FALSE;
+            }
+
+            iReg = SQLCODE    ;
+
+           if (SQLCODE == SQLOK)
+            {
+                stForTas.dACUM_NETOLLAM = fnCnvDouble (stForTas.dACUM_NETOLLAM , USO0);
+                stForTas.dACUM_IVA      = fnCnvDouble (stForTas.dACUM_IVA , USO0);
+
+                vDTrazasLog("", "\n\t\t<< Ver Cliente Fortas >>", LOG05);
+                vfnClienteForTas();
+                vDTrazasLog("", "\n\t\t<< Acumulacion de Contadores >>", LOG05);
+                lTotReg++;
+                dTotNet += stForTas.dACUM_NETOLLAM ;
+                dTotIva += stForTas.dACUM_IVA      ;
+                dTotTot += stForTas.dTOT_PAGAR     ;
+                lTotSeg += stForTas.lDUR_CALL      ;
+                lTotMin += stForTas.lMINUTOS_TASADO;
+                dTotCliTot += stForTas.dTOT_PAGAR;
+
+           }
+    }
+    vDTrazasLog("", "\n\t\t<< Cierra el Cursor >>", LOG03);
+
+    EXEC SQL CLOSE cDupTas2;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\n Error al cerrar el Cursor sobre FA_DETFORTAS : %s"
+                          "\n CLIENTE:[%d] CICLFACT:[%ld]  ALQUILER:[%d]  OPERADOR:[%d]\n",
+                          LOG03, SQLERRM , stHistDocu.lCodCliente ,
+                          stHistDocu.lCodCiclFact, iAlquiler, lhCodOperador);
+        vDTrazasLog("", "\n <<Error al cerrar el Cursor sobre FA_DETFORTAS >>",LOG03);
+        return FALSE;
+    }
+
+    vDTrazasLog("","\n\t\t=> Fin Fichero Duptas2",LOG05);
+
+    return TRUE;
+}
+
+/* bfnOraCargaDupTas2() */
+
+
+/* ----------------------------------------------------------------------------------- */
+/* ----------- FUNCIONES COMUNES DE ESCRITURA A ARCHIVOS DE SALIDA ------------------- */
+/* ----------------------------------------------------------------------------------- */
+
+/***************************************************************************************/
+/* vfnCabeceraCli() */
+/***************************************************************************************/
+void vfnCabeceraCli()
+{
+    char szAux [12] = "";
+    int  iLeng      = 0 ;
+    int  i          = 0 ;
+
+    fprintf (pFFac, "%3d"     ,  lhCodOperador)                 ;
+    fprintf (pFFac, "%.10ld"  ,  pstHistClie[0].lNumCelular)    ;
+    fprintf (pFFac, "%.11ld"  ,  stHistDocu.lNumFolio)          ;
+/* SAAM-20030506 Se comenta linea segun CH-300420030615 */
+/*  fprintf (pFFac, "%-3.3s"   ,  stHistDocu.szPrefPlaza)       ; */ /*PHB:agregue pref_plaza*/
+    fprintf (pFFac, "%-25.25s",  pstHistClie[0].szNOM_CLIENTE)  ;
+    fprintf (pFFac, "%1s"     ,  "N")                           ;
+    fprintf (pFFac, "%-35.35s",  pstHistClie[0].szNOM_CALLE)    ;
+    fprintf (pFFac, "%-15.15s",  pstHistClie[0].szDES_CIUDAD)   ;
+    iLeng = strlen (pstHistClie [0].szNUM_IDENTTRIB)            ;
+    if (pstHistClie [0].szNUM_IDENTTRIB [iLeng-2] == '-')
+    {
+        for (i=0;i<iLeng;i++) szAux [i] = '0';
+        sprintf (szAux, "%.*s%c", iLeng-2, pstHistClie [0].szNUM_IDENTTRIB,pstHistClie [0].szNUM_IDENTTRIB [iLeng-1]);
+    }
+    else
+    {
+        for (i=0;i<iLeng;i++) szAux [i] = '0';
+        sprintf  (szAux,"%s", pstHistClie [0].szNUM_IDENTTRIB);
+    }
+/* SAAM-20030506 Se vuelve a un largo 11 de un largo 20 segun CH-300420030615 */
+    fprintf (pFFac, "%11.11s",  szAux);                 /*  fprintf (pFFac, "%20.20s",  szAux)  */
+    fprintf (pFFac, "%.11ld"  , stHistDocu.lNumFolio) ;
+/* SAAM-20030506 Se comenta linea segun CH-300420030615 */
+/*  fprintf (pFFac, "%3.3s"  , stHistDocu.szPrefPlaza) ; */ /*PHB:agregue pref_plaza*/
+    fprintf (pFFac, "%013.0f" , dTotCliTot)           ; /* Total a pagar (parte entera)*/
+    fprintf (pFFac, "%2s"     , "00")                 ; /* Total a pagar (parte decimal) */
+    fprintf (pFFac, "%2s"     , "00")                 ; /* ojo 00 : 0=Boleta 0=SinConvenio */
+    fprintf (pFFac, "%8s", szFecVen)                  ; /* marca Segun Documento esta fecha va en DDMMYYYY *//*rbr YYYYMMDD 06032000*/
+    fprintf (pFFac, "%8s",  "")                       ;
+    fprintf (pFFac, "%1s" , "1")                      ; /* Facturacion */
+    fprintf (pFFac, "\n")                             ;
+} /* vfnCabeceraCli() */
+
+
+
+/***************************************************************************************/
+/* vfnClienteForAdi() */
+/***************************************************************************************/
+void vfnClienteForAdi()
+{
+    long lNumTerminal;
+
+    lNumTerminal = atol(stForAdi.szNUM_TERMINAL )       ;
+    fprintf(pFFac, "%3d"     , lhCodOperador          ) ;
+    fprintf(pFFac, "%-0.10ld" , lNumTerminal          ) ;
+    fprintf(pFFac, "%.11ld"  , stHistDocu.lNumFolio   ) ;
+/* SAAM-20030506 Se comenta linea segun CH-300420030615 */
+/*  fprintf(pFFac, "%-3.3s"  , stHistDocu.szPrefPlaza ) ; */ /*PHB:agregue pref_plaza*/
+    fprintf(pFFac, "%-10.10s", stForAdi.szNUM_DESTINO ) ;
+    fprintf(pFFac, "%07.0f"  , stForAdi.dIMP_NETO     ) ;
+    fprintf(pFFac, "%s"      , "00")                    ;
+    fprintf(pFFac, "%07.0f"   , stForAdi.dIMP_IVA     ) ;
+    fprintf(pFFac, "%s"      , "00")                    ;
+    fprintf(pFFac, "%07.0f"   , stForAdi.dIMP_APAGAR  ) ;
+    fprintf(pFFac, "%s"      , "00")                    ;
+    fprintf(pFFac, "%-8.8s"  , stForAdi.szFEC_MOVIM   ) ; /* ok YYYYMMDD */
+    fprintf(pFFac, "%4s",  "")                          ;
+    fprintf(pFFac, "%-30.30s", stForAdi.szDES_MOVIM   ) ;
+    fprintf(pFFac, "%.6d"    , stForAdi.lCOD_MOVIM    ) ; /* 000000 */
+    fprintf(pFFac, "%46.46s" , ""                     ) ; /* Se conserva Filler de 46 */
+    fprintf(pFFac, "%1d\n"   , stForAdi.sTIP_REG      ) ; /* 3: Cargo | 4: Rebaja | 5:Abono |6: Saldo */
+} /* vfnClienteForAdi() */
+
+/***************************************************************************************/
+/* vfnClienteForTas() */
+/***************************************************************************************/
+void vfnClienteForTas()
+{
+    long lNumTerminal;
+    /* fprintf(stderr,"Escribe Detalle de Llamadas \n"); */
+
+    lNumTerminal = atol(stForTas.szNUM_TERMINAL)            ;
+    fprintf(pFFac, "%3d"     ,  lhCodOperador )             ;
+
+    fprintf(pFFac, "%-0.10ld",  lNumTerminal )              ;
+
+    fprintf(pFFac, "%.11d"   , stHistDocu.lNumFolio)        ;
+/* SAAM-20030506 Se comenta linea segun CH-300420030615 */
+/*  fprintf(pFFac, "%-3.3s"  , stHistDocu.szPrefPlaza)      ; */ /*PHB:agregue pref_plaza*/
+
+    fprintf(pFFac, "%-10.10s", stForTas.szIND_SALIDA)       ;
+
+    fprintf(pFFac, "%-20.20s", stForTas.szIND_ENTRADA)      ;
+
+    fprintf(pFFac, "%-20.20s", stForTas.szDES_ENTRADA)      ;
+
+    fprintf(pFFac, "%1.1s"   , stForTas.szMOD_CALL)         ;
+
+    fprintf(pFFac, "%-2.2s"  , stForTas.szCLAVE_CALL)       ;
+
+    fprintf(pFFac, "%.5ld"   , stForTas.lMINUTOS_TASADO)    ;
+
+    fprintf(pFFac, "%.9ld"   , stForTas.lDUR_CALL)          ;
+
+    fprintf(pFFac, "%-2.2s"  , stForTas.szCOD_SERVICIO)     ;    /* no se imprime correctamente */
+
+    fprintf(pFFac, "%07.0f"  , stForTas.dACUM_NETOLLAM)     ;
+
+    fprintf(pFFac, "%s"      , "00")                        ;
+
+    fprintf(pFFac, "%07.0f"  , stForTas.dACUM_IVA)          ;
+
+    fprintf(pFFac, "%s"      , "00")                        ;
+
+    fprintf(pFFac, "%07.0f"  , stForTas.dTOT_PAGAR)         ;
+
+    fprintf(pFFac, "%s"      , "00")                        ;
+
+    fprintf(pFFac, "%-6.6s"  , stForTas.szHORA_CALL)        ;
+
+    fprintf(pFFac, "%-8.8s"  , stForTas.szFEC_CALL)         ;   /* ok  YYYYMMDD */
+
+    fprintf(pFFac, "%-2.2s"  , stForTas.szCOD_TRAFICO)      ;
+
+    fprintf(pFFac, "%4s"     ,  "")                         ;   /* insertar aqui filler 4*/
+
+    fprintf(pFFac, "%1.1s"   , stForTas.szIND_REFACTURA)    ;
+
+    fprintf(pFFac, "%14.14s" , "")              ;   /* filler permanece de 14 */
+
+    fprintf(pFFac, "%1.1s\n" , stForTas.szTIP_REG)      ;   /* 9 */
+
+
+    pstHistClie[0].lNumCelular = lNumTerminal           ;   /* rescate num terminal para cliente */
+
+} /* vfnClienteForTas() */
+
+/***************************************************************************************/
+/* vfnClienteAnm() Funcion para escribir en archivo las llamadas anomalas desde FA_DATEFORTAS */
+/***************************************************************************************/
+void vfnClienteAnm()
+{
+    long lNumTerminal;
+    /*long lIndSalida;*/
+    /*long lIndEntrada;*/
+    /* fprintf(stderr,"Escribe Detalle de Llamadas \n"); */
+
+    lNumTerminal = atol(stAnomalos.szNUM_TERMINAL)            ;
+    /*lIndSalida   = atol(stAnomalos.szIND_SALIDA)	      ;*/
+    /*lIndEntrada  = atol(stAnomalos.szDES_ENTRADA)	      ;*/
+    
+    fprintf(pFFac, "%3d"     ,  lhCodOperador );
+
+    fprintf(pFFac, "%-0.10ld",  lNumTerminal );
+
+    /*fprintf(pFFac, "%.11d"   , stHistDocu.lNumFolio)        ;***Num Folio no es necesario en el clon de formato .rec*/
+    
+/* SAAM-20030506 Se comenta linea segun CH-300420030615 */
+/*  fprintf(pFFac, "%-3.3s"  , stHistDocu.szPrefPlaza)      ; PHB:agregue pref_plaza*/
+    
+    fprintf(pFFac, "%11.11s"     ,  "")                         ;   /* insertar aqui filler 11*/
+    
+    fprintf(pFFac, "%-10.10s", stAnomalos.szIND_SALIDA)       ;
+
+    fprintf(pFFac, "%-20.20s", stAnomalos.szIND_ENTRADA)      ;
+
+    fprintf(pFFac, "%-20.20s", stAnomalos.szDES_ENTRADA)      ;
+
+    fprintf(pFFac, "%-1.1s"   , stAnomalos.szMOD_CALL)         ;
+
+    fprintf(pFFac, "%-2.2s"  , stAnomalos.szCLAVE_CALL)       ;
+
+    fprintf(pFFac, "%.5ld"   , stAnomalos.lMINUTOS_TASADO)    ;
+
+    fprintf(pFFac, "%.9ld"   , stAnomalos.lDUR_CALL)          ;
+
+    fprintf(pFFac, "%-2.2s"  , stAnomalos.szCOD_SERVICIO)     ;    /* no se imprime correctamente */
+
+    fprintf(pFFac, "%07.0f"  , stAnomalos.dACUM_NETOLLAM)     ;
+
+    fprintf(pFFac, "%s"      , "00")                          ;
+
+    fprintf(pFFac, "%07.0f"  , stAnomalos.dACUM_IVA)          ;
+
+    fprintf(pFFac, "%s"      , "00")                          ;
+
+    fprintf(pFFac, "%07.0f"  , stAnomalos.dTOT_PAGAR)         ;
+
+    fprintf(pFFac, "%s"      , "00")                          ;
+
+    fprintf(pFFac, "%-6.6s"  , stAnomalos.szHORA_CALL)        ;
+
+    fprintf(pFFac, "%-8.8s"  , stAnomalos.szFEC_CALL)         ;   /* ok  YYYYMMDD */
+
+    fprintf(pFFac, "%-2.2s"  , stAnomalos.szCOD_TRAFICO)      ;
+
+    fprintf(pFFac, "%17.17s"     ,  "")                       ;   /* insertar aqui filler 17*/
+    
+    fprintf(pFFac, "%-2.2d"     ,  10)            	      ;   /***codigo de error 10  CH-200503232763*****/
+    
+    /*fprintf(pFFac, "%1.1s"   , stAnomalos.szIND_REFACTURA)  ;****No es necesario en formato .rec***/
+
+    /*fprintf(pFFac, "%14.14s" , "")              	      ;    ****No es necesario en formato .rec****/
+
+    fprintf(pFFac, "%-1.1s\n" , stAnomalos.szTIP_REG)         ;   /* 9 */
+  
+
+    pstHistClie[0].lNumCelular = lNumTerminal                 ;   /* rescate num terminal para cliente */
+
+} /* vfnClienteAnm() */
+
+
+
+/***************************************************************************************/
+/* vfnCabeceraEmp() */
+/***************************************************************************************/
+void vfnCabeceraEmp( int iind)
+{
+
+    fseek(pFFac,0,0);
+    fprintf(pFFac, "%3d",   lhCodOperador)                          ;
+    fprintf(pFFac, "%.11d", lTotReg)                                ;
+    fprintf(pFFac, "%.13d", (int)dTotNet)                           ;
+    fprintf(pFFac, "%.2d",  (int)((dTotNet - (int)dTotNet) * 100))  ;
+    fprintf(pFFac, "%.13d", (int)dTotIva)                           ;
+    fprintf(pFFac, "%.2d",  (int)((dTotIva - (int)dTotIva) * 100))  ;
+    fprintf(pFFac, "%.13d", (int)dTotTot)                           ;
+    fprintf(pFFac, "%.2d",  (int)((dTotTot - (int)dTotTot) * 100))  ;
+    fprintf(pFFac, "%.13d", lTotSeg)                                ;
+    fprintf(pFFac, "%.13d", lTotMin)                                ;
+    fprintf(pFFac, "%8s",   szFecEnv)                               ;   /* DDMMYYYY */
+    fprintf(pFFac, "%8s",   szFecRangod)                            ;   /* DDMMYYYY */
+    fprintf(pFFac, "%8s",   szFecRangoh)                            ;   /* DDMMYYYY */
+    fprintf(pFFac, "%8s",   szFecEmi)                               ;   /* DDMMYYYY */
+    fprintf(pFFac, "%8s",   szFecVen)                               ;   /* DDMMYYYY */ /*YYYYMMDD 06032000 rbr */
+    fprintf(pFFac, "%2s",   "CI")                                   ;
+    fprintf(pFFac, "%28s",  "")                                     ;
+    fprintf(pFFac, "%1s",   "9")                                    ;
+    fprintf(pFFac, "\n")                                            ;
+    Reporte[iind].lLlam = lTotReg                                   ;
+    Reporte[iind].fNeto = dTotNet                                   ;
+} /* vfnCabeceraEmp() */
+
+
+/**********************************************************/
+void vfnReporteFinal()
+{
+
+    int i=0;
+
+    fseek(pFRep,0,0);
+
+    fprintf(pFRep,"%s\n\t\t\t\tINFORME CARRIER %3d\n%s\n",szAst,lhCodOperador,szAst);
+    fprintf(pFRep,"\n\t\t\t\tRECIBIDO\n\t\t\t\t--------\n");
+    fprintf(pFRep, "\tIND_ORDEN     : [ %12ld ]\n", lhIndOrden );
+    fprintf(pFRep, "\tARCHIVO DATOS : [ %s ]\n",szhArchDatos );
+    fprintf(pFRep, "\tCANT LLAMADAS : [ %6ld ]\n",Reporte[0].lLlam );
+    fprintf(pFRep, "\tMONTO NETO    : [ %12.2f ]\n",Reporte[0].fNeto );
+    fprintf(pFRep, "\n%s\n",szAst);
+
+    fprintf(pFRep,"\n\t\t\t\tFACTURADO\n\t\t\t\t---------\n");
+    fprintf(pFRep, "\tARCHIVO       : [ %s.fac ]\n",szBaseName );
+    fprintf(pFRep, "\tCANT LLAMADAS : [ %6ld ]\n",Reporte[1].lLlam );
+    fprintf(pFRep, "\tMONTO NETO    : [ %12.2f ]\n",Reporte[1].fNeto );
+    fprintf(pFRep, "\n%s\n",szAst);
+
+    fprintf(pFRep,"\n\t\t\t\tDEVUELTO\n\t\t\t\t--------\n");
+    fprintf(pFRep, "\tARCHIVO       : [ %s.dev ]\n",szBaseName );
+    fprintf(pFRep, "\tCANT LLAMADAS : [ %6ld ]\n",Reporte[2].lLlam );
+    fprintf(pFRep, "\tMONTO NETO    : [ %12.2f ]\n",Reporte[2].fNeto );
+    fprintf(pFRep, "\n%s\n",szAst);
+     
+    fprintf(pFRep,"\n\t\t\t\tASIGNADO\n\t\t\t\t--------\n");
+    fprintf(pFRep, "\tARCHIVO       : [ %s.asg ]\n",szBaseName );
+    fprintf(pFRep, "\tCANT LLAMADAS : [ %6ld ]\n",Reporte[3].lLlam );
+    fprintf(pFRep, "\tMONTO NETO    : [ %12.2f ]\n",Reporte[3].fNeto );
+    fprintf(pFRep, "\n%s\n",szAst);
+    
+    fprintf(pFRep,"\n\t\t\t\tANOMALO\n\t\t\t\t--------\n");
+    fprintf(pFRep, "\tARCHIVO       : [ %s.anm ]\n",szBaseName );
+    fprintf(pFRep, "\tCANT LLAMADAS : [ %6ld ]\n",Reporte[4].lLlam );
+    fprintf(pFRep, "\tMONTO NETO    : [ %12.2f ]\n",Reporte[4].fNeto );
+    fprintf(pFRep, "\n%s\n",szAst);
+
+    Reporte[5].lLlam = 0;
+    Reporte[5].fNeto = 0.0;
+
+    for (i=1; i<5 ; i++)
+    {
+        Reporte[5].lLlam = Reporte[5].lLlam + Reporte[i].lLlam;
+        Reporte[5].fNeto = Reporte[5].fNeto + Reporte[i].fNeto;
+    }
+
+    fprintf(pFRep, "\n\t\t\t\tCUADRATURA\n\t\t\t\t----------\n");
+    fprintf(pFRep, "\t\t\t LLAMADAS      MONTO NETO\n");
+    fprintf(pFRep, "\tFACTURADO     : [ %6ld ] [ %12.2f ]\n",Reporte[1].lLlam,Reporte[1].fNeto);
+    fprintf(pFRep, "\tDEVUELTO      : [ %6ld ] [ %12.2f ]\n",Reporte[2].lLlam,Reporte[2].fNeto);
+    fprintf(pFRep, "\tASIGNADO      : [ %6ld ] [ %12.2f ]\n",Reporte[3].lLlam,Reporte[3].fNeto);
+    fprintf(pFRep, "\tANOMALO       : [ %6ld ] [ %12.2f ]\n",Reporte[4].lLlam,Reporte[4].fNeto);
+    fprintf(pFRep, "\t               -------------------------------\n");
+    fprintf(pFRep, "\tTOTAL         : [ %6ld ] [ %12.2f ]\n",Reporte[5].lLlam,Reporte[5].fNeto);
+    fprintf(pFRep, "\t               -------------------------------\n");
+    fprintf(pFRep, "\tRECIBIDO      : [ %6ld ] [ %12.2f ]\n",Reporte[0].lLlam,Reporte[0].fNeto);
+    fprintf(pFRep, "\n%s\n",szAst);
+
+}
+/* vfnReporteFinal */
+
+
+/**********************************************************************************/
+/* funcion :bfnOraCargaBaja() */
+/**********************************************************************************/
+BOOL bfnOraCargaBaja()
+{
+    BOOL bFinCursor = FALSE;
+   int  iReg       = 0;
+   static char szCli[6];
+
+   EXEC SQL BEGIN DECLARE SECTION;
+   int  ihCodTipDocum;
+   long lhCodCiclFact;
+   long lhIndOrdenTotal;
+   char szhFecVencimien[9]="";
+   EXEC SQL END DECLARE SECTION  ;
+
+   lClientes = 0;
+   lhIndOrdenTotal =0;
+
+   ihCodTipDocum = stDatosGener.iCodBaja;
+   lhCodCiclFact = iCOD_CICLFACT;
+   
+
+
+    vDTrazasError("", "\n\t\t=> Entrando en Documentos de Baja"
+                      "\n\t\t# Tipo de Documento [%d] "
+                      "\n\t\t# Cod.CiclFact      [%ld]", stStatus.LogNivel,
+                      stDatosGener.iCodBaja, iCOD_CICLFACT);
+    
+
+    
+    EXEC SQL DECLARE cBaja CURSOR FOR
+
+    	 SELECT  c.ROWID        , /* rao se saco el distinct */
+                 c.COD_CLIENTE  ,
+                 c.NUM_FOLIO    ,
+                 /* c.PREF_PLAZA   , */
+                 c.IND_ORDENTOTAL,
+                 c.COD_CICLFACT,
+                 TO_CHAR(c.FEC_VENCIMIE,'DDMMYYYY')
+      	   FROM  fa_histdocu c ,fa_acumfortas b,  fa_detfortas a
+          WHERE   a.ind_orden = :lhIndOrden
+            AND  a.cod_cliente is not null
+            AND  a.cod_periodo  = b.cod_periodo
+            AND  a.cod_cliente  = b.cod_cliente
+            AND  a.cod_cliente  = c.cod_cliente (+)
+            AND  b.num_abonado  > 0
+            AND  b.ind_alquiler > -1
+            AND  b.num_proceso  = c.num_proceso
+            AND  b.num_proceso  > 0
+    		AND  c.COD_TIPDOCUM = :ihCodTipDocum
+    		AND  c.NUM_FOLIO    > 0;
+
+    EXEC SQL OPEN cBaja;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\t\t=> Error Open Cursor Fa_HistDocu (Baja): [%s] ",LOG03, SQLERRM);
+        vDTrazasLog("", "\n << Error Open Cursor Fa_HistDocu (Baja)>> ",LOG03);
+        return FALSE                 ;
+    }
+    while (iReg == SQLOK)
+    {
+        EXEC SQL FETCH cBaja INTO
+                           :stHistDocu.szRowid        ,
+                           :stHistDocu.lCodCliente    ,
+                           :stHistDocu.lNumFolio      ,
+                           /* :stHistDocu.szPrefPlaza    ,*//*PHB:agregue pref_plaza*/
+                           :lhIndOrdenTotal           ,
+                           :stHistDocu.lCodCiclFact   ,
+                            :szhFecVencimien           ;   /* 'YYYYMMDD' */
+        
+        sprintf(stHistDocu.szIndOrdenTotal,"%12ld",lhIndOrdenTotal);
+
+      	if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+      	{
+         	vDTrazasError("", "\n\t\t=> Error  Fetch Fa_HistDocu (Baja) [%s]",LOG03, SQLERRM);
+         	vDTrazasLog("", "\n << Error  Fetch Fa_HistDocu (Baja) >>",LOG03);
+         	return(FALSE)                ;
+      	}
+      	iReg = SQLCODE;
+
+      	if (SQLCODE == SQLOK)
+      	{
+          	lClientes++;
+          	dTotCliTot = 0;
+
+          	if(!bfnOraCargaClieFact())
+            	return(FALSE);
+
+          	if(!bfnOraCargaForTas(0))
+          	{
+          	 fnOraRollBack();
+             	 return  FALSE   ;
+          	}
+          	if(!bfnOraCargaForAdi(0))
+          	{
+          	 fnOraRollBack(); 
+            	 return FALSE    ;
+          	}
+          	if ( bCabeceraCli == TRUE )
+          	{
+                vDTrazasLog("", "\n\t\t=> Imprimiendo resumen del cliente %d",stHistDocu.lCodCliente);
+            	strcpy(szFecVen,szhFecVencimien);
+             	vfnCabeceraCli();
+             	bCabeceraCli = FALSE;
+          	}
+          	if (!bfnOraCommit())
+            	return FALSE;
+        }
+    }
+
+    EXEC SQL CLOSE cBaja;
+
+    if(SQLCODE)
+    {
+        vDTrazasError("", "\n\tError Al cerrar el cursor cBaja sobre FA_HISTDOCU\n\t%s",LOG03, SQLERRM);
+        vDTrazasLog("", "\n << Error Al cerrar el cursor cBaja sobre FA_HISTDOCU>>",LOG03);
+        return FALSE;
+    }
+    return TRUE;
+} /* bfnOraCargaBaja() */
+
+
+
+/***************************************************************************************/
+/* funcion : bfnOraLeeFechasTraza()  */
+/***************************************************************************************/
+BOOL    bfnOraLeeFechasTraza ()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    static char szhFecEnv[9];
+    static char szhFecRangod[9];
+    static char szhFecRangoh[9];
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL SELECT TO_CHAR(FEC_INGRESO,'YYYYMMDD'), TO_CHAR(FEC_INICIO,'YYYYMMDD'),
+                        TO_CHAR(FEC_TERMINO,'YYYYMMDD')
+    INTO :szhFecEnv, :szhFecRangod, :szhFecRangoh
+    FROM FA_TRAZAFORTAS
+    WHERE IND_ORDEN = :lhIndOrden;
+
+    if(sqlca.sqlcode != SQLOK)
+    {
+        fprintf(stderr,"No fue posible obtener las fechas desde FA_TRAZAFORTAS. Proceso se cancela.\n");
+        vDTrazasError("","\n<< ERROR : %s >>\n<< Al Leer fechas desde FA_TRAZAFORTAS >>\n",LOG05,SQLERRM);
+        vDTrazasLog("","\n<< ERROR  Al Leer fechas desde FA_TRAZAFORTAS >>\n",LOG05);
+        return(FALSE);
+    }
+
+    strcpy(szFecEnv, szhFecEnv);
+    strcpy(szFecRangod, szhFecRangod);
+    strcpy(szFecRangoh, szhFecRangoh);
+
+    fprintf(stderr, "Fecha de Ingreso: [%s]\n"
+    				"Fecha de Inicio : [%s]\n"
+    				"Fecha de Termino: [%s]\n"
+    				, szFecEnv, szFecRangod, szFecRangoh);  
+     vDTrazasLog("", "Fecha de Ingreso: [%s]\n"                            
+				"Fecha de Inicio : [%s]\n"            
+				"Fecha de Termino: [%s]\n"            
+				,LOG03, szFecEnv, szFecRangod, szFecRangoh);    				
+    return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para extraer los registros de trafico carrier      */
+/* devuelto (rechazado) desde la tabla FA_DETFORTAS e insertarlos en la      */
+/* tabla de trafico liquidado, FA_DETFORLIQ.                                 */
+/*****************************************************************************/
+BOOL    bfnOraInsertDetForLiq (int * iCantidad)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int ihSecDev;
+    int ihValCero;
+    int ihConceptoCarrier;
+    int ihClienteStartel;
+    EXEC SQL END DECLARE SECTION;
+
+    ihSecDev  = -1;
+    ihValCero =  0;
+    ihConceptoCarrier = 4;
+    ihClienteStartel  = 1;
+
+    EXEC SQL INSERT INTO FA_DETFORLIQ
+    SELECT b.ind_orden, b.cod_periodo, b.num_terminal, b.fec_call, b.hora_call,
+           b.tip_reg, b.ind_alquiler, b.ind_salida, b.ind_entrada, b.des_entrada,
+           b.mod_call, b.clave_call, b.minutos_tasado, b.dur_call, b.cod_servicio,
+           b.acum_netollam, b.acum_iva, b.tot_pagar, b.cod_trafico, b.ind_refactura,
+           b.lote, b.num_abonado, b.cod_cliente, b.cod_operador, b.seq_forfac
+    FROM FA_ACUMFORTAS a, FA_DETFORTAS b
+    WHERE b.ind_orden    = :lhIndOrden
+    AND   b.seq_forfac   = :ihSecDev
+    AND   a.num_abonado  = b.num_abonado
+    AND   a.ind_alquiler > :ihSecDev
+    AND   a.cod_periodo  = b.cod_periodo
+    AND   a.cod_operador = :lhCodOperador
+    AND   a.cod_tipconce = :ihConceptoCarrier
+    AND   a.num_proceso  = :ihValCero
+    AND   a.cod_cliente != :ihClienteStartel
+    AND   a.cod_cliente  = b.cod_cliente;
+
+
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+    {
+    vSqlError();
+    return(FALSE);
+    }
+    EXEC SQL COMMIT;
+    fprintf(stderr, "Cantidad de registros insertados: [%d]\n", sqlca.sqlerrd[2]);
+    *iCantidad = sqlca.sqlerrd[2]; /* Incorporado por PGonzaleg 28-10-2002 */
+    return(TRUE);
+}
+
+/*****************************************************************************/
+/* Funcion booleana usada para extraer los registros de trafico carrier      */
+/* desde la tabla FA_DETFORTAS e insertarlos en la tabla FA_DETFORLIQ.       */
+/*                                                                           */
+/*     Incidencia CH-241120031523                                            */
+/*                                                                           */
+/*****************************************************************************/
+BOOL	bfnOraInsertDetForLiq2(int * iCantidad)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihSecDev;
+	int	ihValCero;
+	int	ihConceptoCarrier;
+	int	ihClienteStartel;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihSecDev  = -1;
+	ihValCero =  0;
+	ihConceptoCarrier = 4;
+	ihClienteStartel  = 1;
+	
+	EXEC SQL INSERT INTO FA_DETFORLIQ
+	SELECT b.ind_orden, b.cod_periodo, b.num_terminal, b.fec_call, b.hora_call,
+       	   b.tip_reg, 8 /* b.ind_alquiler */, b.ind_salida, b.ind_entrada, b.des_entrada,
+           b.mod_call, b.clave_call, b.minutos_tasado, b.dur_call, b.cod_servicio,
+           b.acum_netollam, b.acum_iva, b.tot_pagar, b.cod_trafico, b.ind_refactura,
+           b.lote, b.num_abonado, b.cod_cliente, b.cod_operador, b.seq_forfac
+	FROM FA_ACUMFORTAS a, FA_DETFORTAS b
+	WHERE b.ind_orden    = :lhIndOrden
+/* 20031229 CH-241120031523 se recuperan los otros   */
+	AND   b.seq_forfac   != :ihSecDev
+	AND   a.num_abonado  = b.num_abonado
+	AND   a.ind_alquiler > :ihSecDev
+	AND   a.cod_periodo  = b.cod_periodo 
+	AND   a.cod_operador = :lhCodOperador
+	AND   a.cod_tipconce = :ihConceptoCarrier
+/* 20031229 CH-241120031523 se recuperan los otros   */
+    AND   a.num_proceso  != :ihValCero
+	AND   a.cod_cliente != :ihClienteStartel 
+	AND   a.cod_cliente  = b.cod_cliente;
+	
+	
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+    {
+	vSqlError();
+	return(FALSE);
+    }
+    EXEC SQL COMMIT;
+    fprintf(stderr, "Cantidad de otros registros insertados: [%d]\n", sqlca.sqlerrd[2]);	
+    *iCantidad = sqlca.sqlerrd[2]; /* Incorporado por PGonzaleg 28-10-2002 */	
+    return(TRUE);
+} 
+
+/*****************************************************************************/
+/* Funcion booleana usada para eliminar los registros de trafico carrier     */
+/* devuelto (rechazado) desde la tabla FA_DETFORTAS.                         */
+/*****************************************************************************/
+BOOL    bfnOraDeleteDetFortas ()
+{
+    int iRegDel=0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int     ihSecDev=-1;
+    int     ihValCero=0;
+    int     ihConceptoCarrier=4;
+    int     ihClienteStartel=1;
+    char    szhRowid[19];
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL DECLARE Cur_Delete CURSOR for
+    SELECT b.rowid
+    FROM FA_ACUMFORTAS a, FA_DETFORTAS b
+    WHERE b.ind_orden    = :lhIndOrden
+    AND   b.seq_forfac   = :ihSecDev
+    AND   a.num_abonado  = b.num_abonado
+    AND   a.ind_alquiler > :ihSecDev
+    AND   a.cod_periodo  = b.cod_periodo
+    AND   a.cod_operador = :lhCodOperador
+    AND   a.cod_tipconce = :ihConceptoCarrier
+    AND   a.num_proceso  = :ihValCero
+    AND   a.cod_cliente != :ihClienteStartel
+    AND   a.cod_cliente  = b.cod_cliente;
+
+    EXEC SQL OPEN Cur_Delete;
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        return(FALSE);
+    }
+
+    while(1)
+   	{
+        if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+        {
+            fprintf(stderr, "Error en fetch sobre cursor de tabla FA_DETFORTAS.\n");
+            vSqlError();
+            return(FALSE);
+        }
+
+      	EXEC SQL FETCH Cur_Delete
+      	INTO :szhRowid;
+
+      	iRegDel++;
+
+      	if(sqlca.sqlcode == SQLNOTFOUND) break;
+
+        EXEC SQL DELETE FROM FA_DETFORTAS
+        WHERE ROWID = :szhRowid;
+    }
+
+    EXEC SQL CLOSE Cur_Delete;
+   	if(sqlca.sqlcode < SQLOK)
+    {
+        fprintf(stderr, "Error al cerrar cursor sobre tabla FA_DETFORTAS.\n");
+        vSqlError();
+        return(FALSE);
+    }
+
+    EXEC SQL COMMIT;
+    fprintf(stderr, "Cantidad de registros eliminados: [%d]\n\n", iRegDel-1);
+    return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para extraer los acumuladores de trafico carrier   */
+/* devuelto (rechazado), desde la tabla FA_ACUMFORTAS e insertarlos en la    */
+/* tabla de acumuladores de trafico liquidado, FA_ACUMFORLIQ.                */
+/*****************************************************************************/
+BOOL    bfnOraInsertAcumForLiq ()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int ihSecDev;
+    int ihValCero;
+    int ihConceptoCarrier;
+    int ihClienteStartel;
+    EXEC SQL END DECLARE SECTION;
+
+    ihSecDev  = -1;
+    ihValCero =  0;
+    ihConceptoCarrier = 4;
+    ihClienteStartel  = 1;
+
+    EXEC SQL INSERT INTO FA_ACUMFORLIQ
+    (NUM_ABONADO,IND_ALQUILER,COD_PERIODO,COD_OPERADOR,COD_TIPCONCE,
+     IMP_CONSUMIDO,SEG_CONSUMIDO,COD_CLIENTE,NUM_PROCESO,IND_ORDEN,IMP_LIQUIDADO,SEG_LIQUIDADO)
+    SELECT a.num_abonado, a.ind_alquiler, a.cod_periodo, a.cod_operador, a.cod_tipconce,
+           a.imp_consumido, a.seg_consumido, a.cod_cliente, a.num_proceso, b.ind_orden, 0, 0
+    FROM FA_ACUMFORTAS a, FA_DETFORTAS b
+    WHERE b.ind_orden    = :lhIndOrden
+    AND   b.seq_forfac   = :ihSecDev
+    AND   a.num_abonado  = b.num_abonado
+    AND   a.ind_alquiler > :ihSecDev
+    AND   a.cod_periodo  = b.cod_periodo
+    AND   a.cod_operador = :lhCodOperador
+    AND   a.num_proceso  = :ihValCero
+    AND   a.cod_cliente != :ihClienteStartel
+    AND   a.cod_cliente  = b.cod_cliente
+    GROUP BY a.num_abonado, a.ind_alquiler, a.cod_periodo, a.cod_operador, a.cod_tipconce,
+             a.imp_consumido, a.seg_consumido, a.cod_cliente, a.num_proceso, b.ind_orden, 0, 0;
+
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+    {
+        vSqlError();
+        return(FALSE);
+    }
+	EXEC SQL COMMIT;
+	fprintf(stderr, "Cantidad de registros insertados: [%d]\n", sqlca.sqlerrd[2]);
+	return(TRUE);
+} 
+
+/*****************************************************************************/
+/* Funcion booleana usada para extraer los acumuladores de trafico carrier   */
+/* de la tabla FA_ACUMFORTAS e insertarlos en la tabla FA_ACUMFORLIQ.        */
+/*                                                                           */
+/*     Incidencia CH-241120031523                                            */
+/*                                                                           */
+/*****************************************************************************/
+BOOL	bfnOraInsertAcumForLiq2()
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	ihSecDev;
+	int	ihValCero;
+	int	ihConceptoCarrier;
+	int	ihClienteStartel;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihSecDev  = -1;
+	ihValCero =  0;
+	ihConceptoCarrier = 4;
+	ihClienteStartel  = 1;
+	
+	EXEC SQL INSERT INTO FA_ACUMFORLIQ
+	(NUM_ABONADO,IND_ALQUILER,COD_PERIODO,COD_OPERADOR,COD_TIPCONCE,
+	 IMP_CONSUMIDO,SEG_CONSUMIDO,COD_CLIENTE,NUM_PROCESO,IND_ORDEN,IMP_LIQUIDADO,SEG_LIQUIDADO)
+	SELECT a.num_abonado, 8 /* a.ind_alquiler */, a.cod_periodo, a.cod_operador, a.cod_tipconce,
+	       a.imp_consumido, a.seg_consumido, a.cod_cliente, a.num_proceso, b.ind_orden, 0, 0
+	FROM FA_ACUMFORTAS a, FA_DETFORTAS b 
+	WHERE b.ind_orden    = :lhIndOrden
+/* 20031229 CH-241120031523 se recuperan los otros   */
+	AND   b.seq_forfac   != :ihSecDev
+	AND   a.num_abonado  = b.num_abonado
+	AND   a.ind_alquiler > :ihSecDev
+	AND   a.cod_periodo  = b.cod_periodo 
+	AND   a.cod_operador = :lhCodOperador
+/* 20031229 CH-241120031523 se recuperan los otros   */
+	AND   a.num_proceso  != :ihValCero 
+	AND   a.cod_cliente != :ihClienteStartel
+	AND   a.cod_cliente  = b.cod_cliente
+	GROUP BY a.num_abonado, a.ind_alquiler, a.cod_periodo, a.cod_operador, a.cod_tipconce,
+             a.imp_consumido, a.seg_consumido, a.cod_cliente, a.num_proceso, b.ind_orden, 0, 0;
+	
+	if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+	{
+		vSqlError();
+		return(FALSE);
+	}
+	
+	EXEC SQL COMMIT;
+	fprintf(stderr, "Cantidad de registros insertados: [%d]\n", sqlca.sqlerrd[2]);
+	return(TRUE);
+} 
+
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para actualizar el importe liquidado y los         */
+/* segundos liquidados en la tabla FA_ACUMFORLIQ.                            */
+/*****************************************************************************/
+BOOL    bfnOraUpdateAcumForLiq ()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int ihConceptoCarrier = 4;
+    int ihConceptoIva = 1;
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL UPDATE FA_ACUMFORLIQ
+    SET IMP_LIQUIDADO = :sthAcumForLiq.dAcumNetoLLam, SEG_LIQUIDADO = :sthAcumForLiq.iSegTasados
+    WHERE NUM_ABONADO = :sthAcumForLiq.lNumAbonado
+    AND  IND_ALQUILER = :sthAcumForLiq.iIndAlquiler
+    AND   COD_PERIODO = :sthAcumForLiq.iCodPeriodo
+    AND  COD_OPERADOR = :lhCodOperador
+    AND  COD_TIPCONCE = :ihConceptoCarrier
+    AND     IND_ORDEN = :lhIndOrden
+    AND   COD_CLIENTE = :sthAcumForLiq.lCodCliente;
+    
+    vDTrazasLog("", "\n << SQLCODE [%ld]>>",LOG03, SQLCODE);
+    
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode !=SQLNOTFOUND))
+    {
+    	return(FALSE);
+    }
+    
+    printf("INDICADOR ALQUILER ===> %d \n",sthAcumForLiq.iIndAlquiler);
+    
+    EXEC SQL UPDATE FA_ACUMFORLIQ
+    SET IMP_LIQUIDADO = :sthAcumForLiq.dAcumIva, SEG_LIQUIDADO = :sthAcumForLiq.iSegTasados
+    WHERE NUM_ABONADO = :sthAcumForLiq.lNumAbonado
+    AND  IND_ALQUILER = :sthAcumForLiq.iIndAlquiler
+    AND   COD_PERIODO = :sthAcumForLiq.iCodPeriodo
+    AND  COD_OPERADOR = :lhCodOperador    
+    AND  COD_TIPCONCE = :ihConceptoIva /*RBR 28/08/2001*/
+    AND     IND_ORDEN = :lhIndOrden
+    AND   COD_CLIENTE = :sthAcumForLiq.lCodCliente;
+         
+    vDTrazasLog("", "\n << SQLCODE [%ld]>>",LOG03, SQLCODE);
+    
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode !=SQLNOTFOUND))
+    {
+    	return(FALSE);
+    }
+
+    EXEC SQL COMMIT;
+    return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para rebajar el importe consumido y los segundos   */
+/* consumidos en la tabla FA_ACUMFORTAS, en un monto equivalente al importe  */
+/* liquidado y los segundos liquidados, respectivamente, obtenidos de la     */
+/* tabla FA_ACUMFORLIQ.                                                      */
+/*****************************************************************************/
+BOOL    bfnOraUpdateAcumForTas ()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int ihConceptoCarrier = 4;
+    int ihConceptoIva = 1;
+    EXEC SQL END DECLARE SECTION;
+   
+    
+    EXEC SQL UPDATE FA_ACUMFORTAS
+    SET IMP_CONSUMIDO = IMP_CONSUMIDO - :sthAcumForLiq.dAcumNetoLLam,
+        SEG_CONSUMIDO = SEG_CONSUMIDO - :sthAcumForLiq.iSegTasados
+    WHERE NUM_ABONADO = :sthAcumForLiq.lNumAbonado
+    /* AND  IND_ALQUILER = :sthAcumForLiq.iIndAlquiler CH-200411172369 */
+    AND   COD_PERIODO = :sthAcumForLiq.iCodPeriodo
+    AND  COD_TIPCONCE = :ihConceptoCarrier
+    AND   COD_CLIENTE = :sthAcumForLiq.lCodCliente
+    /* Modificado por RMA 02062005 */
+    AND  COD_OPERADOR = :sthAcumForLiq.iCodOperador;
+
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+    {
+      return(FALSE);
+    }
+
+    EXEC SQL UPDATE FA_ACUMFORTAS
+    SET IMP_CONSUMIDO = IMP_CONSUMIDO - :sthAcumForLiq.dAcumIva
+    WHERE NUM_ABONADO = :sthAcumForLiq.lNumAbonado
+    /* AND  IND_ALQUILER = :sthAcumForLiq.iIndAlquiler CH-200411172369 */
+    AND   COD_PERIODO = :sthAcumForLiq.iCodPeriodo
+    AND  COD_TIPCONCE = :ihConceptoIva
+    AND   COD_CLIENTE = :sthAcumForLiq.lCodCliente
+    /* Modificado por RMA 02062005 */
+    AND  COD_OPERADOR = :sthAcumForLiq.iCodOperador;
+
+    if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+    {
+    	return(FALSE);
+    }
+
+    EXEC SQL COMMIT;
+    return(TRUE);
+}
+
+/*****************************************************************************/
+/* Funcion booleana usada para construir los acumuladores de trafico carrier */
+/* devuelto (rechazado), desde la tabla FA_DETFORLIQ y usarlos para updatear */
+/* los importes y segundos liquidados en la tabla FA_ACUMFORLIQ.             */
+/*****************************************************************************/
+BOOL    bfnOraCalcAcumForLiq ()
+{
+    EXEC SQL DECLARE Cur_ForLiq CURSOR FOR
+    SELECT cod_cliente, num_abonado, ind_alquiler, cod_periodo, cod_operador, sum(acum_netollam),
+             sum(acum_iva), sum(minutos_tasado)*60
+    FROM FA_DETFORLIQ
+    WHERE ind_orden = :lhIndOrden
+    GROUP BY cod_cliente, num_abonado, ind_alquiler, cod_periodo, cod_operador;
+
+    EXEC SQL OPEN Cur_ForLiq;
+    if(sqlca.sqlcode != SQLOK)
+    {
+        vSqlError();
+        return(FALSE);
+    }
+
+    while(1)
+    {
+        if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+        {
+            fprintf(stderr, "Error al abrir cursor sobre tabla FA_DETFORLIQ.\n");
+            vSqlError();
+            return(FALSE);
+        }
+
+        EXEC SQL FETCH Cur_ForLiq
+        INTO :sthAcumForLiq;
+
+        if(sqlca.sqlcode == SQLNOTFOUND) break;
+
+        fprintf(stderr, "\nActualiza importes y segundos liquidados en FA_ACUMFORLIQ.\n"
+        				"Cliente: [%.7d]  Abonado: [%.7d]  Periodo: [%d]  Neto Liquidado: [%f]  IVA Liquidado: [%f]  Segs. Liquidados :[%d]\n",
+        				sthAcumForLiq.lCodCliente, sthAcumForLiq.lNumAbonado, 
+        				sthAcumForLiq.iCodPeriodo, sthAcumForLiq.dAcumNetoLLam,
+        				sthAcumForLiq.dAcumIva, sthAcumForLiq.iSegTasados);
+
+        if(bfnOraUpdateAcumForLiq() == FALSE)
+        {
+                fprintf(stderr, "Error al hacer update sobre tabla FA_ACUMFORLIQ.\n");
+                vSqlError();
+                return(FALSE);
+        }
+
+        fprintf(stderr, "\nRebaja importes y segundos en FA_ACUMFORTAS.\n");
+        if(bfnOraUpdateAcumForTas() == FALSE)
+        {
+            fprintf(stderr, "Error al hacer update sobre tabla FA_ACUMFORTAS.\n");
+            vSqlError();
+            return(FALSE);
+        }
+    }
+
+    EXEC SQL CLOSE Cur_ForLiq;
+    if(sqlca.sqlcode < SQLOK)
+    {
+        fprintf(stderr, "Error al cerrar cursor sobre tabla FA_DETFORLIQ.\n");
+        vSqlError();
+        return(FALSE);
+    }
+	return(TRUE);
+}
+
+
+/*****************************************************************************/
+/* Funcion booleana usada para construir los acumuladores de trafico carrier */
+/* facturado, desde la tabla FA_DETFORLIQ y usarlos para updatear            */
+/* los importes y segundos liquidados en la tabla FA_ACUMFORLIQ.             */
+/*                                                                           */
+/*     Incidencia CH-241120031523                                            */
+/*                                                                           */
+/*****************************************************************************/
+BOOL	bfnOraCalcAcumForLiq2 ()
+{	
+	EXEC SQL DECLARE Cur_ForLiq2 CURSOR FOR 
+	SELECT cod_cliente, num_abonado, ind_alquiler, cod_periodo, cod_operador, sum(acum_netollam),
+			 sum(acum_iva), sum(minutos_tasado)*60
+	FROM FA_DETFORLIQ
+	WHERE ind_orden = :lhIndOrden
+	GROUP BY cod_cliente, num_abonado, ind_alquiler, cod_periodo, cod_operador;
+	
+	EXEC SQL OPEN Cur_ForLiq2;
+	if(sqlca.sqlcode != SQLOK)
+	{
+		vSqlError();
+		return(FALSE);
+	}
+	
+      while(1)
+      {
+         if((sqlca.sqlcode != SQLOK) && (sqlca.sqlcode != SQLNOTFOUND))
+         {
+            fprintf(stderr, "Error al abrir cursor sobre tabla FA_DETFORLIQ.\n");
+            vSqlError();
+            return(FALSE);
+         }
+
+         EXEC SQL FETCH Cur_ForLiq2
+         INTO :sthAcumForLiq;
+
+         if(sqlca.sqlcode == SQLNOTFOUND) break;
+         
+         fprintf(stderr, "\nActualiza importes y segundos liquidados en FA_ACUMFORLIQ.\n");
+         fprintf(stderr, "Cliente: [%.7d]  Abonado: [%.7d]  Periodo: [%d]  Neto Liquidado: [%f]  IVA Liquidado: [%f]  Segs. Liquidados :[%d]\n",
+   		  sthAcumForLiq.lCodCliente, sthAcumForLiq.lNumAbonado, sthAcumForLiq.iCodPeriodo, sthAcumForLiq.dAcumNetoLLam, 
+   		  sthAcumForLiq.dAcumIva, sthAcumForLiq.iSegTasados);
+      		  
+         if(bfnOraUpdateAcumForLiq() == FALSE)
+         {
+               fprintf(stderr, "Error al hacer update sobre tabla FA_ACUMFORLIQ.\n");
+               vSqlError();
+               return(FALSE);
+         }
+      }
+
+   EXEC SQL CLOSE Cur_ForLiq2;
+   if(sqlca.sqlcode < SQLOK)
+	{
+		fprintf(stderr, "Error al cerrar cursor sobre tabla FA_DETFORLIQ.\n");
+		vSqlError();
+		return(FALSE);
+	}
+	
+	return(TRUE);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

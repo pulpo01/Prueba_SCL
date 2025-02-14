@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="878" height="475" initialize="init();" xmlns:ns1="Cliente.*" alpha="1.0" backgroundAlpha="1.0">
+
+
+	<mx:Script>
+	<![CDATA[
+		import mx.collections.SortField;
+		import mx.events.CloseEvent;
+		import mx.formatters.NumberBase;
+		import mx.formatters.NumberFormatter;
+		import user.libreria.clases.UtilDataGrid;
+		import generated.webservices.orquestador.GetDetalleClienteResultEvent;
+		import mx.messaging.channels.StreamingAMFChannel;
+		import mx.states.SetProperty;
+	
+		import mx.core.Application;
+		import mx.controls.Alert;
+		import mx.rpc.events.FaultEvent;
+		import mx.collections.ArrayCollection;
+		import mx.utils.ArrayUtil;
+		import mx.managers.PopUpManager;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import flash.display.DisplayObject;
+		
+		import generated.webservices.orquestador.*;
+		
+		import mx.events.ModuleEvent;
+		import mx.events.CloseEvent;
+	    import mx.modules.ModuleManager;
+	   	import mx.modules.IModuleInfo;
+		import user.libreria.clases.UtilDataGrid;
+		import user.libreria.clases.StringUtil;
+		import mx.events.ItemClickEvent;
+		import mx.collections.SortField;
+		import mx.collections.Sort;
+				
+		public var searchingPopUpView:Class = BarraDeProgreso2;
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject;
+		public var wsORQ:WSSEGPortal = new WSSEGPortal();
+		
+		// Para la impresion en pdf	
+		public var anchoColsGrid:Array = new Array();
+			
+		[Bindable]
+		public var dsGridTotal:ArrayCollection = new ArrayCollection([{labelTotal:"TOTAL", total:0}]);
+			
+		[Bindable]
+		public var dsGrid:Array = new Array();
+
+		[Embed(source="/recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class; 		
+
+		public var subTitulo:String;
+		
+		public var campoOrdenamiento:String = 'fecIngresoOrd';
+		public var tipoOrdenamiento:String = 'Asc';
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getError(event:FaultEvent):void    {
+			        
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {
+				
+				/*
+				var mensaje:String = new String();
+				mensaje = event.fault.faultString + "\n" + event.fault.faultDetail;
+		     	Alert.show(mensaje, "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	     	}
+	     	
+		} // getError
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getData(event:BeneficiosXClienteAbonadoResultEvent):void	{
+		
+			PopUpManager.removePopUp(popUpWindow);
+			
+			if (event.result.arrayBeneficios != null)	{
+				dsGrid = event.result.arrayBeneficios;
+				anchoColsGrid = UtilDataGrid.anchosColumnas(grid);
+				if (Application.application.numCelAboSelect != null){
+					contenedor.title = contenedor.title  + " (Num. Celular: " + Application.application.numCelAboSelect.toString() + ")";
+				}
+				
+				//Se habilita los radio boton
+				bloqAndDesBloqRadio('desBloq');
+				
+			}else{
+				
+				//Se deshabilita los radio boton
+				bloqAndDesBloqRadio('bloq');
+			
+				Alert.show( event.result.desError, 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+			}
+			
+		} // getData  
+					
+					
+		// --------------------------------------------------------------------------------	
+		private function closeHandler(e:CloseEvent):void	{
+			cerrar();	
+		} // closeHandler
+		// --------------------------------------------------------------------------------
+				
+		private function executeWS():void	{
+	
+		    popUpParent = Application.application.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+
+			var numAbonado:Number = parseInt(Application.application.numAbonadoDetalle);
+			var codCliente:Number = parseInt(Application.application.codClienteDetalle);
+			var nomUsuario:String = Application.application.usuario.username;
+			var codEvento:String = Application.application.codEvento; 
+
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addbeneficiosXClienteAbonadoEventListener(getData);
+			wsORQ.beneficiosXClienteAbonado(codCliente, numAbonado, nomUsuario, codEvento);
+			
+		} // executeWS
+
+		// --------------------------------------------------------------------------------			
+	  	
+	  	private function init():void {
+	  		subTitulo = "(" + Application.application.abonadoDTO.numAbonado + ") " + Application.application.abonadoDTO.nomUsuario;
+			executeWS();
+		} // init
+	
+		// --------------------------------------------------------------------------------
+		
+		private function cerrar():void {
+			PopUpManager.removePopUp(this);
+		} // cerrar
+		
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Version : 1.0
+		// Fecha : 19/12/08
+		// ------------------------------------------------------------------------------------------
+
+		private function changeCombo(combo:ComboBox):void	{
+	
+			txtFiltro.text = "";
+			ac.refresh();						
+			
+		} // changeCombo
+	
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Version : 1.0
+		// Fecha : 17/12/08
+		// ------------------------------------------------------------------------------------------
+			 	
+		private function filtrar():void	{
+		
+			ac.filterFunction = filtroGrilla;
+			ac.refresh();
+		}
+			
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Version : 1.1
+		// Fecha : 17/12/08
+		// ------------------------------------------------------------------------------------------
+		
+		private function filtroGrilla(item:Object):Boolean 	{
+			var campo:String;
+		
+			switch(cboFiltro.selectedItem.data)	{
+				case 1:	
+					if  (item.fecIngreso.toString().toUpperCase().indexOf(txtFiltro.text.toUpperCase()) >= 0)	
+						return true;
+					else
+						return false;
+				case 2:								
+					if  (item.fecEstado.toString().toUpperCase().indexOf(txtFiltro.text.toUpperCase()) >= 0)	
+						return true;
+					else
+						return false;
+				
+			} // switch
+				 
+			return true;
+			 
+		} // procesarFiltro
+		
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L
+		// Version : 1.0
+		// Fecha : 16/08/2010
+		// ------------------------------------------------------------------------------------------
+		
+		private function ordenarValores(event:ItemClickEvent):void {
+			
+            if (event.currentTarget.selectedValue == 'fecIngresoOrd') {
+            	campoOrdenamiento='fecIngresoOrd'; 
+            }else if(event.currentTarget.selectedValue == 'fecEstadoOrd'){
+            	campoOrdenamiento='fecEstadoOrd';	
+            } 
+
+	        if (event.currentTarget.selectedValue == "Asc") {
+	        	tipoOrdenamiento='Asc';
+	        }else if(event.currentTarget.selectedValue == "Desc"){
+	        	tipoOrdenamiento='Desc';
+	        }
+	              
+            var dataSortField:SortField = new SortField();
+            dataSortField.name = campoOrdenamiento;
+            dataSortField.numeric = false;
+            
+            var numericDataSort:Sort = new Sort();
+            
+            if (tipoOrdenamiento=="Desc"){
+	       		dataSortField.descending = true;
+	        }else{
+	        	dataSortField.descending = false;
+	        }
+			numericDataSort.fields = [dataSortField];	        	    
+		    ac.sort = numericDataSort;
+            ac.refresh();
+        }
+		
+	 	// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L
+		// Version : 1.0
+		// Fecha : 17/08/2010
+		// ------------------------------------------------------------------------------------------
+		
+		private function bloqAndDesBloqRadio(accion:String):void {
+
+			if(accion == 'bloq'){
+				hRadio1.enabled = false;
+				hRadio2.enabled = false;
+			}else if(accion == 'desBloq'){
+				hRadio1.enabled = true;
+				hRadio2.enabled = true;
+			}
+   
+        }
+			
+		]]>
+	</mx:Script>
+	
+	<mx:Panel width="855" height="454" layout="absolute" title="&gt;&gt; Beneficios Asociados" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="1" alpha="1.0" borderAlpha="1.0" verticalCenter="-4" id="contenedor">
+		<mx:Button x="733" y="371" label="Cerrar" width="92" height="31" fontSize="10" click="cerrar()">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/libIcons/16x16/close.png')</mx:icon>
+		</mx:Button>
+
+		<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="815" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="33" x="10" y="10" paddingRight="10" horizontalGap="10">
+			<mx:Image>
+				<mx:source>recursosInterfaz/imagenes/iconos/filtro.gif</mx:source>
+			</mx:Image>
+			<mx:TextInput fontSize="10" maxChars="20" id="txtFiltro" width="149" change="filtrar()" height="26" fontWeight="normal" fontStyle="normal" styleName="TextInput"/>
+			<mx:ComboBox labelField="label" id="cboFiltro" width="165" change="changeCombo(cboFiltro)" fontWeight="normal">
+			 <mx:ArrayCollection>
+			          <mx:Object icon="recursosInterfaz/imagenes/iconos/buscar.png" label="No aplicar filtro" data="0"/>
+			          <mx:Object label="Fecha Ingreso" data="1"/>
+			          <mx:Object label="Fecha Estado" data="2"/>
+			      </mx:ArrayCollection>
+			</mx:ComboBox>
+			
+			<mx:VRule/>
+			<mx:Image x="739" y="11" source="recursosInterfaz/imagenes/iconos/excel.gif" id="imgCopy" toolTip="Transformar a Excel" click="UtilDataGrid.copyDatagridToClipboard(grid, 'BeneficiosAbonados')"/>
+		</mx:HBox>
+
+		<mx:AdvancedDataGrid  sortExpertMode="true" dataProvider="{ac}" id="grid" width="815" fontSize="10" textAlign="left" height="267"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" x="10" y="93" selectionMode="multipleRows">
+			<mx:columns>
+				<mx:AdvancedDataGridColumn headerText="Cod. Plan" dataField="codPlan" paddingRight="5" textAlign="right"  width="80"/>			
+				<mx:AdvancedDataGridColumn headerText="Plan" dataField="desPlan" paddingRight="5" width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Periodos" dataField="cntPeriodos" paddingRight="5" textAlign="right"  width="100"/>
+				<mx:AdvancedDataGridColumn headerText="Tipo de Plan" dataField="desTiplan" paddingLeft="5"  textAlign="left" width="100"/>
+				<mx:AdvancedDataGridColumn headerText="Fec.Ingreso" dataField="fecIngreso" paddingLeft="5"  textAlign="center" />
+				<mx:AdvancedDataGridColumn headerText="Fec.Estado" dataField="fecEstado" paddingRight="5" textAlign="center"/>
+				<mx:AdvancedDataGridColumn headerText="Estado" dataField="desEstado" paddingLeft="5" width="110" textAlign="left"/>
+				<mx:AdvancedDataGridColumn headerText="Acumulado" dataField="valAcumulado" paddingRight="5" textAlign="right"  width="90"/>
+				<mx:AdvancedDataGridColumn headerText="Beneficio" dataField="valBeneficio" paddingRight="5" textAlign="right"  width="90"/>
+				<mx:AdvancedDataGridColumn headerText="Fec.Ingreso Ord" dataField="fecIngresoOrd" paddingRight="5" textAlign="center" visible="false"/>
+				<mx:AdvancedDataGridColumn headerText="Fec.Estado Ord" dataField="fecEstadoOrd" paddingRight="5" textAlign="center" visible="false"/>
+			</mx:columns>
+		</mx:AdvancedDataGrid>
+		
+		<mx:RadioButtonGroup id="grupo1" itemClick="ordenarValores(event);"/>
+		<mx:RadioButtonGroup id="grupo2" itemClick="ordenarValores(event);"/>
+		
+		<mx:HBox id="hRadio1" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" x="10" y="44" paddingRight="10" horizontalGap="10">
+			<mx:RadioButton  value="fecIngresoOrd" x="28" y="51" label="Fecha Ingreso" width="115" height="18" selected="true" groupName="grupo1" id="rbtFecIngre" />
+			<mx:RadioButton  value ="Asc" x="179" y="51" label="Ascendente" width="115" height="18" selected="true" groupName="grupo2" id="rbtAsc" />
+		</mx:HBox>
+		<mx:HBox id="hRadio2" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" paddingRight="10" horizontalGap="10" x="10" y="68">
+			<mx:RadioButton  value ="fecEstadoOrd" x="28" y="69" label="Fecha Estado" width="115" height="18" groupName="grupo1" id="rbtFecEsta" />
+			<mx:RadioButton  value ="Desc" x="179" y="69" label="Descendente" width="115" height="18" groupName="grupo2" id="rbtDesc" />
+		</mx:HBox>
+		
+	</mx:Panel>
+	
+	<mx:ArrayCollection id="ac" source="{ArrayUtil.toArray(dsGrid)}" />
+		
+</mx:Module>

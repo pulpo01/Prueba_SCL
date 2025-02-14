@@ -1,0 +1,2526 @@
+/* ================================================================================================================ */
+/*
+   Tipo        :  COLA DE PROCESO
+   Nombre      :  Co_GestionCobex.pc
+   Parametros  :  Usuario/Password. ( por defecto asume los de la cuenta )
+                  Nivel de Log ( por defecto asume 3 : Log Normal ) 
+                  Nombre de la Cola (Opcional), para nombrar archivos de log
+   Autor       :  
+   Fecha       :  02-Septiembre-2009
+*/ 
+/* ================================================================================================================ */
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+
+#include "Co_GestionCobex.h"
+
+LINEACOMANDO  	stLineaComando;     		/* Datos con los que se invoco al proceso */
+char 			szgCodProceso [6] = "";
+char 			szArchivoLog[256] = ""; 	/* log */
+char            *pathDir ;
+char            szPathLog   [128] = "";
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    char	szhCodEstado          [2]; EXEC SQL VAR szhCodEstado          IS STRING (2);
+    char    szhGecob              [6]; EXEC SQL VAR szhGecob              IS STRING (6);
+    char    szhWait               [2]; EXEC SQL VAR szhWait               IS STRING (2);
+    char    szhYYYYMMDD           [9]; EXEC SQL VAR szhYYYYMMDD           IS STRING (9);
+    char    szFechayyyymmdd       [9]; EXEC SQL VAR szFechayyyymmdd       IS STRING (9);  
+    char    szPND                 [4]; EXEC SQL VAR szPND                 IS STRING (4);   
+    char    szREA                 [4]; EXEC SQL VAR szREA                 IS STRING (4);   
+    char    szhProcesado          [4]; EXEC SQL VAR szhProcesado          IS STRING (4);   
+    char    szhError              [4]; EXEC SQL VAR szhError              IS STRING (4);   
+    char    szhMORA               [2]; EXEC SQL VAR szhMORA               IS STRING (2);   
+    char    szhPREMORA            [2]; EXEC SQL VAR szhPREMORA            IS STRING (2);   
+    char    szhNOASIGNADO        [12]; EXEC SQL VAR szhNOASIGNADO         IS STRING (12);    
+    char    szhGE_CLIENTES       [12]; EXEC SQL VAR szhGE_CLIENTES        IS STRING (12); /* Incidencia 121721 - 18.01.2010 - MQG  */
+    char    szhCOD_CATEGORIA     [14]; EXEC SQL VAR szhCOD_CATEGORIA      IS STRING (14); /* Incidencia 121721 - 18.01.2010 - MQG  */
+EXEC SQL END DECLARE SECTION;
+
+td_Parametros     sthParam;         /* Estructura de Parametros para Gestion      */
+td_Entidad_Rango  sthCobex;         /* Estructura de Entidades de Cobranza        */
+td_Cliente        sthClien;         /* Estructura de Clientes a reasignar         */
+td_Categorias	  sthCategorias;    /* Estructura de Categorias                   *//* Incidencia 121721 - 18.01.2010 - MQG  */
+
+long              lIndParam;        /* Indice de array para Parametros            */
+long              lIndCobex;        /* Indice de array para Entidades de Cobranza */ 
+long              lIndClien;        /* Indice de array para Clientes a reasignar  */ 
+long              lIndCateg;        /* Indice de array para Categorias            *//* Incidencia 121721 - 18.01.2010 - MQG  */
+
+/* ============================================================================= */
+/*  main                                                                         */
+/* ============================================================================= */
+int main( int argc, char *argv[] )
+{
+char modulo[] = "main";
+int iResult = 0;
+
+    fprintf(stdout, "\n%s GECOB pid(%ld) VERSION [%s]\n", szGetTime(1),getpid(),szVERSION);
+    fflush (stdout);
+
+    /*- Inicializacion de parametros  -*/    
+    memset(szgCodProceso,0,sizeof(szgCodProceso));    
+    strcpy(szgCodProceso,"GECOB"); 
+    rtrim(szgCodProceso);
+    
+    /*- Validacion de parametros de entrada -*/
+    memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+    if (ifnValidaParametros(argc,argv,&stLineaComando) != 0) {
+        fprintf (stdout,"\n\tError >> Fallo la Validacion de Parametros \n");
+        fflush  (stdout);
+        iResult = 1; /* Fallo validacion */
+   } else {   
+        /*- Conexion a la Base de Datos -*/
+        if (ifnConexionDB(&stLineaComando) != 0)   {
+            fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+            fflush  (stdout);
+            iResult = 2; /* Fallo conexion */
+
+        } else  {
+    	    /* Inicializacion de Parametros */
+    	    vfnInicializacionParametros();    
+    	
+            /*- Prepara Archivo de Log -*/ 
+            if (ifnAbreArchivoLog() != 0)    {
+                fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+                fflush  (stdout);
+                iResult = 3;  /* Fallo Log */
+            
+	        } else {
+                /*- Ejecuta el proceso propiamente tal -*/
+				if (ifnEjecutaCola() != 0)   {
+                    fprintf (stdout,"\n\tError >> Fallo el proceso \n");
+                    fflush  (stdout);
+                    iResult = 4; /* Fallo Proceso */
+				} else {
+             	
+					EXEC SQL 
+		            SELECT COD_ESTADO 
+		            INTO :szhCodEstado
+		            FROM CO_COLASPROC 
+		            WHERE COD_PROCESO=:szhGecob;
+		            
+		            if (SQLCODE)  {
+		                fprintf (stdout,"\n\tError >> Fallo el proceso ( Validacion Cola Wait ) \n");
+		                fflush  (stdout);
+		                iResult = 5; /* Fallo Proceso */
+		
+		            } else {
+		
+		                if ( strcmp(szhCodEstado,"W")!=0 ) {
+		                    /* LA COLA ESTA EN UN ESTADO DISTINTO DE WAIT         */
+		                    /* SEÑALAR ESTO COMO ERROR E INTENTAR FORZARLA A WAIT */
+		                    ifnTrazasLog(modulo,"Regresando la Cola a Espera (%s)",LOG02,szhCodEstado);
+		                    EXEC SQL 
+		                    UPDATE CO_COLASPROC
+		                       SET COD_ESTADO = :szhWait
+		                     WHERE COD_PROCESO = :szhGecob;
+		
+		                    if (SQLCODE) {
+		                        fprintf (stdout,"\n\tError >> Fallo el proceso ( Update Cola Wait ) %s\n",SQLERRM );
+		                        fflush  (stdout);
+		                        iResult = 6; /* Fallo Proceso */
+		                    }                            
+		
+		                    EXEC SQL COMMIT;
+		                    if (SQLCODE) {
+		                        fprintf (stdout,"\n\tError >> Fallo el proceso ( Commit Cola Wait ) %s\n", SQLERRM );
+		                        fflush  (stdout);
+		                        iResult = 7; /* Fallo Proceso */
+		                     }                            
+		                     ifnTrazasLog(modulo,"OK. Cola forzada a espera",LOG02);
+		                 }
+		             }
+                } /* end ifnEjecutaCola */
+                vfnCierraArchivoLog();
+            } /* end ifnAbreArchivoLog */
+        } /* end ifnConexionDB*/
+   } /* end ifnValidaParametros */
+
+    return iResult;
+   
+} /* end main */    
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+char modulo[]="ifnValidaParametros";
+
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+extern  char *optarg;
+extern  int  optind, opterr, optopt;
+        int  iOpt=0;
+        char opt[] = ":u:l:n:";
+/*-- Variables locales -----------------------------------------------------------*/  
+char  *psztmp = "";
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+int  Userflag=0;
+int  Logflag=0;
+
+/*-- Seteo de Valores Iniciles y por defecto -------------------------------------*/
+    opterr=0;
+    stStatus.iLogNivel = iLOGNIVEL_DEF ;
+    
+/*-- En caso de Invocacion sin Parametros ----------------------------------------*/
+    if(argc == 1)   {
+        return 0; /*ok asume valores por defecto */
+    }
+
+/*-- Analisis de los argumentos recibidos ----------------------------------------*/
+    while ((iOpt=getopt(argc, argv, opt))!=EOF)    {
+
+        switch(iOpt)
+        {
+            case 'u':  /*-- Usuario/Password --*/
+                if(!Userflag) {
+                    strcpy(pstLC->szUsuarioOra, optarg);                      
+                    Userflag=1;
+                    
+                    if ((psztmp=(char *)strchr(pstLC->szUsuarioOra,'/'))==(char *)NULL) {
+                        fprintf (stderr,"\n\tError >> Usuario no valido. Requiere '/' \n");
+                        fflush  (stderr);
+                        return -1;
+                    
+                    } else {
+                        strncpy (pstLC->szOraAccount,pstLC->szUsuarioOra,psztmp-pstLC->szUsuarioOra);
+                        strcpy  (pstLC->szOraPasswd, psztmp+1);
+                    }
+         
+                } else {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+
+            case 'l': /*-- Nivel de Log --*/
+                if(!Logflag) {
+                    stStatus.iLogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=1;
+                
+                } else {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+            case 'n': /*-- Nombre de la Cola (codigo del proceso) --*/
+                strcpy(szgCodProceso,optarg);
+                break;
+            case '?':
+                fprintf (stderr,"\n\tError >> opcion '-%c' es desconocida\n",optopt);
+                fflush  (stderr);
+                return -1;
+
+            case ':':
+                fprintf (stderr,"\n\tError >> falta argumento para opcion '-%c'\n",optopt);
+                fflush  (stderr);
+                return -1;
+        }
+    } /* end while */
+    pstLC->iLogLevel=stStatus.iLogNivel;
+    return 0;
+
+} /* ifnValidaParametros */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB(LINEACOMANDO *pstLC)
+{
+char modulo[]="ifnConexionDB";
+    
+    if( bfnOraConnect(pstLC->szOraAccount,pstLC->szOraPasswd) == FALSE )    {
+        fprintf (stderr,"\nNo hay conexion a ORACLE \n");
+        fflush  (stderr);
+        return -1;
+    }
+    
+    return 0;
+} /* end ifnConexionDB */
+
+/* ============================================================================= */
+/* vfnInicializacionParametros():                                                */
+/* ============================================================================= */
+void vfnInicializacionParametros(void)
+{
+char modulo[]="vfnInicializacionParametros";
+int  iRes = 0;
+EXEC SQL BEGIN DECLARE SECTION;
+    char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+EXEC SQL END DECLARE SECTION;
+    
+    strcpy(szhGecob        ,GECOB);
+  	strcpy(szhYYYYMMDD	   ,"YYYYMMDD");
+    strcpy(szhWait         ,W );
+    strcpy(szPND           ,PND);
+    strcpy(szREA           ,REA);
+    strcpy(szhProcesado    ,PROCESADO);
+    strcpy(szhError        ,ERROR);
+    strcpy(szhMORA         ,MORA);
+    strcpy(szhPREMORA      ,PREMORA);
+    strcpy(szhNOASIGNADO   ,NOASIGNADO);
+    strcpy(szhGE_CLIENTES  ,GE_CLIENTES);   /* Incidencia 121721 - 18.01.2010 - MQG  */
+    strcpy(szhCOD_CATEGORIA,COD_CATEGORIA); /* Incidencia 121721 - 18.01.2010 - MQG  */
+                    
+    EXEC SQL EXECUTE
+		BEGIN
+			:szFechayyyymmdd :=TO_CHAR(SYSDATE  ,:szhYYYYMMDD);
+		END;
+	END-EXEC;
+	
+	lIndParam = 0;
+	lIndCobex = 0;
+	lIndClien = 0;
+
+	sprintf(stStatus.szFileName   ,"%s",szgCodProceso);
+	sprintf(szhPathLogSched       ,"%s/CO_SCHEDULER",getenv("XPC_LOG"));    
+	sprintf(stStatus.szLogPathGene,"%s",szhPathLogSched);
+    
+  	pathDir =(char *)malloc(228);
+	pathDir =szGetEnv("HOME");
+
+    sprintf(szPathLog  ,"%s/%s",stStatus.szLogPathGene,szFechayyyymmdd);
+
+    iRes = ifnLlenaCategoria(); /* Incidencia 121721 - 18.01.2010 - MQG */
+    
+    return;
+} /* end vfnInicializacionParametros */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* if iCreaDir != 0 : crear directorio antes que el archivo                      */
+/* ============================================================================= */
+int ifnAbreArchivoLog()
+{
+char modulo[]="ifnAbreArchivoLog";
+char szArchivoErr[256]=""; /* errores  */
+char szArchivoLog[256]=""; /* log      */
+char szComando   [256]="";
+
+    sprintf(szComando,"mkdir -p %s",szPathLog);
+
+    if (system (szComando)!=0) {
+        fprintf (stderr,"Error al intentar crear directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+
+    memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log                       */         
+    memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores                   */     
+
+    sprintf(szArchivoLog,"%s/%s.log",szPathLog,stStatus.szFileName);
+    sprintf(szArchivoErr,"%s/%s.err",szPathLog,stStatus.szFileName);
+    
+    if((stStatus.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL ) {    
+        fprintf (stderr,"Error al crear archivo de Log\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    if((stStatus.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL ) {    
+        fprintf (stderr,"Error al crear archivo de Errores\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    ifnTrazasLog(modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n", LOG03,szGetTime(1),getpid());
+
+    return 0;
+    
+}/* end ifnAbreArchivoLog */
+
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs        */
+/* ============================================================================= */
+void vfnCierraArchivoLog(void)
+{
+char modulo[]="vfnCierraArchivoLog";
+    
+    ifnTrazasLog(modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n\n", LOG03,szGetTime(1),getpid());
+
+    if ( fclose(stStatus.LogFile) != 0 )    {    
+        fprintf (stderr,"Error al cerrar archivo de Log\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.ErrFile) != 0 )    {    
+        fprintf (stderr,"Error al cerrar archivo de Errores\n");
+        fflush  (stderr);
+    }
+        
+    return ;    
+} /* end vfnCierraArchivoLog */
+
+/* ============================================================================= */
+/*  ifnEjecutaCola() : Ejecuta la cola de acciones                               */
+/* ============================================================================= */
+int ifnEjecutaCola(void)
+{
+char  modulo[] ="ifnEjecutaCola";
+char  szIniProc[9], szFinProc[9], szTmpProc[9];
+int   iDifSegs = 0;
+
+	sprintf( szIniProc, "%s", szSysDate( "HH24:MI:SS" ) );
+
+	ifnTrazasLog( modulo, "Corriendo la cola lanzada ", LOG03 );
+	ifnTrazasLog(modulo,"GECOB VERSION [%s]\n",LOG03, szVERSION);
+	if( !bfnCambiaEstadoCola( szgCodProceso, "L", "R" ) ) {
+	    if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback 'L->R' : %s", LOG00, SQLERRM );
+	        return -1;
+    }	else	{    
+	    if( !bfnOraCommit() )   {    
+	        ifnTrazasLog( modulo, "En Commit 'L->R' : %s", LOG00, SQLERRM );
+	        if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+	            return FALSE;    
+    	}
+	}
+
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )	{
+		ifnTrazasLog( modulo, "Error al realizar carga de bGetParamDecimales().", LOG03 );
+		return -1;
+    }
+				
+	if (ifnGeneraUniverso() !=0 ) {
+		ifnTrazasLog( modulo, "Error en Llamada a ifnGeneraUniverso().", LOG03 );
+		return -1;
+	}
+		
+	/* Informacion Estadistica */
+	sprintf( szFinProc, "%s", szSysDate( "HH24:MI:SS" ) );    
+	if( (iDifSegs=ifnRestaHoras(szIniProc,szFinProc,szTmpProc)) >= 0 )	{
+	    ifnTrazasLog(modulo,"\n\tRESUMEN DEL PROCESO GECOB"
+	                        "\n\t       HORA INICIO  : %s "
+	                        "\n\t       HORA TERMINO : %s "
+	                        "\n\t       TIEMPO TOTAL : %s  (%d segs)"
+	                        "\n",EST00
+	                        ,szIniProc,szFinProc,szTmpProc,iDifSegs);
+	}
+
+	ifnTrazasLog( modulo, "Volviendo la cola a espera ", LOG03 );
+	if( !bfnCambiaEstadoCola( szgCodProceso, "R", "W") ) 	{
+		if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback 'R->W' : %s", LOG00, SQLERRM );
+		return -1;
+	}
+
+	EXEC SQL COMMIT;
+	if (SQLCODE) {
+	    fprintf (stdout,"\n\tError >> Fallo el Commit -  %s\n", SQLERRM );
+	    fflush  (stdout);
+	    return -1;
+	}                            
+
+	ifnTrazasLog( modulo, "Saliendo de %s ( Cola Wait )\n", LOG02, szgCodProceso );
+	return 0;
+	
+} /* end ifnEjecutaCola */
+
+
+/* ============================================================================= */
+/*  ifnReasignacion: Funcion que reasigna aquellos clientes que pasan a otro     */ 
+/*  rango de gestion                                                             */
+/* ============================================================================= */
+int ifnReasignacion(char *sCodAgente, char *sRango, int j, int i)
+{
+char   modulo[]   = "ifnReasignacion";
+int    iError     = 0;     
+int    iRes       = 0;    
+char   shMontoDesde     [20]; EXEC SQL VAR shMontoDesde IS STRING(20);
+char   shMontoHasta     [20]; EXEC SQL VAR shMontoHasta IS STRING(20);   
+char   szhCicloFact     [3]; EXEC SQL VAR szhCicloFact IS STRING(3);   
+char   szhDiasDesde     [6]; EXEC SQL VAR szhDiasDesde IS STRING(6);  
+char   szhDiasHasta     [6]; EXEC SQL VAR szhDiasHasta IS STRING(6);  
+char   szhCategoria     [5]; EXEC SQL VAR szhCategoria IS STRING(5);   
+int    ihDiasMora    ;
+
+EXEC SQL BEGIN DECLARE SECTION;   
+   long    lhCodCliente       ;
+   long    lhNumSecuencia     ;
+   char    shCodAgente     [6]; EXEC SQL VAR shCodAgente     IS STRING(6);
+   char    shCodRango      [6]; EXEC SQL VAR shCodRango      IS STRING(6);
+   char    shCodRangoClie  [6]; EXEC SQL VAR shCodRangoClie  IS STRING(6);
+   char    shCodEntidadClie  [6]; EXEC SQL VAR shCodEntidadClie  IS STRING(6);
+   static char szhQuery[2048]; EXEC SQL VAR szhQuery        IS STRING(2048);      
+   int     ihDiaIniClie;
+   int     ihDiaFinClie;
+   double  dhDeudaCliente;   
+EXEC SQL END DECLARE SECTION;                                                 
+
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+
+    memset(shCodRango ,0,sizeof(shCodRango));    
+    memset(shCodAgente,0,sizeof(shCodAgente));    
+
+    strcpy(shCodAgente, sCodAgente); 
+    strcpy(shCodRango , sRango); 
+
+    ifnTrazasLog( modulo, " Codigo Agente [%s] ", LOG09, shCodAgente);
+                            
+    /************************************************************************/
+    /* Obtiene el Universo de clientes con mora                             */
+    /************************************************************************/   
+    /*SE AGREGA TABLA CO-SALDOSCONC Y SE CAMBIA EL SALDO DE EXITESTE EN ESTA TABLA inc 156981*/
+    strcpy(szhQuery,"SELECT B.NUM_SECUENCIA, A.COD_CLIENTE, B.COD_RANGO, D.DIA_INICIAL, D.DIA_FINAL, NVL(S.SALDO_VENCIDO, 0), B.COD_ENTIDAD ");
+    strcat(szhQuery,"  FROM GE_CLIENTES A, CO_GESTION_COBEX_TO B, CO_MOROSOS C, CO_RANGOS_COBEX_TD D, CO_SALDOCONS_TO S ");
+    strcat(szhQuery," WHERE A.COD_CLIENTE = B.COD_CLIENTE ");
+    strcat(szhQuery,"   AND B.COD_CLIENTE = C.COD_CLIENTE ");
+    strcat(szhQuery,"   AND C.COD_CLIENTE = S.COD_CLIENTE ");
+    /*hqr se regularizan todos los clientes del rango de días, independiente de la empresa a la que están asignados actualmente*/
+    /*
+    strcat(szhQuery,"   AND B.COD_ENTIDAD = '");
+    strcat(szhQuery,shCodAgente);
+    strcat(szhQuery,"'");
+    */
+    /*hqr Se regularizan todos los clientes de la misma entidad o que estén en otro rango*/
+    strcat(szhQuery,"   AND (B.COD_ENTIDAD = '");
+    strcat(szhQuery,shCodAgente); /*la misma entidad*/
+    strcat(szhQuery,"' OR B.COD_RANGO != '");   
+    strcat(szhQuery,shCodRango);
+    strcat(szhQuery,"')"); 
+    /*Fin HQR*/
+    
+    sprintf(szhDiasDesde,"%d",sthCobex.iDiasDesde[i]);
+    sprintf(szhDiasHasta,"%d",sthCobex.iDiasHasta[i]);
+    /*SE CAMBIA FECHA POR inc 156981*/
+    strcat(szhQuery," AND S.FEC_VENCIMIE <=  (TRUNC(SYSDATE) - (");
+    strcat(szhQuery, szhDiasDesde);
+    strcat(szhQuery,")- 1)");
+    strcat(szhQuery," AND S.FEC_VENCIMIE >= (TRUNC(SYSDATE) - ");
+    strcat(szhQuery, szhDiasHasta);    
+    strcat(szhQuery,")");    
+        
+    /*hqr*/
+    /*
+    strcat(szhQuery,"   AND B.COD_RANGO = '");
+    strcat(szhQuery,shCodRango);
+    strcat(szhQuery,"'");
+    */
+    /*hqr Se comenta, para que actualice a todos los clientes que ahora pertenecen al rango y que actualmente están en otro rango*/
+    strcat(szhQuery,"   AND B.TIP_GESTION = '");
+    strcat(szhQuery,szhMORA);
+    strcat(szhQuery,"'");
+    strcat(szhQuery,"   AND B.FEC_TERMINO IS NULL ");
+    strcat(szhQuery,"   AND B.COD_RANGO   = D.COD_RANGO ");
+    /* Inicio Incidencia 121721 - 18.01.2010 - MQG       */
+    /*strcat(szhQuery,"   AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = C.COD_CLIENTE) ");*/   
+    strcat(szhQuery,"   AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = C.COD_CLIENTE ");   
+    strcat(szhQuery,"                   AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA) ");   
+    /* Fin Incidencia 121721 - 18.01.2010 - MQG       */
+    
+    /*if(( sthParam.dMontoDesde[j] == 0 ) && (sthParam.dMontoHasta[j] == 0 )) {
+       sprintf(shMontoDesde,"%d",sthParam.dMontoDesde[j]);
+       strcat(szhQuery," AND C.DEU_VENCIDA > ");
+       strcat(szhQuery,(shMontoDesde));
+       sprintf(shMontoHasta,"%d",sthParam.dMontoHasta[j]);
+       strcat(szhQuery," AND C.DEU_VENCIDA < ");
+       strcat(szhQuery,(shMontoHasta));
+       strcat(szhQuery," ) ");           
+    }*/
+/*SE MODIFICA inc 156981*/
+    if( sthParam.dMontoDesde[j] > 0 ) {
+       sprintf(shMontoDesde,"%.2f",sthParam.dMontoDesde[j]);
+       strcat(szhQuery," AND S.SALDO_VENCIDO > ");
+       strcat(szhQuery,(shMontoDesde));
+    }
+    if (sthParam.dMontoHasta[j] > 0 ){
+       sprintf(shMontoHasta,"%.2f",sthParam.dMontoHasta[j]);
+       strcat(szhQuery," AND S.SALDO_VENCIDO < ");
+       strcat(szhQuery,(shMontoHasta));
+    }
+    
+    if( sthParam.lCicloFact[j] > 0 ) {
+       sprintf(szhCicloFact,"%d",sthParam.lCicloFact[j]);
+       strcat(szhQuery," AND A.COD_CICLO = ");
+       strcat(szhQuery,szhCicloFact);
+    }
+        
+    if  (strcmp(sthParam.sCodSegmento[j],CARNULL)!= 0) {
+       strcat(szhQuery," AND A.COD_SEGMENTO = '");
+       strcat(szhQuery,sthParam.sCodSegmento[j]);
+       strcat(szhQuery,"'");
+    }
+
+    /*if( sthParam.iCodCategoria[j] > 0 ) {
+       sprintf(szhCategoria,"%d",sthParam.iCodCategoria[j]);
+       strcat(szhQuery," AND A.COD_CATEGORIA = ");
+       strcat(szhQuery,szhCategoria);
+    }*/
+    
+    if  (strcmp(sthParam.sCodCategoria[j],CARNULL)!= 0) {
+       strcat(szhQuery,"  AND C.COD_CATEGORIA = '");
+       strcat(szhQuery,sthParam.sCodCategoria[j]);
+       strcat(szhQuery,"'"); 
+    }            
+
+    if  (strcmp(sthParam.sCodCalifica[j],CARNULL )!= 0) {
+       strcat(szhQuery," AND A.COD_CALIFICACION = '");
+       strcat(szhQuery,sthParam.sCodCalifica[j]);
+       strcat(szhQuery,"'");       
+    }
+    
+    ifnTrazasLog( modulo, "\t szhQuery - [%s]", LOG05,szhQuery );
+
+    EXEC SQL PREPARE sql_cabecera_3 FROM :szhQuery;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR al PREPARAR QUERY Cur_EntCob", LOG05 );
+        return SQLCODE;
+    }
+
+    EXEC SQL DECLARE Cur_EntCob CURSOR FOR sql_cabecera_3;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR en DECLARE QUERY Cur_EntCob", LOG05 );
+        return SQLCODE;
+    }
+   
+   EXEC SQL OPEN Cur_EntCob;
+   if( SQLCODE != SQLOK ) {
+       ifnTrazasLog( modulo, "\tOPEN Cur_EntCob - %s", LOG00,SQLERRM );
+       return -1;
+   }
+   
+   while(1) {
+
+        EXEC SQL FETCH Cur_EntCob INTO :lhNumSecuencia, :lhCodCliente, :shCodRangoClie, 
+                                       :ihDiaIniClie  , :ihDiaFinClie, :dhDeudaCliente, :shCodEntidadClie;
+                                                      
+		if( SQLCODE  == SQLNOTFOUND) {
+			break; /* No hay mas registros pendientes */
+		}
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+	       ifnTrazasLog( modulo, "en FETCH : %s", LOG00, SQLERRM );
+		   break;
+	    }
+
+		ifnTrazasLog( modulo, " ======== EVALUACION DE CLIENTE PARA REASIGNACION =============", LOG03);
+		ifnTrazasLog( modulo, " Secuencia      [%ld] ", LOG09, lhNumSecuencia);
+		ifnTrazasLog( modulo, " Cliente        [%ld] ", LOG09, lhCodCliente);
+		ifnTrazasLog( modulo, " Rango Actual   [%s] ", LOG09, shCodRangoClie);
+		ifnTrazasLog( modulo, " Dia Inicial    [%d] ", LOG09, ihDiaIniClie);
+		ifnTrazasLog( modulo, " Dia Final      [%d] ", LOG09, ihDiaFinClie);
+		ifnTrazasLog( modulo, " dhDeudaCliente [%.2f] ", LOG09, dhDeudaCliente);
+		ifnTrazasLog( modulo, " shCodEntidadClie [%s] ", LOG09, shCodEntidadClie);
+                                    
+        iRes = ifnDiasMorosidad(lhCodCliente, &ihDiasMora);
+        if( iRes < 0 ) {
+        	iError = -1;        	    	   	
+        	break;
+        }
+
+		ifnTrazasLog( modulo, " ihDiasMora     [%d] ", LOG09, ihDiasMora);
+
+        if (ihDiasMora > 0) {
+            if(( ihDiasMora >= ihDiaIniClie  ) && ( ihDiasMora <= ihDiaFinClie))  {
+
+  		       ifnTrazasLog( modulo, " Cliente se mantiene en rango asignado... [%s]", LOG05, shCodRangoClie);
+  		       
+  		       /*hqr se restan los clientes que ya tiene asignados para los mismos criterios*/
+  		       if (strcmp(shCodRangoClie, shCodRango) ==0 ){ /*Solo si se trata del mismo rango*/
+			       sthCobex.dMtoUtilizado [i]= sthCobex.dMtoUtilizado [i] + dhDeudaCliente;
+	               	       sthCobex.dMtoPorAsignar[i]= sthCobex.dMtoPorAsignar[i] - dhDeudaCliente;  		
+	               	       ifnTrazasLog( modulo, " Nuevo Monto Utilizado   [%.2f]", LOG09, sthCobex.dMtoUtilizado [i]);       		     
+	               	       ifnTrazasLog( modulo, " Nuevo Monto por Asignar [%.2f]", LOG09, sthCobex.dMtoPorAsignar [i]); 
+               	       }
+
+            } else {
+
+		       ifnTrazasLog( modulo, " Cliente debe ser reasignado de rango y/o empresa...", LOG05);      
+		       //sthCobex.dMtoUtilizado [i]= sthCobex.dMtoUtilizado [i] - dhDeudaCliente;
+               //sthCobex.dMtoPorAsignar[i]= sthCobex.dMtoPorAsignar[i] + dhDeudaCliente;
+  
+               iRes = ifnCierraRegistro(lhNumSecuencia, lhCodCliente, shCodEntidadClie);
+            
+            } /* end if(( ihDiasMora >= ihDiaIniClie */
+        } /* end if (ihDiasMora > 0) */
+         
+	} /* endwhile */
+	      
+	EXEC SQL CLOSE Cur_EntCob;
+	if(  SQLCODE )
+	{
+		ifnTrazasLog( modulo, "en CLOSE : %s", LOG00, SQLERRM );
+		return -1;
+	}
+                	
+    return iError;
+  
+} /* end ifnReasignacion() */
+
+
+/* ============================================================================= */
+/*  ifnCierraRegistro :                                                          */
+/* ============================================================================= */
+int ifnCierraRegistro(long lNumSecuencia, long lCodCliente, char *sEntidad)
+{	
+   char        modulo[]="ifnCierraRegistro";
+   int         iError = 0;                
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   long   lhCodCliente   ;
+   char   shCodAgente[6] ; EXEC SQL VAR shCodAgente IS STRING(6);   
+   long   lhNumSecuencia ;      
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                         
+    ifnTrazasLog( modulo, "\n En funcion %s", LOG06,modulo);                      
+    lhCodCliente   = lCodCliente;
+    lhNumSecuencia = lNumSecuencia;
+    strcpy(shCodAgente, sEntidad); 
+
+    ifnTrazasLog( modulo, " lhCodCliente   [%ld]", LOG09, lhCodCliente  );
+    ifnTrazasLog( modulo, " lhNumSecuencia [%ld]", LOG09, lhNumSecuencia);
+    ifnTrazasLog( modulo, " shCodAgente    [%s]", LOG09, shCodAgente);
+                       
+    EXEC SQL                       
+    UPDATE CO_GESTION_COBEX_TO
+       SET FEC_TERMINO = SYSDATE
+     WHERE COD_CLIENTE  = :lhCodCliente
+       AND COD_ENTIDAD  = :shCodAgente
+       AND NUM_SECUENCIA= :lhNumSecuencia
+       AND FEC_TERMINO IS NULL;
+      
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+	  ifnTrazasLog( modulo, "\t En UPDATE CO_GESTION_COBEX_TO  - %s", LOG00, SQLERRM );
+	  return -1;				
+    }
+		
+	return iError;
+	
+} /* end ifnCierraRegistro */
+
+/* ============================================================================= */
+/*  ifnDiasMorosidad : Funcion que obtiene los dias morosidad del cliente        */
+/* ============================================================================= */
+int ifnDiasMorosidad(long lCodCliente, int *iDiasMora)
+{	
+   char        modulo[]="ifnDiasMorosidad";
+   int         iError = 0;                
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   long   lhCodCliente    ;
+   int    ihMorodidad     ;
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                         
+    ifnTrazasLog( modulo, " En funcion %s", LOG09,modulo);                      
+    ifnTrazasLog( modulo, " lCodCliente [%ld]", LOG09,lCodCliente);                      
+    lhCodCliente = lCodCliente;
+                       
+    /*EXEC SQL                       
+    SELECT NVL(TRUNC(SYSDATE-MIN(FEC_VENCIMIE)),0)
+      INTO :ihMorodidad
+      FROM CO_CARTERA
+     WHERE COD_CLIENTE = :lhCodCliente;
+     */
+/* INC156981
+     EXEC SQL                       
+    SELECT NVL(TRUNC(SYSDATE-FEC_DEUDVENC),0)
+      INTO :ihMorodidad
+      FROM CO_MOROSOS, 
+     WHERE COD_CLIENTE = :lhCodCliente;
+*/     
+     EXEC SQL                       
+    SELECT NVL(TRUNC(SYSDATE- FEC_VENCIMIE),0)
+      INTO :ihMorodidad
+      FROM CO_SALDOCONS_TO 
+     WHERE COD_CLIENTE = :lhCodCliente;
+     
+     
+      
+    if( SQLCODE != SQLOK) {
+	    ifnTrazasLog( modulo, "\t En SELECT TRUNC(SYSDATE-FEC_DEUDVENC)  - %s", LOG00, SQLERRM );
+	    return -1;				
+    }
+
+    if( SQLCODE  == SQLNOTFOUND) {
+		ifnTrazasLog( modulo, "\t Cliente no se encuentra moroso ...", LOG00 );
+		ihMorodidad = 0;
+	}
+    if (ihMorodidad ==0){
+    	ifnTrazasLog( modulo, "\t Cliente no se encuentra moroso ...", LOG00 );
+    	}
+	
+	*iDiasMora = ihMorodidad;
+	return iError;
+	
+} /* end ifnDiasMorosidad */
+
+/* ============================================================================= */
+/*  ifnLlenaEstructuraCOBEX: Funcion que llena estructura de entidades de        */
+/*  cobranza                                                                     */ 
+/* ============================================================================= */
+int ifnLlenaEstructuraCOBEX()
+{
+char    modulo[]   = "ifnLlenaEstructuraCOBEX";
+int     iError     = 0;     
+int     iRes       = 0;    
+double  dhMonto_Asig    ;
+double  dhPrcAsignado   ;    
+double  dhMontoUtilizado; 
+double  dhPorAsignar    ;
+double  dzMorosidadTotal;
+
+EXEC SQL BEGIN DECLARE SECTION;   
+   char   shCodAgente     [6]; EXEC SQL VAR shCodAgente IS STRING(6);
+   char   shCodRango      [6]; EXEC SQL VAR shCodRango  IS STRING(6);
+   char   shCodRangoAnt   [6]; EXEC SQL VAR shCodRangoAnt  IS STRING(6);
+   double dhPrcAsignacion    ;
+   int    ihDiasIni          ;
+   int    ihDiasFin          ;
+   /*hqr*/
+   long   lhNumSecuencia     ;
+   long   lhNumSecuenciaAnt  ;
+   long   lhCiclo            ;
+   char   shCodSegmento   [6]; EXEC SQL VAR shCodSegmento IS STRING(6);
+   char   shCodCategoria  [6]; EXEC SQL VAR shCodCategoria IS STRING(6);
+   char   shCodCalificacion [6]; EXEC SQL VAR shCodCalificacion IS STRING(6);
+   double dhMtoDesde         ;
+   double dhMtoHasta         ;
+   int    ihNumVecesMora     ;
+   int    ihIndHistorico     ;       
+EXEC SQL END DECLARE SECTION;                                                 
+
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+
+   /************************************************************************/
+   /* Obtiene las entidades de cobranzas con sus respectivos atributos     */
+   /************************************************************************/
+   EXEC SQL DECLARE Cur_ECob CURSOR for        
+     SELECT A.COD_ENTIDAD, B.COD_RANGO, B.PRC_ASIGNACION, C.DIA_INICIAL, C.DIA_FINAL,
+     	    D.NUM_SECUENCIA, NVL(D.COD_CICLO, -1), NVL(D.COD_SEGMENTO, '-1'), NVL(D.COD_CATEGORIA, '-1'), 
+     	    NVL(D.COD_CALIFICACION, '-1'),
+     	    NVL(D.MTO_DESDE, -1), NVL(D.MTO_HASTA, -1), NVL(D.NUM_VECESMORA,-1), NVL(D.IND_HISTORICO, -1)
+       FROM CO_ENTCOB A,CO_ENTIDAD_RANGO_TD B, CO_RANGOS_COBEX_TD C, CO_PARAM_COBEX_TO D 
+      WHERE A.COD_ENTIDAD = B.COD_ENTIDAD    
+        AND B.COD_RANGO   = C.COD_RANGO 
+        AND SYSDATE BETWEEN A.FEC_INI_VIGENCIA AND A.FEC_FIN_VIGENCIA    
+        AND D.COD_ESTADO = :szPND  
+        AND D.COD_RANGO = C.COD_RANGO  
+        AND D.TIP_GESTION = :szhMORA   
+        UNION
+      SELECT A.COD_ENTIDAD, '-1', -1, -1, -1, 
+            D.NUM_SECUENCIA, NVL(D.COD_CICLO, -1), NVL(D.COD_SEGMENTO, '-1'), NVL(D.COD_CATEGORIA, '-1'), 
+     	    NVL(D.COD_CALIFICACION, '-1'),
+     	    NVL(D.MTO_DESDE, -1), NVL(D.MTO_HASTA, -1), NVL(D.NUM_VECESMORA,-1), NVL(D.IND_HISTORICO, -1)
+       FROM CO_ENTCOB A, CO_PARAM_COBEX_TO D 
+      WHERE A.COD_ENTIDAD = D.COD_ENTIDAD    
+        AND SYSDATE BETWEEN A.FEC_INI_VIGENCIA AND A.FEC_FIN_VIGENCIA    
+        AND D.COD_ESTADO = :szPND  
+    	AND D.TIP_GESTION = :szhPREMORA       
+      ORDER BY 2, 6, 1; 
+         
+   if( SQLCODE != SQLOK ) {
+       ifnTrazasLog( modulo, "\tDECLARE Cur_ECob - %s", LOG00,SQLERRM );
+       return -1;
+   }
+   
+   EXEC SQL OPEN Cur_ECob;
+   if( SQLCODE != SQLOK ) {
+       ifnTrazasLog( modulo, "\tOPEN Cur_ECob - %s", LOG00,SQLERRM );
+       return -1;
+   }
+   memset(shCodRangoAnt ,0,sizeof(shCodRangoAnt));
+   lhNumSecuenciaAnt = 0;
+   while(1) {
+
+        EXEC SQL FETCH Cur_ECob INTO :shCodAgente , :shCodRango , :dhPrcAsignacion, 
+                                     :ihDiasIni   , :ihDiasFin  , :lhNumSecuencia,
+                                     :lhCiclo     , :shCodSegmento, :shCodCategoria,
+                                     :shCodCalificacion, :dhMtoDesde, :dhMtoHasta,
+                                     :ihNumVecesMora, :ihIndHistorico;  
+                                                      
+		if( SQLCODE  == SQLNOTFOUND) {
+			break; /* No hay mas registros pendientes */
+		}
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+	       ifnTrazasLog( modulo, "en FETCH : %s", LOG00, SQLERRM );
+		   break;
+	    }
+
+		ifnTrazasLog( modulo, " =============================================================", LOG03);
+		ifnTrazasLog( modulo, " Codigo Agente             [%s] ", LOG03, shCodAgente);
+		ifnTrazasLog( modulo, " Codigo Rango              [%s] ", LOG03, shCodRango);
+		ifnTrazasLog( modulo, " Porcentaje Asignacion     [%.2f] ", LOG03, dhPrcAsignacion);
+		ifnTrazasLog( modulo, " Dias de Inicio            [%d] ", LOG03, ihDiasIni);
+		ifnTrazasLog( modulo, " Dias de Fin               [%d] ", LOG03, ihDiasFin);
+		ifnTrazasLog( modulo, " lhNumSecuencia            [%ld] ", LOG03, lhNumSecuencia);
+		ifnTrazasLog( modulo, " lhCiclo                   [%ld] ", LOG03, lhCiclo);
+		ifnTrazasLog( modulo, " shCodSegmento             [%s] ", LOG03, shCodSegmento);   
+		ifnTrazasLog( modulo, " shCodCategoria            [%s] ", LOG03, shCodCategoria);   
+		ifnTrazasLog( modulo, " shCodCalificacion         [%s] ", LOG03, shCodCalificacion);   
+		ifnTrazasLog( modulo, " Monto desde               [%f] ", LOG03, dhMtoDesde);
+		ifnTrazasLog( modulo, " Monto hasta               [%f] ", LOG03, dhMtoHasta);
+		ifnTrazasLog( modulo, " Cantidad de veces en mora [%d] ", LOG03, ihNumVecesMora);
+		ifnTrazasLog( modulo, " Se incluye el historico   [%d] ", LOG03, ihIndHistorico);
+		          
+        strcpy(sthCobex.sCodAgente[lIndCobex], shCodAgente); 
+        strcpy(sthCobex.sCodRango [lIndCobex], shCodRango); 
+        strcpy(sthCobex.sCodSegmento [lIndCobex], shCodSegmento);
+        strcpy(sthCobex.sCodCategoria [lIndCobex], shCodCategoria);
+        strcpy(sthCobex.sCodCalifica [lIndCobex], shCodCalificacion);
+        
+        sthCobex.iDiasDesde  [lIndCobex] = ihDiasIni;
+        sthCobex.iDiasHasta  [lIndCobex] = ihDiasFin;
+        sthCobex.dPrcAsignado[lIndCobex] = dhPrcAsignacion; 
+        sthCobex.lNumSecuencia[lIndCobex] = lhNumSecuencia;
+        sthCobex.lCicloFact[lIndCobex] = lhCiclo;
+        sthCobex.dMontoDesde[lIndCobex] = dhMtoDesde;
+        sthCobex.dMontoHasta[lIndCobex] = dhMtoHasta;
+        sthCobex.iVecesMora[lIndCobex] = ihNumVecesMora;
+        sthCobex.iHistorico[lIndCobex] = ihIndHistorico;
+        
+
+		ifnTrazasLog( modulo, " =============================================================", LOG03);
+		ifnTrazasLog( modulo, " Codigo Agente             [%s] ", LOG03, sthCobex.sCodAgente[lIndCobex]);
+		ifnTrazasLog( modulo, " Codigo Rango              [%s] ", LOG03, sthCobex.sCodRango [lIndCobex]);
+		ifnTrazasLog( modulo, " Porcentaje Asignacion     [%.2f] ", LOG03, sthCobex.dPrcAsignado[lIndCobex]);
+		ifnTrazasLog( modulo, " Dias de Inicio            [%d] ", LOG03, sthCobex.iDiasDesde  [lIndCobex]);
+		ifnTrazasLog( modulo, " Dias de Fin               [%d] ", LOG03, sthCobex.iDiasHasta  [lIndCobex]);
+		ifnTrazasLog( modulo, " lhNumSecuencia            [%ld] ", LOG03, sthCobex.lNumSecuencia[lIndCobex]);
+		ifnTrazasLog( modulo, " lhCiclo                   [%ld] ", LOG03, sthCobex.lCicloFact[lIndCobex]);
+		ifnTrazasLog( modulo, " shCodSegmento             [%s] ", LOG03, sthCobex.sCodSegmento [lIndCobex]);   
+		ifnTrazasLog( modulo, " shCodCategoria            [%s] ", LOG03, sthCobex.sCodCategoria [lIndCobex]);   
+		ifnTrazasLog( modulo, " shCodCalificacion         [%s] ", LOG03, sthCobex.sCodCalifica [lIndCobex]);   
+		ifnTrazasLog( modulo, " Monto desde               [%f] ", LOG03, sthCobex.dMontoDesde[lIndCobex]);
+		ifnTrazasLog( modulo, " Monto hasta               [%f] ", LOG03, sthCobex.dMontoHasta[lIndCobex]);
+		ifnTrazasLog( modulo, " Cantidad de veces en mora [%d] ", LOG03, sthCobex.iVecesMora[lIndCobex]);
+		ifnTrazasLog( modulo, " Se incluye el historico   [%d] ", LOG03, sthCobex.iHistorico[lIndCobex]);		
+                
+        dhMonto_Asig = 0;
+        dhPrcAsignado= 0;    
+        dhMontoUtilizado = 0; 
+	if ((lhNumSecuenciaAnt != lhNumSecuencia) && (strcmp(shCodRango,"-1") != 0)){		
+	        iRes = ifnMorosidadActual(shCodRango, lhCiclo, shCodSegmento, shCodCategoria, shCodCalificacion, dhMtoDesde, dhMtoHasta, ihNumVecesMora, &dzMorosidadTotal); 
+	        if( iRes < 0 ) return -1;    
+	}   
+	
+	strcpy(shCodRangoAnt, shCodRango);//Para que no busque tantas veces la morosidad
+	lhNumSecuenciaAnt = lhNumSecuencia;
+		     	        
+        iRes = ifnMorosidadEntidad(dhPrcAsignacion, &dhMonto_Asig, &dhMontoUtilizado, &dhPorAsignar, shCodAgente, shCodRango, dzMorosidadTotal);
+        if( iRes < 0 ) {
+           iError = -1;
+           break;        	    	   	
+        } else  {
+           sthCobex.dMtoAsignado  [lIndCobex]= dhMonto_Asig;   
+           sthCobex.dMtoUtilizado [lIndCobex]= dhMontoUtilizado;
+           sthCobex.dMtoPorAsignar[lIndCobex]= dhPorAsignar;  
+        }   	            	    	   		
+                                               
+        lIndCobex = lIndCobex + 1;
+                 	    
+	} /* endwhile */
+	      
+	EXEC SQL CLOSE Cur_ECob;
+	if(  SQLCODE )
+	{
+		ifnTrazasLog( modulo, "en CLOSE : %s", LOG00, SQLERRM );
+		return -1;
+	}
+           	
+    return iError;
+  
+} /* end ifnLlenaEstructuraCOBEX() */
+
+/* ============================================================================= */
+/*  ifnGeneraUniverso: Funcion que rescata los datos agendados para la gestion   */
+/* ============================================================================= */
+int ifnGeneraUniverso()
+{
+char modulo[]   = "ifnGeneraUniverso";
+int  iError     = 0;     
+int  iRes       = 0;    
+
+EXEC SQL BEGIN DECLARE SECTION;   
+   long   lhNumSecuencia     ;
+   char   shTipGestion    [2]; EXEC SQL VAR shTipGestion   IS STRING(2);
+   char   shCodAgente     [6]; EXEC SQL VAR shCodAgente    IS STRING(6);
+   long   lhCicloFact        ;
+   char   shCodSegmento   [6]; EXEC SQL VAR shCodSegmento  IS STRING(6);
+   /*int    ihCodCategoria     ; *//* Incidencia 121721 - 18.01.2010 - MQG       */
+   char   shCodCalifica   [6]; EXEC SQL VAR shCodCalifica  IS STRING(6);
+   char   shCodRango      [6]; EXEC SQL VAR shCodRango     IS STRING(6);
+   double dhMontoDesde       ;
+   double dhMontoHasta       ;
+   int    ihVecesMora        ;
+   int    ihHistorico        ;
+   int    ihCantMeses        ;
+   char   shCodCategoria  [6]; EXEC SQL VAR shCodCategoria IS STRING(6); /* Incidencia 121721 - 18.01.2010 - MQG       */
+EXEC SQL END DECLARE SECTION;                                                 
+
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+
+   iRes = ifnLlenaEstructuraCOBEX();
+   if( iRes < 0 ) return -1;        	    	   	
+
+   /************************************************************************/
+   /* Obtiene el Universo Agendado para la Gestion de Cobranzas            */
+   /************************************************************************/
+   EXEC SQL DECLARE Cur_GesCobex CURSOR for        
+   SELECT  A.NUM_SECUENCIA             , A.TIP_GESTION            , NVL(A.COD_ENTIDAD  , '-1'), 
+           NVL(A.COD_CICLO    , -1) , NVL(A.COD_SEGMENTO ,'-1'), NVL(A.COD_CATEGORIA, '-1'), 
+           NVL(A.COD_CALIFICACION,'-1'), NVL(A.COD_RANGO    ,'-1'), NVL(A.MTO_DESDE    , -1  ), 
+           NVL(A.MTO_HASTA       , -1 ), NVL(A.NUM_VECESMORA,'-1'), NVL(A.IND_HISTORICO, -1  ), 
+           NVL(A.NUM_MESES       , -1 )            
+     FROM CO_PARAM_COBEX_TO A, CO_RANGOS_COBEX_TD B
+    WHERE A.COD_RANGO = B.COD_RANGO (+)
+    AND A.COD_ESTADO IN (:szPND)     
+   ORDER BY A.TIP_GESTION, B.DIA_INICIAL, A.COD_ENTIDAD; /*Se agrega numero de dias, para que empiece por los rangos menores*/
+         
+   if( SQLCODE != SQLOK ) {
+       ifnTrazasLog( modulo, "\tDECLARE Cur_GesCobex - %s", LOG00,SQLERRM );
+       return -1;
+   }
+   
+   EXEC SQL OPEN Cur_GesCobex;
+   if( SQLCODE != SQLOK ) {
+       ifnTrazasLog( modulo, "\tOPEN Cur_GesCobex - %s", LOG00,SQLERRM );
+       return -1;
+   }
+   
+   while(1) {
+
+        EXEC SQL FETCH Cur_GesCobex INTO :lhNumSecuencia, :shTipGestion  , :shCodAgente   , 
+                                         :lhCicloFact   , :shCodSegmento , :shCodCategoria, 
+                                         :shCodCalifica , :shCodRango    , :dhMontoDesde  , 
+                                         :dhMontoHasta  , :ihVecesMora   , :ihHistorico   , 
+                                         :ihCantMeses   ;            
+                                                      
+		if( SQLCODE  == SQLNOTFOUND) {
+			break; /* No hay mas registros pendientes */
+		}
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+	       ifnTrazasLog( modulo, "en FETCH : %s", LOG00, SQLERRM );
+		   break;
+	    }
+
+		ifnTrazasLog( modulo, " =============================================================", LOG03);
+		ifnTrazasLog( modulo, " Tipo de Gestion           [%s] ", LOG03, shTipGestion);
+		ifnTrazasLog( modulo, " Codigo Agente             [%s] ", LOG03, shCodAgente);
+		ifnTrazasLog( modulo, " Ciclo Facturacion         [%ld] ", LOG03, lhCicloFact);
+		ifnTrazasLog( modulo, " Segmento                  [%s] ", LOG03, shCodSegmento);
+		/*ifnTrazasLog( modulo, " Categoria                 [%d] ", LOG03, ihCodCategoria);*//* Incidencia 121721 - 18.01.2010 - MQG       */
+		ifnTrazasLog( modulo, " Calificacion              [%s] ", LOG03, shCodCalifica);
+		ifnTrazasLog( modulo, " Codigo de Rango           [%s] ", LOG03, shCodRango);
+		ifnTrazasLog( modulo, " Monto desde               [%f] ", LOG03, dhMontoDesde);
+		ifnTrazasLog( modulo, " Monto hasta               [%f] ", LOG03, dhMontoHasta);
+		ifnTrazasLog( modulo, " Cantidad de veces en mora [%d] ", LOG03, ihVecesMora);
+		ifnTrazasLog( modulo, " Se incluye el historico   [%d] ", LOG03, ihHistorico);
+		ifnTrazasLog( modulo, " Meses pre-mora            [%d] ", LOG03, ihCantMeses);
+		ifnTrazasLog( modulo, " lhNumSecuencia            [%ld] ", LOG03, lhNumSecuencia);
+		ifnTrazasLog( modulo, " Categoria                 [%s] ", LOG03, shCodCategoria); /* Incidencia 121721 - 18.01.2010 - MQG       */            
+		
+        /* Inicializacion de Array de Parametros  */
+        strcpy(sthParam.sTipGestion [lIndParam], shTipGestion ); 
+        strcpy(sthParam.sCodAgente  [lIndParam], shCodAgente  );
+        strcpy(sthParam.sCodSegmento[lIndParam], shCodSegmento); 
+        strcpy(sthParam.sCodCalifica[lIndParam], shCodCalifica);
+        strcpy(sthParam.sCodRango   [lIndParam], shCodRango   );
+
+        sthParam.lNumSecuencia [lIndParam] = lhNumSecuencia;
+        sthParam.lCicloFact    [lIndParam] = lhCicloFact;
+        /*sthParam.iCodCategoria [lIndParam] = ihCodCategoria; */ /* Incidencia 121721 - 18.01.2010 - MQG       */
+        sthParam.dMontoDesde   [lIndParam] = dhMontoDesde; 
+        sthParam.dMontoHasta   [lIndParam] = dhMontoHasta; 
+        sthParam.iVecesMora    [lIndParam] = ihVecesMora; 
+        sthParam.iHistorico    [lIndParam] = ihHistorico; 
+        sthParam.iCantMeses    [lIndParam] = ihCantMeses; 
+        
+        /* Inicio Incidencia 121721 - 18.01.2010 - MQG       */
+        strcpy(sthParam.sCodCategoria[lIndParam], shCodCategoria   );
+        /*
+        if ( strcmp(sthParam.sCodCategoria[lIndParam],"-1") != 0)  {
+            iRes = ifnBuscaCategoria(lIndParam);      
+        } else {
+        	sthParam.iCodCategoria[lIndParam] = -1;
+        }*/
+
+	/*ifnTrazasLog( modulo, " Categoria                 [%d] ", LOG03, sthParam.iCodCategoria[lIndParam]); *//* Incidencia 121721 - 18.01.2010 - MQG       */            
+	ifnTrazasLog( modulo, " Categoria                 [%s] ", LOG03, sthParam.sCodCategoria[lIndParam]); /* Incidencia 121721 - 18.01.2010 - MQG       */            
+        /* Fin Incidencia 121721 - 18.01.2010 - MQG       */
+        lIndClien = 0; /*Se inicializa la variable*/
+	    if ( strcmp(shTipGestion,PREMORA)== 0)  {
+           iRes = ifnGestionPreMora(lIndParam);
+        	ifnTrazasLog( modulo, " iRes = ifnGestionPreMora(lIndParam)                [%d] ", LOG03, iRes);
+	       if( iRes < 0 ) iError = -1;        	    	   	
+        }
+
+	    if ( strcmp(shTipGestion,MORA) == 0)  {
+           iRes = ifnGestionMora(lIndParam);
+	       if( iRes < 0 ) iError = -1;        	    	   	
+        }
+                                           
+        iRes = ifnUpdateGestion(lhNumSecuencia, iError);
+        if( iRes < 0 ) iError = -1;        	    	   	
+                
+        lIndParam = lIndParam + 1;
+
+	} /* endwhile */
+	      
+	EXEC SQL CLOSE Cur_GesCobex;
+	if(  SQLCODE )
+	{
+		ifnTrazasLog( modulo, "en CLOSE : %s", LOG00, SQLERRM );
+		return -1;
+	}
+           	
+    return iError;
+  
+} /* end ifnGeneraUniverso() */
+
+/* ============================================================================= */
+/*  ifnUpdateGestion : Funcion que obtiene la morosidad total en cobros          */
+/* ============================================================================= */
+int ifnUpdateGestion(long lNumSecuencia, int iEstado)
+{	
+   char        modulo[]="ifnUpdateGestion";
+   int         iError = 0;                
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+    long   lhNumSecuencia ;                                       
+    char   shEstado    [4]; EXEC SQL VAR shEstado IS STRING(4);   
+EXEC SQL END DECLARE SECTION;                                                 
+                                          
+    memset(shEstado  ,0,sizeof(shEstado));                                                                                       
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+    lhNumSecuencia = lNumSecuencia;
+    ifnTrazasLog( modulo, " Secuencia  [%ld] ", LOG09, lhNumSecuencia);            
+    ifnTrazasLog( modulo, " Estado  [%d] ", LOG09, iEstado);    
+				
+    if( iEstado == 0) {
+    	strcpy(shEstado, szhProcesado);
+    } else {
+        strcpy(shEstado, szhError);	 	
+    }                   
+    ifnTrazasLog( modulo, " shEstado  [%s] ", LOG09, shEstado);    
+    EXEC SQL                       
+    UPDATE CO_PARAM_COBEX_TO
+      SET  COD_ESTADO = :shEstado
+     WHERE NUM_SECUENCIA = :lhNumSecuencia;
+      
+    if( SQLCODE != SQLOK) {
+	  ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA)  - %s", LOG00, SQLERRM );
+	  return -1;				
+    }
+    ifnTrazasLog( modulo, "\n\tEn Salida funcion %s", LOG03,modulo); 
+    ifnTrazasLog( modulo, "\n\tEn ierror = %d", LOG03,iError); 
+	return iError;
+} /* end ifnUpdateGestion */
+
+/* ============================================================================= */
+/*  ifnGestionPreMora : Funcion que busca los clientes para gestion pre-mora     */
+/* ============================================================================= */
+int ifnGestionPreMora(long i)
+{	
+   char        modulo[]="ifnGestionPreMora";
+   static char szhQuery      [2048]; EXEC SQL VAR szhQuery     IS STRING(2048);
+   char        szhCicloFact     [3]; EXEC SQL VAR szhCicloFact IS STRING(3);   
+   char        szhCantMeses     [3]; EXEC SQL VAR szhCantMeses IS STRING(3);   
+   char        szhCategoria     [5]; EXEC SQL VAR szhCategoria IS STRING(5);  
+   char        szhVecesMora     [5]; EXEC SQL VAR szhCategoria IS STRING(5); 
+   
+   int         iSalir = FALSE;                                                            
+   int         iError = 0;                
+   int         iRes   = 0;                
+                                        
+EXEC SQL BEGIN DECLARE SECTION;                                           
+    long   lzhCod_Cliente     ;                                       
+EXEC SQL END DECLARE SECTION;                                                 
+    
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);   
+                              
+    /************************************************************************/
+    /* Obtiene el Universo de clientes con pre-mora                         */
+    /************************************************************************/
+    strcpy(szhQuery,"SELECT A.COD_CLIENTE ");
+    strcat(szhQuery," FROM  GE_CLIENTES A ");
+    strcat(szhQuery,"WHERE NOT EXISTS (SELECT 1 FROM CO_MOROSOS  C WHERE C.COD_CLIENTE = A.COD_CLIENTE ) ");
+    if( sthParam.iVecesMora[i] >= 0 ) {
+    	strcat(szhQuery,"  AND  ");
+    	sprintf(szhVecesMora,"%d",sthParam.iVecesMora[i]);
+    	strcat(szhQuery,(szhVecesMora));
+    	strcat(szhQuery,"  = (SELECT count(1) FROM CO_HMOROSOS D WHERE D.COD_CLIENTE = A.COD_CLIENTE  ");
+	    if( sthParam.iCantMeses[i] > 0 ) {
+	       sprintf(szhCantMeses,"%d",(sthParam.iCantMeses[i]*-1));
+	       strcat(szhQuery,"                     AND D.FEC_INGRESO > TRUNC(ADD_MONTHS(SYSDATE, ");
+	       strcat(szhQuery,(szhCantMeses));
+	       strcat(szhQuery," ))");           
+	    }    	
+	    strcat(szhQuery," ) ");
+    } else {
+ 	    if( sthParam.iCantMeses[i] > 0 ) {
+	       sprintf(szhCantMeses,"%d",(sthParam.iCantMeses[i]*-1));
+	       strcat(szhQuery,"  AND  ");
+	       strcat(szhQuery,"  EXISTS (SELECT 1 FROM CO_HMOROSOS D WHERE D.COD_CLIENTE = A.COD_CLIENTE  ");
+	       strcat(szhQuery,"                     AND D.FEC_INGRESO > TRUNC(ADD_MONTHS(SYSDATE, ");
+	       strcat(szhQuery,(szhCantMeses));
+	       strcat(szhQuery," )))");           
+	    }    		
+    }
+    strcat(szhQuery,"  AND     EXISTS (SELECT 1 FROM CO_CARTERA  B "); 
+    strcat(szhQuery,"                   WHERE B.COD_CLIENTE = A.COD_CLIENTE ");
+    strcat(szhQuery,"                     AND B.COD_CONCEPTO NOT IN (2,6)   ");
+
+
+    strcat(szhQuery," ) ");
+
+    /* Inicio Incidencia 121721 - 18.01.2010 - MQG       */
+    /* strcat(szhQuery,"  AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = A.COD_CLIENTE) ");*/
+    strcat(szhQuery,"   AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = A.COD_CLIENTE ");   
+    strcat(szhQuery,"                   AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA) ");   
+    /* Fin Incidencia 121721 - 18.01.2010 - MQG       */
+    
+    if( sthParam.lCicloFact[i] > 0 ) {
+       sprintf(szhCicloFact,"%d",sthParam.lCicloFact[i]);
+       strcat(szhQuery,"  AND A.COD_CICLO = ");
+       strcat(szhQuery,szhCicloFact);
+    }
+        
+    if  (strcmp(sthParam.sCodSegmento[i],CARNULL)!= 0) {
+       strcat(szhQuery,"  AND A.COD_SEGMENTO = '");
+       strcat(szhQuery,sthParam.sCodSegmento[i]);
+       strcat(szhQuery,"'");                  
+    }
+
+    if  (strcmp(sthParam.sCodCategoria[i],CARNULL)!= 0) {
+       strcat(szhQuery,"  AND A.COD_CATEGORIA IN");
+       strcat(szhQuery,"  (SELECT COD_VALOR FROM CO_CODIGOS WHERE NOM_TABLA = '");
+       strcat(szhQuery,szhGE_CLIENTES);
+       strcat(szhQuery,"' AND NOM_COLUMNA = '");
+       strcat(szhQuery,szhCOD_CATEGORIA);
+       strcat(szhQuery,"' AND DES_VALOR = '");
+       strcat(szhQuery,sthParam.sCodCategoria[i]);
+       strcat(szhQuery,"')"); 
+    }
+
+    if  (strcmp(sthParam.sCodCalifica[i],CARNULL )!= 0) {
+       strcat(szhQuery,"  AND A.COD_CALIFICACION ='");
+       strcat(szhQuery,sthParam.sCodCalifica[i]);
+       strcat(szhQuery,"'");                         
+    }
+    
+    if (( sthParam.lCicloFact[i] > 0 ) || (strcmp(sthParam.sCodSegmento[i],CARNULL)!= 0) || (strcmp(sthParam.sCodCategoria[i],CARNULL)!= 0) || (strcmp(sthParam.sCodCalifica[i],CARNULL )!= 0)) {
+    	strcat(szhQuery,"  AND A.COD_CLIENTE > 0");
+    }
+    
+    ifnTrazasLog( modulo, "\t szhQuery - [%s]", LOG05,szhQuery );
+
+    EXEC SQL PREPARE sql_cabecera FROM :szhQuery;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR al PREPARAR QUERY Cur_ClientesPreMora", LOG05 );
+        return SQLCODE;
+    }
+
+    EXEC SQL DECLARE Cur_ClientesPreMora CURSOR FOR sql_cabecera;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR en DECLARE QUERY Cur_ClientesPreMora", LOG05 );
+        return SQLCODE;
+    }
+
+    EXEC SQL OPEN Cur_ClientesPreMora;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR en OPEN QUERY Cur_ClientesPreMora", LOG05 );
+        return SQLCODE;
+    }
+
+    iSalir=FALSE;
+    while(!iSalir)
+    {    	
+        EXEC SQL
+        FETCH Cur_ClientesPreMora
+        INTO :lzhCod_Cliente;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+            ifnTrazasLog( modulo, "\tFETCH Cur_ClientesPreMora - %s", LOG00,SQLERRM );
+            iError = -1;
+            break;
+        }
+
+        if( SQLCODE == SQLNOTFOUND ) {
+            break;
+        }
+
+	/*hqr, no es necesario verificar el saldo, con que esté en morosos es suficiente */
+        /*iRes = ifnVerificaSaldo(lzhCod_Cliente); 
+        if( iRes <= 0 ) {*/
+            iRes = ifnRegistraGestion(lzhCod_Cliente,PREMORA, sthParam.lNumSecuencia[i], NULO, sthParam.sCodAgente[i]);
+            if( iRes < 0 ) {
+        	   iError = -1;
+               break;
+            }
+        /*}*/
+
+        /*if( iRes > 0 ) {
+           ifnTrazasLog( modulo, "\t Cliente con Saldo vencido, no se asignará a PreMora  [%ld]", LOG09,lzhCod_Cliente );
+           iError = -1;
+           break;
+        }        */               
+        
+    } /* fin while cursor Cur_ClientesPreMora */
+
+    EXEC SQL
+    CLOSE Cur_ClientesPreMora;
+    if( SQLCODE != SQLOK ) {
+        ifnTrazasLog( modulo, "\tCLOSE Cur_ClientesPreMora - %s", LOG00, SQLERRM );
+        iError = -1;
+    }
+			
+	return iError;	
+	
+} /* end ifnGestionPreMora */
+
+/* ============================================================================= */
+/*  ifnVerificaSaldo: Funcion que verifica el saldo del cliente                  */
+/* ============================================================================= */
+int ifnVerificaSaldo(long pCodCliente)
+{	
+   char    modulo[]   ="ifnVerificaSaldo";
+   int     iRespuesta = 0;                 
+                                                                                  
+EXEC SQL BEGIN DECLARE SECTION;                                           
+    long   lzCod_Cliente  ;     
+    double dhDeuVencida   ;
+EXEC SQL END DECLARE SECTION;                                                 
+    
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);   
+
+    lzCod_Cliente   = pCodCliente;
+    
+	if( !bfnGetSaldoVencido( lzCod_Cliente, &dhDeuVencida ))	{
+		 return -1;
+	}
+	ifnTrazasLog( modulo, "\n\t lzCod_Cliente = [%ld]", LOG09, lzCod_Cliente);   
+	ifnTrazasLog( modulo, "\n\t dhDeuVencida = [%.2f]", LOG09, dhDeuVencida);   
+    if( dhDeuVencida <= 0) {
+        iRespuesta = 0;
+    } else {
+        iRespuesta = 1;    	
+    }
+
+	return iRespuesta;
+} /* end ifnVerificaSaldo */
+
+/* ============================================================================= */
+/*  ifnRegistraGestion: Funcion que ingresa el registro de premora o mora para   */
+/*  la gestion de cobranza                                                       */
+/* ============================================================================= */
+int ifnRegistraGestion(long pCodCliente, char *cTipoGestion, long lNumSecuencia, char *cRango, char *cAgente)
+{	
+   char  modulo[]="ifnRegistraGestion";
+   int   iError = 0;                
+   int   iRes = 0;
+                                                                                  
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   	char   shCodEntidad    [6]; EXEC SQL VAR shCodEntidad IS STRING(6);
+   	char   shCodRango      [6]; EXEC SQL VAR shCodRango   IS STRING(6);
+    long   lzCod_Cliente      ;      
+    long   lzNum_Secuencia    ;                                  
+    char   szTipoMora      [2]; EXEC SQL VAR szTipoMora   IS STRING(2);
+EXEC SQL END DECLARE SECTION;                                                 
+    
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);   
+                   
+    lzCod_Cliente   = pCodCliente;
+    lzNum_Secuencia = lNumSecuencia;
+
+    memset(shCodEntidad,0,sizeof(shCodEntidad));    
+    memset(shCodRango  ,0,sizeof(shCodRango));    
+    memset(szTipoMora  ,0,sizeof(szTipoMora));    
+
+    strcpy(shCodEntidad, cAgente);
+    strcpy(shCodRango, cRango);                              
+    
+    if  (strcmp(cTipoGestion,PREMORA )== 0) {
+        strcpy(szTipoMora, PREMORA);                              
+    }
+
+    if  (strcmp(cTipoGestion,MORA )== 0) {
+        strcpy(szTipoMora, MORA);                              
+
+        ifnTrazasLog( modulo, " shCodEntidad    [%s] ", LOG09, shCodEntidad);   
+        ifnTrazasLog( modulo, " lzCod_Cliente   [%ld]", LOG09, lzCod_Cliente);   
+        
+        /*iRes = ifnActualizaAgente(lzCod_Cliente, shCodEntidad);*/
+        /*if( iRes < 0 ) return -1;*/
+                
+    } /* end if  (strcmp(cTipoGestion,MORA )== 0) {*/
+
+    ifnTrazasLog( modulo, " \n Insertando en CO_GESTION_COBEX_TO \n", LOG09);   
+    ifnTrazasLog( modulo, " lzNum_Secuencia [%ld]", LOG09, lzNum_Secuencia);   
+    ifnTrazasLog( modulo, " shCodEntidad    [%s] ", LOG09, shCodEntidad);   
+    ifnTrazasLog( modulo, " lzCod_Cliente   [%ld]", LOG09, lzCod_Cliente);   
+    ifnTrazasLog( modulo, " szTipoMora      [%s] ", LOG09, szTipoMora);   
+    ifnTrazasLog( modulo, " shCodRango      [%s] ", LOG09, shCodRango);   
+
+    ifnTrazasLog( modulo, "\n - - - - - - - - - - - - - - - - - - - - - - - - ", LOG09);   
+                       
+    EXEC SQL                       
+    INSERT INTO CO_GESTION_COBEX_TO
+          (NUM_SECUENCIA, COD_ENTIDAD, COD_CLIENTE, FEC_INGRESO, TIP_GESTION, COD_RANGO)
+    VALUES
+          (:lzNum_Secuencia, :shCodEntidad, :lzCod_Cliente, SYSDATE, :szTipoMora, DECODE(:shCodRango , ' ', NULL, :shCodRango));
+
+    if( SQLCODE != SQLOK) {
+	  ifnTrazasLog( modulo, "\t En INSERT INTO CO_GESTION_COBEX_TO (1) - %s", LOG00, SQLERRM );
+	  return -1;				
+    }
+		
+	return iError;
+} /* end ifnRegistraGestion */
+
+/* ============================================================================= */
+/*  ifnActualizaAgente: Funcion que actualiza entidad del cliente                */
+/* ============================================================================= */
+int ifnActualizaAgente(long pCodCliente, char *cAgente)
+{	
+   char        modulo[]="ifnActualizaAgente";
+   int         iError = 0;                
+                                                                                  
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   	char   shCodEntidad    [6]; EXEC SQL VAR shCodEntidad IS STRING(6);
+    long   lzCod_Cliente      ;      
+EXEC SQL END DECLARE SECTION;                                                 
+    
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);   
+    memset(shCodEntidad,0,sizeof(shCodEntidad));    
+
+    lzCod_Cliente   = pCodCliente;
+    strcpy(shCodEntidad, cAgente);
+
+    ifnTrazasLog( modulo, " shCodEntidad  [%s]" , LOG09,shCodEntidad);   
+    ifnTrazasLog( modulo, " lzCod_Cliente [%ld]", LOG09,lzCod_Cliente);   
+
+    if  (strcmp(shCodEntidad,NOASIGNADO )== 0) {
+    
+         EXEC SQL                       
+         UPDATE CO_MOROSOS 
+            SET COD_AGENTE = 'NO ASIGNADO' 
+          WHERE COD_CLIENTE= :lzCod_Cliente;
+
+    } else {
+
+         EXEC SQL                       
+         UPDATE CO_MOROSOS 
+            SET COD_AGENTE = :shCodEntidad
+          WHERE COD_CLIENTE= :lzCod_Cliente;
+	
+	}
+
+    if( SQLCODE != SQLOK) {
+        ifnTrazasLog( modulo, "\t En UPDATE CO_MOROSOS - %s", LOG00, SQLERRM );
+        return -1;				
+    }
+
+	return iError;
+} /* end ifnActualizaAgente */
+
+/****************************************************************************/
+/*   Rutina que rescata el valor de una variable de Ambiente Host           */
+/****************************************************************************/
+char* szGetEnv(char * VarHost)
+{
+    char *ValVarHost;
+
+    ValVarHost=(char *)malloc(1024);
+    if (getenv(VarHost) == NULL)
+    {
+        printf( "\n\t-------------------------------------------------------"
+                "\n\t  No Existe Variable de Ambiente %s    "
+                "\n\t-------------------------------------------------------\n",
+                VarHost);
+        return ((char *) NULL);
+    }
+
+    strcpy(ValVarHost,getenv(VarHost));
+    return (ValVarHost);
+} /* szGetEnv */
+
+/* ============================================================================= */
+/*  ifnGestionMora : Funcion que busca los clientes para gestion mora            */
+/* ============================================================================= */
+int ifnGestionMora(long iIndParametro)
+{	
+   char        modulo[]="ifnGestionMora";
+   int         iError = 0;                
+   int         iRes   = 0;             
+
+   iRes = ifnReasignar(iIndParametro); 
+   if( iRes < 0 ) return -1;
+
+   iRes = ifnAsignar(iIndParametro);
+   if( iRes < 0 ) return -1;
+   
+   if( lIndClien > 0 ) { /* existen clientes por reasignar */       
+       iRes = ifnClientesPendientes(iIndParametro);
+       if( iRes < 0 ) return -1;        	    	   	    
+   } /* end if( lIndClien > 0 ) */
+   
+   return iError;	
+	
+} /* end ifnGestionMora */
+
+/* ============================================================================= */
+/*  ifnClientesPendientes :                                                      */
+/* ============================================================================= */
+int ifnClientesPendientes(int iIndice)
+{	
+    char    modulo[]="ifnClientesPendientes";
+    int     iError = 0;                
+    long    i;
+    int     j;
+    int     ihBuscoEntidad;
+    int     iRes;
+EXEC SQL BEGIN DECLARE SECTION;                                           
+	char   shEntidadAntigua [6]; EXEC SQL VAR shEntidadAntigua IS STRING(6);
+	char   shEntidadGestion [6]; EXEC SQL VAR shEntidadGestion IS STRING(6);
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                            
+    ifnTrazasLog( modulo, "\n En funcion %s", LOG03,modulo);  
+
+     /* Clientes pendientes a asignar */
+    for (i=0;i<=lIndClien;i++)   {
+
+        if (sthClien.iProcesado[i] == 0) {
+
+            memset(shEntidadAntigua  ,0,sizeof(shEntidadAntigua  ));    
+            ihBuscoEntidad = 0;
+            iRes = ifnVerificaEmpresaAnterior(sthClien.lCodCliente[i], shEntidadAntigua);
+            if( iRes < 0 ) {
+                iError = -1;
+                break;
+            }
+            
+            ihBuscoEntidad = 0;                            	     
+            if (strcmp(shEntidadAntigua,CARNULL)==0)  {
+                 ihBuscoEntidad = 1;
+            } else {
+            	/*hqr falta validar si la empresa anterior tiene cupo disponible*/
+               	 strcpy(shEntidadGestion, shEntidadAntigua);
+            }
+    	   // if (ihBuscoEntidad == 1){ /*hqr para que no haga siempre el for*/
+	            for (j=0;j<=lIndCobex;j++)   {
+	            	/*hqr revisar, la variable shEntidadGestion está vacia*/
+	                if ((strcmp(shEntidadGestion,sthCobex.sCodAgente[j])==0))  {
+	            
+		                if ((sthClien.iDiasMorosidad[i] > sthCobex.iDiasDesde[j]) && (sthClien.iDiasMorosidad[i] < sthCobex.iDiasHasta[j])){
+		          	  	          	  
+		               	    if ((sthCobex.dMtoPorAsignar[j] > sthClien.dDeudaCliente[i]) && ((sthCobex.dMtoPorAsignar[j] - sthClien.dDeudaCliente[i]) > 0)){
+	                          	                               	                                      	                
+	                          	   if (ihBuscoEntidad == 1)  {           
+	                          	       strcpy(shEntidadGestion, sthCobex.sCodAgente[j]);
+	                          	   } /* end if (ihBuscoEntidad == 1) */
+	                          	                                      	                           	                           	     
+	                               iRes = ifnRegistraGestion(sthClien.lCodCliente[i],MORA,sthParam.lNumSecuencia[iIndice], sthCobex.sCodRango[j], shEntidadGestion);
+	                               if( iRes < 0 ) {
+	                                   iError = -1;
+	                                   break;
+	                               }
+	                                
+	                               sthCobex.dMtoUtilizado [j]= sthCobex.dMtoUtilizado [j] + sthClien.dDeudaCliente[i];
+	                               sthCobex.dMtoPorAsignar[j]= sthCobex.dMtoPorAsignar[j] - sthClien.dDeudaCliente[i];  
+	                               sthClien.iProcesado[i] = 1;
+	
+	                               break;                             
+	                                                                                               	
+	                        } /* end if ((sthCobex.dMtoPorAsignar[i] > dMonto)*/     
+		          	    } /* end if ((sthCobex.iDiasHasta[j]*/	      	  
+	                } /* end if ((strcmp(shEntidadGestion,sthCobex.sCodAgente)==0) */
+	           } /* end for j*/
+           //} /*end if (ihBuscoEntidad == 1)*/
+            
+            if( iError < 0 ) {
+                break;
+            }
+
+		} /* end if (sthClien.iProcesado[i] == 0) */
+    } /* end for i*/
+            
+	return iError;
+	
+} /* end ifnClientesPendientes */
+
+/* ============================================================================= */
+/*  ifnReasignar :                                                               */
+/* ============================================================================= */
+int ifnReasignar(long iIndParametro)
+{	
+   char    modulo[]="ifnReasignar";
+   int     iError = 0;        
+   int     iIndAgente;        
+   char    shCodRango   [6]; 
+   char    shCodEntidad [6]; 
+    
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);   
+    memset(shCodRango,0,sizeof(shCodRango));                   
+    strcpy(shCodRango,sthParam.sCodRango[iIndParametro]);
+
+    ifnTrazasLog( modulo, " shCodRango [%s]", LOG03,shCodRango);   
+                                          
+    for (iIndAgente=0;iIndAgente<=lIndCobex;iIndAgente++)   {
+        if( strcmp(sthCobex.sCodRango[iIndAgente], shCodRango) == 0) {
+            strcpy(shCodEntidad, sthCobex.sCodAgente[iIndAgente]);	
+
+	        if (ifnReasignacion(shCodEntidad, shCodRango, iIndParametro, iIndAgente) !=0 ) {
+		       ifnTrazasLog( modulo, "Error en Llamada a ifnReasignacion().", LOG03 );
+               iError = -1;
+               break;        	    	   	
+	        } /* end if (ifnReasignacion(shCodEntidad, shCodRango, iIndParametro, iIndAgente) !=0 ) */
+
+        } /* end if( strcmp(sthCobex.sCodRango[iIndAgente], shCodRango) == 0) */
+    } /* end for */
+        
+	return iError;	
+	
+} /* end ifnReasignar */
+
+
+/* ============================================================================= */
+/*  ifnAsignar                                                                   */
+/* ============================================================================= */
+int ifnAsignar(long iIndParametro)
+{	
+   char    modulo[]="ifnAsignar";
+   int     iError = 0;                
+   int     iRes   = 0;             
+   int     iIndAgente;                                         
+   char    shCodRango   [6];
+    
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);   
+    memset(shCodRango,0,sizeof(shCodRango));                   
+    strcpy(shCodRango,sthParam.sCodRango[iIndParametro]);
+    ifnTrazasLog( modulo, " lIndCobex [%ld]", LOG03, lIndCobex);       
+    for (iIndAgente=0;iIndAgente<=lIndCobex;iIndAgente++)   {
+        if( strcmp(sthCobex.sCodRango[iIndAgente], shCodRango) == 0) {
+        	
+		    ifnTrazasLog( modulo, " =============================================================", LOG03);
+		    ifnTrazasLog( modulo, " Entidad [%s] - [%.2f]", LOG03, sthCobex.sCodAgente[iIndAgente],  sthCobex.dPrcAsignado[iIndAgente]);
+        
+           //if (sthCobex.iHistorico[iIndAgente] == 1) { /*Solo si se pide asignarlo a empresa anterior*/
+	            /* Para clientes ya asignados a una entidad (0) re-evaluacion */   
+	            ifnTrazasLog( modulo, " sthCobex.dMtoPorAsignar[%ld]= [%.2f]", LOG03, iIndAgente,  sthCobex.dMtoPorAsignar[iIndAgente]);                                                              
+	            if( sthCobex.dMtoPorAsignar[iIndAgente] > 0.0 ) {
+	        	    iRes = ifnAsignaEntidad(iIndAgente, iIndParametro, shCodRango, 0);
+	                if( iRes < 0 ) {
+	                   iError = -1;
+	                   break;        	    	   	
+	                }
+	            } /* end if( sthCobex[iIndAgente].dMtoPorAsignar > 0.0 ) */
+	
+	            /* Para clientes que se encuentran como NO ASIGNADOS (1)*/                                                               
+	            if( sthCobex.dMtoPorAsignar[iIndAgente] > 0.0 ) {
+	        	    iRes = ifnAsignaEntidad(iIndAgente, iIndParametro, shCodRango, 1);
+	                if( iRes < 0 ) {
+	                    iError = -1;
+	                    break;        	    	   	
+	                }
+	            } /* end if( sthCobex[iIndAgente].dMtoPorAsignar > 0.0 ) */
+	    //}
+            
+            /*HQR*/
+            /* Para clientes que se encuentran Asignados actualmente a Otra Empresa en CO_MOROSOS (2)*/                                                               
+            if( sthCobex.dMtoPorAsignar[iIndAgente] > 0.0 ) {
+        	    iRes = ifnAsignaEntidad(iIndAgente, iIndParametro, shCodRango, 2);
+                if( iRes < 0 ) {
+                    iError = -1;
+                    break;        	    	   	
+                }
+            }  /* end if( sthCobex[iIndAgente].dMtoPorAsignar > 0.0 ) */            
+		
+        } /* end if( strcmp(sthCobex.sCodRango[iIndAgente], shCodRango) == 0) */
+    } /* end for */
+                                    	
+	return iError;	
+	
+} /* end ifnAsignar */
+     
+/* ============================================================================= */
+/*  ifnMorosidadActual : Funcion que obtiene la morosidad total en cobros        */
+/* ============================================================================= */
+int ifnMorosidadActual(char *sCodRango, long lCiclo, char *sCodSegmento, char *sCodCategoria, char *sCodCalificacion, double dMtoDesde, double dMtoHasta, int iNumVecesMora, double *dMorosidadTotal)
+
+{	
+   char  modulo[]="ifnMorosidadActual";
+   int   iError  = 0;                
+                     
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   char    shCodRango [6]; EXEC SQL VAR shCodRango IS STRING(6);       
+   double  dhMorosidadTotal         ;                                
+   char shCiclo[6]; EXEC SQL VAR shCiclo IS STRING(6);  
+   char shCodSegmento[6]; EXEC SQL VAR shCodSegmento IS STRING(6);  
+   char shCodCategoria[6]; EXEC SQL VAR shCodCategoria IS STRING(6);  
+   char shCodCalificacion[6]; EXEC SQL VAR shCodCalificacion IS STRING(6);  
+   char shMtoDesde[20]; EXEC SQL VAR shMtoDesde IS STRING(20);  
+   char shMtoHasta[20]; EXEC SQL VAR shMtoHasta IS STRING(20);  
+   char shNumVecesMora[20]; EXEC SQL VAR shNumVecesMora IS STRING(20);
+   double dhMtoDesde;
+   double dhMtoHasta;
+   int    ihNumVecesMora;
+   long  lhCiclo;
+   static char szhQuery      [2048]; EXEC SQL VAR szhQuery     IS STRING(2048);   
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                      
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);                      
+    memset(shCodRango,0,sizeof(shCodRango));                   
+    memset(shCodSegmento,0,sizeof(shCodSegmento));                   
+    memset(shCodCategoria,0,sizeof(shCodCategoria));  
+    memset(shCodCalificacion,0,sizeof(shCodCalificacion));  
+    memset(shCiclo,0,sizeof(shCiclo));  
+    memset(shMtoDesde,0,sizeof(shMtoDesde));  
+    memset(shMtoHasta,0,sizeof(shMtoHasta));  
+    memset(shNumVecesMora,0,sizeof(shNumVecesMora));  
+    
+    strcpy(shCodRango,sCodRango);
+    strcpy(shCodSegmento,sCodSegmento);
+    strcpy(shCodCategoria,sCodCategoria);
+    strcpy(shCodCalificacion,sCodCalificacion);
+    dhMtoDesde = dMtoDesde;
+    dhMtoHasta = dMtoHasta;
+    ihNumVecesMora = iNumVecesMora;
+    lhCiclo = lCiclo;
+    
+    ifnTrazasLog( modulo, " shCodRango         [%s]", LOG09,shCodRango);                      
+    ifnTrazasLog( modulo, " shCodSegmento      [%s]", LOG09,shCodSegmento);
+    ifnTrazasLog( modulo, " shCodCategoria     [%s]", LOG09,shCodCategoria);
+    ifnTrazasLog( modulo, " shCodCalificacion  [%s]", LOG09,shCodCalificacion);
+    ifnTrazasLog( modulo, " lhCiclo            [%ld]", LOG09,lhCiclo);
+    ifnTrazasLog( modulo, " dhMtoDesde         [%.2f]", LOG09,dhMtoDesde);
+    ifnTrazasLog( modulo, " dhMtoHasta         [%.2f]", LOG09,dhMtoHasta);
+    ifnTrazasLog( modulo, " ihNumVecesMora     [%d]", LOG09,ihNumVecesMora);
+    
+    /*SE AGREGA TABLA CO_SALDOCONS_TO Y SE COMBIAN TODOS LOS CAMPOS DE SALDOS Y DEUDA A ESTA TABLA INC156981 */
+          
+    strcpy(szhQuery,"SELECT NVL(SUM(S.SALDO_VENCIDO),0) ");   
+    strcat(szhQuery, "FROM CO_MOROSOS C, CO_RANGOS_COBEX_TD B, GE_CLIENTES A, CO_SALDOCONS_TO S ");
+    strcat(szhQuery, "WHERE TRUNC(SYSDATE-S.FEC_VENCIMIE) BETWEEN B.DIA_INICIAL AND B.DIA_FINAL ");
+    strcat(szhQuery, "AND A.COD_CLIENTE = C.COD_CLIENTE ");
+    strcat(szhQuery, "AND C.COD_CLIENTE = S.COD_CLIENTE ");
+    strcat(szhQuery, "AND B.COD_RANGO = '");
+    strcat(szhQuery, shCodRango);
+    strcat(szhQuery, "'");
+    if( dhMtoDesde > 0    ) {
+       sprintf(shMtoDesde,"%.2f",dhMtoDesde);
+       strcat(szhQuery," AND S.SALDO_VENCIDO > ");
+       strcat(szhQuery,(shMtoDesde));
+    }
+    if (dhMtoHasta > 0 ){
+       sprintf(shMtoHasta,"%.2f",dhMtoHasta);
+       strcat(szhQuery," AND S.SALDO_VENCIDO < ");
+       strcat(szhQuery,(shMtoHasta));
+    }
+    strcat(szhQuery," AND S.FEC_VENCIMIE <=  (TRUNC(SYSDATE) - (B.DIA_INICIAL");
+    strcat(szhQuery,"- 1))");
+    strcat(szhQuery," AND S.FEC_VENCIMIE >= (TRUNC(SYSDATE) - B.DIA_FINAL");    
+    strcat(szhQuery,")");
+
+    if  (strcmp(shCodCategoria,CARNULL)!= 0) {
+       strcat(szhQuery,"  AND C.COD_CATEGORIA = '");
+       strcat(szhQuery,shCodCategoria);
+       strcat(szhQuery,"'"); 
+    } 
+    /*Primero se sacan todos los morosos en el rango actual y después se va bajando el monto que ya tengan asignado en el mismo rango
+    y demás condiciones*/
+    /*               
+    strcat(szhQuery," AND NOT EXISTS (SELECT 1 FROM CO_GESTION_COBEX_TO D ");
+    strcat(szhQuery," WHERE C.COD_CLIENTE = D.COD_CLIENTE ");
+    strcat(szhQuery," AND D.FEC_TERMINO IS NULL ");     
+    strcat(szhQuery," AND D.TIP_GESTION = '");     
+    strcat(szhQuery,(szhMORA));
+    strcat(szhQuery,"') ");   
+    strcat(szhQuery,"   AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = C.COD_CLIENTE ");   
+    strcat(szhQuery,"                   AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA) ");       
+    */    
+    if( lhCiclo > 0 ) {
+       sprintf(shCiclo,"%d",lhCiclo);
+       strcat(szhQuery,"  AND A.COD_CICLO = ");
+       strcat(szhQuery,shCiclo);
+    }
+        
+    if  (strcmp(shCodSegmento,CARNULL)!= 0) {
+       strcat(szhQuery,"  AND A.COD_SEGMENTO = '");
+       strcat(szhQuery,shCodSegmento);
+       strcat(szhQuery,"'");
+    }
+
+    if  (strcmp(shCodCalificacion,CARNULL )!= 0) {
+       strcat(szhQuery,"  AND A.COD_CALIFICACION = '");
+       strcat(szhQuery,shCodCalificacion);
+       strcat(szhQuery,"'");
+    }
+    
+    ifnTrazasLog( modulo, "\t QUERY  - %s", LOG03, szhQuery ); 
+       
+    EXEC SQL PREPARE SQL_DINAMICO FROM :szhQuery; //INTO :dhMorosidadTotal;                    
+    /*SELECT NVL(SUM(DEU_VENCIDA),0)
+      INTO :dhMorosidadTotal
+      FROM CO_MOROSOS A, CO_RANGOS_COBEX_TD B */
+     /*WHERE TRUNC(SYSDATE-A.FEC_INGRESO) BETWEEN B.DIA_INICIAL AND B.DIA_FINAL*//*Incidencia 133925*/
+    /* WHERE TRUNC(SYSDATE-A.FEC_DEUDVENC) BETWEEN B.DIA_INICIAL AND B.DIA_FINAL
+       AND B.COD_RANGO = :shCodRango;*/
+    
+    if ( SQLCODE ) 
+    {
+        ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA)  - %s", LOG00, SQLERRM );
+        return -1;	
+    }             
+    
+    sqlca.sqlcode=0; 
+    EXEC SQL DECLARE CUR_DINAMICO CURSOR FOR SQL_DINAMICO;
+    if ( SQLCODE ) 
+    {
+        ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA) Declare - %s", LOG00, SQLERRM );
+        return -1;
+    }
+
+    sqlca.sqlcode=0; 
+    EXEC SQL OPEN CUR_DINAMICO;
+    if ( SQLCODE ) 
+    {
+        ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA) Open - %s", LOG00, SQLERRM );
+        return -1;
+    }
+
+    do
+    {
+    	sqlca.sqlcode=0; 
+        EXEC SQL FETCH CUR_DINAMICO INTO :dhMorosidadTotal;
+        if( SQLCODE == SQLOK ) 
+        {
+            *dMorosidadTotal = dhMorosidadTotal;
+        }
+        else
+        {
+        ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA) FETCH - %s", LOG00, SQLERRM );
+        return -1;
+        }
+    } while ( FALSE );
+
+    sqlca.sqlcode=0; 
+    EXEC SQL CLOSE CUR_DINAMICO;
+    if( SQLCODE ) 
+    {
+        ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA) CLOSE CUR_DINAMICO - %s", LOG00, SQLERRM );
+        return -1;
+    }        
+
+    ifnTrazasLog( modulo, " dzMorosidadTotal [%.2f]", LOG09,dhMorosidadTotal);                      
+    	
+	return iError;
+} /* end ifnMorosidadActual */
+    
+/* ============================================================================= */
+/*  ifnMorosidadEntidad : Funcion que obtiene los montos de morosidad asignados  */
+/*  por entidad                                                                  */
+/* ============================================================================= */
+int ifnMorosidadEntidad(double dPorcentaje, double *dAsignado, double *dUtilizado, double *dPorAsignar, char *cEntidad, char *sCodRango, double dzMorosidadTotal)
+{	
+   char        modulo[]="ifnMorosidadEntidad";
+   int         iError = 0;                
+   double      dhMonto_Asig ;
+   double      dhPrcAsignado;
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   double      dhMontoUtilizado;   
+   char        shCodEntidad [6]; EXEC SQL VAR shCodEntidad IS STRING(6);                                       
+   char        shCodRango   [6]; EXEC SQL VAR shCodRango   IS STRING(6);                                       
+EXEC SQL END DECLARE SECTION;                                                 
+                                  
+   memset(shCodEntidad,0,sizeof(shCodEntidad));                                                                                             
+   memset(shCodRango  ,0,sizeof(shCodRango));                                                                                             
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);     
+                                  
+   dhMontoUtilizado = 0.0;
+   dhPrcAsignado    = 0.0;
+   dhMonto_Asig     = 0.0;
+                
+   dhPrcAsignado = dPorcentaje;              
+   dhMonto_Asig  = (dzMorosidadTotal * dhPrcAsignado )/100;              
+   
+   *dAsignado    = dhMonto_Asig;
+                       
+   strcpy(shCodEntidad, cEntidad);
+   strcpy(shCodRango  , sCodRango);
+
+   ifnTrazasLog( modulo, " shCodEntidad     [%s]", LOG09,shCodEntidad);                      
+   ifnTrazasLog( modulo, " dhPrcAsignado    [%.2f]", LOG09,dhPrcAsignado);                      
+   ifnTrazasLog( modulo, " dzMorosidadTotal [%.2f]", LOG09,dzMorosidadTotal);                      
+                       
+  /* EXEC SQL                       
+   SELECT NVL(SUM(DEU_VENCIDA), 0)
+     INTO :dhMontoUtilizado
+     FROM CO_MOROSOS A, CO_RANGOS_COBEX_TD B, CO_ENTCOB C
+    WHERE COD_AGENTE  = :shCodEntidad*/
+      /*AND TRUNC(SYSDATE-A.FEC_INGRESO) BETWEEN B.DIA_INICIAL AND B.DIA_FINAL*/
+      /*AND TRUNC(SYSDATE-A.FEC_DEUDVENC) BETWEEN B.DIA_INICIAL AND B.DIA_FINAL
+      AND B.COD_RANGO = :shCodRango
+      AND A.COD_AGENTE= C.COD_ENTIDAD
+      AND SYSDATE BETWEEN C.FEC_INI_VIGENCIA AND C.FEC_FIN_VIGENCIA;
+      
+          
+    if( SQLCODE != SQLOK) {
+	  ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA) (1) - %s", LOG00, SQLERRM );
+	  return -1;				
+    }*/
+		
+	*dUtilizado = dhMontoUtilizado;
+	*dPorAsignar= dhMonto_Asig - dhMontoUtilizado;
+	
+
+	ifnTrazasLog( modulo, " dAsignado   [%.2f]", LOG09,*dAsignado);                      
+	ifnTrazasLog( modulo, " dUtilizado  [%.2f]", LOG09,*dUtilizado);                      
+	ifnTrazasLog( modulo, " dPorAsignar [%.2f]", LOG09,*dPorAsignar);                      
+
+    if( dhMontoUtilizado > dhMonto_Asig) {
+	  ifnTrazasLog( modulo, "\t Error en la asignacion de montos . Revisar ", LOG00);
+	  return -1;				
+    }
+	
+	return iError;
+} /* end ifnMorosidadEntidad */
+
+/* ============================================================================= */
+/*  ifnAsignaEntidad : Funcion que asigna clientes a entidades de cobranza de    */ 
+/*  acuerdo al porcentaje asignado                                               */
+/* ============================================================================= */
+int ifnAsignaEntidad(int iIndiceAgen, int iIndiceParam, char *sCodRango, int iIndNoAsignado)
+{
+   char        modulo[]="ifnAsignaEntidad";
+   int         iError  = 0;                
+   int         iSalir = FALSE;                                                            
+   int         iRes       = 0;    
+   int         iResValida = 0;       
+   double      dhDeudaCliente;
+         
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   long        lzhCod_Cliente;   
+   char        shCodRango       [6]; EXEC SQL VAR shCodRango   IS STRING(6);
+   static char szhQuery      [2048]; EXEC SQL VAR szhQuery     IS STRING(2048);   
+   char        shMontoDesde     [20]; EXEC SQL VAR shMontoDesde IS STRING(20);
+   char        shMontoHasta     [20]; EXEC SQL VAR shMontoHasta IS STRING(20);   
+   char        shDiasDesde     [20]; EXEC SQL VAR shDiasDesde IS STRING(20);
+   char        shDiasHasta     [20]; EXEC SQL VAR shDiasHasta IS STRING(20);   
+   char        szhCicloFact     [3]; EXEC SQL VAR szhCicloFact IS STRING(3);   
+   char        szhCategoria     [5]; EXEC SQL VAR szhCategoria IS STRING(5);   
+EXEC SQL END DECLARE SECTION;                                                 
+        
+    ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+    memset(shCodRango,0,sizeof(sCodRango));   
+    strcpy(shCodRango, sCodRango);
+                                                                                          
+    /************************************************************************/
+    /* Obtiene el Universo de clientes con mora                             */
+    /************************************************************************/   
+    
+/*SE AGREGA TABLA CO_SALDOCONS_TO Y SE COMBIAN TODOS LOS CAMPOS DE SALDOS Y DEUDA A ESTA TABLA INC156981 */    
+    strcpy(szhQuery,"SELECT A.COD_CLIENTE ");
+    strcat(szhQuery," FROM  GE_CLIENTES A ");
+    strcat(szhQuery,"WHERE  EXISTS (SELECT 1 FROM CO_MOROSOS  C, CO_SALDOCONS_TO S ");
+    strcat(szhQuery," WHERE C.COD_CLIENTE = A.COD_CLIENTE  ");
+    strcat(szhQuery," AND   C.COD_CLIENTE = S.COD_CLIENTE  ");
+
+    if  (iIndNoAsignado == 0) {
+        strcat(szhQuery,"   AND C.COD_AGENTE  = '");
+        strcat(szhQuery,sthCobex.sCodAgente[iIndiceAgen]);
+        strcat(szhQuery,"' ");                
+    } else 
+    	if  (iIndNoAsignado == 1) {
+    		
+	        strcat(szhQuery,"   AND C.COD_AGENTE  = '");
+	        /*hqr revisar*/
+	        strcat(szhQuery,NOASIGNADO);
+	        strcat(szhQuery,"'");
+	        //strcat(szhQuery,"' OR C.COD_AGENTE NOT IN (SELECT COD_ENTIDAD FROM CO_ENTCOB))");        
+	       
+	       // strcat(szhQuery," AND NOT EXISTS (SELECT 1 FROM CO_ENTCOB WHERE COD_ENTIDAD = C.COD_AGENTE)");        
+	        
+	}
+
+    if( sthParam.dMontoDesde[iIndiceParam] > 0 ) {
+       sprintf(shMontoDesde,"%.2f",sthParam.dMontoDesde[iIndiceParam]);
+       strcat(szhQuery," AND S.SALDO_VENCIDO > ");
+       strcat(szhQuery,(shMontoDesde));
+    }
+    if (sthParam.dMontoHasta[iIndiceParam] > 0 ){
+       sprintf(shMontoHasta,"%.2f",sthParam.dMontoHasta[iIndiceParam]);
+       strcat(szhQuery," AND S.SALDO_VENCIDO < ");
+       strcat(szhQuery,(shMontoHasta));
+    }
+    /*HQR*/
+    if( sthCobex.iDiasDesde[iIndiceAgen] > 0 ) {
+       sprintf(shDiasDesde,"%d",sthCobex.iDiasDesde[iIndiceAgen]);
+       strcat(szhQuery," AND S.FEC_VENCIMIE <=  (TRUNC(SYSDATE) - (");
+       strcat(szhQuery,(shDiasDesde));
+       strcat(szhQuery,"- 1))");
+    }
+    if (sthCobex.iDiasHasta[iIndiceAgen] > 0 ){
+       sprintf(shDiasHasta,"%d",sthCobex.iDiasHasta[iIndiceAgen]);
+       strcat(szhQuery," AND S.FEC_VENCIMIE >= (TRUNC(SYSDATE) - ");
+       strcat(szhQuery,(shDiasHasta));
+       strcat(szhQuery,")");
+    }    
+    /*Fin HQR*/
+    if  (strcmp(sthParam.sCodCategoria[iIndiceParam],CARNULL)!= 0) {
+       strcat(szhQuery,"  AND C.COD_CATEGORIA = '");
+       strcat(szhQuery,sthParam.sCodCategoria[iIndiceParam]);
+       strcat(szhQuery,"'"); 
+    }   
+        
+    strcat(szhQuery,") ");
+    strcat(szhQuery," AND A.COD_CLIENTE >= 0"); //para que busque por la Pk    
+    strcat(szhQuery," AND NOT EXISTS (SELECT 1 FROM CO_GESTION_COBEX_TO D ");
+    strcat(szhQuery," WHERE A.COD_CLIENTE = D.COD_CLIENTE ");
+    strcat(szhQuery," AND D.FEC_TERMINO IS NULL ");  
+    strcat(szhQuery," AND COD_RANGO = '");
+    strcat(szhQuery, shCodRango);
+    strcat(szhQuery,"'");
+    strcat(szhQuery," AND D.TIP_GESTION = '");     
+    strcat(szhQuery,(szhMORA));
+    strcat(szhQuery,"') ");   
+    /* Inicio Incidencia 121721 - 18.01.2010 - MQG       */
+    /*strcat(szhQuery," AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = A.COD_CLIENTE) ");*/
+    strcat(szhQuery,"   AND NOT EXISTS (SELECT 1 FROM CO_COBEX_INMUNE_TO E WHERE E.COD_CLIENTE = A.COD_CLIENTE ");   
+    strcat(szhQuery,"                   AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA) ");   
+    /* Fin Incidencia 121721 - 18.01.2010 - MQG       */        
+        
+    if( sthParam.lCicloFact[iIndiceParam] > 0 ) {
+       sprintf(szhCicloFact,"%d",sthParam.lCicloFact[iIndiceParam]);
+       strcat(szhQuery,"  AND A.COD_CICLO = ");
+       strcat(szhQuery,szhCicloFact);
+    }
+        
+    if  (strcmp(sthParam.sCodSegmento[iIndiceParam],CARNULL)!= 0) {
+       strcat(szhQuery,"  AND A.COD_SEGMENTO = '");
+       strcat(szhQuery,sthParam.sCodSegmento[iIndiceParam]);
+       strcat(szhQuery,"'");
+    }
+/*
+    if( sthParam.iCodCategoria[iIndiceParam] > 0 ) {
+       sprintf(szhCategoria,"%d",sthParam.iCodCategoria[iIndiceParam]);
+       strcat(szhQuery,"  AND A.COD_CATEGORIA = ");
+       strcat(szhQuery,szhCategoria);
+    }*/ 
+
+    if  (strcmp(sthParam.sCodCalifica[iIndiceParam],CARNULL )!= 0) {
+       strcat(szhQuery,"  AND A.COD_CALIFICACION = '");
+       strcat(szhQuery,sthParam.sCodCalifica[iIndiceParam]);
+       strcat(szhQuery,"'");
+    }
+        
+    ifnTrazasLog( modulo, " szhQuery - [%s]", LOG05,szhQuery );
+
+    EXEC SQL PREPARE sql_cabecera_2 FROM :szhQuery;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR al PREPARAR QUERY Cur_ClientesMora", LOG05 );
+        return SQLCODE;
+    }
+
+    EXEC SQL DECLARE Cur_ClientesMora CURSOR FOR sql_cabecera_2;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR en DECLARE QUERY Cur_ClientesMora", LOG05 );
+        return SQLCODE;
+    }
+
+    EXEC SQL OPEN Cur_ClientesMora;
+    if (SQLCODE)
+    {
+    	ifnTrazasLog( modulo, "\t ERROR en OPEN QUERY Cur_ClientesMora", LOG05 );
+        return SQLCODE;
+    }
+
+    iSalir=FALSE;
+    while(!iSalir)
+    {    	
+        EXEC SQL
+        FETCH Cur_ClientesMora
+         INTO :lzhCod_Cliente;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+            ifnTrazasLog( modulo, "\tFETCH Cur_ClientesMora - %s", LOG00,SQLERRM );
+            iError = -1;
+            break;
+        }
+
+        if( SQLCODE == SQLNOTFOUND ) {
+            break;
+        }
+
+        ifnTrazasLog( modulo, "\nlzhCod_Cliente [%ld]", LOG05, lzhCod_Cliente );
+        
+        iRes       = 0;
+        iResValida = 0;
+        if(sthCobex.dMtoPorAsignar[iIndiceAgen] > 0) {      
+           
+            iResValida = ifnValidaCliente(lzhCod_Cliente, iIndiceAgen, &dhDeudaCliente);
+        	
+            /*----- si iResValida < 0 ------ error ------------------------------*/
+        	if  (iResValida < 0) {  
+                 iError = -1;
+                 break;
+            } /* end if  (iResValida < 0) */
+        	
+            /*----- si iResValida = 0 ------ asignar cliente --------------------*/
+        	if  (iResValida == 0) {  
+                 iRes = ifnAsignaCliente(lzhCod_Cliente, iIndiceAgen, iIndNoAsignado, dhDeudaCliente, sthParam.iHistorico[iIndiceParam], sthParam.lNumSecuencia[iIndiceParam]);
+        	     if  (iRes < 0) {  
+                      iError = -1;
+                      break;
+                 } /* end if  (iResValida < 0) */
+            } /* end if  (iResValida == 0) */
+
+            /*----- si iResValida = 1 ------ re-asignar cliente -----------------*/                 
+        	if  (iResValida == 1) {  
+        	     iRes = ifnReaAsignaCliente(lzhCod_Cliente, dhDeudaCliente);
+        	     if  (iRes < 0) {  
+                     iError = -1;
+                     break;
+                 }
+            } /* end if  (iResValida == 1) */
+
+            /*----- si iResValida = 2 ------ cliente sin deuda -----------------*/                         	     
+        	if  (iResValida == 2) {  
+                ifnTrazasLog( modulo, " Cliente no tiene deuda ...", LOG05 );            	   
+            } /* end if  (iResValida == 2) */        	      
+
+          	ifnTrazasLog( modulo, "\n - - - - - - - - - - - - - - - - - - - - - - - - ", LOG05);   
+        	              	            
+        } else {
+            break;	      
+        } /* if(sthCobex.dMtoPorAsignar[iIndiceAgen] > 0) */        
+
+    } /* fin while cursor Cur_ClientesMora */
+
+    EXEC SQL
+    CLOSE Cur_ClientesMora;
+    if( SQLCODE != SQLOK ) {
+       ifnTrazasLog( modulo, "\tCLOSE Cur_ClientesMora - %s", LOG00, SQLERRM );
+        iError = -1;
+    }
+				
+    EXEC SQL COMMIT;
+    if (SQLCODE) {
+        ifnTrazasLog( modulo, "\tError al realizar COMMIT - %s", LOG00, SQLERRM );
+        iError = -1;
+    }                            
+	
+	return iError;
+} /* end ifnAsignaEntidad */
+
+
+/* ============================================================================= */
+/*  ifnReaAsignaCliente                                                          */
+/* ============================================================================= */
+int ifnReaAsignaCliente(long pCodCliente, double dDeudaCliente)
+{	
+   char  modulo[]="ifnReaAsignaCliente";
+   long  lhCodCliente  ;
+   int   iRes       = 0;
+   int   ihDiasMora    ;  
+   
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+   lhCodCliente = pCodCliente;       
+
+   ifnTrazasLog( modulo, " Cliente debe ser reasignado...", LOG05 );    
+            	               	   
+   iRes = ifnDiasMorosidad(lhCodCliente, &ihDiasMora);
+   if( iRes < 0 ) return -1;
+                
+   ifnTrazasLog( modulo, " ihDiasMora [%d]", LOG05, ihDiasMora );
+               
+   if (ihDiasMora > 0) {
+       iRes = ifnExisteClienteArray(lhCodCliente);
+       if (iRes == 1) {
+   	          sthClien.lCodCliente   [lIndClien] = lhCodCliente;
+              sthClien.dDeudaCliente [lIndClien] = dDeudaCliente;            	   
+   	          sthClien.iDiasMorosidad[lIndClien] = ihDiasMora;
+   	          sthClien.iProcesado    [lIndClien] = 0;
+   	          lIndClien = lIndClien + 1;
+       } /* end if (iRes == 1) */
+            	       
+   } else {
+         ifnTrazasLog( modulo, " Cliente no se encuentra moroso (2)...", LOG05 );            	   
+   } /* end if (ihDiasMora > 0) */
+            	          	           	
+   return 0;
+} /* end ifnReaAsignaCliente */
+
+
+/* ============================================================================= */
+/*  ifnAsignaCliente                                                             */
+/* ============================================================================= */
+int ifnAsignaCliente(long pCodCliente, int iAgente, int iNoAsignado, double dDeudaCliente, int iHistorico, long lNumSecuencia)
+{	
+   char  modulo[]="ifnAsignaCliente";
+   long  lhCodCliente    ;
+   int   iRes         = 0;
+   int   ihDiasMora      ;  
+   int   ihRegGestion = 0;
+   int   ihIndice        ;
+   int   i               ;
+   char  shEntidadGestion [6]; 
+   char  shEntidadAntigua [6];
+   char  shCodRango       [6]; 
+   
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);   
+   memset(shEntidadAntigua,0,sizeof(shEntidadAntigua));                   
+   memset(shCodRango      ,0,sizeof(shCodRango));                   
+                   
+   lhCodCliente = pCodCliente;                       	
+   ihIndice     = iAgente;
+   strcpy(shCodRango, sthCobex.sCodRango[ihIndice]);
+
+   iRes = ifnDiasMorosidad(lhCodCliente, &ihDiasMora);
+   if( iRes < 0 ) return -1;
+                
+   ifnTrazasLog( modulo, " ihDiasMora [%d]", LOG05, ihDiasMora );
+   ifnTrazasLog( modulo, " sthCobex.iDiasDesde [%d]", LOG05, sthCobex.iDiasDesde[ihIndice]);
+   ifnTrazasLog( modulo, " sthCobex.iDiasHasta [%d]", LOG05, sthCobex.iDiasHasta[ihIndice]);
+                
+   if (ihDiasMora > 0) {
+                                                              
+       if(( ihDiasMora >= sthCobex.iDiasDesde[ihIndice]) && ( ihDiasMora <= sthCobex.iDiasHasta[ihIndice]))  {
+    
+            if  (iNoAsignado == 0) {  
+       	         strcpy(shEntidadGestion, sthCobex.sCodAgente[iAgente]);
+       	         ihRegGestion = 1;  
+
+            } else { /* Clientes No Asignados */
+
+                 if  (iHistorico == 1) {  /* asignar entidad historica*/
+                	  iRes = ifnVerificaEmpresaAnterior(lhCodCliente, shEntidadAntigua);
+                      if( iRes < 0 ) return -1;
+                                      
+                 	  if (strcmp(shEntidadAntigua,CARNULL)==0)  { 
+           	              strcpy(shEntidadGestion, sthCobex.sCodAgente[ihIndice]);
+           	              ihRegGestion = 1;
+                      } else {
+                          for (i=0;i<=lIndCobex;i++)   {
+                               if ((strcmp(sthCobex.sCodAgente[i], shEntidadAntigua) == 0) || (strcmp(sthCobex.sCodRango[i] , shCodRango) == 0)) {
+                                   if(sthCobex.dMtoPorAsignar[i] > 0) {                            	
+      	                              strcpy(shEntidadGestion, shEntidadAntigua);
+      	                              /*i = ihIndice;*/
+      	                              ihIndice = i; /*hqr */
+           	                          ihRegGestion = 1;      	                              
+      	                           }
+      	                           break;
+                               } /* end if ((strcmp(sthCobex.sCodAgente[i],..*/
+                          } /* end for */                      
+    	              } /* end if (strcmp(shEntidadAntigua,CARNULL)==0) */
+      	                                    
+                 } /* end if  (iHistorico == 1) */
+                            	     
+                 if  (iHistorico == 0) {  
+         	          strcpy(shEntidadGestion, sthCobex.sCodAgente[ihIndice]);
+       	              ihRegGestion = 1;
+                            	                                 	                                	            
+          	     } /* end if (iHistorico == 0)*/
+                            	     
+            } /* end if  (iNoAsignado == 0) */
+                                                              
+            /* Registra Gestion de Cobranza */
+            if  (ihRegGestion == 1) {  
+
+                 iRes = ifnRegistraGestion(lhCodCliente,MORA,lNumSecuencia, shCodRango, shEntidadGestion);
+                 if( iRes < 0 ) return -1;
+                             
+                 sthCobex.dMtoUtilizado [ihIndice]= sthCobex.dMtoUtilizado [ihIndice] + dDeudaCliente;
+                 sthCobex.dMtoPorAsignar[ihIndice]= sthCobex.dMtoPorAsignar[ihIndice] - dDeudaCliente;  
+                                   
+                 iRes = ifnVerificaClienteArray(lhCodCliente);
+                                   
+            } /* end if  (ihRegGestion == 0) */ 
+                             
+       }  /* end if(( ihDiasMora >= sthCobex.iDiasDesde[iAgente].iDiasDesde  ) && ( ihDiasMora <= sthCobex.iDiasHasta[iAgente].iDiasHasta)) */   
+                    
+   } else {
+   	
+      ifnTrazasLog( modulo, " Cliente no se encuentra moroso (1)...", LOG05 );            	                   	                         
+      
+   } /* end if (ihDiasMora > 0) */                     
+                 	           	           	
+   return iRes;
+   
+} /* end ifnAsignaCliente */
+
+/* ============================================================================= */
+/*  ifnExisteClienteArray                                                        */
+/* ============================================================================= */
+int ifnExisteClienteArray(long pCodCliente)
+{	
+   char  modulo[]="ifnExisteClienteArray";
+   long  lhCodCliente  ;
+   int   iRes = 0;
+   int   i;
+   
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);   
+   ifnTrazasLog( modulo, "   lIndClien %ld", LOG09,lIndClien);                     
+   lhCodCliente = pCodCliente;              
+
+   for (i=0;i<=lIndClien;i++)   {
+      if (sthClien.lCodCliente[i] == lhCodCliente) {
+      	  iRes = 1;
+      	  break;
+      }
+   } /* end for */          	
+   ifnTrazasLog( modulo, "\n\tEn salida funcion %s", LOG09,modulo);   
+   return iRes;
+} /* end ifnExisteClienteArray */
+
+/* ============================================================================= */
+/*  ifnVerificaClienteArray                                                      */
+/* ============================================================================= */
+int ifnVerificaClienteArray(long pCodCliente)
+{	
+   char  modulo[]="ifnVerificaClienteArray";
+   long  lhCodCliente  ;
+   int   iError = 0;
+   int   i;
+   
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+   lhCodCliente = pCodCliente;              
+
+   for (i=0;i<=lIndClien;i++)   {
+      if (sthClien.lCodCliente[i] == lhCodCliente) {
+      	  sthClien.iProcesado[i] = 1;
+      	  break;
+      }
+   } /* end for */
+   
+   ifnTrazasLog( modulo, "\n\tEn salida funcion %s", LOG09,modulo);         	
+   return iError;
+} /* end ifnVerificaClienteArray */
+
+/* ============================================================================= */
+/*  ifnVerificaEmpresaAnterior                                                   */
+/* ============================================================================= */
+int ifnVerificaEmpresaAnterior(long pCodCliente, char *sEntidadAntigua)
+{	
+   char  modulo[]="ifnVerificaEmpresaAnterior";
+   int   iError = 0;      
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+   long     lhCodCliente    ;
+   char     shEntidadCob [6]; EXEC SQL VAR shEntidadCob IS STRING(6);      
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                         
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);                      
+   lhCodCliente = pCodCliente;              
+   
+   ifnTrazasLog( modulo, " lhCodCliente [%ld]", LOG09, lhCodCliente);                      
+                          
+   EXEC SQL                       
+   SELECT NVL(B.COD_AGENTE, '-1')
+     INTO :shEntidadCob
+     FROM CO_MOROSOS A, CO_HMOROSOS B, CO_ENTCOB D  
+    WHERE A.COD_CLIENTE = :lhCodCliente 
+      AND A.COD_CLIENTE = B.COD_CLIENTE 
+      AND B.FEC_HISTORICO = (SELECT MAX(FEC_HISTORICO) FROM CO_HMOROSOS C 
+                              WHERE C.COD_CLIENTE = B.COD_CLIENTE
+                                AND C.COD_AGENTE <> 'NO ASIGNADO')
+      AND B.COD_AGENTE = D.COD_ENTIDAD                                 
+      AND SYSDATE BETWEEN D.FEC_INI_VIGENCIA AND D.FEC_FIN_VIGENCIA;                                
+                                          
+   if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+	  ifnTrazasLog( modulo, "\t En SELECT B.COD_AGENTE - %s", LOG00, SQLERRM );
+	  return -1;				
+   }
+   
+   if( SQLCODE  == SQLNOTFOUND) {
+      strcpy(shEntidadCob, CARNULL); 
+   }   
+           	
+   strcpy(sEntidadAntigua, shEntidadCob); 
+
+   ifnTrazasLog( modulo, " sEntidadAntigua [%s]", LOG09, sEntidadAntigua);                      
+           	
+   return iError;
+} /* end ifnVerificaEmpresaAnterior */
+
+/* ============================================================================= */
+/*  ifnValidaCliente : Funcion valida si el cliente puede ser asignado a la      */
+/*  entidad de cobranza de turno                                                 */
+/* ============================================================================= */
+int ifnValidaCliente(long pCodCliente, int iIndAgen, double *dDeudaCliente)
+{	
+   char  modulo[]="ifnValidaCliente";
+   int   iError = 0;      
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+     long        lhCodCliente  ;
+     double      dhDeudaCliente;   
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                         
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG09,modulo);                      
+   lhCodCliente = pCodCliente;              
+   
+   ifnTrazasLog( modulo, " lhCodCliente [%ld]", LOG09, lhCodCliente);                      
+   
+   /*                       
+   if( !bfnGetSaldoVencido( lhCodCliente, &dhDeudaCliente ))	{   
+ 		 return -1;
+   }*/
+   if( (ifnDeudaCliente( lhCodCliente, &dhDeudaCliente )) < 0 )	{   
+ 		 return -1;
+   }
+
+   ifnTrazasLog( modulo, " sthCobex.dMtoPorAsignar [%.2f]", LOG09,sthCobex.dMtoPorAsignar[iIndAgen]);                      
+   ifnTrazasLog( modulo, " dhDeudaCliente [%.2f]", LOG09,dhDeudaCliente);                      
+
+   if(sthCobex.dMtoPorAsignar[iIndAgen] >=  dhDeudaCliente) {    	   
+       iError = 0;         	   
+       *dDeudaCliente = dhDeudaCliente;
+   } 
+   
+   if(sthCobex.dMtoPorAsignar[iIndAgen] <  dhDeudaCliente) {    	   
+       iError = 1;         	   
+       *dDeudaCliente = dhDeudaCliente;
+   } 
+
+   if(dhDeudaCliente == 0.0) {    	   
+       iError = 2;         	   
+       *dDeudaCliente = 0.0;
+   } 
+           	
+   return iError;
+} /* end ifnValidaCliente */
+
+/* ============================================================================= */
+/*  ifnDeudaCliente :                                                            */
+/* ============================================================================= */
+int ifnDeudaCliente(long pCodCliente, double *dDeuda)
+{	
+   char        modulo[]="ifnDeudaCliente";
+   int         iError = 0;                
+
+EXEC SQL BEGIN DECLARE SECTION;                                           
+     long        lhCodCliente  ;
+     double      dhDeudaCliente;   
+EXEC SQL END DECLARE SECTION;                                                 
+                                                                                         
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+   lhCodCliente = pCodCliente;              
+                    
+/* INC156981                        
+   EXEC SQL                       
+   SELECT DEU_VENCIDA
+     INTO :dhDeudaCliente
+     FROM CO_MOROSOS
+    WHERE COD_CLIENTE = :lhCodCliente;
+    
+*/ 
+  	
+     EXEC SQL                       
+    SELECT SALDO_VENCIDO
+      INTO :dhDeudaCliente
+      FROM CO_SALDOCONS_TO 
+     WHERE COD_CLIENTE = :lhCodCliente;
+          
+   if( SQLCODE != SQLOK) {
+	  ifnTrazasLog( modulo, "\t En SELECT SUM(DEU_VENCIDA) (2) - %s", LOG00, SQLERRM );
+	  return -1;				
+   }
+	           	
+   *dDeuda = dhDeudaCliente;
+   return iError;
+} /* end ifnDeudaCliente */
+
+/* Inicio Incidencia 121721 - 18.01.2010 - MQG  */
+/* ============================================================================= */
+/*  ifnLlenaCategoria                                                            */
+/* ============================================================================= */
+int ifnLlenaCategoria()
+{	
+   char  modulo[]="ifnLlenaCategoria";
+   int   iError = 0;    
+   int   iTotalRows=0 ;            
+                                                                                         
+   ifnTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);                      
+                       
+	EXEC SQL DECLARE CurCategoria CURSOR FOR
+    SELECT TO_NUMBER(COD_VALOR), DES_VALOR 
+      FROM CO_CODIGOS 
+     WHERE NOM_TABLA   = :szhGE_CLIENTES
+       AND NOM_COLUMNA = :szhCOD_CATEGORIA;
+          
+   if( SQLCODE != SQLOK) {
+	  ifnTrazasLog( modulo, "\t En CurCategoria - %s", LOG00, SQLERRM );
+	  return -1;				
+   }
+
+   EXEC SQL OPEN CurCategoria;
+   if ( SQLCODE ) {
+	  ifnTrazasLog( modulo, "OPEN CurCategoria %s ", LOG00, SQLERRM );
+	  return -1;
+   }
+    
+   EXEC SQL FETCH curCategoria
+    INTO :sthCategorias;
+                       
+   iTotalRows = SQLROWS;
+   if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+		ifnTrazasLog( modulo, "\tError FETCH curCategoria\n\t %s", LOG01, SQLERRM );
+		return -1; 
+   }
+	
+   EXEC SQL CLOSE curCategoria;
+   if( SQLCODE ) {
+	  ifnTrazasLog( modulo, "en CLOSE curCategoria : %s", LOG00, SQLERRM );
+	  return -1;
+   }
+   
+   lIndCateg  = iTotalRows;
+   return iError;
+} /* end ifnLlenaCategoria */
+
+/* ============================================================================= */
+/*  ifnBuscaCategoria                                                            */
+/* ============================================================================= */
+int ifnBuscaCategoria(long lIndice)
+{
+   int i; 
+   
+   for (i=0;i<=lIndCateg;i++)   {
+      if (strcmp(sthCategorias.sCodCategoria[i],sthParam.sCodCategoria[lIndice])==0)  { 
+      	  sthParam.iCodCategoria[lIndice] = sthCategorias.iCodCategoria[i];
+      	  break;
+      }
+   } /* end for */
+	
+   return 0; 
+   
+} /* end ifnBuscaCategoria*/      
+
+/* Fin  Incidencia 121721 - 18.01.2010 - MQG  */
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

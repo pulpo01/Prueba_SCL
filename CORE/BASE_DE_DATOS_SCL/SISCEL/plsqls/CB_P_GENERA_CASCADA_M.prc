@@ -1,0 +1,184 @@
+CREATE OR REPLACE PROCEDURE        CB_P_GENERA_CASCADA_M(fec_baja_prueba IN VARCHAR2)
+IS
+v_cont           NUMBER := 1;
+v_nue_periodo    DATE;
+v_periodo        DATE;
+v_entra_per      NUMBER;
+v_cont_per       NUMBER := 1;
+v_tabla          VARCHAR2(30):='CB_CASCADA_M';
+v_accion         VARCHAR2(2);
+v_sqlcode        VARCHAR2(10);
+v_sqlerrm        VARCHAR2(70);
+--
+CURSOR C1 IS
+       SELECT TIP_ACCION,
+              FEC_ORIGEN,
+              FEC_ACCION,
+              CANTIDAD
+       FROM CB_CASCADA_BAJA
+	   WHERE TIP_ACCION IN('ALTA', 'BAJAM')
+       ORDER BY FEC_ORIGEN DESC,
+                FEC_ACCION DESC;
+C1_CASCADA_BAJA          C1%ROWTYPE;
+--
+BEGIN
+DELETE FROM CB_CASCADA_M;
+OPEN C1;
+v_nue_periodo := TO_DATE('01013000','DDMMYYYY');
+--v_nue_periodo := '01013000';
+v_entra_per := 0;
+--
+LOOP
+   FETCH C1 INTO C1_CASCADA_BAJA;
+   EXIT WHEN C1%NOTFOUND;
+   IF C1_CASCADA_BAJA.FEC_ORIGEN <> v_nue_periodo AND v_cont_per < 38 THEN
+      IF v_cont_per < 37 THEN
+         v_accion := 'I1';
+         INSERT INTO CB_CASCADA_M (PER_ACTUAL,TOT_ALTA,MES_0,MES_1,MES_2,MES_3,MES_4,MES_5,MES_6,
+         MES_7,MES_8,MES_9,MES_10,MES_11,MES_12,MES_13,MES_14,MES_15,MES_16,MES_17,MES_18,MES_19,MES_20,
+         MES_21,MES_22,MES_23,MES_24,MAS_DE_24)
+         VALUES (C1_CASCADA_BAJA.FEC_ORIGEN,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+        v_cont_per := v_cont_per + 1;
+      ELSIF v_cont_per = 37 THEN
+         v_accion := 'I2';
+         INSERT INTO CB_CASCADA_M (PER_ACTUAL,TOT_ALTA,MES_0,MES_1,MES_2,MES_3,MES_4,MES_5,MES_6,
+         MES_7,MES_8,MES_9,MES_10,MES_11,MES_12,MES_13,MES_14,MES_15,MES_16,MES_17,MES_18,MES_19,MES_20,
+         MES_21,MES_22,MES_23,MES_24,MAS_DE_24)
+         VALUES (TO_DATE('19010101','YYYYMMDD'),0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+         v_cont_per := v_cont_per + 1;
+      END IF;
+      v_nue_periodo := C1_CASCADA_BAJA.FEC_ORIGEN;
+   END IF;
+   IF C1_CASCADA_BAJA.TIP_ACCION = 'ALTA' THEN
+      v_accion := 'U1';
+      UPDATE CB_CASCADA_M
+      SET TOT_ALTA = TOT_ALTA + C1_CASCADA_BAJA.CANTIDAD
+      WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+   ELSE
+      v_periodo := ADD_MONTHS(TO_DATE(TO_CHAR(SYSDATE,'YYYYMM')||'01','YYYYMMDD'),-1);
+      v_cont := 1;
+      LOOP
+      IF v_periodo = C1_CASCADA_BAJA.FEC_ACCION THEN
+         v_entra_per := 1;
+         v_accion := 'U2';
+         IF v_cont = 1 THEN
+	    UPDATE CB_CASCADA_M
+            SET MES_0 = MES_0 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'),C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 2 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_1 = MES_1 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 3 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_2 = MES_2 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 4 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_3 = MES_3 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 5 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_4 = MES_4 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 6 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_5 = MES_5 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 7 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_6 = MES_6 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 8 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_7 = MES_7 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 9 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_8 = MES_8 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 10 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_9 = MES_9 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 11 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_10 = MES_10 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 12 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_11 = MES_11 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 13 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_12 = MES_12 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 14 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_13 = MES_13 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 15 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_14 = MES_14 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 16 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_15 = MES_15 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 17 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_16 = MES_16 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 18 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_17 = MES_17 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 19 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_18 = MES_18 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 20 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_19 = MES_19 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 21 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_20 = MES_20 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 22 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_21 = MES_21 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 23 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_22 = MES_22 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 24 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_23 = MES_23 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont = 25 THEN
+            UPDATE CB_CASCADA_M
+            SET MES_24 = MES_24 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         ELSIF v_cont > 25 THEN
+            UPDATE CB_CASCADA_M
+            SET MAS_DE_24 = MAS_DE_24 + C1_CASCADA_BAJA.CANTIDAD
+            WHERE PER_ACTUAL = DECODE(v_cont_per, 38, TO_DATE('19010101','YYYYMMDD'), C1_CASCADA_BAJA.FEC_ORIGEN);
+         END IF;
+     END IF;
+     v_cont := v_cont + 1;
+     v_periodo := ADD_MONTHS(v_periodo,-1);
+     EXIT WHEN v_entra_per = 1;
+     END LOOP;
+     v_entra_per := 0;
+   END IF;
+END LOOP;
+COMMIT;
+EXCEPTION WHEN OTHERS THEN
+   v_sqlcode := sqlcode;
+   v_sqlerrm := sqlerrm;
+   ROLLBACK;
+END CB_P_GENERA_CASCADA_M;
+/
+SHOW ERRORS

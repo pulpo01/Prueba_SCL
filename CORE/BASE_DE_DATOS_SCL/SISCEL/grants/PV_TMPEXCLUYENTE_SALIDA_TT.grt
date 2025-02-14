@@ -1,0 +1,7 @@
+GRANT     SELECT                                                                ON PV_TMPEXCLUYENTE_SALIDA_TT  TO      SISCEL_SELECT
+/
+GRANT     SELECT, INSERT, UPDATE, DELETE               ON PV_TMPEXCLUYENTE_SALIDA_TT TO      SISCEL_ADMIN
+/
+GRANT     SELECT, INSERT, UPDATE, DELETE               ON PV_TMPEXCLUYENTE_SALIDA_TT TO      SISCEL_PV
+/
+

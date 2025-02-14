@@ -1,0 +1,263 @@
+/* ============================================================================= */
+/*
+    Tipo        :  ACCION
+    Nombre      :  OutBound.pc ("OUTBD"->szfnOutBound)
+    Descripcion :  Genera archivos con los abonados y el Monto de la deuda total y
+                   vencida de un cliente
+    Recibe      :  by Val -> Cod Cliente 
+    Devuelve    :  "NOSAL"-> El Cliente no registra saldo en la cartera.
+                   "OK"   -> La accion se ejecuto correctamente.
+    Autor       :  Modesto Aranda C.
+    Fecha       :  13 - Mayo - 2002 
+Modificacion    :  12-11-2004
+						 Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "OutBound.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* Envia   */
+/* ============================================================================= */
+char *szfnOutBound(FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+char   modulo[] = "szfnOutBound";
+int	 iError = 0, ii=0, iMsgGenerados = 0, rr, ik, ilarDir, iresta=0, ilargo=0, iexiste=0;
+char	 szhFecAux[9]="", szDirCli1[250], szComando[300]="", szPathCart[256]="";
+char   szEncabeza[501]="", szArchivoCart[256]="";
+static char 	szAux[9];
+double dMtoAux = 0.0 ;
+FILE   *fp;
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente           = 0  ;
+	char	szhDirClie[250]        = "" ;EXEC SQL VAR szhDirClie IS STRING (250);
+	char	szhNomClie[91]         = "" ;EXEC SQL VAR szhNomClie IS STRING (91);
+	char	szhTelClie[13]         = "" ;EXEC SQL VAR szhTelClie IS STRING (13);
+	char	szhCodCat[51]          = "" ;EXEC SQL VAR szhCodCat IS STRING (51);
+	char	szhCodOper[6]          = "" ;EXEC SQL VAR szhCodOper IS STRING (6);
+	long	lhCodCta               = 0 ;
+	long	lhNumCel               = 0 ;
+	long	lhNumDias				  = 0;
+	long  lhCodCat               =-1;
+	double dMtoSaldo = 0.0; 
+	double dhSaldoNoVenc = 0.0;	
+	
+	/* Vbles Bind */	
+	char  szh99999         [6];
+	char  szhNODEFINIDA   [11];
+	char  szhGE_CLIENTES  [12];
+	char  szhCOD_CATEGORIA[14];
+	char  szhCO_CARTERA   [11];
+	char  szhCOD_TIPDOCUM [13];
+	int   ihValor_cero   = 0  ;
+	int   ihValor_uno    = 1  ;
+	int   ihValor_dos    = 2  ;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+	
+	memset(szArchivoCart,'\0',sizeof(szArchivoCart));
+	memset(szPathCart,'\0',sizeof(szPathCart));
+   memset(szComando,'\0',sizeof(szComando));
+	lhCodCliente = lCliente;
+	strcpy(szh99999,"99999");
+	strcpy(szhNODEFINIDA   ,"NODEFINIDA");
+	strcpy(szhGE_CLIENTES  ,"GE_CLIENTES");
+	strcpy(szhCOD_CATEGORIA,"COD_CATEGORIA");
+	strcpy(szhCO_CARTERA   ,"CO_CARTERA");
+	strcpy(szhCOD_TIPDOCUM ,"COD_TIPDOCUM");
+          
+	/*-Obtiene datos del cliente-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT RTRIM(A.NOM_CLIENTE)||' '||NVL(RTRIM(A.NOM_APECLIEN1),' ')||' '||NVL(RTRIM(A.NOM_APECLIEN2),' ')
+	       ,NVL(A.TEF_CLIENTE1,' ')
+	       ,A.COD_CUENTA
+	       ,A.COD_CATEGORIA
+	       ,NVL(A.COD_OPERADORA,:szh99999)
+	INTO	 :szhNomClie, :szhTelClie, :lhCodCta, :lhCodCat, :szhCodOper					  
+	FROM   GE_CLIENTES A	      
+	WHERE  A.COD_CLIENTE = :lhCodCliente;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar tabla GE_CLIENTES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NODAT";   
+	}
+	
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{   
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) no esta en tabla GE_CLIENTES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NOCLI";   
+	}
+	/*-Obtiene categoria del cliente-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT NVL(MAX(DES_VALOR),:szhNODEFINIDA)
+	  INTO :szhCodCat
+	  FROM CO_CODIGOS 
+	 WHERE NOM_TABLA	 = :szhGE_CLIENTES
+	   AND NOM_COLUMNA = :szhCOD_CATEGORIA
+	   AND TO_NUMBER(COD_VALOR) = :lhCodCat;
+	   
+	if( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar tabla CO_CODIGOS  %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NOCAT";   
+	}
+	   
+	/*-Quita los espacios en blanco de las variables */
+	rtrim(szhNomClie);
+	rtrim(szhTelClie);
+	rtrim(szhCodCat);
+	rtrim(szhCodOper);
+	/* Obtine los saldos del cliente */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+    SELECT NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),:ihValor_cero),  NVL(TRUNC(SYSDATE)-TRUNC(MIN(FEC_VENCIMIE)),:ihValor_cero)
+    INTO :dMtoSaldo,
+		 :lhNumDias
+    FROM CO_CARTERA
+    WHERE COD_CLIENTE   = :lhCodCliente 
+    AND IND_FACTURADO = :ihValor_uno
+    AND	FEC_VENCIMIE < TRUNC(SYSDATE)
+	AND COD_TIPDOCUM NOT IN ( SELECT	TO_NUMBER(COD_VALOR)
+								FROM	CO_CODIGOS
+								WHERE	NOM_TABLA = :szhCO_CARTERA
+								AND		NOM_COLUMNA = :szhCOD_TIPDOCUM);	
+	if( sqlca.sqlcode != SQLOK  )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "SELECT FROM CO_CARTERA(1) (Cliente:%ld) : %s ",LOG02,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "ERCTA";
+    }
+
+    if( !dMtoSaldo )
+    {
+        ifnTrazaHilos( modulo,&pfLog, " El Cliente[%ld] No registra saldo en CO_CARTERA",LOG02,lhCodCliente);  
+        return "NOSAL";
+    }
+    
+	ifnTrazaHilos( modulo,&pfLog, "\t\tCliente:[%ld]-Saldo(vencido)[%f]",LOG05,lCliente,dMtoSaldo);
+    sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+    EXEC SQL 
+    SELECT NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),:ihValor_cero)
+      INTO :dhSaldoNoVenc
+      FROM CO_CARTERA
+     WHERE COD_CLIENTE   = :lhCodCliente 
+       AND FEC_VENCIMIE >= TRUNC(SYSDATE)
+	   AND COD_TIPDOCUM NOT IN (	SELECT	TO_NUMBER(COD_VALOR)
+									FROM	CO_CODIGOS
+									WHERE	NOM_TABLA = :szhCO_CARTERA
+									AND		NOM_COLUMNA = :szhCOD_TIPDOCUM);
+	if( sqlca.sqlcode != SQLOK  )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "SELECT FROM CO_CARTERA(2) (Cliente:%ld) : %s ",LOG02,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "ERCTA";
+    }
+	ifnTrazaHilos( modulo,&pfLog, "\t\tCliente:[%ld]-Saldo(no vencido)[%f]",LOG05,lCliente,dhSaldoNoVenc);
+
+	/*-Si no existe, crea el directorio del dia -*/
+	if (ifnSysDateYYYYMMDD(szAux, CXX)!=0) return "PND";
+	/*strcpy (szAux,(char *)szSysDate("YYYYMMDD"));  obtiene fecha actual */
+	sprintf( szPathCart,"%s/OutBound/%s\0", getenv("XPC_DAT"),szAux );
+	sprintf( szComando, "mkdir -p %s\0", szPathCart );
+	if (system (szComando)!=0)  /* no pudo crear el directorio */
+	{
+		fprintf (stderr,"Error al intentar crear directorio de CartaCob\n");
+		fflush  (stderr);
+		return "PND";
+	}
+	/* verifica si el cliente esta asociado a una operadora*/
+	if(strcmp(szhCodOper,"99999")==0)
+		sprintf( szArchivoCart,"%s/OutBound_%s.csv",szPathCart,szhCodCat);	
+	else
+		sprintf( szArchivoCart,"%s/OutBound_%s_%s.csv",szPathCart,szhCodOper,szhCodCat);
+		
+	ifnTrazaHilos( modulo,&pfLog, "\t\tCliente:[%ld] Operadora[%s]",LOG05,lCliente,szhCodOper);
+	ifnTrazaHilos( modulo,&pfLog, "\t\tarchivo[%s]",LOG05,szArchivoCart);
+
+	/* Se debe verificar si el archivo existe de lo contrario inserta los encabezados */
+  	memset(szComando,'\0',sizeof(szComando));
+   sprintf(szComando,"test -s %s\0", szArchivoCart );
+	iexiste=WEXITSTATUS(system(szComando));
+	
+	if((fp = fopen(szArchivoCart,"a")) == (FILE*)NULL )
+	{ 
+		fprintf (stderr,"Error al crear archivo de Cartas de Cobranza\n");
+		fflush  (stderr);
+		return "PND";    
+	}
+	  
+	/* Si archivo no existia insertar los encabezados */
+  	if (iexiste)
+	{  
+		fprintf(fp,"COD_CLIENTE,NOMBRE,NRO_CEL,NRO_CONTACTO,COD_CTA,DEUDA_VENCIDA,DEUDA_TOTAL,DIAS_DE_MOROSIDAD\n");
+	}	
+	/*-Obtine el numero del celular de uno de los abonados del cliente-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+    SELECT A.NUM_CELULAR
+      INTO :lhNumCel
+      FROM GA_ABOCEL A
+     WHERE A.COD_CLIENTE = :lhCodCliente
+       AND A.COD_SITUACION = (SELECT MIN(COD_SITUACION)
+                              FROM  GA_ABOCEL B
+                              WHERE B.COD_CLIENTE = A.COD_CLIENTE)
+       AND ROWNUM < :ihValor_dos;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al recuperar Abonados %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "ERABO";   
+	}
+	fprintf(fp,"%ld,%s,%ld,%s,%ld,%.*f,%.*f,%ld\n",lhCodCliente
+												  ,szhNomClie
+												  ,lhNumCel
+												  ,szhTelClie
+												  ,lhCodCta
+												  ,pstParamGener.iNumDecimal,dMtoSaldo
+												  ,pstParamGener.iNumDecimal,dMtoSaldo+dhSaldoNoVenc
+												  ,lhNumDias);
+
+
+	ifnTrazaHilos( modulo,&pfLog, "\t\tCliente:[%ld]-Saldo(despues)[%f]",LOG05,lCliente,dMtoSaldo+dhSaldoNoVenc);
+	fclose(fp);
+			
+	return "OK";
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

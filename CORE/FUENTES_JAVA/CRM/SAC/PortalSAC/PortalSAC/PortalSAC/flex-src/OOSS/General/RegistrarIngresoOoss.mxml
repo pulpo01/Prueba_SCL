@@ -1,0 +1,645 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="900" height="475" initialize="init();" xmlns:ns1="Cliente.*" alpha="1.0" backgroundAlpha="1.0">
+
+
+	<mx:Script>
+	<![CDATA[
+		import com.as3xls.xls.style.XFormat;
+		import mx.formatters.NumberBase;
+		import mx.formatters.NumberFormatter;
+		import user.libreria.clases.UtilDataGrid;
+		import generated.webservices.orquestador.GetDetalleClienteResultEvent;
+		import mx.messaging.channels.StreamingAMFChannel;
+		import mx.states.SetProperty;
+	
+		import mx.core.Application;
+		import mx.controls.Alert;
+		import mx.rpc.events.FaultEvent;
+		import mx.collections.ArrayCollection;
+		import mx.utils.ArrayUtil;
+		import mx.managers.PopUpManager;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import flash.display.DisplayObject;
+		
+		import generated.webservices.orquestador.*;
+		import user.libreria.clases.StringUtil;
+		
+		import mx.events.ModuleEvent;
+		import mx.events.CloseEvent;		
+	    import mx.modules.ModuleManager;
+	   	import mx.modules.IModuleInfo;
+	   	import mx.collections.XMLListCollection;
+		import user.libreria.clases.UtilDataGrid;
+		
+		public var searchingPopUpView:Class = BarraDeProgreso2;
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject;
+		public var wsORQ:WSSEGPortal = new WSSEGPortal();
+
+		
+		// Para la impresion en pdf
+		public var anchoColsGrid:Array = new Array();
+		
+		public static var tipo:String = "";
+		public static var numAbonaGrilla:Number = 0;
+			
+		[Bindable]
+		public var dsGrid:Array = new Array();
+		
+		private var xmlString:String;
+
+		[Bindable]
+        private var company:XML;
+              
+        [Bindable]
+        private var companyData:XMLListCollection;
+
+
+		[Embed(source="/recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class; 		
+
+		// --------------------------------------------------------------------------------
+		
+		private function getError(event:FaultEvent):void    {
+			        
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {
+				
+				/*
+				var mensaje:String = new String();
+				mensaje = event.fault.faultString + "\n" + event.fault.faultDetail;
+		     	Alert.show(mensaje, "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	  		}
+	     	
+		} // getError
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getCliente(event:ObtenerListDatosAbonadosResultEvent):void	{
+		
+			PopUpManager.removePopUp(popUpWindow);
+			
+			if (event.result.arrayAbonados != null)	{
+				
+				//Largo del arreglo
+				var largo:Number = event.result.arrayAbonados.length;
+				
+				//Se incia el DTO
+				[ArrayElementType("AbonadoDTO")]
+				var abonadoClienteDTO:AbonadoDTO = new AbonadoDTO();
+				
+				for(var i:int=0; i < largo; i++){
+					abonadoClienteDTO = event.result.arrayAbonados[i];
+					break;
+				}
+				
+				dsGrid = new Array(abonadoClienteDTO);
+				
+				//Se carga los datos del arbol
+				cargarArbol();
+				
+			}else{
+				
+				Alert.show( "El sistema no ha podido cargar los datos del cliente", 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+			}
+			
+		} // getCliente  
+					
+		// --------------------------------------------------------------------------------
+		
+		private function getAbonado(event:ObtenerDatosAbonadoResultEvent):void	{
+		
+			PopUpManager.removePopUp(popUpWindow);
+
+			if ( event.result.numAbonado != 0 && event.result.numCelular != 0  )	{
+
+				[ArrayElementType("AbonadoDTO")]
+				var abonadoDTO:AbonadoDTO = new AbonadoDTO();
+				
+				//Se guarda el numero de abonado en una variable de la clase
+				numAbonaGrilla = event.result.numAbonado;
+				
+				abonadoDTO.numAbonado = event.result.numAbonado;
+				abonadoDTO.numCelular = event.result.numCelular;
+				abonadoDTO.nomUsuario = event.result.nomUsuario;
+					
+				dsGrid = new Array(abonadoDTO);
+				
+				//Se carga los datos del arbol
+				cargarArbol();
+					
+			}else{
+	
+				Alert.show( "El sistema no ha podido cargar los datos del abonado", 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+					
+			}
+			
+			
+		} // getAbonado  
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getCuenta(event:ConsultaCuentaResultEvent):void	{
+		
+			PopUpManager.removePopUp(popUpWindow);
+			
+			if (event.result.arrayAbonados != null)	{
+				//Largo del arreglo
+				var largo:Number = event.result.arrayAbonados.length;
+				
+				//Se incia el DTO
+				[ArrayElementType("AbonadoDTO")]
+				var abonadoCuentaDTO:AbonadoDTO = new AbonadoDTO();
+				
+				for(var i:int = 0; i < largo; ++i){
+					abonadoCuentaDTO = event.result.arrayAbonados[i];
+					break;
+				}
+				
+				dsGrid = new Array(abonadoCuentaDTO);
+				
+				//Se carga los datos del arbol
+				cargarArbol();
+				
+			}else{
+				Alert.show( "El sistema no ha podido cargar los datos de la cuenta", 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+							
+			}
+			
+		} // getCuenta  					
+
+		// --------------------------------------------------------------------------------	
+		private function closeHandler(e:CloseEvent):void	{
+			cerrar();	
+		} // closeHandler
+		// --------------------------------------------------------------------------------	
+		
+		private function executeWS(nivel:String):void	{
+	
+		    popUpParent = Application.application.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+
+			var nomUsuario:String = Application.application.usuario.username;
+			var codEvento:String = Application.application.codEvento; 
+
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));			
+			switch(nivel)	{
+				case "Cuenta":
+					//Llamado WS particular consultaCuenta
+					wsORQ.addconsultaCuentaEventListener(getCuenta);
+					wsORQ.consultaCuenta(Application.application.ctaSelect); //Codigo de cuenta
+					break;
+				case "Cliente":
+					//Llamado WS particular obtenerListDatosAbonados
+					wsORQ.addobtenerListDatosAbonadosEventListener(getCliente);
+					wsORQ.obtenerListDatosAbonados(Application.application.cliSelect); //Codigo cliente
+					break;
+				case "Abonado":
+					//Llamado WS particular obtenerDatosAbonado
+					wsORQ.addobtenerDatosAbonadoEventListener(getAbonado);
+					wsORQ.obtenerDatosAbonado(Application.application.aboSelect); //Numero de abonado
+					
+			} // switch
+			
+		} // executeWS
+
+		// --------------------------------------------------------------------------------			
+	  	
+	  	private function init():void {
+	  		
+	  		searchingPopUpView;
+	  		
+	  		if( Application.application.aboSelect != null ){
+			  	panel.title = panel.title + "Registrar Consulta " + tipo;  	
+		  		executeWS(tipo);
+	  		}else if( Application.application.cliSelect != null ){
+	  			panel.title = panel.title + "Registrar Consulta " + tipo;  	
+		  		executeWS(tipo);
+	  		}else if(Application.application.ctaSelect != null ){
+	  			panel.title = panel.title + "Registrar Consulta " + tipo;  	
+		  		executeWS(tipo);
+	  		}else{
+	  			Alert.show( "Existen dificultades con datos de sesión", "Advertencia");
+	  			cerrar();
+	  		}
+				
+		} // init
+	
+		// --------------------------------------------------------------------------------
+		
+		private function cerrar():void {
+			PopUpManager.removePopUp(this);
+		} // cerrar
+		
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 03/08/2010
+		// ------------------------------------------------------------------------------------------
+
+		private function changeCombo(combo:ComboBox):void	{
+	
+			txtFiltro.text = "";
+			ac.refresh();						
+			
+		} // changeCombo
+	
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 03/08/2010
+		// ------------------------------------------------------------------------------------------
+			 	
+		private function filtrar():void	{
+		
+			ac.filterFunction = filtroGrilla;
+			ac.refresh();
+		}
+			
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.1
+		// Fecha : 17/12/08
+		// ------------------------------------------------------------------------------------------
+		
+		private function filtroGrilla(item:Object):Boolean 	{
+			var campo:String;
+
+			switch(cboFiltro.selectedItem.data)	{
+				case 1:
+					if (item.descripcion == null)
+						return false;		
+	
+					if  (item.descripcion.toString().toUpperCase().indexOf(txtFiltro.text.toUpperCase()) >= 0)	
+						return true;
+					else
+						return false;
+							
+				case 2:
+					if (item.fechaEjecucion == null)
+						return false;		
+									
+					if  (item.fechaEjecucion.toString().toUpperCase().indexOf(txtFiltro.text.toUpperCase()) >= 0)	
+						return true;
+					else
+						return false;
+				
+			} // switch
+				 
+			return true;
+			 
+		} // procesarFiltro
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 06/08/2010
+		// ------------------------------------------------------------------------------------------
+			
+		private function cargarArbol():void	{
+
+			consultaAtencionExecuteWS();
+							
+		} // cargarArbol
+							
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 06/08/2010
+		// ------------------------------------------------------------------------------------------		
+						
+		private function removeEmployee():void {
+                var node:XML = XML(tree.selectedItem);
+                if( node == null ) return;
+                if( node.localName() != "employee" ) return;
+            
+                var children:XMLList = XMLList(node.parent()).children();
+                for(var i:Number=0; i < children.length(); i++) {
+                    if( children[i].@name == node.@name ) {
+                        delete children[i];
+                    }
+                }
+            }
+
+
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 06/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function addEmployee():void {
+                var newNode:XML = <employee/>;
+                //newNode.@name = empName.text;
+                var dept:XMLList =company.department.(@title == "Operations");
+                if( dept.length() > 0 ) {
+                    dept[0].appendChild(newNode);
+                    //empName.text = "";
+                }
+            }
+
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 06/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		 private function treeLabel(item:Object):String {
+                var node:XML = XML(item);
+                if( node.localName() == "department" )
+                    return node.@title;
+                else
+                    return node.@name;
+            }
+
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 09/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function consultaAtencionExecuteWS():void	{
+
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));			
+			wsORQ.addconsultaAtencionEventListener(getDataConsultaAtencion);
+			wsORQ.consultaAtencion();
+
+			
+		} // executeWS
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 09/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function getDataConsultaAtencion(event:ConsultaAtencionResultEvent):void	{
+		
+			PopUpManager.removePopUp(popUpWindow);
+
+			if (event.result.arrayAtencionCliente != null)	{
+	
+				var largo:Number = event.result.arrayAtencionCliente.length;
+				var i:int = 0;
+				var atencionClienteDTO:AtencionClienteDTO;
+				var xmlStringInt:String = '';
+				var exisNivel:String = 'NO';
+				var indObser:String = 'N';
+
+				xmlString = ' <list> ';
+
+
+				for( i = 0; i < largo; i++ ) {
+				 	
+				 	atencionClienteDTO = new AtencionClienteDTO();
+	                atencionClienteDTO = event.result.arrayAtencionCliente[i];
+	                
+	                if( atencionClienteDTO.numNivel == 0 ){
+	                	
+	                	if(atencionClienteDTO.indObserv == 'S'){
+	               			indObser = 'S';
+	               		}
+	                	break;	
+	                }
+				 	
+				}
+				
+
+			    for( i = 0; i < largo; i++ ) {
+  	
+					atencionClienteDTO = new AtencionClienteDTO();
+	                atencionClienteDTO = event.result.arrayAtencionCliente[i];
+	                
+	                if( atencionClienteDTO.numNivel == 0 && exisNivel == 'NO' ){
+	               		xmlString = xmlString + ' <department title="'+atencionClienteDTO.desAtencion+'" code="'+atencionClienteDTO.codAtencion+'" indObs="'+atencionClienteDTO.indObserv+'" > ';
+	               		exisNivel == 'SI';
+	               		
+	        		}else{
+	        			
+	        			if(indObser == 'S'){
+	        				xmlStringInt = xmlStringInt + ' <employee name="'+atencionClienteDTO.desAtencion+'" code="'+atencionClienteDTO.codAtencion+'" indObs="S"/> ';
+	        			}else{
+	        				xmlStringInt = xmlStringInt + ' <employee name="'+atencionClienteDTO.desAtencion+'" code="'+atencionClienteDTO.codAtencion+'" indObs="'+atencionClienteDTO.indObserv+'"/> ';
+	        			}
+	        			
+	        		}
+		
+				}
+
+				xmlString = xmlString + xmlStringInt + ' </department>  </list> ';
+				company = new XML(xmlString);
+              
+            	companyData = new XMLListCollection(company.department);
+				
+				
+			}else{
+			
+				Alert.show( event.result.desError, 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+			}
+			
+		} // getCuenta  
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 11/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function guardarRegConsulta():void	{
+
+			 var node:XML = XML(tree.selectedItem);
+			 var codAten:String;
+			 	
+			 	
+             if( node == null ){  
+             	Alert.show( "Debe seleccionar un tipo de registro de atención cliente", "Advertencia");
+             	return;
+             }
+             
+             
+             if( node.localName() != "employee" ){
+             	Alert.show( "Debe seleccionar un tipo de registro de atención cliente", "Advertencia");
+             	
+             	return;
+             }
+
+             var children:XMLList = XMLList(node.parent()).children();
+             for(var i:Number=0; i < children.length(); i++) {
+             	if( children[i].@name == node.@name ) {
+                    codAten = children[i].@code;
+                    if(children[i].@indObs == 'S' && txtObsReCon.text == ''){
+                    	Alert.show( "Debe ingresar una observación", "Advertencia");
+             			return;
+                    }
+                }
+             }
+            
+			// Llenado de los datos de guardar consulta
+			var resgistroAtencionDTO:ResgistroAtencionDTO = new ResgistroAtencionDTO();
+			
+			var hoy:Date = new Date();
+			var mes:Number = hoy.getMonth() + 1;
+			var fechaCompl:String = hoy.getDate()+'/'+mes+'/'+hoy.getFullYear()+' '+hoy.getHours()+':'+hoy.getMinutes()+':'+hoy.getSeconds();
+			
+			resgistroAtencionDTO.codAtencion = parseInt(codAten);
+			resgistroAtencionDTO.fechaIni = Application.application.sesionDateOOSS;
+			resgistroAtencionDTO.fechaFin = fechaCompl;
+			resgistroAtencionDTO.nomUsua = Application.application.parameters.usuario;
+			resgistroAtencionDTO.numAbonado = numAbonaGrilla;
+			resgistroAtencionDTO.observacion = txtObsReCon.text;
+ 			
+			guardaConsultaExecuteWS(resgistroAtencionDTO);
+			
+		} // executeWS
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 11/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function guardaConsultaExecuteWS(resgistroAtencionDTO:ResgistroAtencionDTO):void	{
+
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));	
+			wsORQ.addingresoAtencionEventListener(getDataGuardarConsulta);
+			wsORQ.ingresoAtencion(resgistroAtencionDTO);
+			
+		}
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 11/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function getDataGuardarConsulta(event:IngresoAtencionResultEvent):void	{
+
+			if(event.result.codRetorno == 0){
+
+				Alert.show( "El registro de la consulta ha sido guardado satisfactoriamente.", 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+			}else{
+
+				Alert.show( "El sistema no ha podido registrar la atención ingresada.", 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							closeHandler,
+							iconWarning,
+							mx.controls.Alert.OK );
+			}
+			
+		}
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L.
+		// Version : 1.0
+		// Fecha : 12/08/2010
+		// ------------------------------------------------------------------------------------------	
+		
+		private function limpiar():void	{
+			
+			txtObsReCon.text = "";
+			tree.selectedItem = false;
+		}
+		
+		
+		]]>
+	</mx:Script>
+	
+	<mx:Panel id="panel" width="890" height="454" layout="absolute" title="&gt;&gt; " fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="1" alpha="1.0" borderAlpha="1.0" verticalCenter="-4" fontWeight="bold" color="#000000">
+		<mx:Button x="757" y="362" label="Limpiar ítems " width="103" height="31" fontSize="10" click="limpiar()">
+		</mx:Button>
+
+		<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="850" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="33" x="10" y="10" paddingRight="10" horizontalGap="10" visible="false">
+			<mx:Image>
+				<mx:source>recursosInterfaz/imagenes/iconos/filtro.gif</mx:source>
+			</mx:Image>
+			<mx:TextInput fontSize="10" maxChars="50" id="txtFiltro" width="149" change="filtrar()" height="26" fontWeight="normal" fontStyle="normal" styleName="TextInput"/>
+			<mx:ComboBox labelField="label" id="cboFiltro" width="165" change="changeCombo(cboFiltro)" fontWeight="normal">
+			 <mx:ArrayCollection>
+			          <mx:Object icon="recursosInterfaz/imagenes/iconos/buscar.png" label="No aplicar filtro" data="0"/>
+			          <mx:Object label="Fecha Ejecución" data="2"/>
+			          <mx:Object label="Descripción" data="1"/>
+			      </mx:ArrayCollection>
+			</mx:ComboBox>
+			<mx:VRule/>
+			
+			<mx:Image x="739" y="11" source="recursosInterfaz/imagenes/iconos/excel.gif" id="imgCopy" toolTip="Transformar a Excel" click="UtilDataGrid.copyDatagridToClipboard(grid, 'RegistrarConsulta')"/>
+		</mx:HBox>
+
+		<mx:AdvancedDataGrid sortExpertMode="true" dataProvider="{ac}" id="grid" width="850" fontSize="10" textAlign="left" height="81"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" x="10" y="10" selectionMode="multipleRows" fontWeight="normal">
+			<mx:columns>
+				<mx:AdvancedDataGridColumn headerText="Núm. Abonado" dataField="numAbonado" paddingLeft="5" textAlign="center" width="100"/>
+				<mx:AdvancedDataGridColumn headerText="Núm. Terminal" dataField="numCelular" paddingLeft="5" width="200"  textAlign="center"/>
+				<mx:AdvancedDataGridColumn headerText="Usuario (nombre y apellidos)" dataField="nomUsuario" paddingRight="5" textAlign="center" width="120"/>		
+			</mx:columns>
+		</mx:AdvancedDataGrid>
+		<mx:Button x="646" y="362" label="Guardar" width="103" height="31" fontSize="10" click="guardarRegConsulta()">
+		</mx:Button>
+
+		<mx:Tree id="tree" dataProvider="{companyData}" labelFunction="treeLabel" width="850" x="10" y="113" height="196"  fontWeight="normal">
+	    </mx:Tree>
+
+		<mx:Label x="10" y="332" text="Observación" styleName="TextoCampo"/>
+		<mx:TextArea x="91" y="317" width="544" height="76" id="txtObsReCon" restrict="0-9A-Za-zñáéíóúÁÉÍÓÚü \-_@" maxChars="255" fontWeight="normal"></mx:TextArea>
+		<mx:Label x="317" y="95" text="Registro de atención" width="236" textAlign="center" fontSize="12" styleName="TituloCampo" fontWeight="bold"/>
+
+		
+	</mx:Panel>
+	
+	<mx:ArrayCollection id="ac" source="{ArrayUtil.toArray(dsGrid)}" />
+	
+
+	
+		
+</mx:Module>

@@ -1,0 +1,17 @@
+package com.tmmas.scl.framework.serviceDomain.businessObject.dao.interfaces;
+
+import com.tmmas.scl.framework.productDomain.dataTransferObject.EspecProductoDTO;
+import com.tmmas.scl.framework.productDomain.dataTransferObject.ProductoOfertadoListDTO;
+import com.tmmas.scl.framework.serviceDomain.dataTransferObject.EspecProvisionamientoListDTO;
+import com.tmmas.scl.framework.serviceDomain.dataTransferObject.EspecServicioClienteListDTO;
+import com.tmmas.scl.framework.serviceDomain.exception.ServiceSpecEntitiesException;
+
+public interface EspecificacionServicioClienteDAOIT {
+	
+	public EspecServicioClienteListDTO obtenerEspecificacionServicioCliente (EspecProductoDTO especProducto) throws ServiceSpecEntitiesException;
+	
+	public EspecProvisionamientoListDTO obtenerEspecificacionesProvisionamiento (EspecServicioClienteListDTO espServCliList) throws ServiceSpecEntitiesException;
+	
+	public ProductoOfertadoListDTO obtenerEspecificacionServicioLista(ProductoOfertadoListDTO prodOferList) throws ServiceSpecEntitiesException;
+
+}

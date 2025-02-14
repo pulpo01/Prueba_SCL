@@ -1,0 +1,1103 @@
+/* ***************************************************************************/
+/*            "FaSched.pc"                                                   */
+/*       30 de Noviembre de 1999                                             */
+/*        Roy Barrera Richards                                               */
+/*                                                                           */
+/*           Modificaciones                                                  */
+/*13-Diciembre-1999 : Se crea Administrador de Colas.                        */
+/*19-Enero-2000 : Trabajo sobre archivo Log.                                 */
+/*              Defino Log por defecto 3                                     */
+/*                Disminuyo el tamaño cuando es LOG03                        */
+/*               Cada nuevo día genera nuevo directorio y archivo de Log     */
+/*****************************************************************************/
+/*****************************************************************************/
+/* ***************************************************************************/
+/* *    Incorporacion de un nuevo parametro en la llamada                  * */
+/* *            a las sgte funcion:                                        * */
+/* *        bfnCambiaEstCola                                               * */
+/* *    Patricio Gonzalez G.    01-02-2002                                 * */
+/* ************************************************************************* */
+/* ************************************************************************* */
+/* * Se corrige el uso de cod_aplic en duro, al uso parámetrico del mismo. * */
+/* *  FAedo. 07/03/2002                                                    * */
+/* ************************************************************************* */
+/*****************************************************************************/
+
+#include "FaSched.h"
+
+
+				
+				
+EXEC SQL INCLUDE sqlca;
+
+long pid;
+char szHoyDia[9]="";
+
+/* 20041013 CH-200409082192 Se declaran funciones nuevas */
+int  iVerificaColasEnEjecucion();
+int szBuscaExe(int, char *, char *);
+int iBuscaProceso(char *);
+char *ltrim(char *);
+char *rtrim(char *);
+char *alltrim(char *);
+
+/* ******************************************************************************** */
+/* main : Rutina principal */
+/* ******************************************************************************** */
+int main(int argc,char *argv[])
+{
+    char modulo[]="main";
+
+    int  sts;
+    char szOraAccount[32]="";
+    char szOraPasswd[32]="";
+    char status[16]="";
+
+    pid=getpid();
+    strcpy(szHoyDia,cfnGetTime(2)); /* YYYYMMDD */
+
+    fprintf( stdout, "\n******* FaSched version " __DATE__ " " __TIME__ ". *******\n%s\n** pid : [ %8ld ] **\n************************\n",
+             cfnGetTime(1),pid );
+
+    sts = ifnValidaParametros(argc,argv,szOraAccount, szOraPasswd);
+
+
+    if ( sts != 0 ) return sts;
+
+    sts = ifnAbreArchivosLog();
+
+
+    if ( sts != 0 ) return sts;
+
+
+    sts = ifnCicloColasProc(szOraAccount,szOraPasswd);
+    if ( sts != 0 )
+    {   sprintf(status,"Anormal [%d]",sts);     }
+    else
+    {   sprintf(status,"Controlado");   }
+
+    vDTrazasError(modulo,"%s[%ld] << Termino %s del FaSched  version " __DATE__ " " __TIME__ ">>\n", LOG03, cfnGetTime(1),pid,status);
+    vDTrazasLog  (modulo,"%s[%ld] << Termino %s del FaSched  version " __DATE__ " " __TIME__ ">>\n", LOG03, cfnGetTime(1),pid,status);
+    fprintf(stdout,"\n");
+    return sts;
+
+} /* main */
+
+
+/* ******************************************************************************** */
+/* ifnValidaParametro : verifica los parametros de la invocacion  */
+/* ******************************************************************************** */
+int ifnValidaParametros ( int argc, char *argv[], char *szOraAccount, char *szOraPasswd)
+{
+
+    extern char *optarg;
+    extern int optind, opterr, optopt;
+    char opt[] = ":u:l:h";
+    int iOpt=0;
+    char *psztmp = "";
+    char szUser [64] = "";
+
+    int  Userflag=FALSE;
+    int  Logflag=FALSE;
+
+    opterr=0;
+
+    stStatus.LogNivel=0;  /* 19-Enero-2000 */
+
+    if(argc == 1)
+    {
+        stStatus.LogNivel=LOGDEFAULT;
+        fprintf (stdout,"\n%s Iniciando FaSched con valores por defecto ( -u/ -l%d )\n"
+                       ,cfnGetTime(1),stStatus.LogNivel);
+        return 0;/* validacion ok */
+    }
+
+    while ( (iOpt = getopt(argc, argv, opt) ) != EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':
+                if(Userflag==FALSE)
+                {
+                    strcpy(szUser, optarg);
+                    Userflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return -2;
+                }
+                break;
+
+
+            case 'l':
+                if(Logflag==FALSE)
+                {
+                    stStatus.LogNivel = atoi(optarg);
+                    Logflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return -2;
+                }
+                break;
+
+            case 'h':
+                fprintf (stdout,"\n<< Ayuda >>\n%s\n",szUsage);
+                return -1;
+
+            case '?':
+                fprintf(stdout,"\n<< Error: opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+                return -3;
+
+            case ':':
+                fprintf(stdout,"\n<< Error: falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+                return -4;
+
+        }/* endswitch */
+
+    } /* enwhile */
+
+
+    if(Userflag==TRUE)
+    {
+        if ( (psztmp=(char *)strstr(szUser,"/") )==(char *)NULL )
+        {
+            fprintf (stderr,"\n<< Error : usuario no valido. Requiere \"/\" >>\n%s\n",szUsage);
+            return -5;
+        }
+        else
+        {
+            strncpy (szOraAccount,szUser,psztmp-szUser);
+            strcpy  (szOraPasswd, psztmp+1);
+        }
+    }
+
+    if (stStatus.LogNivel <= 0) stStatus.LogNivel = LOGDEFAULT;
+
+    return 0; /* Validacion ok */
+
+} /* ifnValidaParamatros */
+
+
+/* ******************************************************************************** */
+/* ifnAbreArchivosLog : Crea para escritura o appendea archivos de Log y de Errores */
+/* ******************************************************************************** */
+int ifnAbreArchivosLog()
+{
+    char modulo[]="ifnAbreArchivosLog";
+
+    char *pathDir;
+    char szArchivo[32]="";
+    char szPath[256]="";
+    char szComando[128]="";
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"FaSched"); /* 'FaSched' */
+
+/*     pathDir=(char *)malloc(128);  */
+    pathDir=szGetEnv("XPF_LOG");
+    sprintf(szPath,"%s/FaSched/%s",pathDir,cfnGetTime(2)); /* '....log/FaSched/YYYYMMDD/' */
+    free(pathDir);
+
+    fprintf(stdout, "\nCrea Directorio Log  : %s\n", szPath);
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    fprintf(stdout, "\nCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+    sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+	
+/* 20041012 CH-200409082192 Se cierra antes de volver abrir */
+	if(stStatus.ErrFile!=NULL)
+		fclose(stStatus.ErrFile);
+
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )/* "wb+" */
+    {   fprintf(stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+        return -7;    }
+
+    vDTrazasError(modulo, "\n*** FaSched version " __DATE__ " " __TIME__ "***\n\n%s [%ld] << Abre Archivo de Errores >>\n", LOG04, cfnGetTime(1),pid);
+
+    sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+/* 20041012 CH-200409082192 Se cierra antes de volver abrir */
+	if(stStatus.LogFile!=NULL)
+		fclose(stStatus.LogFile);
+    if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) /* "wb+" */
+    {   fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+        vDTrazasError(modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+        return -8;    }
+
+    vDTrazasLog(modulo, "\n*** FaSched version " __DATE__ " " __TIME__ "***\n\n%s[%ld] << Abre Archivo de Log >>", LOG04, cfnGetTime(1),pid);
+    vDTrazasLog(modulo, "%s[%ld] << Inicio del FaSched >>" , LOG03, cfnGetTime(1),pid);
+
+    return 0;
+}
+
+
+/* ******************************************************************************** */
+/* ifnCicloColasProc : Se conecta y trabaja sobre la base de Datos */
+/* ******************************************************************************** */
+int ifnCicloColasProc( char *szOraAccount, char *szOraPasswd)
+{
+    char modulo[]="ifnCicloColasProc";
+
+     int num_elem,sts;
+    rg_fa_intqueueproc  stFaIntQueueProc;
+
+    vDTrazasLog(modulo,"\n*** FaSched version " __DATE__ " " __TIME__ "***\n\nUsuario : [%s]\n",LOG03,szOraAccount);
+    vDTrazasLog(modulo,"Pass    : [%s]\n",LOG03,szOraPasswd);
+
+    if (!fnOraConnect(szOraAccount,szOraPasswd))
+    {   vDTrazasError(modulo, "%s No Hay Conexion a la Base de Datos", LOG01,cfnGetTime(3));
+        return -10; }
+
+    vDTrazasLog(modulo,"%s[%ld] Conectado...", LOG03, cfnGetTime(3),pid);
+
+    sts=ifnVerificaEstadoScheduler();
+    if (sts < 0)      return -12;   /* Error */
+    else if(sts == 0) return -13;   /* FaSched desactivado antes de comenzar */
+
+    if (!bfnRegistraEjecucionActual())
+    {
+        if (!fnOraRollBackRelease())
+            vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                          LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+        return -14;
+    }
+    else
+    {   if (!fnOraCommit())
+        {   vDTrazasError(modulo,"%s En Commit\n%s\n",
+                        LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+            if (!fnOraRollBackRelease())
+                vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                              LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+            return -15;
+        }
+    }
+
+    while(1)
+    {
+
+        sts=ifnVerificaEstadoScheduler();
+        if (sts < 0)
+        {
+            return -16;
+        }
+        else if(sts == 0)
+        {
+            return 0;   /* 0: FaSched desactivado durante la ejecucion */
+        }
+
+
+        if (strcmp(cfnGetTime(2),szHoyDia)>0) /* 19-Enero-2000 */
+        {
+            fprintf(stderr,"\n entro a if \n");
+
+            strcpy(szHoyDia,cfnGetTime(2));
+            vDTrazasLog     ( modulo , "\n*** FaSched version " __DATE__ " " __TIME__ "***\n\n%s[%ld] - Fin del Dia - << Cerrando Archivo de Log >> "
+                        , LOG03, cfnGetTime(1),pid);
+            fclose(stStatus.LogFile);
+            vDTrazasError   ( modulo , "\n*** FaSched version " __DATE__ " " __TIME__ "***\n\n%s[%ld] - Fin del Dia - << Cerrando Archivo de Errores >> "
+                            , LOG03, cfnGetTime(1),pid);
+            fclose(stStatus.ErrFile);
+            if ( ifnAbreArchivosLog() != 0 ) return -17; /* Fallo Cambio Dia */
+        }
+
+        num_elem=ifnCargaHostArray(&stFaIntQueueProc);
+
+        if (num_elem < 0)  /* contiene el código del error producido */
+        {
+            vDTrazasError(modulo,"%s Al Cargar Host Array [%d]\n",LOG01, cfnGetTime(3),num_elem );
+            return num_elem ;
+        }
+        else if (num_elem > 0)
+        {
+            if (ifnRecorreHostArray(num_elem,&stFaIntQueueProc) < 0)
+            {
+                return -18;
+            }
+        }
+/*INICIO XO-200510030783 CJG
+		sleep(15);
+FIN XO-200510030783 CJG */		
+		sleep(1);/*XO-200510030783 CJG */		
+		iVerificaColasEnEjecucion();
+    }
+
+    return 0;
+
+} /* ifnAcessoOracle */
+
+
+
+/* ********************************************************************* */
+/* funcion ifnCargaHostArray() */
+/* ********************************************************************* */
+int ifnCargaHostArray(rg_fa_intqueueproc *pstFaIntQueueProc)
+{
+    char modulo[40]="ifnCargaHostArray";
+    int n=0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        rg_fa_intqueueproc  sthFaIntQueueProc;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog ( modulo,"%s[%ld] Recuperando colas ..."
+                , LOG04, cfnGetTime(3),pid);
+
+
+    EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT = 'yyyymmddhh24miss';
+
+    EXEC SQL DECLARE Cursor_FaIntQueueProc CURSOR FOR
+    SELECT  COD_MODGENER                ,
+        COD_PROCESO                 ,
+        NVL(COD_TIPPROC             ,'O'),
+        COD_ACTIVACION              ,
+        COD_PRIORIDAD               ,
+        COD_ESTADO                  ,
+        FEC_ESTADO                  ,
+        NVL(PID_PROCESO     ,0)     ,
+        NVL(NOM_USUARIO     ,' ')   ,
+        NVL(PAS_USUARIO     ,' ')   ,
+        NVL(COD_NIVLOG      ,3)     ,
+        COD_TIPINTERVALO            ,
+        NVL(NUM_SEGUNDOS    ,-1)    ,
+        NVL(COD_HORADIA     ,'-1')  ,
+        NVL(COD_HORAFECH,sysdate)   ,
+        NVL(COD_HORAVIGINI  ,'-1')  ,
+        NVL(COD_HORAVIGFIN  ,'-1')  ,
+        NVL(NUM_DELTAHORAS  ,0)     ,
+                NVL(COD_TIPUNINTER  ,0)     ,
+                COD_ESTADOC_ENT             ,
+                COD_ESTADOC_SAL             ,
+                COD_APLIC
+      FROM  FA_INTQUEUEPROC
+     WHERE  COD_ACTIVACION  = 'A'
+       AND  COD_ESTADO      = 1    /* wait */
+       AND  TO_CHAR(sysdate,'HH24:MI:SS')  between COD_HORAVIGINI and COD_HORAVIGFIN ;
+
+    if (sqlca.sqlcode)
+    {
+        vDTrazasError(modulo,"%s Al declarar cursor sobre FA_INTQUEUEPROC\n%s\n",
+                        LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+
+        if (!fnOraRollBackRelease())
+            vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                          LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+
+        return -20;
+    }
+
+    EXEC SQL OPEN Cursor_FaIntQueueProc;
+
+    if (sqlca.sqlcode)
+    {
+        vDTrazasError(modulo,"%s Al abrir cursor sobre FA_INTQUEUEPROC\n%s\n",
+                      LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+
+        if (!fnOraRollBackRelease())
+            vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                          LOG01, cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+
+        return -21;
+    }
+
+    memset(&sthFaIntQueueProc,0,sizeof(sthFaIntQueueProc));
+
+    while(1)
+    {
+
+        EXEC SQL FETCH Cursor_FaIntQueueProc
+        INTO :sthFaIntQueueProc;
+
+        n = sqlca.sqlerrd[2];
+
+        /* Revisar el tema de pisarse los antes leidos */
+        /*vDTrazasError(modulo,"sqlca.sqlcode [%d], SQLNOTFOUND [%d]\n",LOG05,sqlca.sqlcode,SQLNOTFOUND);*/
+
+        if(sqlca.sqlcode == SQLNOTFOUND )
+        {
+            break;
+        }
+        else if(sqlca.sqlcode < 0)
+        {
+            vDTrazasError(modulo,"%s en el Fetch sobre FA_INTQUEUEPROC\n%s\n",
+                            LOG01, cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+
+            if (!fnOraRollBackRelease())
+                vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                              LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+            return -22;
+        }
+    }/* end while */
+
+
+    EXEC SQL CLOSE Cursor_FaIntQueueProc;
+    if (sqlca.sqlcode)
+    {
+        vDTrazasError(modulo,"%s al cerrar el cursor sobre sobre FA_INTQUEUEPROC\n%s\n",
+                      LOG01, cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+
+        if (!fnOraRollBackRelease())
+                vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                              LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+        return -23;
+    }
+
+    if(n != 0)
+    {
+        *pstFaIntQueueProc = sthFaIntQueueProc;
+    }
+
+    return n ; /* Cantidad de Filas recuperadas */
+}
+
+/* ************************************************************************************** */
+/* ifnRecorreHostArray( ) */
+/* ************************************************************************************** */
+int ifnRecorreHostArray(int NumElem, rg_fa_intqueueproc *pstFaIntQueueProc)
+{
+    char modulo[]="ifnRecorreHostArray";
+     int i,iAux,ExeFlag=FALSE;
+    char szComando      [1024] = "";
+    char szCmdShell		[128]      ;
+    char szModGene      [4]   = "" ;
+    char szTipProc      [2]   = "" ;
+     int iCodProc             = 0  ;
+    char szDia          [12]       ;
+    char szHora         [10]       ;
+    char szUsuario      [64]  = "" ;
+    char szNomUsuarOra  [32]  = "" ;
+    char szPasUsuarOra  [32]  = "" ;
+    int iNumMinRunning        = 0  ;
+    char *psztmp                   ;
+    char szAux          [16]  =""  ;
+    double dDifEjec           = 0.0;
+    long lTiempo              = 0L ;
+    char szUniInt       [10]       ;
+    char szCodAplic     [4]        ;
+	int ret                   = 0  ;
+
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhN_Segundos=0L,lhN_SegundosUlt=0L;
+         int ihIntervalo=0, ihDias=0, ihDiasUlt=0;
+        long lhSegsDia=86400; /* cantidad de segundos que tiene un dia */
+        char szhUltimaVez[15];
+        char szhSiguienteVez[15];
+        char szhHoraEjec[9],szhAhora[9];
+        char szhExeComando[31];
+         int ihCodProceso   =0;
+         int ihLogLevel     =3;
+         int ihNumMinRunning=0;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog(modulo,"%s[%ld] Encontradas %d colas...",
+                LOG04, cfnGetTime(3),pid,NumElem);
+
+
+    for (i=0; i<NumElem; i++)
+    {
+        strcpy(szModGene, pstFaIntQueueProc->szCodModGener  [i]);
+        strcpy(szTipProc, pstFaIntQueueProc->szCodTipProc   [i]);
+        strcpy(szCodAplic,pstFaIntQueueProc->szCodAplic     [i]);
+        iCodProc        = pstFaIntQueueProc->iCodProceso    [i] ;
+        ihCodProceso    = iCodProc;
+        ihLogLevel      = pstFaIntQueueProc->iCodNivLog     [i] ;
+
+        strcpy(szhUltimaVez,pstFaIntQueueProc->szFecEstado  [i]);   /* ultima vez que se ejecuto */
+
+ vDTrazasLog(modulo,"%s[%ld] Cola %d [%s_%d_%s] pid %ld estado [%d] ",
+                                LOG03, cfnGetTime(3),pid, i+1, szModGene, iCodProc, szCodAplic, pstFaIntQueueProc->lPidProceso[i], pstFaIntQueueProc->iCodEstado[i]);
+								
+        if (!bfnGetDifUltEjec (szhUltimaVez,&dDifEjec ))
+            return -66;
+
+        ExeFlag=FALSE;
+        switch (pstFaIntQueueProc->iCodTipIntervalo[i])
+        {
+            case SEGUNDOS:
+
+                    ihIntervalo = pstFaIntQueueProc->lNumSegundos [i];
+
+                    if      (pstFaIntQueueProc->iCodTipUnInter[i] == 1)  /* Segundos */
+                    {
+                        lTiempo=  (long)(dDifEjec * lhSegsDia);
+                        strcpy(szUniInt,    "Segundos");
+                    }
+                    else if (pstFaIntQueueProc->iCodTipUnInter[i] == 2)  /* minutos  */
+                    {
+                        lTiempo=  (long)(dDifEjec * 1440);
+                        strcpy(szUniInt,    "Minutos");
+                    }
+                    else if (pstFaIntQueueProc->iCodTipUnInter[i] == 3)  /* horas    */
+                    {
+                        lTiempo=  (long)(dDifEjec * 24);
+                        strcpy(szUniInt,    "Horas");
+                    }
+                    else if (pstFaIntQueueProc->iCodTipUnInter[i] == 4)  /* Dias     */
+                    {
+                        lTiempo=  (long)(dDifEjec);
+                        strcpy(szUniInt,    "Dias");
+                    }
+                    else                                                /* Se mantiene por defecto segundos */
+                    {
+                        lTiempo=  (long)(dDifEjec * lhSegsDia);
+                        strcpy(szUniInt, "Segundos");
+                    }
+                    vDTrazasLog(modulo,"%s[%ld] Cola %d [%s_%d_%s] Se activa cada [%d] %s [%d] diferencia [%ld]",
+                                LOG05, cfnGetTime(3),pid, i+1, szModGene, iCodProc, szTipProc, ihIntervalo,szUniInt,pstFaIntQueueProc->iCodTipUnInter[i], lTiempo);
+
+                    if ( lTiempo >= ihIntervalo )
+                    {
+                        ExeFlag = TRUE;
+                    }
+
+                    break;
+
+            case HORAESPEC:
+
+                    strcpy(szhHoraEjec,pstFaIntQueueProc->szCodHoraDia[i]);
+
+                    vDTrazasLog(modulo,"%s[%ld] Cola %d [%s_%d_%s] Se activa diariamente a las [%s] ",
+                                LOG04, cfnGetTime(3),pid, i+1,szModGene, iCodProc, szTipProc, szhHoraEjec);
+
+                    EXEC SQL
+                        SELECT TRUNC(SYSDATE - TO_DATE (:szhUltimaVez,'yyyymmddhh24miss')),
+                                    (TO_CHAR(SYSDATE,'hh24:mi:ss'))
+                               INTO :ihDias,
+                                    :szhAhora
+                               FROM DUAL;
+
+                    if ( ihDias > 0  && strcmp(szhAhora,szhHoraEjec) >= 0 )
+                    {
+                        ExeFlag = TRUE;
+                    }
+
+                    break;
+
+            case DIAHORAESPEC:
+
+                    strcpy(szhSiguienteVez,pstFaIntQueueProc->szCodHoraFech[i]);/* la proxima vez que se debe ejecutar */
+
+                    strncpy(&szDia[0],&szhSiguienteVez[6],2);  szDia[2]='/';
+                    strncpy(&szDia[3],&szhSiguienteVez[4],2);  szDia[5]='/';
+                    strncpy(&szDia[6],&szhSiguienteVez[0],4);
+
+                    strncpy(&szHora[0],&szhSiguienteVez[8],2);  szHora[2]=':';
+                    strncpy(&szHora[3],&szhSiguienteVez[10],2); szHora[5]=':';
+                    strncpy(&szHora[6],&szhSiguienteVez[12],2);
+
+
+                    vDTrazasLog(modulo,"%s[%ld] Cola %d [%s_%d_%s] Se activa solamente el [%s] a las [%s] ",
+                                LOG04, cfnGetTime(3),pid, i+1, szModGene, iCodProc, szTipProc,szDia,szHora);
+
+                    EXEC SQL
+                        SELECT (SYSDATE - TO_DATE(:szhSiguienteVez,'yyyymmddhh24miss'))*:lhSegsDia,
+                                    TRUNC(SYSDATE - TO_DATE (:szhSiguienteVez,'yyyymmddhh24miss')),
+                                    TRUNC(SYSDATE - TO_DATE (:szhUltimaVez,'yyyymmddhh24miss'))
+                               INTO :lhN_Segundos,
+                                    :ihDias,
+                                    :ihDiasUlt
+                               FROM DUAL;
+
+                    if ( (lhN_Segundos >= 0  && ihDias == 0) && ihDiasUlt > 0 )
+                    {
+                        ExeFlag = TRUE;
+                    }
+
+                    break;
+
+            default :
+
+                    break;
+
+        }
+
+		vDTrazasLog(modulo,"**** rao 1 ",LOG03);
+
+        if (ExeFlag == TRUE)
+        {
+            vDTrazasLog (modulo,"%s[%ld] Cambiando estado de la cola  ",
+                         LOG04, cfnGetTime(3),pid);
+            if (! bfnCambiaEstCola( szModGene, iCodProc, iESTAQUEUE_WAIT, iESTAQUEUE_INIT, szCodAplic))
+            /* Incorporado por PGonzaleg 01-02-2002 */
+            /* Corregido por FAedo. 07-03-02        */
+            {
+                if (!fnOraRollBackRelease())
+                    vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                                  LOG01, cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+                return -25;
+            }
+            else
+            {
+                if (!fnOraCommit())
+                {   vDTrazasError(modulo,"%s En Commit\n%s\n",
+                                  LOG01, cfnGetTime(3), sqlca.sqlerrm.sqlerrmc);
+                    if (!fnOraRollBackRelease())
+                        vDTrazasError(modulo,"%s En Rollback release\n%s\n",
+                                      LOG01, cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+                    return -26;
+                }
+            }
+
+
+            /**** Usuario ****/
+            memset(szUsuario,'\0',sizeof(szUsuario));
+
+            strcpy(szNomUsuarOra,pstFaIntQueueProc->szNomUsuarOra[i]);
+            strcpy(szPasUsuarOra,pstFaIntQueueProc->szPasUsuarOra[i]);
+
+            iAux = strlen(szNomUsuarOra) - 1;
+            while ((szNomUsuarOra[iAux]==' ') && (iAux>=0))
+            {  szNomUsuarOra[iAux]='\0';
+               iAux--; }
+
+            iAux = strlen(szPasUsuarOra) - 1;
+            while ((szPasUsuarOra[iAux]==' ') && (iAux>=0))
+            {  szPasUsuarOra[iAux]='\0';
+               iAux--; }
+
+
+            if ( (psztmp=(char *)strstr(szNomUsuarOra,"\\$") )!=(char *)NULL )
+            {
+                sprintf(szUsuario,"%s/%s",szNomUsuarOra,szPasUsuarOra);
+            }
+            else if ((psztmp=(char *)strchr(szNomUsuarOra,'$') )!=(char *)NULL )
+            {
+                memset(szAux,0,sizeof(szAux));
+                strncpy (szAux,szNomUsuarOra,psztmp-szNomUsuarOra);
+                sprintf (szUsuario,"%s\\%s/%s",szAux,psztmp,szPasUsuarOra);
+            }
+            else
+            {
+                sprintf(szUsuario,"%s/%s",szNomUsuarOra,szPasUsuarOra);
+            }
+
+            /* comando de ejecucion de Colas */
+            memset(szComando,0,sizeof(szComando));
+            strcpy(szhExeComando,"New_QueueAdmin");
+
+  /* parametrizar la invocacion de los Queue.... despues en tablas de colas */
+
+
+            sprintf(szComando,"nohup %s -e%s -p%d -t%s -u%s -l%d -c%s > /dev/null 2>&1 &", 
+                              szhExeComando, szModGene, iCodProc, szTipProc, szUsuario, ihLogLevel, szCodAplic); 
+/*			sprintf(szCmdShell,"%s_%ld_%s_%d_%s.ksh",szhExeComando,pid, szModGene, iCodProc, szCodAplic ); */
+/*             sprintf(szComando,"echo \"nohup %s -e%s -p%d -t%s -u%s -l%d -c%s >> %s.out 2>&1 &\nsleep 5\n\" > %s;chmod 777 %s",  */
+	        /*INICIO XO-200510030783 CJG sprintf(szComando,"echo \"%s -e%s -p%d -t%s -u%s -l%d -c%s 1>> %s.out 2>>%s.err \nsleep 1\n\" > %s;chmod 777 %s",FIN XO-200510030783 CJG*/
+/*	        sprintf(szComando,"echo \"%s -e%s -p%d -t%s -u%s -l%d -c%s 1>>/dev/null 2>>%s.err \n\" > %s;chmod 777 %s", 
+        			szhExeComando, szModGene, iCodProc, szTipProc, szUsuario, ihLogLevel, szCodAplic,szhExeComando, szCmdShell, szCmdShell); */
+			
+			ret=system(szComando);
+
+/*			vDTrazasLog(modulo,"**** %s[%ld] Activando Cola %d [%s] con [%s] ret=%d",LOG03, cfnGetTime(3),pid, i+1,szCmdShell, szComando, ret); */
+
+/*			ret=misystem(szCmdShell); */
+			
+
+			vDTrazasLog(modulo,"**** %s[%ld] Ejecute [%s] ret=%d",LOG03, cfnGetTime(3),pid, szComando, ret);
+/*INICIO XO-200510030783 CJG
+			sleep(1);
+FIN XO-200510030783 CJG */
+/*			unlink(szCmdShell); */
+
+        }
+        ExeFlag = FALSE;
+    } /* endfor */
+    sleep(1);
+    vDTrazasLog ( modulo,"%s[%ld] Fin Colas. ", LOG04, cfnGetTime(3),pid);
+    return 0;
+}
+
+/* ******************************************************************************** */
+/* ifnVerificaEstadoScheduler :  */
+/* ******************************************************************************** */
+int ifnVerificaEstadoScheduler()
+{
+    char modulo[]="bfnVerificaEstadoScheduler";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhCodEstado[2];
+    EXEC SQL END DECLARE SECTION;
+
+
+    EXEC SQL SELECT COD_ESTSCHED
+               INTO :szhCodEstado
+               FROM FA_SCHEDULER;
+
+
+    if (sqlca.sqlcode)
+    {
+        vDTrazasError(modulo,"%s Al recuperar estado del FaSched\n%s\n",
+                        LOG01,cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+        vDTrazasLog (modulo,"%s Al recuperar estado del FaSched\n%s\n",
+                        LOG01,cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+        return -1;
+    }
+
+
+    if (szhCodEstado[0]!='A')
+        return 0;
+
+
+    return 1;
+
+}
+
+
+/* ******************************************************************************** */
+/* bfnRegistraEjecucionActual :  */
+/* ******************************************************************************** */
+BOOL bfnRegistraEjecucionActual()
+{
+    char modulo[40];
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhPidProc;
+    EXEC SQL END DECLARE SECTION;
+
+    lhPidProc = pid;
+
+    strcpy(modulo,"bfnRegistraEjecucionActual");
+
+
+    EXEC SQL UPDATE FA_SCHEDULER
+                SET PID_PROCESO = :lhPidProc,
+                    FEC_PROCESO = SYSDATE ;
+
+    if (sqlca.sqlcode)
+    {
+        vDTrazasError(modulo,"%s Al Actualizar FA_Scheduler\n%s\n",
+                        LOG01,cfnGetTime(3),sqlca.sqlerrm.sqlerrmc);
+        return FALSE;
+    }
+
+    return TRUE;
+
+}
+
+/* 20041013 CH-200409082192 Funciones nuevas */
+#ifndef isnull
+    #define isnull(name) (name==(char )NULL )
+#endif
+#ifndef strnull
+    #define strnull(name) (name==(char *)NULL || name[0]==(char)NULL)
+#endif
+
+char *ltrim(char *s)
+{
+    char *p=s;
+    if( strnull(s) ) return(NULL);
+    while( *p<=32 && *p>1 ) p++;
+    strcpy(s,p);
+    return(s);
+}
+
+char *rtrim(char *s)
+{
+    char *p=NULL;
+    if( strnull(s) ) return(NULL);
+    p=(s+strlen(s)-1);
+    while( *p<=32 && *p>1 )  p--;
+    *(++p)=0;
+    return(s);
+}
+
+char *alltrim(char *s)
+{
+    return(ltrim(rtrim(s)));
+}
+
+
+int iBuscaProceso(char *szComando)
+{
+	char cmd[99];
+	char buf[BUFSIZ];
+	FILE *ptr;
+	int cnt=0;
+	
+	/* ps -fea|grep -w FaSched|grep -v grep */
+	sprintf(cmd, "ps -fea|grep -w '%s'|grep -v grep",szComando);
+	if ((ptr = popen(cmd, "r")) != NULL)
+	{
+			while (fgets(buf, BUFSIZ, ptr) != NULL)
+			{
+				cnt++;
+			}
+	}
+	pclose(ptr);
+	return(cnt);
+}
+
+int szBuscaExe(int iCodProceso, char *szCodAplic, char *szComandoExe)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int  ihCodProceso ;
+	char szhCodAplic[4];
+	char szhExeComando[31];
+EXEC SQL END DECLARE SECTION;
+
+	ihCodProceso=iCodProceso;
+	strcpy(szhCodAplic, szCodAplic);
+
+	EXEC SQL SELECT EXE_COMANDO
+			   INTO :szhExeComando
+			   FROM FA_INTPROCESOS
+			   WHERE COD_PROCESO = :ihCodProceso
+			   AND COD_APLIC = :szhCodAplic;
+			   
+  	if (SQLCODE)
+	{	
+		return(FALSE);	
+	}
+	strcpy(szComandoExe, alltrim(szhExeComando)); 
+	return(TRUE);
+}
+
+/* ********************************************************************************************************** */
+/* iVerificaColasEnEjecucion : verifica que las colas de procesos no queden en estado de ejecucion eternamente  */
+/* ********************************************************************************************************** */
+
+int iVerificaColasEnEjecucion()
+{
+	char modulo[]="iVerificaColasEnEjecucion";
+	int ret=0, iAux;
+    char szUsuario      [65]    ="" ;
+    char szAux          [32]    ="" ;
+    char szComando      [128]   ="" ;
+    char *psztmp                    ;
+	
+EXEC SQL BEGIN DECLARE SECTION;
+	char szCod_ModGener[4];
+	int  ihCodProceso ;
+	char szhCodAplic[4];
+	long lhPidProceso;
+	int iCodEstado; 
+	int iNivelLog; 
+	char szComandoExe[32];
+    char szNomUsuarOra  [32]    ="" ;
+    char szPasUsuarOra  [32]    ="" ;
+	
+EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE Cur_FaInQueueProc CURSOR for
+	SELECT COD_MODGENER, COD_PROCESO, COD_APLIC, PID_PROCESO, COD_ESTADO, NVL(NOM_USUARIO,' '), NVL(PAS_USUARIO,' '), NVL(COD_NIVLOG,3)
+	FROM FA_INTQUEUEPROC
+	WHERE COD_ESTADO   IN (2,3)  ;/* Estado Corriendo (INICIADO y RUNNING) */
+       
+  	if (SQLCODE)
+	{	
+	    vDTrazasError(modulo,"Al declarar Cursor Cur_FaInQueueProc\n\t%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+		return(-14);	
+	}
+
+	EXEC SQL OPEN Cur_FaInQueueProc ;
+
+	if (SQLCODE)
+	{	
+	    vDTrazasError(modulo,"Al Abrir Cursor Cur_FaInQueueProc\n\t%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+		return(-15);	
+	}
+
+	while (SQLCODE == SQLOK)
+	{
+		ret=TRUE;
+		
+	    EXEC SQL FETCH Cur_FaInQueueProc INTO  :szCod_ModGener, :ihCodProceso, :szhCodAplic, :lhPidProceso, iCodEstado, :szNomUsuarOra, :szPasUsuarOra, :iNivelLog ;
+
+		if (SQLCODE == SQLOK )
+		{	
+			if(!szBuscaExe(ihCodProceso, szhCodAplic, szComandoExe))
+			{
+				vDTrazasError(modulo,"Al Buscar Nombre a Aplicacion para %d %s\n\t%s\n",LOG01,ihCodProceso, szhCodAplic, sqlca.sqlerrm.sqlerrmc);
+			}
+
+
+			memset(szUsuario,'\0',sizeof(szUsuario));
+
+			iAux = strlen(szNomUsuarOra) - 1;
+			while ((szNomUsuarOra[iAux]==' ') && (iAux>=0))
+			{  szNomUsuarOra[iAux]='\0';
+			   iAux--; }
+
+			iAux = strlen(szPasUsuarOra) - 1;
+			while ((szPasUsuarOra[iAux]==' ') && (iAux>=0))
+			{  szPasUsuarOra[iAux]='\0';
+			   iAux--; }
+
+			if ( (psztmp=(char *)strstr(szNomUsuarOra,"\\$") )!=(char *)NULL )
+			{
+				sprintf(szUsuario,"%s/%s",szNomUsuarOra,szPasUsuarOra);
+			}
+			else if ((psztmp=(char *)strchr(szNomUsuarOra,'$') )!=(char *)NULL )
+			{
+				memset(szAux,0,sizeof(szAux));
+				strncpy (szAux,szNomUsuarOra,psztmp-szNomUsuarOra);
+				sprintf (szUsuario,"%s\\%s/%s",szAux,psztmp,szPasUsuarOra);
+			}
+			else
+			{
+				sprintf(szUsuario,"%s/%s",szNomUsuarOra,szPasUsuarOra);
+			}
+															    
+			sprintf(szComando,"%s -u%s -l%d -e%s", szComandoExe, szUsuario, iNivelLog, szCod_ModGener);
+			
+			vDTrazasLog(modulo,"%s[%ld] Verificando %s %d %s %d [%s]", LOG03, cfnGetTime(1),pid,szCod_ModGener,ihCodProceso, szhCodAplic, lhPidProceso,szComando);
+			
+			if((ret=iBuscaProceso(szComando)) == FALSE)
+			{
+				if (!bfnCambiaEstCola(szCod_ModGener, ihCodProceso, iCodEstado, iESTAQUEUE_WAIT, szhCodAplic ))
+				{
+					vDTrazasError(modulo,"Al inicializar estado de la cola a WAIT en iVerificaColasEnEjecucion Pid %d\n\t%s\n",LOG01,pid, sqlca.sqlerrm.sqlerrmc);
+				}
+				else if(!bfnOraCommit())
+				{
+					vDTrazasError(modulo,"En Commit - iVerificaColasEnEjecucion Pid 0 \n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+					if (!fnOraRollBackRelease())
+					{
+						vDTrazasError(modulo,"En Rollback release iVerificaColasEnEjecucion Pid %d\n\t%s\n", LOG01, pid, sqlca.sqlerrm.sqlerrmc);
+					}
+				}
+				else
+				{
+					vDTrazasLog(modulo,"%s[%ld] cola %s %d %s %d Reseteado de %d a %d\n", LOG03, cfnGetTime(1),pid,szCod_ModGener,ihCodProceso, szhCodAplic, lhPidProceso, iCodEstado, iESTAQUEUE_WAIT );
+				}
+			}
+			else
+			{
+				vDTrazasLog(modulo,"*** Proceso [%s] ejecutado %d Veces ***\n", LOG03, szComandoExe, ret);
+			}
+			
+		}
+	}
+	EXEC SQL CLOSE Cur_FaInQueueProc ;
+
+  return(0); /* Validacion ok */
+
+} /* iVerificaColasEnEjecucion */
+
+
+int misystem(char *cmd)
+{
+    char modulo[]="misystem";
+	pid_t ppid1, ppid2=-99; /* Process ID of the child process */
+	pid_t wpid;	/* Process ID from wait() */
+	pid_t lpid;	/* Local Process ID  */
+	pid_t hpid;	/* Hijo Process ID  */
+	int status;	/* Exit status from wait() */
+
+	fflush(stdout); fflush(stderr);			   
+	
+	lpid=(long)getpid(); 	 
+	
+	signal(SIGCHLD, SIG_IGN);
+	signal(SA_NOCLDWAIT, SIG_IGN);
+
+	if( (ppid1 = fork()) == -1 )
+	{
+		vDTrazasLog(modulo,"%s[%ld]\t ERROR %s: Failed to fork()... ADIOS !\n",LOG05,cfnGetTime(3),pid, strerror(errno));
+		return(-1);
+	}
+	else if( ppid1 == 0 )
+	{
+                  
+	    status=execlp(cmd, cmd, NULL);
+	    vDTrazasLog(modulo,"%s[%ld]\t PID %ld: %s PID %ld  hpid=%d status=%d - errno=[%d]\n", LOG05,cfnGetTime(3),pid,
+	    	   lpid, cmd, (long)ppid1, hpid, status,errno);
+	    /* Si el comando execlp() devuelve error, se imprime error en el archivo de Log */
+	    if(status==-1)
+	    {
+	        vDTrazasLog(modulo,"ERRNO: [%s]",LOG05,strerror(errno));    
+	    }
+	    
+	    
+	    vDTrazasLog(modulo,"%s[%ld]\t Voy a MORIR, mipid=[%d].\n", LOG05,cfnGetTime(3),pid,lpid);
+        /*INICIO XO-200510030783 CJG*/
+	    sleep(1); /* 20051207 */
+        /*FIN XO-200510030783 CJG */
+	    exit(0);
+	}
+	do
+	{
+		vDTrazasLog(modulo,"%s[%ld]\t Se espera detencion del proceso hijo...[%d]",LOG05,cfnGetTime(3),pid,ppid1); 
+		wpid = wait(&status);
+		vDTrazasLog(modulo,"%s[%ld]\t wait ret : wpid=[%d] apid=[%d] status=[%d] ppid1=[%d]\n",LOG05,cfnGetTime(3),pid, wpid, getpid(),status, ppid1);
+	} while( wpid != -1 && wpid != ppid1 );
+	
+	vDTrazasLog(modulo,"%s[%ld]\t lpid=[%ld] ppid1=[%d] ppid2=[%d] wpid=[%d] hpid=[%d]\n",LOG05,cfnGetTime(3),pid, lpid,ppid1,ppid2,wpid,hpid);
+	if( wpid == -1 )
+	{
+		/* * The wait() call failed : */
+		vDTrazasLog(modulo,"%s[%ld]\t ERROR %s: wait(%d) errno=[%d] ... !\n",LOG05,cfnGetTime(3),pid,strerror(errno), status, errno);
+	}
+	else if( wpid != ppid1 )
+	{
+		/* Should never happen in this program: */
+		vDTrazasLog(modulo,"%s[%ld]\t Termino ejecucion de [%s]  (lpid=[%ld] ppid1=[%d] ppid2=[%d] wpid=[%d] hpid=[%d])...  ADIOS !.\n", LOG05,cfnGetTime(3),pid,cmd,lpid,ppid1,ppid2,wpid,hpid);
+		exit(0);
+	}
+	
+	if( WIFEXITED(status) )
+	{
+		vDTrazasLog(modulo,"%s[%ld]\t [%s] salio con WIFEXITED(status): [%d] .\n",LOG05,cfnGetTime(3),pid,cmd, WEXITSTATUS(status));
+	}
+	else if( WIFSIGNALED(status) )
+	{
+		vDTrazasLog(modulo,"%s[%ld]\t Signal: %d%s\n",LOG05,cfnGetTime(3),pid,
+			   WTERMSIG(status),
+			   WCOREDUMP(status) ? " with core file." : ".");
+	}
+	else
+	{
+		vDTrazasLog(modulo,"%s[%ld]\t Stopped child process status=%d.", LOG05,cfnGetTime(3),pid,status);
+	}
+	
+	if (pid != lpid || pid != getpid())
+	{
+		vDTrazasLog(modulo,"%s[%ld]\t No tengo nada que hacer, me suicido [%d]!=[%d] (%d) (lpid=[%ld] ppid1=[%d] ppid2=[%d] wpid=[%d] hpid=[%d]).\n"
+		                    ,LOG05
+		                    ,cfnGetTime(3)
+		                    ,pid
+		                    ,pid
+		                    ,lpid
+		                    ,getpid()
+		                    ,lpid
+		                    ,ppid1
+		                    ,ppid2
+		                    ,wpid
+		                    ,hpid);
+		exit(0);
+	}
+	
+	vDTrazasLog(modulo,"%s[%ld]\t Reestableciendo senales a valores por defecto...",LOG05,cfnGetTime(3),pid);
+	signal(SIGCHLD, SIG_DFL);
+	signal(SA_NOCLDWAIT, SIG_DFL);
+	
+	return(0);
+}
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

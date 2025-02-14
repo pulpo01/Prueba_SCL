@@ -1,0 +1,574 @@
+/* ============================================================================= */
+/*
+    Tipo        :  ACCION
+    Nombre      :  AsigCobJud.pc ("ACJUD"->szfnAsigCobJud)
+    Descripcion :  ASIGna una entidad de COBranza JUDicial
+                   a todos los abonados del rut del cliente dado
+    Recibe      :  by Val -> Cod Cliente 
+    Devuelve    :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+                   "NORUT"-> Fue imposible determinar el rut del cliente dado
+                   "NOAGE"-> Fue imposible asignar un agente (entidad)
+                   "OK"   -> La accion se ejecuto correctamente
+    Autor       :  Roy Barrera Richards
+    Fecha       :  10 - Agosto - 2000 
+Modificacion    :  12-11-2004
+						 Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "AsigCobJud.h"
+#define HOST_ARRAY_AGENTES  500  
+
+EXEC SQL INCLUDE sqlca;
+/* ============================================================================= */
+/* funcion de asignacion de entidad de cobranza judicial                         */
+/* ============================================================================= */
+char  *szfnAsigCobJud (FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+char modulo[]="szfnAsigCobJud";
+int iResp=0, iMetropolitana = 13, iAsignado = 0;
+int i=0,iMorososComuna=0,iPorcentajeTotal=0;
+long lTotalRows=0;
+float fPorcentajeDefinido = 0.0;
+float fPorcentajeActual = 0.0;
+EXEC SQL BEGIN DECLARE SECTION;
+   long lhCodCliente          = 0  ;
+   long lhCodClienteNew       = 0  ;
+   char szhCodRegion[4]       = "" ; EXEC SQL VAR szhCodRegion IS STRING (4);
+   char szhCodComuna[6]       = "" ; EXEC SQL VAR szhCodComuna IS STRING (6);
+   int  ihDirCorrespondencia  = 3  ;
+   char szhNumIdent[21]       = "" ; EXEC SQL VAR szhNumIdent IS STRING (21);
+   char szhCodTipIdent[3]     = "" ; EXEC SQL VAR szhCodTipIdent IS STRING (3);
+   char szhCodEntidadAsig[6]  = "" ; EXEC SQL VAR szhCodEntidadAsig IS STRING (6);
+   char szhCodAgenteAsig[31]  = "" ; EXEC SQL VAR szhCodAgenteAsig IS STRING (31);
+   char szhCodAgenteNew[31]   = "" ; EXEC SQL VAR szhCodAgenteNew IS STRING (31);
+   long lhCodCuentaNew        = 0  ;
+   char szhCodMovimiento[6]   = "" ; EXEC SQL VAR szhCodMovimiento IS STRING (6);
+   char szhFecMovimiento[15]  = "" ; EXEC SQL VAR szhFecMovimiento IS STRING (15);
+   char szhAuxHoy[15]         = "" ; EXEC SQL VAR szhAuxHoy IS STRING (15);
+   char szhCodEnvio[6]        = "" ; EXEC SQL VAR szhCodEnvio IS STRING (6);
+   int ihIncrementoClientes  = 0  ;
+   char szhRutStgo[2]         = "" ; EXEC SQL VAR szhRutStgo IS STRING (2);
+VARCHAR szhCodAgente    [HOST_ARRAY_AGENTES][31];
+VARCHAR szhCodEntidad   [HOST_ARRAY_AGENTES][6] ; 
+   int ihPrcAsignado   [HOST_ARRAY_AGENTES]    ;
+   int ihMorososAgente [HOST_ARRAY_AGENTES]    ;
+   char szhCobranzaJudicial[2]= "" ; EXEC SQL VAR szhCobranzaJudicial IS STRING (2);
+   char szhTipCobranza[2]     = "" ; EXEC SQL VAR szhTipCobranza IS STRING (2);
+   char szCodGestion[3+1];   
+   int iCountGest=0;        
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	 CXX = ctxCont;
+	 EXEC SQL CONTEXT USE :CXX;
+    
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+    lhCodCliente = lCliente;
+    
+    strcpy(szhCobranzaJudicial,"J");
+
+    /*-(0) Obtiene el Rut del Cliente -*/            
+    iResp = ifnGetRutCliente(&pfLog, lCliente,szhNumIdent,szhCodTipIdent, CXX); /* el envia mensaje en caso de error */
+    if (iResp == 0) /*No encontro el rut */
+    {
+        return "NORUT";
+    }
+    else if (iResp < 0 ) /* error oracle */
+    {
+        return "SQL";
+    }
+    
+    iResp = 0;
+
+    ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)(NumIdent:%s)(TipIdent:%s)",LOG05,lhCodCliente,szhNumIdent,szhCodTipIdent);  
+
+  
+    /*--(1) Verificar si el rut de este cliente ya tiene alguna cobranza externa asignada --*/    
+	 sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    SELECT A.COD_ENTIDAD, A.COD_MOVIMIENTO, A.COD_ENVIO
+         , TO_CHAR(A.FEC_MOVIMIENTO,'YYYYMMDDHH24MISS')
+         , TO_CHAR(SYSDATE,'YYYYMMDDHH24MISS')
+    INTO   :szhCodEntidadAsig, :szhCodMovimiento, :szhCodEnvio
+         , :szhFecMovimiento
+         , :szhAuxHoy
+    FROM  CO_ENTCOB B, CO_COBEXTERNA A
+    WHERE A.NUM_IDENT = :szhNumIdent
+    AND   A.COD_TIPIDENT = :szhCodTipIdent 
+    AND   B.COD_ENTIDAD  = A.COD_ENTIDAD
+    AND   B.TIP_COBRANZA = 'A' ; /* AMBAS ( judicial y Perjudicial) */
+
+    if (sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) CO_COBEXTERNA => %s " ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL"; /* error oracle*/
+    }
+    else if ( sqlca.sqlcode != SQLNOTFOUND )
+    {
+        /* El cliente ya esta asociado a una entidad de cobranza de tipo Judicial. Cambia el indicador */
+        sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+        EXEC SQL
+        UPDATE CO_COBEXTERNA
+        SET    TIP_COBRANZA = :szhCobranzaJudicial,
+               COD_MOVIMIENTO = 'M',
+               FEC_MOVIMIENTO = SYSDATE
+        WHERE  NUM_IDENT = :szhNumIdent
+        AND    COD_TIPIDENT = :szhCodTipIdent ;
+        
+        if (sqlca.sqlcode)
+        {
+            ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) UPDATE 'J' CO_COBEXTERNA => %s " ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+            return "SQL"; /* error oracle*/
+        }
+            
+        return "OK"; /* No hace nada mas, porque ya esta como cobranza Pre-Judicial */
+
+    }
+    /* SQLNOTFOUND : El cliente no esta asociado a ninguna entidad de cobranza del tipo Judicial ( reasignar a una )*/
+        
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    UPDATE CO_COBEXTERNA
+    SET    COD_MOVIMIENTO = 'B',
+           FEC_MOVIMIENTO = SYSDATE
+    WHERE  NUM_IDENT = :szhNumIdent
+    AND    COD_TIPIDENT = :szhCodTipIdent ;
+    
+    if (sqlca.sqlcode)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) UPDATE 'B' CO_COBEXTERNA => %s " ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL"; /* error oracle*/
+    }
+
+
+    /*--(2) Determinar comuna asociada a la direccion de correspondencia del cliente --*/
+    
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    SELECT C.COD_REGION, C.COD_COMUNA
+      INTO :szhCodRegion, :szhCodComuna
+      FROM GE_DIRECCIONES C, GA_DIRECCLI B
+     WHERE B.COD_CLIENTE      = :lhCodCliente
+       AND B.COD_TIPDIRECCION = :ihDirCorrespondencia
+       AND C.COD_DIRECCION    = B.COD_DIRECCION;
+    
+    if (sqlca.sqlcode)
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) DIRECCIONES => %s",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL";     /* error oracle */
+    }
+    
+    if ( atoi(szhCodRegion) != iMetropolitana ) /* la direccion no es de la region metropolitana */
+    {
+        /*-- Verificar si el Rut tiene asociados clientes con direccion en Santiago */
+        iResp = ifnRutMetropolitano (&pfLog,lhCodCliente, &i, CXX );
+        if ( iResp < 0 )
+        {
+            return "SQL";       /* error oracle */
+        }
+        else if ( iResp == 0 )
+        {
+            return "NORUT";     /* no hallo el rut */
+        }
+    }
+    else
+    {
+        i = 1 ; /* marca como metropolitano */
+    }
+
+    strcpy(szhRutStgo,"N");
+    if (i == 1)   
+    {
+        strcpy(szhCodComuna,"13112"); /* si es metropolitana COMUNA = STGO_CENTRO*/
+        strcpy(szhRutStgo,"S");
+    }
+
+	 ifnTrazaHilos( modulo,&pfLog, "Cliente :[%ld]  Comuna : [%s]",LOG03,lhCodCliente,szhCodComuna);  
+    /*- (3) Obtiene los agentes de cobranzas de la comuna y sus porcentajes definidos---------------*/
+    sqlca.sqlcode=0;    
+    EXEC SQL 
+    DECLARE curEntExt CURSOR FOR
+    SELECT A.COD_AGENTE
+         , A.PRC_ASIGNACION
+         , C.COD_ENTIDAD
+      FROM CO_ENTCOB C,
+           CO_AGENCOB B,
+           CO_AGENCOMU A
+     WHERE A.COD_COMUNA  = :szhCodComuna 
+       AND B.COD_AGENTE  = A.COD_AGENTE
+       AND C.COD_ENTIDAD = B.COD_ENTIDAD
+       AND C.TIP_ENTIDAD = 'E'  /* EXTERNO */
+       AND C.TIP_COBRANZA != 'P' ; /* PREJUDICIAL */
+
+    if (sqlca.sqlcode)
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Declare curAgentes => %s", LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL";   
+    }
+
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL OPEN curEntExt ;
+    if (sqlca.sqlcode)
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Open curAgentes => %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL";   
+    }
+
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL FETCH curEntExt INTO :szhCodAgente, :ihPrcAsignado, :szhCodEntidad ;
+    lTotalRows=SQLROWS;    
+            
+    if ( sqlca.sqlcode != SQLNOTFOUND && sqlca.sqlcode != SQLOK )
+	{
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fetch curAgentes => %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+		return "SQL";
+	}
+	else if ( sqlca.sqlcode != SQLNOTFOUND )
+	{
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fetch curAgentes => Sobrepasado Maximo de elementos ",LOG00,lhCodCliente);  
+        return "SQL";
+	}
+	
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL CLOSE curEntExt ;
+    if (sqlca.sqlcode)
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Close curAgentes => %s "
+                     ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL";            
+    }
+	
+    /*--(0) Obtiene el cod_cuenta del cliente en la CO_MOROSOS --*/    
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    SELECT COD_CUENTA
+    INTO :lhCodCuentaNew
+    FROM CO_MOROSOS
+    WHERE COD_CLIENTE = :lhCodCliente;
+    if ( sqlca.sqlcode )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select Cod_cuenta from CO_MOROSOS => %s " ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "SQL"; /* error oracle*/
+    }
+
+	iAsignado = 0;
+	
+	if ( lTotalRows > 0 ) 
+	{
+        if ((ihPrcAsignado[0] == 100)) 
+        {    
+            sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+            EXEC SQL 
+            INSERT INTO CO_COBEXTERNA
+            ( 
+                NUM_IDENT,          COD_TIPIDENT,       COD_CUENTA,      COD_ENTIDAD,     
+                TIP_COBRANZA,       FEC_INGRESO,        NUM_PROCESO,     COD_MOVIMIENTO,  
+                FEC_MOVIMIENTO,     MTO_DEUDA,          MTO_VENCIDO,     CNT_CLIENTES,    
+                COD_ENVIO,          NUM_IDENT_SANTIAGO, NOM_USUARIO     
+            )
+            VALUES
+            (   
+                :szhNumIdent,       :szhCodTipIdent,    :lhCodCuentaNew,   :szhCodEntidad[0],
+                'J',                SYSDATE,            0,                 'A',                
+                SYSDATE,            0,                  0,                 1,                 
+                'X',                :szhRutStgo,        USER           
+            );
+
+            sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+            EXEC SQL 
+            UPDATE CO_MOROSOS
+               SET COD_AGENTE  = :szhCodAgente[0] 
+             WHERE COD_CLIENTE = :lhCodCliente;
+
+            if (sqlca.sqlcode)
+            {   
+                ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)->(Agente:%.*s) Insert CO_COBEXTERNA => %s "
+                             ,LOG00,lhCodCliente,szhCodAgente[0].len,szhCodAgente[0].arr,sqlca.sqlerrm.sqlerrmc);  
+                return "SQL";            
+            }
+            else
+            {   
+                ifnTrazaHilos( modulo,&pfLog, "%s : (Cliente:%ld)->(Agente:%.*s) Ok "
+                             ,LOG03,modulo,lhCodCliente,szhCodAgente[0].len,szhCodAgente[0].arr);
+                sprintf(szhCodEntidadAsig,"%.*s",szhCodEntidad[0].len,szhCodEntidad[0].arr);
+                sprintf(szhCodAgenteAsig,"%.*s",szhCodAgente[0].len,szhCodAgente[0].arr);
+                iAsignado = 1;
+               /* return "OK"; */
+            }/*endif*/
+        }            
+        else /* el primero no tenia el 100% */
+        {
+            for(i=0; i < lTotalRows; i++) /* procesar cada agente (contar sus morosos) */
+            {
+                sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+                EXEC SQL      
+                SELECT COUNT(A.COD_CLIENTE)   
+                  INTO :ihMorososAgente[i]
+                  FROM GE_DIRECCIONES C, GA_DIRECCLI B, CO_MOROSOS A /* CO_COBEXTERNA A */
+                 WHERE A.COD_AGENTE = :szhCodAgente[i] /*A.COD_ENTIDAD = :szhCodEntidad[i]*/
+                   AND B.COD_CLIENTE = A.COD_CLIENTE
+                   AND B.COD_TIPDIRECCION = :ihDirCorrespondencia
+                   AND C.COD_DIRECCION = B.COD_DIRECCION
+                   AND C.COD_COMUNA= :szhCodComuna;
+
+                if (sqlca.sqlcode)
+                {   
+                    ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)(Agente:%.*s) Count CO_COBEXTERNA => %s "
+                                 ,LOG00,lhCodCliente,szhCodAgente[i].len,szhCodAgente[i].arr,sqlca.sqlerrm.sqlerrmc);  
+                    return "SQL";
+                }
+        
+                iMorososComuna += ihMorososAgente[i];      /* Acumula el total de morosos de la comuna */
+                iPorcentajeTotal += ihPrcAsignado[i];      /* Suma los porcentajes de cada agente */
+            }/* end for i  */
+
+            if ( iPorcentajeTotal != 100 )
+            {
+                ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)(Agente:%.*s) LA SUMA DE PORCENTAJES NO DA 100%% [%d]"
+                             ,LOG02,lhCodCliente,szhCodAgente[i].len,szhCodAgente[i].arr,iPorcentajeTotal);  
+                /*return "SQL";*/
+            }
+
+        	for(i=0; i < lTotalRows; i++) /* procesar cada agente (elegir cual asignar) */
+            {
+                fPorcentajeDefinido = (float) ihPrcAsignado[i];
+                fPorcentajeActual   = (iMorososComuna==0)?0.0:(float) ( (100 * (float)ihMorososAgente[i]) / (float)iMorososComuna );
+
+                ifnTrazaHilos( modulo,&pfLog, "i[%d] COD_AGENTE [%.*s] fPorcentajeDefinido [%f] fPorcentajeActual[%f] "
+                             ,LOG05,i,szhCodAgente[i].len,szhCodAgente[i].arr,fPorcentajeDefinido,fPorcentajeActual);  
+                
+                if ( fPorcentajeDefinido >= fPorcentajeActual )
+                {   
+                    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+                    EXEC SQL 
+                    INSERT INTO CO_COBEXTERNA
+                    ( 
+                        NUM_IDENT,          COD_TIPIDENT,       COD_CUENTA,      COD_ENTIDAD,     
+                        TIP_COBRANZA,       FEC_INGRESO,        NUM_PROCESO,     COD_MOVIMIENTO,  
+                        FEC_MOVIMIENTO,     MTO_DEUDA,          MTO_VENCIDO,     CNT_CLIENTES,    
+                        COD_ENVIO,          NUM_IDENT_SANTIAGO, NOM_USUARIO     
+                    )
+                    VALUES
+                    (   
+                        :szhNumIdent,       :szhCodTipIdent,    :lhCodCuentaNew,   :szhCodEntidad[i],
+                        'J',                SYSDATE,            0,                 'A',                
+                        SYSDATE,            0,                  0,                 1,                 
+                        'X',                :szhRutStgo,        USER           
+                    );
+                    
+                    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+                    EXEC SQL 
+                    UPDATE CO_MOROSOS
+                       SET COD_AGENTE  = :szhCodAgente[i] 
+                     WHERE COD_CLIENTE = :lhCodCliente;
+
+                    if (sqlca.sqlcode)
+                    {   
+                        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)->(Agente:%.*s) Update CO_MOROSOS+ => %s "
+                                     ,LOG00,lhCodCliente,szhCodAgente[i].len,szhCodAgente[i].arr,sqlca.sqlerrm.sqlerrmc);  
+                        return "SQL";
+                    }  
+                    else
+                    {   
+                        ifnTrazaHilos( modulo,&pfLog, "%s : (Cliente:%ld)->(Agente:%.*s) Ok+ "
+                             ,LOG03,modulo,lhCodCliente,szhCodAgente[i].len,szhCodAgente[i].arr);  
+                        sprintf(szhCodEntidadAsig,"%.*s",szhCodEntidad[i].len, szhCodEntidad[i].arr);
+                        sprintf(szhCodAgenteAsig,"%.*s",szhCodAgente[i].len,szhCodAgente[i].arr);
+                        iAsignado = 1;     
+                        /* return "OK"; */
+                    }
+                    break;
+                }
+            } /* end for i */
+        } 
+    }
+
+    if ( iAsignado == 0)
+    {
+        /* 2 situaciones : ( lTotalRows <= 0 ) o nunca se cumplio que (fPorcentajeDefinido >= fPorcentajeActual )*/
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) NOAGE => No se encontro agente" ,LOG01,lhCodCliente);  
+        return "NOAGE";
+    }
+
+    /*--(4) Ya asigno una entidad de cobranza externa Actualizar la CO_MOROSOS ---*/
+
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL 
+    DECLARE curClientes CURSOR FOR
+    SELECT COD_CLIENTE,COD_AGENTE, COD_CUENTA
+    FROM CO_MOROSOS
+    WHERE NUM_IDENT = :szhNumIdent
+    AND COD_TIPIDENT = :szhCodTipIdent ;
+    
+    if (sqlca.sqlcode)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) DECLARE CURSOR Clientes => %s" ,LOG03,lhCodCliente, sqlca.sqlerrm.sqlerrmc);  
+        return "SQL";
+    }
+    
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL 
+    OPEN curClientes ;
+    if (sqlca.sqlcode)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) OPEN CURSOR Clientes => %s" ,LOG03,lhCodCliente, sqlca.sqlerrm.sqlerrmc);  
+        return "SQL";
+    }
+    
+    iResp = 0; 
+    while (1)
+    {
+        sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+        EXEC SQL
+        FETCH curClientes 
+        INTO :lhCodClienteNew, :szhCodAgenteNew, :lhCodCuentaNew;
+        
+        if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+        {
+            ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) FETCH CURSOR Clientes => %s" ,LOG03,lhCodCliente, sqlca.sqlerrm.sqlerrmc);  
+            iResp = 1; 
+            break; /* error sql */
+        }
+        else if ( sqlca.sqlcode == SQLNOTFOUND )
+        {
+            ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fin CURSOR Clientes" ,LOG03,lhCodCliente);  
+            iResp = 0; 
+            break; /* no mas datos */
+        }
+        
+        if ( strcmp(szhCodAgenteNew,szhCodAgenteAsig) ) /* si son != */
+        {
+            sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+            EXEC SQL 
+            UPDATE CO_MOROSOS
+               SET COD_AGENTE  = :szhCodAgenteAsig 
+             WHERE COD_CLIENTE = :lhCodClienteNew;
+             
+            if (sqlca.sqlcode)
+            {
+                ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Update CO_MOROSOS => %s" ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+                iResp = 1; 
+                break; /* error sql */
+            }
+
+            /* rvc 23.07.03 */
+            memset(szCodGestion, 0, sizeof(szCodGestion));
+            strcpy(szCodGestion,"007");
+            sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+            EXEC SQL SELECT count(*)
+                      INTO   :iCountGest
+                      FROM CO_GESTION
+                      WHERE COD_CLIENTE = :lhCodClienteNew
+                      AND   COD_GESTION = :szCodGestion;
+
+            if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+            {
+                ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)(COD_GESTION:%s) SELECT count(*) FROM CO_GESTION: %s", LOG00, lhCodClienteNew, szCodGestion, sqlca.sqlerrm.sqlerrmc );
+                return FALSE;
+            }
+
+            /* Si no existe el cliente + codigo de gestion se inserta*/
+            if (iCountGest == 0)
+            {
+                sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+                EXEC SQL
+                INSERT INTO CO_GESTION
+                (
+                    COD_CLIENTE ,
+                    COD_CUENTA  ,
+                    COD_TIPIDENT,
+                    NUM_IDENT   ,
+                    COD_GESTION ,
+                    FEC_GESTION ,
+                    OBS_GESTION ,
+                    NOM_USUARIO 
+                )
+                VALUES
+                (
+                    :lhCodClienteNew,
+                    :lhCodCuentaNew,
+                    :szhCodTipIdent,
+                    :szhNumIdent,
+                    :szCodGestion,
+                    SYSDATE,
+                    'CAMBIA EJECUTIVO COBRANZA A PRE-JUDICIAL',
+                    USER
+                );
+
+                if (sqlca.sqlcode)
+                {
+                    ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Insert CO_GESTION => %s" ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+                    iResp = 1; 
+                    break; /* error sql */
+                }
+            }
+            else
+            {
+                /* Si existe el cliente + codigo de gestion se actualiza fecha*/
+                sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+                EXEC SQL UPDATE CO_GESTION
+                         SET   FEC_GESTION = SYSDATE
+                         WHERE COD_CLIENTE = :lhCodClienteNew
+                         AND   COD_GESTION = :szCodGestion;
+
+                if( sqlca.sqlcode != SQLOK )
+                {
+                   ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Actualizando CO_GESTION %s.", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+                   return FALSE;
+                }
+            } /* if (iCountGest == 0) */
+        }
+    }/* endwhile */
+    
+    sqlca.sqlcode=0; /* se resetea la vble sql en caso de memoria saturada*/
+    EXEC SQL
+    CLOSE curClientes;
+    if (sqlca.sqlcode)
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) close CURSOR Clientes => %s" ,LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        iResp = 1; 
+    }
+    
+    if (iResp == 1)
+    {
+        return "SQL";
+    }
+
+    ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld)-->(Entidad:%s) -OK- " ,LOG03,lhCodCliente,szhCodEntidadAsig);  
+
+    return "OK";
+
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

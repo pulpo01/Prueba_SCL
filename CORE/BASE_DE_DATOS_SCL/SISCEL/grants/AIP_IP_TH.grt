@@ -1,0 +1,5 @@
+GRANT    SELECT                                    ON AIP_IP_TH TO SISCEL_SELECT
+/
+GRANT    SELECT, INSERT, UPDATE, DELETE            ON AIP_IP_TH TO SISCEL_AL
+/
+

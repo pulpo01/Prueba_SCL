@@ -1,0 +1,547 @@
+/*=============================================================================
+   Nombre         : co_cierre_web.pc
+   Programa       : Generacion de registro de cierre para empresa virtual de web
+   Autor          : G.A.C.
+   Fecha Creacion : 07 - Septiembre - 2005
+   Proyecto       : P-CO-05018 Pago de Saldo Potspago a través de WEB
+==============================================================================*/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <pasoc.h>
+#include <unistd.h>
+#include "co_cierre_web.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+   char  szhCod_Proceso   [6];
+   long  lhPid_Proceso       ;
+   char  szhEstado_Proc   [2];
+	char  szHoraIni        [11]; EXEC SQL VAR szHoraIni IS STRING(11);
+	char  szhhhmiss        [11];
+   char  szFechayyyymmdd  [9] ; EXEC SQL VAR szFechayyyymmdd IS STRING(9);
+   char  szhYYYYMMDD      [9] ;
+   char  szhHH24miss      [11];
+EXEC SQL END DECLARE SECTION;
+int   iDiffSeg = 0;
+char  szHoraFin[9];
+char  szTmpProc[9];
+long  lTotalReg;
+
+char szUsage[] = "\n\tUso : co_cierre_web  -u [Usuario]/[Password]\n"
+                 "\t                     -l [Nivel de log. Por default es 3]\n\n";
+ 
+int main( int argc, char* argv[] )
+{
+char modulo[]="main";
+	
+   memset (&stConfig,0,sizeof (CONFIGLOCAL));
+	memset( szHoraIni, '\0', sizeof( szHoraIni ) );
+
+   if (argc < 2) {
+   	fprintf (stdout,"\n\tFaltan parametros.\n%s",szUsage);
+      fflush  (stdout);
+      exit(1);
+   }
+
+   /*- Validacion de parametros de entrada -*/
+   memset(&stConfig,0,sizeof(CONFIGLOCAL));
+   if (ifnValidaParametros(argc,argv,&stConfig) != 0)  {
+        fprintf (stdout,"\n\tError >> Fallo en la Validacion de Parametros \n");
+        fflush  (stdout);
+
+   } else {
+
+		if (ifnInicio(stConfig) != 0 ) {
+		    fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+		    fflush  (stdout);
+		}
+		else
+		{
+			if (ifnGeneraCierreWeb() != 0) {
+		   	vDTrazasLog( modulo, "\tProceso de Generacion de Registro de Cierre Web Finalizado con ERROR.\n\n", LOG03,modulo);
+		   	fprintf (stdout,"\n\tError >> Fallo Funcion Principal \n");
+		   	fflush  (stdout);
+			}
+		}
+
+	   if (ifnUpdateColasProc("W")!=0) {
+	       vDTrazasLog (modulo,"\t Funcion ifnUpdateColasProc(W) con Error ***\n",LOG03);
+	       return -1;
+	   }
+		if( ifnExitcierreWeb() != 0 ) {
+			fprintf (stdout,"\n\tError >> Fallo Funcion de estadistica \n");
+			fflush  (stdout);
+		}
+	
+
+	}
+	fprintf(stderr, "\t< FIN DEL PROCESO: GENERACION DE REGISTRO DE CIERRE WEB >\n\n");
+	return 0;
+
+}/* Fin main */
+
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], CONFIGLOCAL *pstLC )
+{
+char modulo[]="ifnValidaParametros";
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+extern char  *optarg;
+extern int  optind, opterr, optopt;
+int    iOpt=0;
+char   opt[]  = "u:l:n:";
+
+char szUsuario[61] = "";
+char *pszTmp       = "";
+
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+int  Userflag=0;
+int  Logflag=0;
+
+/*-- Seteo de Valores Iniciales y por defecto -------------------------------------*/
+    opterr=0;
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF)
+    {
+          switch (iOpt)
+             {
+                 case 'u':
+                   if ( strlen (optarg) )
+                   {
+                        strcpy (szUsuario,optarg)  ;
+                        stConfig.bOptUsuario = TRUE; 
+                   }
+                   break;
+                 case 'l':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptNivelLog = TRUE;
+                        stConfig.iNivelLog    = atoi(optarg);
+                   }
+                   break;   
+		           case 'n': 
+		             if ( strlen (optarg) ) {
+		               sprintf(szhCod_Proceso,"%s",optarg);
+		             }
+		             break;   
+
+             }/* fin switch */
+    }/* fin While de Opciones */
+    if (!stConfig.bOptUsuario)
+    {
+         fprintf(stderr,"\n\tError Falta Usuario en Parametros de Entrada: \n%s\n", szUsage);
+         return -1;
+    }
+    else
+    {
+       if ( (pszTmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+       {
+             fprintf (stderr,"\n\tFormato Usuario Oracle Incorrecto:\n%s\n", szUsage);
+             return -1;
+       }
+       else
+       {
+          strncpy (stConfig.szUsuario ,szUsuario,pszTmp-szUsuario);
+          strcpy  (stConfig.szPassWord, pszTmp+1);
+       }
+    }
+
+
+    if( !stConfig.bOptNivelLog )
+         stConfig.iNivelLog = iNIVEL_DEF;
+
+    stStatus.LogNivel = stConfig.iNivelLog;
+    
+    return 0;
+
+} /* ifnValidaParametros */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB( CONFIGLOCAL pstLC)
+{
+char modulo[]="ifnConexionDB";
+
+   if( !bfnConnectORA( pstLC.szUsuario, pstLC.szPassWord ) )   {
+       fprintf (stderr,"\nNo hay conexion a ORACLE \n");
+       fflush  (stderr);
+       return -1;
+    }
+
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* Funcion : ifnInicio										                     */
+/* ============================================================================= */
+int ifnInicio (CONFIGLOCAL pstConfig)
+{
+char modulo[]="ifnInicio";
+
+	if (ifnConexionDB(pstConfig) != 0)   {
+		fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+      fflush  (stdout);
+      return -1;
+	}
+
+	strcpy(szhYYYYMMDD,"YYYYMMDD");
+	strcpy(szhHH24miss,"hh24:mi:ss");
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:szHoraIni := TO_CHAR(SYSDATE,:szhHH24miss);
+        	:szFechayyyymmdd := TO_CHAR(SYSDATE,:szhYYYYMMDD);
+		END;
+	END-EXEC;
+
+   lhPid_Proceso=getpid();
+   if (strlen(szhCod_Proceso)<1)  strcpy(szhCod_Proceso,"CCWEB");
+
+	/*-----------------------------------------------------------------------*/
+  	/* Inicializacion de Archivos LOG										 */
+	/*-----------------------------------------------------------------------*/
+  	if (ifnAbreArchivosLog(0)!=0) return -1;
+  	
+
+	vDTrazasLog( modulo, "\n\t***************************************************************"
+					 	  "\n\t%s  Generacion de Cierre Web               Hora : %s      "
+						  "\n\t***************************************************************\n",LOG03,szhVersion,szHoraIni);	
+	vDTrazasError( modulo, "\n\t***************************************************************"
+					 	  "\n\t%s  Errores en Generacion de Cierre Web    Hora : %s      "
+						  "\n\t***************************************************************\n",LOG03,szhVersion,szHoraIni);	
+
+   if (ifnUpdateColasProc("R")!=0) {
+        vDTrazasLog (modulo,"\n\n\t Funcion ifnUpdateColasProc(R)***\n",LOG03);
+        return -1;
+   }
+   
+	return 0;
+}/* fin a ifnInicio */
+
+/*===========================================================================*/
+/* Funcion que abre los archivos de log y de error                           */
+/*===========================================================================*/
+int ifnAbreArchivosLog()
+{
+char modulo[]="ifnAbreArchivosLog";
+char *pathDir               ;
+char szComando  [128]   ="" ;
+char szPathLog  [128]   ="" ;
+   /*-----------------------------------------------------------------------*/
+   /* Inicializacion de estructura	de archivo								*/
+   /*-----------------------------------------------------------------------*/
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	strcpy(szArchivo,szhCod_Proceso);
+	pathDir =(char *)malloc(228);
+
+	pathDir =szGetEnv("XPC_LOG");
+	sprintf(szPathLog  ,"%s/CO_SCHEDULER/%s",pathDir,szFechayyyymmdd);
+	free(pathDir);
+	sprintf(szComando,"/usr/bin/mkdir -p %s", szPathLog);
+	system (szComando);
+
+	sprintf(stStatus.ErrName,"%s/%s.err",szPathLog,szArchivo);
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+	    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+	    return -1;
+	}
+
+	sprintf(stStatus.LogName,"%s/%s.log",szPathLog,szArchivo);
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+	    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+    	return -1;
+   }
+   
+
+   return 0;
+}/* ifnAbreArchivosLog */
+
+
+/* ============================================================================= */
+/* Funcion ifnExitcierreWeb: finaliza proceso    				                     */
+/* ============================================================================= */
+int ifnExitcierreWeb (void)
+{
+char modulo[]="ifnExitcierreWeb";
+
+	strcpy(szhhhmiss,"HH24:MI:SS");
+
+	/* Datos Fin de Tiempo */
+	EXEC SQL EXECUTE
+		BEGIN
+			:szHoraFin := TO_CHAR(SYSDATE,:szhhhmiss);
+		END;
+	END-EXEC;
+
+	iDiffSeg = ifnRestaHoras(szHoraIni,szHoraFin,szTmpProc);
+
+   vDTrazasLog(modulo,"\n\t         HORA INICIO  : %s "
+                      "\n\t         HORA TERMINO : %s "
+                      "\n\t         TIEMPO TOTAL : %s  (%d segs)"
+                      "\n\t REGISTROS PROCESADOS : %ld"
+                      "\n\t PROMEDIO  x  REGISTRO: %.5f segs "
+                      "\n\n",LOG03,szHoraIni,szHoraFin,szTmpProc,iDiffSeg,lTotalReg,(float)((float)iDiffSeg/(float)lTotalReg) );
+
+	vDTrazasLog( modulo, "\tFin del Proceso de Generacion de Registro de Cierre Web.\n\n", LOG03,modulo);
+	
+	if ( fclose(stStatus.LogFile) != 0 )    {
+	    fprintf (stderr,"Error al cerrar archivo de Log\n");
+	    fflush  (stderr);
+	}
+
+	if ( fclose(stStatus.ErrFile) != 0 )    {
+	    fprintf (stderr,"Error al cerrar archivo de Errores\n");
+	    fflush  (stderr);
+	}
+
+	return 0;
+}/* fin a ifnExitcierreWeb */
+
+
+/*===========================================================================*/
+/* Funcion RighTrim : Limpia blancos a la derecha                            */
+/*===========================================================================*/
+int RighTrim (char *szVar)
+{
+int  iLenVar = 0;
+int  i       = 0;
+
+   iLenVar = strlen(szVar);
+   for (i=iLenVar-1;i>-1;i--) {
+        if (szVar[i]==' ') {
+            szVar[i]='\0';
+        } else break;
+   }
+   return (0);        
+} /* RighTrim */
+
+/* ============================================================================= */
+/* Copia un substr de un char a otro                                             */
+/* ============================================================================= */
+void Strcpysub(char *str1, int Largo, char *str2)
+{
+   int i;
+   str2[0]='\0';
+   for(i=0;i<=Largo-1;str2[i]=str1[i],i++);
+   str2[i]='\0';
+}
+
+/* ============================================================================= */
+/* Lleva una Hora dada a un valor equivalente en segundos                        */
+/* ============================================================================= */
+int HoraToSegs(char *HoraFmto)
+{
+  char *Hora,HH[3],MI[3],SS[3];
+  int iHH,iMI,iSS;
+  Hora=HoraFmto;
+  Strcpysub(Hora,2,HH); Hora=Hora+3; /*HH:*/ iHH=atoi(HH); if (iHH<00||iHH>23) return -1;
+  Strcpysub(Hora,2,MI); Hora=Hora+3; /*MI:*/ iMI=atoi(MI); if (iMI<00||iMI>59) return -1;
+  Strcpysub(Hora,2,SS);              /*SS */ iSS=atoi(SS); if (iSS<00||iSS>59) return -1;
+  return (iHH*3600+iMI*60+iSS);
+}
+
+/* ============================================================================= */
+/* Resta dos string en fmto hora y retorna la diferencia en fmto hora y segundos */
+/* ============================================================================= */
+int ifnRestaHoras( char *h1, char *h2, char *hh)
+{
+  int ih1,ih2,ih;
+  div_t hmsH,hmsMS;
+  if ((ih1=HoraToSegs(h1))<0) return -1;
+  if ((ih2=HoraToSegs(h2))<0) return -1;
+  ih=(ih2>=ih1)?(ih2-ih1):(((24*3600)-ih1)+ih2); /* restando horas en segundos , considerando cambio de dia */
+  hmsH=div(ih,3600);
+  hmsMS=div(hmsH.rem,60);
+  sprintf(hh,"%02d:%02d:%02d\0",hmsH.quot,hmsMS.quot,hmsMS.rem);
+  return ih;
+}
+
+/* ============================================================================= */
+/* Funcion principal que genera un registro de cierre web en la interfaz de pago */
+/* ============================================================================= */
+int ifnGeneraCierreWeb()
+{
+char modulo[]="ifnGeneraCierreWeb";
+EXEC SQL BEGIN DECLARE SECTION;
+	char   szhNum_Ejercicio[13]; EXEC SQL VAR szhNum_Ejercicio IS STRING(13); 
+	char   szhNom_Usuario  [21]; EXEC SQL VAR szhNom_Usuario IS STRING(21); 
+	int    ihCod_caja 			;
+	int    ihCount             ;
+
+	char   szhUSUARIO_SERV [20];
+	char   szhModulo       [3];
+	char   szhEmpresa_WEB  [4];
+   char   szhServicio_INT [4];
+	char   szhLetra_A      [2];
+	char   szhLetra_O      [2];
+	int    ihValor_cero    = 0 ;
+	int    ihValor_uno     = 1 ;
+	int    ihValor_ocho    = 8 ;
+EXEC SQL END DECLARE SECTION;
+
+	vDTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);
+	strcpy(szhUSUARIO_SERV,"USUARIO_SERV_PL_SQL");
+	strcpy(szhModulo,"GE");
+	strcpy(szhEmpresa_WEB,"WEB");
+	strcpy(szhServicio_INT,"INT");
+	strcpy(szhLetra_A,"A");
+	strcpy(szhLetra_O,"O");
+
+   EXEC SQL
+   SELECT UNIQUE NUM_EJERCICIO 
+   INTO   :szhNum_Ejercicio
+   FROM   CO_INTERFAZ_PAGOS 
+   WHERE  EMP_RECAUDADORA = :szhEmpresa_WEB
+   AND    SUBSTR(NUM_EJERCICIO,:ihValor_uno,:ihValor_ocho)=TO_CHAR(SYSDATE,:szhYYYYMMDD);
+
+	if( SQLCODE==SQLNOTFOUND ) 	{
+		vDTrazasLog( modulo, "\tNo existen Registros para este Periodo", LOG02,SQLERRM );
+		return 0;
+	}
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tSELECT UNIQUE NUM_EJERCICIO CO_INTERFAZ_PAGOS  - %s", LOG00,SQLERRM );
+		return -1;
+	}
+	vDTrazasLog( modulo, "\t\t ==> szhNum_Ejercicio [%s]\n", LOG03,szhNum_Ejercicio);
+
+
+   EXEC SQL
+   SELECT COUNT(:ihValor_uno)
+   INTO   :ihCount
+   FROM   CO_INTERFAZ_PAGOS 
+   WHERE  EMP_RECAUDADORA = :szhEmpresa_WEB
+   AND    NUM_EJERCICIO   = :szhNum_Ejercicio
+   AND    SER_SOLICITADO  = :szhServicio_INT;
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tSELECT UNIQUE NUM_EJERCICIO CO_INTERFAZ_PAGOS  - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	if (ihCount > 0)  {
+		vDTrazasLog( modulo, "\n\tYa existe un Registro de Cierre para este Periodo", LOG02,SQLERRM );
+		return 0;
+	}
+   
+   memset(szhNom_Usuario,'\0',sizeof(szhNom_Usuario));
+   EXEC SQL
+   SELECT VAL_PARAMETRO
+   INTO   :szhNom_Usuario
+   FROM   GED_PARAMETROS
+   WHERE  NOM_PARAMETRO = :szhUSUARIO_SERV
+   AND    COD_MODULO    = :szhModulo;
+
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tSELECT VAL_PARAMETRO GED_PARAMETROS  - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	vDTrazasLog( modulo, "\t\t ==> szhNom_Usuario   [%s]\n\n", LOG03,szhNom_Usuario);
+	
+	EXEC SQL
+	SELECT UNIQUE COD_CAJA
+   INTO   :ihCod_caja
+   FROM   CO_EMPRESAS_REX
+   WHERE  EMP_RECAUDADORA = :szhEmpresa_WEB;
+
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tSELECT COD_CAJA CO_EMPRESAS_REX - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	EXEC SQL
+	INSERT INTO CO_INTERFAZ_PAGOS 
+			 (EMP_RECAUDADORA , COD_CAJA_RECAUDA , SER_SOLICITADO  , FEC_EFECTIVIDAD, NUM_TRANSACCION, 
+			  NOM_USUARORA    , TIP_TRANSACCION  , SUB_TIP_TRANSAC , COD_SERVICIO   , NUM_EJERCICIO  ,
+			  COD_CLIENTE     , NUM_CELULAR      , IMP_PAGO        , NUM_FOLIOCTC   , NUM_IDENT      , 
+			  TIP_VALOR       , NUM_DOCUMENTO    , COD_BANCO       , CTA_CORRIENTE  , COD_AUTORIZA   , 
+			  CAN_DEBE        , MTO_DEBE         , CAN_HABER       , MTO_HABER      , COD_ESTADO     , 
+			  COD_ERROR       , NUM_COMPAGO      , NUM_TARJETA     , COD_TIPIDENT   , PREF_PLAZA     ) 
+	VALUES (:szhEmpresa_WEB , :ihCod_caja      , :szhServicio_INT, SYSDATE        , :ihValor_cero  ,
+	        :szhNom_Usuario , :szhLetra_A      , :szhLetra_O     , :ihValor_ocho  , :szhNum_Ejercicio, 
+	        NULL            , NULL             , NULL            , NULL           , NULL           , 
+	        NULL            , NULL             , NULL            , NULL           , NULL           , 
+	        NULL            , NULL             , NULL            , NULL           , NULL           , 
+	        NULL            , NULL             , NULL            , NULL           , NULL          ); 
+	
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tINSERT INTO CO_INTERFAZ_PAGOS  - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	lTotalReg++;
+	vDTrazasLog( modulo, "\t* Registro de Cierre Insertado con Exito en Co_Interfaz_Pagos\n", LOG03);
+
+   EXEC SQL COMMIT WORK;
+   if (SQLCODE != SQLOK ) {
+       vDTrazasLog (modulo,"\t Error en COMMIT WORK\n",LOG00);
+       return -1;
+   }
+
+	return 0;
+
+}/* Fin ifnGeneraCierreWeb */
+
+/* ============================================================================= */
+/* Funcion que actualiza la cola de proceso en la tabla co_colasproc             */
+/* ============================================================================= */
+int ifnUpdateColasProc(char *pszEstado)
+{
+char modulo[]="ifnUpdateColasProc";
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhEstado  [2];
+EXEC SQL END DECLARE SECTION;    
+    
+    strcpy(szhEstado,pszEstado);
+
+    vDTrazasLog (modulo,"\t Actualizando CO_COLASPROC con Estado [%s]*****",LOG03,pszEstado);
+    EXEC SQL
+    UPDATE CO_COLASPROC SET
+           COD_ESTADO  = :szhEstado,
+           FEC_ESTADO  = SYSDATE,
+           PID_PROCESO = :lhPid_Proceso
+    WHERE  COD_PROCESO = :szhCod_Proceso;
+    
+    if (SQLCODE != SQLOK ) {
+        vDTrazasLog (modulo,"\t Error en ifnUpdateColasProc\n",LOG00);
+        return -1;
+    }
+        
+    EXEC SQL COMMIT WORK;
+    if (SQLCODE != SQLOK ) {
+        vDTrazasLog (modulo,"\t Error en COMMIT WORK CO_COLASPROC\n",LOG00);
+        return -1;
+    }
+
+    return 0;
+}
+
+/******************************************************************************************/
+/** Informaci¢n de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisi¢n                                            : */
+/**  %PR% */
+/** Autor de la Revisi¢n                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisi¢n ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creaci¢n de la Revisi¢n                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

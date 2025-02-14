@@ -1,0 +1,848 @@
+/************************************************************************/
+/* Actualiza estados de cartera: Estados y situaciones de abonados para */
+/*                               ser considerados en proceso.           */
+/* Ingresa nuevas ventas periodo: Para lo que recurre a Siscel para     */
+/*                                recuperar las nuevas ventas.          */
+/* Discrimina clientes/abonados a ser procesados.                       */
+/*----------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                             */
+/* Inicio: Lunes 13 de Agosto del 2001.                                 */
+/* Por Fabian Aedo Ramírez.                                             */
+/* modificado : Viernes 13 de Diciembre 2002                            */
+/* por Jaime Vargas                                                     */ 
+/*----------------------------------------------------------------------*/
+#include "Sel_Cartera.h"
+#include "GEN_biblioteca.h"
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+	char    szhUserName[30]="";
+	char    szhPassWord[30]="";
+	char    szhSysDate [17]="";
+   	char    szFechaYYYYMMDD[9]="";  
+	char    szhIndInstancia[2]="";
+    char    szhIndEstado[2]="";
+    short 	lhErrValCartera;
+	long    lhCodError;
+EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------*/
+/* Lista de Tipos de Comisionistas para ejecucion de ciclo                   */
+/*---------------------------------------------------------------------------*/
+	stTiposComis * lstTiposComis = NULL;
+/*---------------------------------------------------------------------------*/
+/* Carga la estructura de tipos de comisionistas que seran procesados.       */
+/* en funcion del tipo de ciclo en proceso, se ejecuta libreria de carga de  */
+/* tipos de comisionista a procesar.                                         */
+/*---------------------------------------------------------------------------*/
+void vCargaTiposComis()
+{
+    stTiposComis * paux;
+    
+    switch(szTipoPeriodo)
+    {
+    	case PERIODICO:
+    			fprintf(stderr,"\n[vCargaTiposComis] EJECUCION EN MODO PERIODICO.\n");
+    			fprintf(pfLog ,"\n[vCargaTiposComis] EJECUCION EN MODO PERIODICO.\n");
+    			lstTiposComis = stGetTipComisSelecPer(UNIVERSO, stCiclo);
+				break;
+    	case ESPORADICO:
+    			fprintf(stderr,"\n[vCargaTiposComis] EJECUCION EN MODO ESPORADICO.\n");
+    			fprintf(pfLog ,"\n[vCargaTiposComis] EJECUCION EN MODO ESPORADICO.\n");
+    			lstTiposComis = stGetTipComisSelecProm(UNIVERSO, stCiclo);
+    			break;
+    }
+}	
+/*-----------------------------------------------------------------------------*/
+/* funcion que retorna si existen registros asosiados a un tipo comisionista   */
+/*-----------------------------------------------------------------------------*/
+BOOL  bfnExisteTipComis(char * pszCodTipComis)
+{
+   EXEC SQL BEGIN DECLARE SECTION;
+      char  szhCodTipComis[3];
+      long  lhContReg;
+   EXEC SQL END DECLARE SECTION;
+
+   strcpy(szhCodTipComis , pszCodTipComis);
+   lhContReg = 0;
+
+   EXEC SQL SELECT count(*) INTO :lhContReg
+      FROM  CMT_CARTERA
+      WHERE COD_TIPCOMIS  = :szhCodTipComis 
+      AND   ROWNUM = 1 ;
+
+   if(lhContReg != 0)
+      return TRUE ;
+   else
+      return FALSE ;
+}
+/*****************************************************************************/
+/* Rutina para la incorporación de las nuevas ventas de MasterDealer         */
+/*****************************************************************************/
+void vGetNvasVentas(int piCodTipoRed, char * szCodigoTipComis, char * pszCodTipVendedor)
+{
+	int         i;
+	long        iLastRows    = 0;
+	int         iFetchedRows = MAXFETCH;
+	int         iRetrievRows = MAXFETCH;
+	long		lCantVentas  = 0;
+    EXEC SQL BEGIN DECLARE SECTION;
+		long    lMaxFetch;
+		char    szhFecDesde[11];
+		char    szhFecHasta[11];
+		long    lhNumVenta[MAXFETCH];
+		long	lhCodVendedor[MAXFETCH];
+		long	lNumVenta;
+		long	lhCodComisionista;
+		char	szhCodTipComis[3];
+		int     ihCodTipoRed;
+		char	szhCodTipVendedor[3];
+    EXEC SQL END DECLARE SECTION;
+               
+    strcpy(szhFecDesde    		, stCiclo.szFecDesdeNormal);   
+    strcpy(szhFecHasta    		, stCiclo.szFecHastaNormal);         
+    strcpy(szhCodTipComis 		, szCodigoTipComis);    
+    strcpy(szhCodTipVendedor	, pszCodTipVendedor);
+    ihCodTipoRed          		= piCodTipoRed;
+                       
+    fprintf(stderr,"[vGetNvasVentas] En Proceso de inserción de nuevas ventas... fec_desde = [%s],\n",szhFecDesde);
+    fprintf(stderr,"[vGetNvasVentas] En Proceso de inserción de nuevas ventas... fec_hasta = [%s],\n",szhFecHasta);
+
+    fprintf(pfLog ,"[vGetNvasVentas] En Proceso de inserción de nuevas ventas... fec_desde = [%s],\n",szhFecDesde);
+    fprintf(pfLog ,"[vGetNvasVentas] En Proceso de inserción de nuevas ventas... fec_hasta = [%s],\n",szhFecHasta);
+    
+    EXEC SQL DECLARE NUEVASVTAS CURSOR for 
+        SELECT 	A.NUM_VENTA,
+        		A.COD_VENDEDOR 
+         FROM 	GA_VENTAS       A, 
+              	VE_VENDEDORES   B,
+		      	VE_REDVENTAS_TD D
+        WHERE	D.COD_TIPORED    = :ihCodTipoRed
+          AND	D.COD_VENDEDOR   = B.COD_VENDEDOR
+          AND 	B.COD_TIPCOMIS   = :szhCodTipVendedor
+          AND 	B.COD_TIPCOMIS   = A.COD_TIPCOMIS
+          AND 	B.COD_VENDEDOR   = A.COD_VENDEDOR 
+          AND 	A.IND_ESTVENTA   = 'AC' 
+          AND 	A.FEC_ACEPREC     BETWEEN TO_DATE(:szhFecDesde,'DD-MM-YYYY') 
+		  AND   TO_DATE(:szhFecHasta,'DD-MM-YYYY');
+
+    EXEC SQL OPEN NUEVASVTAS;
+    lMaxFetch = MAXFETCH;
+        
+	while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL FOR :lMaxFetch FETCH   NUEVASVTAS
+        	INTO	:lhNumVenta, lhCodVendedor;
+
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+			lCantVentas++;
+			lNumVenta = lhNumVenta[i];
+			lhCodComisionista	= lObtieneVendedorPadre(lhCodVendedor[i], ihCodTipoRed, szhCodTipComis);
+        
+	        EXEC SQL INSERT INTO CMT_CARTERA
+	              ( COD_TIPCOMIS       ,COD_COMISIONISTA
+	               ,COD_AGENCIA        ,COD_CLIENTE
+	               ,NUM_VENTA          ,FEC_VENTA
+	               ,FEC_ACEPREC        
+	               ,NUM_ABONADO        ,COD_ESTADO         
+	               ,FEC_CAMBIO         ,COD_SITUACION     
+	               ,IND_PROCESABLE     ,COD_PLANTARIF      
+	               ,COD_TIPORED		   ,COD_TIPVENDEDOR) 
+	           SELECT 
+	                :szhCodTipComis    	,:lhCodComisionista
+	               ,A.COD_VENDEDOR     	,A.COD_CLIENTE
+	               ,A.NUM_VENTA        	,A.FEC_VENTA
+	               ,NVL(A.FEC_ACEPREC  	,A.FEC_VENTA)
+	               ,C.NUM_ABONADO      	,C.COD_ESTADO
+	               ,SYSDATE        		,C.COD_SITUACION
+	               ,'N'                	,C.COD_PLANTARIF 
+	               ,:ihCodTipoRed		,A.COD_TIPCOMIS
+	          FROM GA_VENTAS       A , 
+	               GA_ABOCEL       C 
+	         WHERE A.NUM_VENTA         = :lNumVenta
+	           AND A.IND_ESTVENTA      = 'AC'
+	           AND A.NUM_VENTA         = C.NUM_VENTA
+	           AND NOT EXISTS (SELECT X.NUM_ABONADO FROM CMT_CARTERA X
+	                           WHERE C.NUM_ABONADO=X.NUM_ABONADO);
+		}
+    }
+    fprintf(pfLog , "\n[vGetNvasVentas] Ventas Recuperadas TR:[%d] TipComis:[%s] TipVendedor:[%s]--->[%d]\n", ihCodTipoRed, szhCodTipComis,szhCodTipVendedor, lCantVentas);
+    fprintf(stderr, "\n[vGetNvasVentas] Ventas Recuperadas TR:[%d] TipComis:[%s] TipVendedor:[%s]--->[%d]\n", ihCodTipoRed, szhCodTipComis,szhCodTipVendedor, lCantVentas);
+    EXEC SQL CLOSE NUEVASVTAS;
+}
+/*****************************************************************************/
+/* Rutina para la creación de cartera inicial para nuevos tip_comis          */
+/*****************************************************************************/
+void vCargaCarteraNueva(int piCodTipoRed, char * pszCodTipComis, char *pszCodTipVendedor)
+{
+	int         i;
+	long        iLastRows    = 0;
+	int         iFetchedRows = MAXFETCH;
+	int         iRetrievRows = MAXFETCH;
+	long		lCantVentas = 0;
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lMaxFetch;
+        char    szhFecHasta[11];
+        long    lNumVenta[MAXFETCH];
+        long	lhCodVendedor[MAXFETCH];
+        long	lhCodComisionista;
+        long    lhNumVenta;
+        char    szhCodTipComis[3];
+		int     ihCodTipoRed;
+		char	szhCodTipVendedor[3];
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhFecHasta    		, stCiclo.szFecHastaNormal);
+    strcpy(szhCodTipComis 		, pszCodTipComis);    
+	strcpy(szhCodTipVendedor	, pszCodTipVendedor);
+	ihCodTipoRed          		= piCodTipoRed;
+
+    fprintf(stderr,"[vCargaCarteraNueva] En Proceso de creacion cartera inicial... fec_hasta = [%s],\n",szhFecHasta);
+    fprintf(pfLog ,"[vCargaCarteraNueva] En Proceso de creacion cartera inicial... fec_hasta = [%s],\n",szhFecHasta);
+    
+    EXEC SQL DECLARE CARTERANUEVA CURSOR for 
+        SELECT 	A.NUM_VENTA,
+        		A.COD_VENDEDOR 
+         FROM 	GA_VENTAS       A, 
+              	VE_VENDEDORES   B,
+		      	VE_REDVENTAS_TD D
+        WHERE	D.COD_TIPORED    = :ihCodTipoRed
+          AND	D.COD_VENDEDOR   = B.COD_VENDEDOR
+          AND 	B.COD_TIPCOMIS   = :szhCodTipVendedor
+          AND 	B.COD_TIPCOMIS   = A.COD_TIPCOMIS
+          AND 	B.COD_VENDEDOR   = A.COD_VENDEDOR 
+          AND 	A.IND_ESTVENTA     = 'AC' 
+          AND 	A.FEC_ACEPREC      < TO_DATE(:szhFecHasta,'DD-MM-YYYY');
+
+    EXEC SQL OPEN CARTERANUEVA;
+    lMaxFetch = MAXFETCH;
+        
+	while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL FOR :lMaxFetch FETCH   CARTERANUEVA
+        	INTO	:lNumVenta, :lhCodVendedor;
+
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+			lCantVentas++;
+			lhNumVenta = lNumVenta[i];
+			lhCodComisionista	= lObtieneVendedorPadre(lhCodVendedor[i], ihCodTipoRed, szhCodTipComis);
+					
+	        EXEC SQL INSERT INTO CMT_CARTERA
+	              ( COD_TIPCOMIS       ,COD_COMISIONISTA
+	               ,COD_AGENCIA        ,COD_CLIENTE
+	               ,NUM_VENTA          ,FEC_VENTA
+	               ,FEC_ACEPREC        
+	               ,NUM_ABONADO        ,COD_ESTADO         
+	               ,FEC_CAMBIO         ,COD_SITUACION     
+	               ,IND_PROCESABLE     ,COD_PLANTARIF      
+	               ,COD_TIPORED		   ,COD_TIPVENDEDOR) 
+	           SELECT 
+	                :szhCodTipComis    	,:lhCodComisionista
+	               ,A.COD_VENDEDOR     	,A.COD_CLIENTE
+	               ,A.NUM_VENTA        	,A.FEC_VENTA
+	               ,NVL(A.FEC_ACEPREC  	,A.FEC_VENTA)
+	               ,C.NUM_ABONADO      	,C.COD_ESTADO
+	               ,SYSDATE        		,C.COD_SITUACION
+	               ,'N'                	,C.COD_PLANTARIF 
+	               ,:ihCodTipoRed		,A.COD_TIPCOMIS
+	          FROM GA_VENTAS       A , 
+	               GA_ABOCEL       C 
+	         WHERE A.NUM_VENTA         = :lhNumVenta
+	           AND A.IND_ESTVENTA      = 'AC'
+	           AND A.NUM_VENTA         = C.NUM_VENTA
+	           AND NOT EXISTS (SELECT X.NUM_ABONADO FROM CMT_CARTERA X
+	                           WHERE C.NUM_ABONADO=X.NUM_ABONADO);
+		}
+    }
+	fprintf(pfLog , "\n[vCargaCarteraNueva]Ventas Nuevas Tr:[%d] TipComis:[%s] TipVendedor:[%s]-->[%d].\n",ihCodTipoRed, szhCodTipComis, szhCodTipVendedor, lCantVentas);
+	fprintf(stderr, "\n[vCargaCarteraNueva]Ventas Nuevas Tr:[%d] TipComis:[%s] TipVendedor:[%s]-->[%d].\n",ihCodTipoRed, szhCodTipComis, szhCodTipVendedor, lCantVentas);
+    EXEC SQL CLOSE CARTERANUEVA;
+}
+/*****************************************************************************/
+/* Rutina para la actualizacion de los estados, situaciones y plan tarifario */
+/* que cambiaron durante el último periodo.                                  */
+/*****************************************************************************/
+void vActCambiosAbonados(int piCodTipoRed, char * pszCodTipComis)
+{
+
+    long    	lhCantAbonados=0;
+	int         i;
+	long        iLastRows    = 0;
+	int         iFetchedRows = MAXFETCH;
+	int         iRetrievRows = MAXFETCH;
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lMaxFetch;
+		int		ihCodTipoRed;
+		char	szhCodTipComis[3];
+        
+        long    lhNumAbonado[MAXFETCH];
+        char    szhOldEstado[MAXFETCH][3]; 
+        char    szhNewEstado[MAXFETCH][3];
+        char    szhOldSituacion[MAXFETCH][4]; 
+        char    szhNewSituacion[MAXFETCH][4];
+        char    szhOldPlanTarif[MAXFETCH][4]; 
+        char    szhNewPlanTarif[MAXFETCH][4]; 
+        
+        char    szhEstado[3];
+        char    szhSituacion[4];
+        char    szhPlanTarif[4]; 
+        long	lhAbonado;
+    EXEC SQL END DECLARE SECTION;
+        
+	ihCodTipoRed             = piCodTipoRed;
+    strcpy(szhCodTipComis    , pszCodTipComis);
+        
+    EXEC SQL DECLARE CAMBIOS_ABONADOS CURSOR for 
+        SELECT A.NUM_ABONADO
+              ,A.COD_ESTADO
+              ,B.COD_ESTADO
+              ,A.COD_SITUACION
+              ,B.COD_SITUACION
+              ,A.COD_PLANTARIF
+              ,B.COD_PLANTARIF 
+        FROM  CMT_CARTERA A ,
+              GA_ABOCEL   B
+        WHERE A.COD_TIPCOMIS	 =  :szhCodTipComis
+		  AND A.COD_TIPORED      =  :ihCodTipoRed
+          AND A.NUM_ABONADO      =  B.NUM_ABONADO
+          AND ((A.COD_ESTADO    !=  B.COD_ESTADO) 
+            OR (A.COD_SITUACION !=  B.COD_SITUACION)
+            OR (A.COD_PLANTARIF !=  B.COD_PLANTARIF));
+
+    EXEC SQL OPEN CAMBIOS_ABONADOS;
+        
+	while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL FOR :lMaxFetch FETCH   CAMBIOS_ABONADOS
+			INTO :lhNumAbonado    , 
+                 :szhOldEstado    ,
+                 :szhNewEstado    ,
+                 :szhOldSituacion ,
+                 :szhNewSituacion ,
+                 :szhOldPlanTarif ,
+                 :szhNewPlanTarif ;
+
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+        	lhCantAbonados++;
+        	
+			strcpy(szhEstado	, szfnTrim(szhNewEstado[i]));
+			strcpy(szhSituacion	, szfnTrim(szhNewSituacion[i]));
+			strcpy(szhPlanTarif	, szfnTrim(szhNewPlanTarif[i])); 
+			lhAbonado			= lhNumAbonado[i];
+			
+	        EXEC SQL UPDATE CMT_CARTERA
+	             SET COD_ESTADO      = :szhEstado,
+	                 COD_SITUACION   = :szhSituacion,
+	                 COD_PLANTARIF   = :szhPlanTarif,
+	                 FEC_CAMBIO      = SYSDATE,
+	                 IND_PROCESABLE  = 'N'
+	           WHERE NUM_ABONADO      = :lhAbonado 
+	          	 AND COD_TIPCOMIS     = :szhCodTipComis
+			  	 AND COD_TIPORED      = :ihCodTipoRed;
+    	}
+    }
+    
+	EXEC SQL CLOSE CAMBIOS_ABONADOS;
+	
+    fprintf(pfLog ,"\n [vActCambiosAbonados] Cantidad Total de abonados actualizados... %d\n",lhCantAbonados);
+    fprintf(stderr,"\n [vActCambiosAbonados] Cantidad Total de abonados actualizados... %d\n",lhCantAbonados);
+}       
+/*****************************************************************************/
+/* Rutina para determinacion de ind_procesable, es decir, si el abonado      */
+/* entrara al proceso de comision.                                           */
+/* Situacion de abonado Aceptable (AAA, ABP, ACP, CNP, CSP, RTP)             */
+/* Estados de Cobranza que invalidan: (BF, CF, CC)                           */
+/* Solo se chequean aquellos abonados que ingresaron y/o cambiaron de estado */
+/* es decir, con IND_PROCESABLE='P'.                                         */
+/*****************************************************************************/
+void vDiscriminaAbonados(int piCodTipoRed , char * pszCodTipComis)
+{
+	long       	iCantidad = 0;
+	int         i;      
+	short       iLastRows    = 0;  
+	int         iFetchedRows = MAXFETCH;
+	int         iRetrievRows = MAXFETCH;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+		long    lMaxFetch;     
+		int		ihCodTipoRed;
+		char	szhCodTipComis[3];
+        long    lhNumAbonado[MAXFETCH];
+        long	lhAbonado;
+        char    szhIndProcesable[2];
+    EXEC SQL END DECLARE SECTION;
+
+	lMaxFetch                = MAXFETCH;
+	ihCodTipoRed             = piCodTipoRed;
+    strcpy(szhCodTipComis    , pszCodTipComis);
+        
+    EXEC SQL DECLARE DISCRIMINA_ABONADOS CURSOR for 
+        SELECT NUM_ABONADO                           
+        FROM  CMT_CARTERA    C ,                          
+              CMD_PARAMETROS P                         
+       WHERE  C.COD_TIPCOMIS   = :szhCodTipComis
+		  AND C.COD_TIPORED    = :ihCodTipoRed
+       	  AND C.COD_SITUACION  = P.VAL_PARAMETRO1  
+          AND P.COD_TIPCODIGO  = 10 
+          AND P.COD_CODIGO     = 5 
+          AND P.COD_PARAMETRO  > 0
+       MINUS
+       SELECT NUM_ABONADO                           
+       FROM  CMT_CARTERA     C ,                          
+             CMD_PARAMETROS  P                         
+      WHERE  C.COD_TIPCOMIS		= :szhCodTipComis
+		  AND C.COD_TIPORED    	= :ihCodTipoRed
+          AND C.IND_PROCESABLE 	= 'N' 
+       	  AND C.COD_ESTADO     	= P.VAL_PARAMETRO1 
+          AND P.COD_TIPCODIGO  	= 10 
+          AND P.COD_CODIGO     	= 6 
+          AND P.COD_PARAMETRO  	> 0 ;
+    
+	EXEC SQL OPEN DISCRIMINA_ABONADOS;
+	     
+	strcpy(szhIndProcesable,"S");
+	
+	while(iFetchedRows == iRetrievRows)
+	{
+		EXEC SQL for :lMaxFetch 
+        	FETCH DISCRIMINA_ABONADOS 
+            INTO  :lhNumAbonado;
+
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+		iLastRows    = sqlca.sqlerrd[2];                
+                
+		for (i=0; i < iRetrievRows; i++)
+		{
+	
+			lhAbonado = lhNumAbonado[i];
+			
+			EXEC SQL UPDATE CMT_CARTERA 
+			SET IND_PROCESABLE = :szhIndProcesable
+			WHERE NUM_ABONADO    = :lhAbonado
+			AND  COD_TIPORED    = :ihCodTipoRed
+			AND  COD_TIPCOMIS   = :szhCodTipComis;
+			
+			iCantidad++;
+		}
+	}
+	fprintf(pfLog , "\n[vDiscriminaAbonados] Abonados con Cambio a Procesable TR:[%d] TipComis:[%s]---->[%d]\n",ihCodTipoRed, szhCodTipComis, iCantidad);
+	fprintf(stderr, "\n[vDiscriminaAbonados] Abonados con Cambio a Procesable TR:[%d] TipComis:[%s]---->[%d]\n",ihCodTipoRed, szhCodTipComis, iCantidad);
+	EXEC SQL CLOSE DISCRIMINA_ABONADOS;
+}
+/*****************************************************************************/
+/* RUTINA QUE PERMITE MANEJAR LAS  ENTIDADES DE CARTERA PARA LOS PROCESOS    */
+/* DE COMISION POR CONCEPTO DE FACTURACION                                   */
+/*****************************************************************************/
+void vProcesaCarteras()
+{
+    stTiposComis * paux;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        char    szhCodTipComis[3];
+		int		ihCodTipoRed;
+		char	szhCodTipVendedor[3];
+    EXEC SQL END DECLARE SECTION;
+        
+	for (paux=lstTiposComis;paux != NULL; paux=paux->sgte)
+    {
+		ihCodTipoRed            = paux->iCodTipoRed   ;
+		strcpy(szhCodTipComis   , paux->szCodTipComis);
+		strcpy(szhCodTipVendedor, paux->szCodTipVendedor);
+
+        fprintf(pfLog, "\n[vProcesaCarteras] TR:[%d] TipComis:[%s] TipVendedor:[%s]\n", ihCodTipoRed, szhCodTipComis, szhCodTipVendedor);                
+
+        if (bfnExisteTipComis(szhCodTipComis))
+        { 
+            /*------------------------------------------------------------*/
+            /* Rutina para la actualizacion de los estados, situaciones   */
+            /* y plan tarifario que cambiaron durante el último periodo.  */
+            /*------------------------------------------------------------*/
+     		fprintf(pfLog , "[vProcesaCarteras] Actualizando estado de abonados para CodTipComis ...\n\n");       
+    		fprintf(stderr, "[vProcesaCarteras] Actualizando estado de abonados para CodTipComis ...\n\n");       
+            vActCambiosAbonados(ihCodTipoRed, szhCodTipComis);
+              
+            /*------------------------------------------------------------------ */
+            /* Rutina para la incorporación de las nuevas ventas del periodo.    */
+            /*------------------------------------------------------------------ */    
+     		fprintf(pfLog , "[vProcesaCarteras] Recuperando nuevas ventas desde Siscel para CodTipComis ...\n\n");       
+    		fprintf(stderr, "[vProcesaCarteras] Recuperando nuevas ventas desde Siscel para CodTipComis ...\n\n");       
+            vGetNvasVentas(ihCodTipoRed, szhCodTipComis, szhCodTipVendedor);
+        } 
+        else
+        { 
+            /*------------------------------------------------------------------*/
+            /* Genera Cartera Inicial para distribuidores nuevos.               */
+            /*------------------------------------------------------------------*/
+     		fprintf(pfLog , "[vProcesaCarteras] Genera Cartera Inicial para distribuidores nuevos...Tipo Comisionista:[%s].\n\n",szhCodTipComis);
+    		fprintf(stderr, "[vProcesaCarteras] Genera Cartera Inicial para distribuidores nuevos...Tipo Comisionista:[%s].\n\n",szhCodTipComis);
+            vCargaCarteraNueva(ihCodTipoRed, szhCodTipComis, szhCodTipVendedor);
+         }
+         
+        /*------------------------------------------------------------------*/
+        /* Determina abonados a ser procesables.                            */ 
+        /*------------------------------------------------------------------*/
+  		fprintf(pfLog , "[vProcesaCarteras] Determina abonados a ser procesados (marca S)...\n\n");
+   		fprintf(stderr, "[vProcesaCarteras] Determina abonados a ser procesados (marca S)...\n\n");
+        vDiscriminaAbonados(ihCodTipoRed, szhCodTipComis);                                                  
+    }
+}
+/*****************************************************************************/
+/* CARGA PARAMETROS DEL PROCESO Y VERIFICA ESTADO                            */
+/*****************************************************************************/
+void  vGetParametros()
+{
+	lhErrValCartera         = 0;
+    strcpy(szhIndInstancia, "N");
+	strcpy(szhIndEstado   , "T");
+
+    EXEC SQL
+		SELECT 	VAL_PARAMETRO
+        INTO    :szhIndInstancia
+ 		FROM 	GED_PARAMETROS
+		WHERE 	NOM_PARAMETRO = 'IND_CARTERA_MANUAL'
+  		AND 	COD_MODULO    = 'CM';
+
+    if (sqlca.sqlcode!=0)
+    {
+       exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_201,"ERROR AL CONSULTAR PARAMETRO IND_CARTERA_MANUAL.",0,0));                                                                                                                           
+    }
+
+    if (strcmp(szhIndInstancia, AUTOMATICO) == 0)
+    {
+    	lhCodError = 0;
+    }
+    else
+	{
+		EXEC SQL
+			SELECT 	VAL_PARAMETRO
+        	INTO    :lhErrValCartera
+ 			FROM 	GED_PARAMETROS
+			WHERE 	NOM_PARAMETRO = 'COD_ERROR_VALCARTERA'
+  			AND 	COD_MODULO    = 'CM';
+
+        if (sqlca.sqlcode != 0)
+     	{
+       		exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_201,"ERROR AL CONSULTAR PARAMETRO COD_ERROR_VALCARTERA.",0,0));                                                                                                                           
+     	}
+	}
+	fprintf(pfLog, "\n[vGetParametros] Modo Cartera Manual:[%s] Error Generico:[%d].\n",szhIndInstancia, lhErrValCartera);
+	fprintf(stderr, "\n[vGetParametros] Modo Cartera Manual:[%s] Error Generico:[%d].\n",szhIndInstancia, lhErrValCartera);
+}
+/*****************************************************************************/
+/* VERIFICA ESTADO DEL PROCESO                                               */
+/*****************************************************************************/
+void vEstadoProceso()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+		long lhSecProceso;
+		long lhMiSecProceso;
+		char szhIdCiclComis[11];
+    EXEC SQL END DECLARE SECTION;
+    
+	lhMiSecProceso 			= proceso.sec_proceso;
+	strcpy(szhIdCiclComis	, stArgs.szIdPeriodo);
+	
+	fprintf(pfLog, "\n[vEstadoProceso]Valida ejecucion anterior proceso Cartera.\n");
+	fprintf(stderr, "\n[vEstadoProceso]Valida ejecucion anterior proceso Cartera.\n");
+	
+	EXEC SQL
+		SELECT 	SEC_PROCESO         , 
+				NVL(IND_ESTADO, 'T'), 
+     			NVL(COD_ERROR , 0)
+		INTO    :lhSecProceso,
+				:szhIndEstado, 
+				:lhCodError
+		FROM 	CMT_TRAZAS_PROCESOS
+		WHERE 	SEC_PROCESO = (SELECT MAX(SEC_PROCESO) 
+							   FROM CMT_TRAZAS_PROCESOS 
+							   WHERE SEC_PROCESO < :lhMiSecProceso
+							   AND ID_PERIODO = :szhIdCiclComis)
+		AND 	COD_PROCESO = 'SEL_CARTERA';
+
+    if (sqlca.sqlcode != SQLNOTFOUND)
+    {
+	    if (sqlca.sqlcode!=SQLOK)
+	    {
+	    	exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_201,"ERROR AL CONSULTAR ESTADO DEL PROCESO",0,0));                                                                                                                           
+	    }	
+	
+	    fprintf(pfLog, "[vEstadoProceso] Secuencia del Proceso <%ld> - Estado <%s> - Error <%ld>\n", lhSecProceso, szhIndEstado, lhCodError);    
+		if (strcmp(szhIndInstancia, MANUAL) == 0)
+		{
+		    if (strcmp(szhIndEstado, FALLA) == 0)
+			{
+				if(lhCodError == lhErrValCartera)	
+				{
+					fprintf(pfLog, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+					fprintf(pfLog, "\nDEBE APROBAR EN FORMA MANUAL LA CARTERAA TRAVES DE LA APLICACION VB.\n");
+					fprintf(pfLog, "\nMENU FORMAS COMISION -> CARTERA -> ACTUALIZACION MANUAL CARTERA.\n");
+					fprintf(pfLog, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+
+					fprintf(stderr, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+					fprintf(stderr, "\nDEBE APROBAR EN FORMA MANUAL LA CARTERAA TRAVES DE LA APLICACION VB.\n");
+					fprintf(stderr, "\nMENU FORMAS COMISION -> CARTERA -> ACTUALIZACION MANUAL CARTERA.\n");
+					fprintf(stderr, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+					
+					exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,lhErrValCartera,"CARTERA EN ESPERA DE APROBACION POR EL USUARIO.",0,0)); 
+				}
+			}
+		}
+
+	}
+}
+/*****************************************************************************/
+/* Rutina principal.                                                         */
+/*****************************************************************************/
+int     main (int argc, char *argv[])
+{       
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+    long    lSegIni, lSegFin ;
+    short   ibiblio;   
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+    lSegIni=lGetTimer();
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+	memset(&stStatusProc, 0, sizeof(rg_estadistica));
+	memset(&stCiclo, 0, sizeof(reg_ciclo));  
+	memset(&proceso     , 0, sizeof(proceso));
+  
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+     memset(&stArgs, 0, sizeof(rg_argumentos));
+     vManejaArgs(argc, argv);        
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+    strcpy(szhUserName, stArgs.szUser);                                                 
+    strcpy(szhPassWord, stArgs.szPass); 
+                                                         
+    if(fnOraConnect(szhUserName, szhPassWord) == FALSE)                                       
+    {                                                                                 
+       fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+       exit(EXIT_205);                                                           
+    }                                                                                 
+    else                                                                              
+    {                                                                                 
+       fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");    
+       fprintf(stderr, "Username: %s\n\n", szhUserName);                             
+    }                                                                                 
+/*---------------------------------------------------------------------------*/
+/* Inicializa la traza del proceso.                                          */
+/*---------------------------------------------------------------------------*/
+    vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUserName, stArgs.izSecuencia);
+    ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);
+    if (ibiblio)
+    {
+       fprintf(stderr, "Error al Abrir Traza");
+       fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);
+       exit(ibiblio);
+    }
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+    if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+    {
+       setlocale(LC_TIME, LC_TIME_SPANISH);
+    }
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n"); 
+    if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)                                               
+    {                                                                                                                  
+       exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));                                                                                                                           
+    }                                                                                                                  
+    fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);                                         
+/*---------------------------------------------------------------------------*/
+/* Generacion del nombre y creacion del archivo de log.                      */
+/*---------------------------------------------------------------------------*/
+    strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+    strncpy(szhSysDate, pszGetDateLog(),16);                                                            
+    strcpy(stArgsLog.szProceso,LOGNAME);                                                                     
+    strncpy(stArgsLog.szSysDate,szhSysDate,16);                                                                         
+    sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);                       
+        
+    if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)                                                          
+    {                                                                                                        
+        fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", LOGNAME);                                 
+        fprintf(stderr, "Revise su existencia.\n");                                                          
+        fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                
+        fprintf(stderr, "Proceso finalizado con error.\n");                                                       
+    }                                                                                                          
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                           
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+	fprintf(pfLog, "Base de datos : %s\n\n", (strcmp(getenv((const char *)"TWO_TASK"), "")!=0?getenv((const char *)"TWO_TASK"):getenv((const char *)"ORACLE_SID")));
+    fprintf(pfLog,"\nUsuario ORACLE      :[ %s ]\n",(char * )sysGetUserName() ); 
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    
+    fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+
+    fprintf(pfLog, "Identificador de Proceso		<%s>\n", stArgs.szProceso);
+    fprintf(pfLog, "Identificador de Bloque			<%s>\n", stArgs.szBloque);
+    fprintf(pfLog, "Secuencia de Ejecucion			<%d>\n", stArgs.izSecuencia);    
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+    EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy hh24:mi:ss';      
+/*---------------------------------------------------------------------------*/
+/* Procesamiento principal:                                                  */
+/*---------------------------------------------------------------------------*/
+   fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+   fprintf(pfLog, "Inicio Procesamiento Principal ...\n\n");
+/*---------------------------------------------------------------------------*/
+/* Carga Parametros del proceso                                              */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog , "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog , "Carga parametros del proceso...\n\n");       
+    fprintf(stderr, "Carga parametros del proceso...\n\n");       
+    vGetParametros();
+/*---------------------------------------------------------------------------*/
+/* Verifica Estado del Proceso                                               */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog , "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog , "Verifica Estado del Proceso...\n\n");       
+    fprintf(stderr, "Verifica Estado del Proceso...\n\n");       
+    vEstadoProceso();
+/*---------------------------------------------------------------------------*/
+/* CARGA ESTRUCTURA CICLOS DE PROCESO                                        */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog , "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog , "Carga estructura de ciclo de proceso...\n\n");       
+    fprintf(stderr, "Carga estructura de ciclo de proceso...\n\n");       
+    if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    {
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	exit(EXIT_101);
+    }
+    szTipoPeriodo = stCiclo.cTipCiclComis;
+/*---------------------------------------------------------------------------*/
+/* CARGA TIPOS DE COMISIONISTAS                                              */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog,  "Carga tipos de comisionistas a procesar...\n\n");       
+    fprintf(stderr, "Carga tipos de comisionistas a procesar...\n\n");       
+	vCargaTiposComis();
+/*---------------------------------------------------------------------------*/
+/* Controla ciclo para los de diferentes tipos de comisiones                 */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog , "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog , "Procesando carteras por tipos de comision...\n\n");       
+    fprintf(stderr, "Procesando carteras por tipos de comision...\n\n");       
+    vProcesaCarteras();
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+    lSegFin=lGetTimer();                         
+    stStatusProc.lSegProceso = lSegFin - lSegIni;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(pfLog , "Estadistica del proceso\n");                                                   
+    fprintf(pfLog , "-------------------------\n");
+    fprintf(pfLog , "Segundos Reales Utilizados     : [%d]\n\n", stStatusProc.lSegProceso);  
+	fprintf(stderr, "Estadistica del proceso\n");
+	fprintf(stderr, "------------------------\n");
+	fprintf(stderr, "Segundos Reales Utilizados     : [%d]\n\n", stStatusProc.lSegProceso);
+/*---------------------------------------------------------------------------*/                                                                                                                             
+	fprintf(stderr, "------------------------\n");
+	fprintf(stderr, "Evalua Forma de Salida Final. Cartera Manual:[%s] Error:[%d]\n\n", szhIndInstancia, lhErrValCartera);
+	
+	if (strcmp(szhIndInstancia, MANUAL) == 0)
+	{
+		EXEC SQL COMMIT;
+		ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK, lhErrValCartera,"CARTERA EN ESPERA DE APROBACION DEL USUARIO.",stStatusProc.lSegProceso,0);
+	    if (ibiblio)
+	    {
+	    	exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));                          
+		}
+		fprintf(pfLog, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+		fprintf(pfLog, "\nDEBE APROBAR EN FORMA MANUAL LA CARTERAA TRAVES DE LA APLICACION VB.\n");
+		fprintf(pfLog, "\nMENU FORMAS COMISION -> CARTERA -> ACTUALIZACION MANUAL CARTERA.\n");
+		fprintf(pfLog, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+
+		fprintf(stderr, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+		fprintf(stderr, "\nDEBE APROBAR EN FORMA MANUAL LA CARTERAA TRAVES DE LA APLICACION VB.\n");
+		fprintf(stderr, "\nMENU FORMAS COMISION -> CARTERA -> ACTUALIZACION MANUAL CARTERA.\n");
+		fprintf(stderr, "\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+		
+    }
+    else
+    {
+		ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,0," ",stStatusProc.lSegProceso,0);
+	    if (ibiblio)
+	    {
+	    	exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));                          
+		}
+    }
+	EXEC SQL COMMIT WORK RELEASE;
+
+    vFechaHora();                                                                             
+    fprintf(stderr, "Programa [%s] finalizado ok.\n", basename(argv[0]));                     
+    fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());                
+	fprintf(pfLog, "Proceso [%s] finalizado ok.\n", basename(argv[0]));
+	fclose(pfLog);
+    return(EXIT_0);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

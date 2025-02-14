@@ -1,0 +1,2763 @@
+/* ********************************************************************** */
+/* *  Fichero : infctlpreciclo.pc                                       * */
+/* *  Informe de Pre-Facturacion de Ciclo                               * */
+/* *  Autor : Mauricio Villagra V.                                      * */
+/* *  Comentarios :                                                     * */
+/* ********************************************************************** */
+
+
+#define _INFCTLPRECICLO_PC_
+
+#include "infctlpreciclo.h"
+
+char szUsage[]=
+   "\nUso:  infctlpreciclo -u Usuario/Password  "
+   "\n\tOPCIONES:                               "
+   "\n          -c Cod_CiclFact (DDMMYY)        "
+   "\n          -l [LogNivel]                   "
+   "\n          -t [Con Trazas] \n";
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+
+EXEC SQL INCLUDE sqlca;
+
+
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+
+    extern  char *optarg        ;
+    char    opt[]="u:c:l:t"      ;
+    int     iOpt =0             ;
+    char    szUsuario [63] = "" ;
+    char    *psztmp      = ""   ;
+    char    szaux     [10]      ;
+    BOOL    bOptUsuario = FALSE ;
+    char    szComando   [256]   ;
+    char    *szDirLogs          ;
+    char    szSysDate   [20]    ;
+    char    szFecha     [20]    ; 
+    
+
+    memset(&stLineaComando,0,sizeof(PCF_LINEACOMANDO));
+    memset(&stStatCargoBasico,0,sizeof(STATCTLCARGOBAS));
+
+
+    while ( (iOpt = getopt(argc,argv,opt)) != EOF)
+    {
+        switch(iOpt)
+        {   
+            case 'u':
+                    if (strlen (optarg))
+                    {
+                        strcpy(szUsuario, optarg);
+                        bOptUsuario = TRUE;
+                        fprintf (stdout," -u %s ", szUsuario);
+                    }
+                    break;
+            case 'c':
+                    if (strlen (optarg))
+                    {
+                        strcpy(szaux,optarg);
+                        
+                        stLineaComando.iCodCiclFact = atoi(szaux);
+                        fprintf (stdout,"-c %d ", stLineaComando.iCodCiclFact);
+                    }
+                    break;
+            case 't':
+                    stLineaComando.bTrazas = TRUE;
+                    break;
+            case 'l':
+                    if (strlen (optarg))
+                    {
+                        stStatus.LogNivel =
+                        (atoi (optarg) > 0)? atoi (optarg):iLOGNIVEL_DEF ;
+                        fprintf (stdout,"-l %d ", stStatus.LogNivel)     ;
+                    }
+                    break;
+        }
+    }
+
+    /********************************************************************/
+    /*              Validacion de Usuario Oracle                        */
+    /********************************************************************/
+    if (!bOptUsuario)
+    {
+        fprintf (stderr, "\n\t# Faltan Parametros de Entrada:\n%s\n", szUsage);
+        return  (2);
+    }
+    else
+    {
+        if ( (psztmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+        {
+            fprintf (stderr,"\n\tUsuario Oracle no Valido\n%s\n",szUsage);
+            return (3);
+        }
+        else
+        {
+            strncpy (stLineaComando.szUser,szUsuario,psztmp-szUsuario);
+            strcpy  (stLineaComando.szPass, psztmp+1)                 ;
+        }
+    }
+
+    if (stStatus.LogNivel <= 0)
+        stStatus.LogNivel = iLOGNIVEL_DEF     ;
+    stLineaComando.iNivLog = stStatus.LogNivel;
+     
+    /********************************************************************/
+    /*              Establece Conexion a ORACLE                         */
+    /********************************************************************/
+    if(!bfnConnectORA(stLineaComando.szUser,stLineaComando.szPass))
+    {
+        fprintf(stderr, "\n\tUsuario/Passwd Invalido\n\t\t"
+                        "'sptel  <usuario> <passwd> '\n");
+        return (3);
+    }
+    else
+    {
+        printf( "\n\t-------------------------------------------------------"
+                "\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx "
+                "\n\t-------------------------------------------------------"
+                ,stLineaComando.szUser);
+    }
+    /*********************************************************************************************/
+    /*********************************************************************************************/
+    if (!bGetDatosGener (&stDatosGener, szSysDate))
+        return FALSE;
+    /**************************************************************************************/
+    szDirLogs=(char *)malloc(1024);
+    if ((szDirLogs = szGetEnv("XPF_LOG")) == (char *)NULL)
+        return (FALSE);
+    /**************************************************************************************/
+    sprintf(stLineaComando.szDirLogs,"%s/informes/Ciclo/%d/",szDirLogs,stLineaComando.iCodCiclFact);
+    sprintf (szComando, "/usr/bin/mkdir -p %s",stLineaComando.szDirLogs );
+    if (system (szComando))
+    {
+        printf( "\n\t***   Fallo mkdir de Directorio Logs : %s \n",szComando);
+        return (FALSE);
+    }
+    /*********************************************************************************************/
+    sprintf(stStatus.ErrName, "%sInfCtlPreCiclo_%s.err",
+            stLineaComando.szDirLogs, szSysDate);
+
+    if( (stStatus.ErrFile = fopen(stStatus.ErrName,"wb")) == (FILE*)NULL )
+    {
+        fprintf( stderr, "\n ### Error: No puede abrirse el fichero "
+                         "de error %s\n", stStatus.ErrName);
+        return (4);
+    }
+    
+    /*********************************************************************************************/
+    sprintf(stStatus.LogName, "%sInfCtlPreCiclo_%s.log",
+            stLineaComando.szDirLogs, szSysDate);
+
+    if ((stStatus.LogFile = fopen(stStatus.LogName,"wb")) == (FILE*)NULL)
+    {
+        fprintf( stderr, "\n ### Error: No puede abrirse el fichero "
+                         "de log %s\n", stStatus.LogName);
+        fclose(stStatus.ErrFile);
+        return (5);
+    }
+    /*********************************************************************************************/
+    vDTrazasLog  (szExeInfCtlPreCiclo,"\n\n\t******************************************"
+                                    "\n\n\t****        Log   InfCtlPreCiclo          **"
+                                    "\n\n\t******************************************"
+                                    ,LOG03);
+
+    vDTrazasError(szExeInfCtlPreCiclo,"\n\n\t***************************************"
+                                    "\n\n\t****     Errores de InfCtlPreCiclo     **"
+                                    "\n\n\t***************************************"
+                                    ,LOG03);
+    /*********************************************************************************************/
+
+    if(!bMainReporte())
+        bfnOraRollBackRelease();
+    else 
+    {
+        if (!bfnOraCommit())
+        {
+           vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en Commit ", LOG01);
+           return FALSE;
+        }
+    }                                        
+    /*********************************************************************************************/
+    /*  Actualiza Traza  de Facturacion                                         */
+    /****************************************************************************/
+    if (stLineaComando.bTrazas){
+            if (!bfnSelectSysDate(szFecha))
+                return (FALSE);
+            else
+            {
+                stTrazaProc.iCodEstaProc       = iPROC_EST_OK                                 ;
+                strcpy(stTrazaProc.szFecTermino,szFecha)                                      ;
+
+                if (stLineaComando.iIndFacturacion == iIND_FACT_NOPROCESADO){
+                    strcpy(stTrazaProc.szGlsProceso,"Proceso de Control de Pre-Ciclo OK");
+                    vDTrazasLog(szExeInfCtlPreCiclo,"Proceso de Control de Pre-Ciclo OK",LOG03);
+                }               
+                else {
+                    strcpy(stTrazaProc.szGlsProceso,"Proceso de Control de Post-Ciclo OK");
+                    vDTrazasLog(szExeInfCtlPreCiclo,"Proceso de Control de Post-Ciclo OK",LOG03);
+                }
+                stTrazaProc.lCodCliente        = 0                                            ;
+                stTrazaProc.lNumAbonado        = 0                                            ;
+                stTrazaProc.lNumRegistros      = 0                                            ;
+                bPrintTrazaProc(stTrazaProc)                                                  ;
+                if (!bfnUpdateTrazaProc(stTrazaProc))
+                    return (FALSE);
+            }
+    }
+    /*********************************************************************************************/
+    if(bfnDisconnectORA(0))
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,
+                "\n\t-------------------------------------------------------"
+                "\n\tDesconectado de ORACLE  %s"
+                "\n\t-------------------------------------------------------\n",
+                LOG03, stLineaComando.szUser);
+    }
+
+    return (0);
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bMainReporte                                                */
+/****************************************************************************/
+BOOL  bMainReporte( void )
+{
+   vDTrazasLog(szExeInfCtlPreCiclo,  "\t\t==>Entrando a bMainReporte",   LOG03);
+    
+    if (stLineaComando.iCodCiclFact == 0)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "Codigo de Ciclo de Facturacion Invalido [%d] (bMainReporte)"
+                                          ,LOG01,stLineaComando.iCodCiclFact);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Carga Planes Tarifarios de Planes Familiares                */
+    /****************************************************************/
+    if (!bfnCargaPlanFamiliar())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Carga de Planes Familiares (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Carga Datos de Ciclo de Facturacion                         */
+    /****************************************************************/
+    if (!bfnEstadoProcCiclo())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Carga de Ciclo Facturacion [%d](bMainReporte)"
+                                         ,LOG01,stLineaComando.iCodCiclFact );
+        return FALSE;
+    }
+
+    /****************************************************************/
+    /*  Valida Traza de Proceso                                     */
+    /****************************************************************/
+   if (stLineaComando.bTrazas){
+        if (stLineaComando.iIndFacturacion == iIND_FACT_NOPROCESADO){
+            if (!bfnValidaTrazaProc(stLineaComando.iCodCiclFact, iPROC_PREFACT, iIND_FACT_NOPROCESADO))  
+                return FALSE;
+        } else {
+            if (!bfnValidaTrazaProc(stLineaComando.iCodCiclFact, iPROC_POSTFACT, iIND_FACT_ENPROCESO)) 
+                return FALSE;
+        }
+        
+        if(!fnOraCommit()) {
+            vDTrazasLog  (szExeInfCtlPreCiclo , "ERROR AL HACER EL COMMIT EN VALIDA TRAZA",LOG01, SQLERRM);
+            vDTrazasError(szExeInfCtlPreCiclo , "ERROR AL HACER EL COMMIT EN VALIDA TRAZA",LOG01, SQLERRM);
+            return (FALSE);
+        }
+    
+        if (stLineaComando.iIndFacturacion == iIND_FACT_NOPROCESADO)
+            bfnSelectTrazaProc (stLineaComando.iCodCiclFact, iPROC_PREFACT, &stTrazaProc);
+        else
+            bfnSelectTrazaProc (stLineaComando.iCodCiclFact, iPROC_POSTFACT, &stTrazaProc);
+        bPrintTrazaProc(stTrazaProc);
+
+    }
+
+    /****************************************************************/
+    /*  Carga Datos de Ciclo de Facturacion                         */
+    /****************************************************************/
+    if (!bfnCargaMonedas())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Carga de Monedas (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Carga Planes Tarifarios de Planes Familiares                */
+    /****************************************************************/
+    if (!bfnCargaCargosBasicos())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Carga de Cargos Basicos (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Carga Documentos a Considerar Como Universo de Datos        */
+    /****************************************************************/
+    if (!bfnCargaInterfazClientes())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Carga de Interfaz (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Analiza Informacion de Clientes para Documentos Cargados    */
+    /****************************************************************/
+    if (!bfnStatInterfazPreCiclo())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Estadisticas de Cartera (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Imprime Estadisticas de Cartera de Clientes                 */
+    /****************************************************************/
+    vPrintStCartera();
+    vPrintStCBasicos();
+    /****************************************************************/
+    /*  Obtiene Numero de Secuencia de Informe                      */
+    /****************************************************************/
+    if (!bfnGetSecuInfo())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error en Obtener Secuencia de Informe (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /****************************************************************/
+    /*  Inserta Resumen de Documentos Facturados                    */
+    /****************************************************************/
+    if (!bfnInsertHeaderInfCtl())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error al Insertar Estadsticas de Clientes (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*  Analiza Cartera de Clientes                                         */
+    /************************************************************************/
+    if (!bfnInsertStatCartera())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error al Insertar Estadsticas de Clientes (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*  Carga de Codigos de Cargo Basico                                    */
+    /************************************************************************/
+    if (!bCargaCodCBasicos())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error al buscar codigos CBasico (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    
+    /************************************************************************/
+    /*  Analiza Cargos de Abonados                                          */
+    /************************************************************************/
+    if (!bfnStatCargosAbon())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,"Error al Insertar Estadisticas de Cargos (bMainReporte)",LOG01);
+        return FALSE;
+    }
+    vDTrazasLog(szExeInfCtlPreCiclo,"\t%s ** Fin de Procesamiento (bMainReporte)",LOG03, cfnGetTime(1));
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnCargaInterfazClientes                                    */
+/****************************************************************************/
+BOOL bfnCargaInterfazClientes( void )
+{
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        long    ihCodCiclFact       ;
+        int     ihCodCiclo          ;
+    EXEC SQL END DECLARE SECTION    ;
+    int     iRowCel,     iRowBeep   ;
+
+    vDTrazasLog(szExeInfCtlPreCiclo,      "\n\t Carga de Tabla de Interfaz FAT_CTLINERTABO ",LOG03);
+
+    /************************************************************************/
+    /*   Inicializa Valores de Variables                                    */
+    /************************************************************************/
+    vDTrazasLog(szExeInfCtlPreCiclo ,"\n\t\t Codigo Ciclo de Facturacion   [%d]"
+                                     "\n\t\t Ciclo de Facturacion          [%d]"
+                                     "\n\t\t Estado Ciclo de Facturacion   [%d]"
+                                    ,LOG03
+                                    ,stLineaComando.iCodCiclFact
+                                    ,stLineaComando.iCodCiclo
+                                    ,stLineaComando.iIndFacturacion );
+    ihCodCiclFact   = stLineaComando.iCodCiclFact   ;
+    ihCodCiclo      = stLineaComando.iCodCiclo            ;
+    /************************************************************************/
+    /*   Elimina Registros Antiguos de tabla Interfaz                       */
+    /************************************************************************/
+    vDTrazasLog(szExeInfCtlPreCiclo ,"\t%s ** Elimina Registros de Interfaz ", LOG03, cfnGetTime(1));
+    
+    EXEC SQL DELETE FAT_CTLINTERABO;
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,"\n\n\t**  Error en Delete de Interfaz (bfnCargaInterfazClientes) **"
+                                        "\n\t\t Error Oracle [%d] [%s]"
+                                       ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    vDTrazasLog(szExeInfCtlPreCiclo,   "\t\t\t**  Total Registros Eliminados [%ld] **",LOG03,SQLROWS);
+    if (!bfnOraCommit())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en Commit ", LOG01);
+        return FALSE;
+    }
+     
+    /************************************************************************/
+    /*   Carga Interfaz con Abonados Celular (Producto 1)                   */
+    /************************************************************************/
+    vDTrazasLog(szExeInfCtlPreCiclo ,"\t%s ** Carga Interfaz Celular ", LOG03, cfnGetTime(1));
+    vDTrazasLog(szExeInfCtlPreCiclo ,"\tCod.Ciclo [%d]\n\tCod.Ciclo Fact [%d]", LOG03,ihCodCiclo,ihCodCiclFact);
+
+     EXEC SQL        
+        INSERT INTO FAT_CTLINTERABO ( 
+                COD_CLIENTE         ,NUM_ABONADO      ,
+                COD_PRODUCTO        ,IND_CAMBIO       ,
+                COD_CICLFACT        ,FEC_ALTA         ,
+                FEC_BAJA            ,IND_ACTUAC       ,
+                IND_SUPERTEL        ,IND_FACTUR       ,
+                IND_BLOQUEO         ,IND_ESTADO       ,
+                COD_EMPRESA         ,COD_PLANTARIF    ,
+                COD_CARGOBASICO     ,IND_CUENCONTROLADA)
+        SELECT  CIC.COD_CLIENTE     ,CIC.NUM_ABONADO  ,
+                CIC.COD_PRODUCTO    ,CIC.IND_CAMBIO   ,
+                INT.COD_CICLFACT    ,INT.FEC_ALTA     ,
+                INT.FEC_BAJA        ,INT.IND_ACTUAC   ,
+                INT.IND_SUPERTEL    ,INT.IND_FACTUR   ,
+                NVL(INT.IND_BLOQUEO,0),0              ,
+                0                   ,'---'            ,
+                '---'               ,NVL(IND_CUENCONTROLADA,0)
+        FROM    GA_INFACCEL     INT ,
+                FA_CICLOCLI     CIC
+        WHERE   CIC.COD_CICLO       = :ihCodCiclo
+        AND     CIC.COD_CLIENTE     = INT.COD_CLIENTE
+        AND     CIC.NUM_ABONADO     = INT.NUM_ABONADO
+        AND     INT.COD_CICLFACT    = :ihCodCiclFact;
+
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,"\n\n\t**  Error en Carga Interfaz Celular (bfnCargaInterfazClientes) **"
+                                        "\n\t\t Error Oracle [%d] [%s]"
+                                       ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    iRowCel =   SQLROWS;
+    vDTrazasLog(szExeInfCtlPreCiclo,   "\t\t\t**  Total Registros Celular   [%ld] **",LOG03,iRowCel);
+    if (!bfnOraCommit())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en Commit ", LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*   Carga Interfaz con Abonados Beeper (Producto 2)                    */
+    /************************************************************************/
+    vDTrazasLog(szExeInfCtlPreCiclo ,"\t%s ** Carga Interfaz Beeper", LOG03,cfnGetTime(1));
+     EXEC SQL        
+        INSERT INTO FAT_CTLINTERABO ( 
+                COD_CLIENTE         ,NUM_ABONADO      ,
+                COD_PRODUCTO        ,IND_CAMBIO       ,
+                COD_CICLFACT        ,FEC_ALTA         ,
+                FEC_BAJA            ,IND_ACTUAC       ,
+                IND_SUPERTEL        ,IND_FACTUR       ,
+                IND_BLOQUEO         ,IND_ESTADO       ,
+                COD_EMPRESA         ,COD_PLANTARIF    ,
+                COD_CARGOBASICO     ,IND_CUENCONTROLADA)
+        SELECT  CIC.COD_CLIENTE     ,CIC.NUM_ABONADO  ,
+                CIC.COD_PRODUCTO    ,CIC.IND_CAMBIO   ,
+                :ihCodCiclFact      ,INT.FEC_ALTA     ,
+                INT.FEC_BAJA        ,INT.IND_ACTUAC   ,
+                0                   ,INT.IND_FACTUR   ,
+                NVL(INT.IND_BLOQUEO,0),0              ,
+                0                   ,'---'            ,
+                '---'               ,NVL(IND_CUENCONTROLADA,0)
+        FROM    GA_INFACBEEP    INT ,
+                FA_CICLOCLI     CIC
+        WHERE   CIC.COD_CICLO       = :ihCodCiclo
+        AND     CIC.COD_CLIENTE     = INT.COD_CLIENTE
+        AND     CIC.NUM_ABONADO     = INT.NUM_ABONADO
+        AND     INT.COD_CICLFACT    = :ihCodCiclFact;
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,"\n\n\t**  Error en Carga Interfaz Beeper (bfnCargaInterfazClientes) **"
+                                        "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    iRowBeep =   SQLROWS;
+    vDTrazasLog(szExeInfCtlPreCiclo,   "\t\t\t**  Total Registros Beeper    [%ld] **",LOG03,iRowBeep);
+    if (!bfnOraCommit())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en Commit ", LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    vDTrazasLog(szExeInfCtlPreCiclo,   "\t\t**  Total Registros Cargados [%ld] **",LOG03,iRowCel+iRowBeep);
+    return TRUE;                                                                               
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :                                         */
+/****************************************************************************/
+BOOL bfnStatInterfazPreCiclo( void )
+{
+    int     iContFetch          = 0;
+    int     iContRowsFetch      = 0;
+    int     iContRowsFetchAux   = 0;
+    int     i                   = 0;
+    long    lCodCliente_Ant     = 0;
+    char    szTipCliente [2]    ="";
+    int     iSqlCodeRet         = 0;
+
+    EXEC SQL BEGIN DECLARE SECTION ;
+    VARCHAR aszhRowId            [MAX_INTERFAZ_CONTROL_FETCH][19];
+    long    alhCodCliente        [MAX_INTERFAZ_CONTROL_FETCH];
+    long    alhNumAbonado        [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihCodProducto       [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihIndCambio         [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihCodCiclFact       [MAX_INTERFAZ_CONTROL_FETCH];
+    VARCHAR aszhFecAlta          [MAX_INTERFAZ_CONTROL_FETCH][15];
+    VARCHAR aszhFecBaja          [MAX_INTERFAZ_CONTROL_FETCH][15];
+    int     aihIndActuac         [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihIndSupertel       [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihIndFactur         [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihIndBloqueo        [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihIndEstado         [MAX_INTERFAZ_CONTROL_FETCH];
+    int     aihCtaControlada     [MAX_INTERFAZ_CONTROL_FETCH];
+    long    alhCodEmpresa        [MAX_INTERFAZ_CONTROL_FETCH];
+    VARCHAR aszhCodPlanTarif     [MAX_INTERFAZ_CONTROL_FETCH][4];
+    VARCHAR aszhCodCargoBasico   [MAX_INTERFAZ_CONTROL_FETCH][4];
+    EXEC SQL END DECLARE SECTION ;    
+
+    vDTrazasLog(szExeInfCtlPreCiclo,"\n\t%s Carga de Interfaz de Abonados en en Memoria",LOG03,cfnGetTime(1));
+
+    /************************************************************************/
+    /*   Inicializa Valores de Variables                                    */
+    /************************************************************************/
+    
+    EXEC SQL DECLARE C_CURSOR_CTLINTERABO CURSOR FOR
+        SELECT  ROWID               ,
+                COD_CLIENTE         ,
+                NUM_ABONADO         ,
+                COD_PRODUCTO        ,
+                IND_CAMBIO          ,
+                COD_CICLFACT        ,
+                TO_CHAR(FEC_ALTA    ,'YYYYMMDDHH24MISS') ,
+                TO_CHAR(FEC_BAJA    ,'YYYYMMDDHH24MISS') ,
+                IND_ACTUAC          ,
+                IND_SUPERTEL        ,
+                IND_FACTUR          ,
+                IND_BLOQUEO         ,
+                IND_ESTADO          ,
+                IND_CUENCONTROLADA  ,
+                COD_EMPRESA         ,
+                COD_PLANTARIF       ,
+                COD_CARGOBASICO                 
+        FROM   FAT_CTLINTERABO;
+
+    EXEC SQL OPEN C_CURSOR_CTLINTERABO;
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,   "\n\n\t**  Error en Open Cursor (bfnStatInterfazPreCiclo) **"
+                                        "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }    
+
+    for (;;)
+    {
+        EXEC SQL 
+            FETCH C_CURSOR_CTLINTERABO 
+            INTO    :aszhRowId         ,
+                    :alhCodCliente     ,
+                    :alhNumAbonado     ,
+                    :aihCodProducto    ,
+                    :aihIndCambio      ,
+                    :aihCodCiclFact    ,
+                    :aszhFecAlta       ,
+                    :aszhFecBaja       ,
+                    :aihIndActuac      ,
+                    :aihIndSupertel    ,
+                    :aihIndFactur      ,
+                    :aihIndBloqueo     ,
+                    :aihIndEstado      ,
+                    :aihCtaControlada  ,
+                    :alhCodEmpresa     ,
+                    :aszhCodPlanTarif  ,
+                    :aszhCodCargoBasico;
+        
+        iSqlCodeRet = SQLCODE;
+        
+        if(iSqlCodeRet != SQLOK && iSqlCodeRet != SQLNOTFOUND)
+        {
+            vDTrazasError(szExeInfCtlPreCiclo,   "\n\n\t**  Error en Fetch de Interfaz de Abonados (bfnStatInterfazPreCiclo) **"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+            return FALSE;
+        }
+        
+        /************************************************************************/
+        /*  Carga Doucmentos recuperados del Fetch en Arreglo Global en Memoria */
+        /************************************************************************/
+        /************************************************************************/
+        iContFetch++;
+        iContRowsFetchAux=SQLROWS-iContRowsFetch;
+        iContRowsFetch=SQLROWS;
+        if (iContRowsFetchAux <= 0)
+        {
+            vDTrazasLog(szExeInfCtlPreCiclo,  "\t\t**  No Retorno Filas [%d] [%d] [%d]",LOG03,iContRowsFetchAux ,SQLROWS,SQLCODE);
+
+            EXEC SQL CLOSE C_CURSOR_CTLINTERABO;
+            break;
+        }
+        vDTrazasLog(szExeInfCtlPreCiclo,  "\t\t**  Fetch Numero     [%d]"
+                                        "\n\t\t Numero Registros      [%d]"
+                                        "\n\t\t Registros Acumulados  [%d]"
+                                       ,LOG03,iContFetch,iContRowsFetchAux,SQLROWS);
+        for (i=0;i<iContRowsFetchAux;i++)              
+        {
+            memset(&stCtlInterAbo,0,sizeof(INTERFAZABONADOS));
+            
+            sprintf(stCtlInterAbo.szRowId         ,"%.*s\0",aszhRowId[i].len,aszhRowId[i].arr);
+                    stCtlInterAbo.lCodCliente     =         alhCodCliente     [i] ;   
+                    stCtlInterAbo.lNumAbonado     =         alhNumAbonado     [i] ;
+                    stCtlInterAbo.iCodProducto    =         aihCodProducto    [i] ;
+                    stCtlInterAbo.iIndCambio      =         aihIndCambio      [i] ;
+                    stCtlInterAbo.iCodCiclFact    =         aihCodCiclFact    [i] ;
+            sprintf(stCtlInterAbo.szFecAlta       ,"%.*s\0",aszhFecAlta[i].len,aszhFecAlta[i].arr);
+            sprintf(stCtlInterAbo.szFecBaja       ,"%.*s\0",aszhFecBaja[i].len,aszhFecBaja[i].arr);
+                    stCtlInterAbo.iIndActuac      =         aihIndActuac      [i] ;
+                    stCtlInterAbo.iIndSupertel    =         aihIndSupertel    [i] ;
+                    stCtlInterAbo.iIndFactur      =         aihIndFactur      [i] ;
+                    stCtlInterAbo.iIndBloqueo     =         aihIndBloqueo     [i] ;
+                    stCtlInterAbo.iIndEstado      =         aihIndEstado      [i] ;
+                    stCtlInterAbo.iCtaControlada  =         aihCtaControlada  [i] ;
+                    stCtlInterAbo.lCodEmpresa     =         alhCodEmpresa     [i] ;
+            sprintf(stCtlInterAbo.szCodPlanTarif  ,"%.*s\0",aszhCodPlanTarif  [i].len,aszhCodPlanTarif  [i].arr);
+            sprintf(stCtlInterAbo.szCodCargoBasico,"%.*s\0",aszhCodCargoBasico[i].len,aszhCodCargoBasico[i].arr);
+
+            
+            /************************************************************************/
+            /************************************************************************/
+            /*   Valida Tipo de Cliente : Individual/Empresa/Familiar               */
+            /************************************************************************/
+            /************************************************************************/
+            if (stCtlInterAbo.lCodCliente != lCodCliente_Ant )
+            {
+                if (!bfnValTipClie())
+                {
+                    vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Validar Tipo de Cliente () **",LOG01);
+                    return FALSE;
+                }
+                sprintf(szTipCliente,"%s\0",stCtlInterAbo.szTipClie);
+            }
+            else
+            {
+                sprintf(stCtlInterAbo.szTipClie,"%s\0",szTipCliente);
+            }
+            /************************************************************************/
+            /************************************************************************/
+            /*  Analiza Estadisticas de Condicion de Abonados                       */
+            /************************************************************************/
+            /************************************************************************/
+            if (!bfnStatInterAbo())
+            {
+                vDTrazasError(szExeInfCtlPreCiclo,"\n\t**  Error en bfnStatInterAbo **",LOG01);
+                return FALSE;
+            }
+            /************************************************************************/
+            /*   Acumula Estadisticas de Cargos Basicos                             */
+            /************************************************************************/
+            if (!bfnCargaStatCargosBasicos())
+            {
+                vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Actualizar Interfaz Abonado (bfnStatInterAbo) **",LOG01);
+                return FALSE;
+            }
+            /************************************************************************/
+            lCodCliente_Ant = stCtlInterAbo.lCodCliente;
+        }
+        if (iSqlCodeRet == SQLNOTFOUND)
+        {
+            vDTrazasLog(szExeInfCtlPreCiclo,  "\t\t**  No Encontro Filas [%d] [%d] [%d]",LOG03,iContRowsFetchAux ,SQLROWS,SQLCODE);
+            EXEC SQL CLOSE C_CURSOR_CTLINTERABO;
+            break;
+        }
+        if (!bfnOraCommit())
+        {
+           vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en Commit ", LOG01);
+           return FALSE;
+        }
+
+    } /*  for (;;)  */
+    if (!bfnOraCommit())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en Commit ", LOG01);
+        return FALSE;
+    }
+    vDTrazasLog(szExeInfCtlPreCiclo,   "\t**  Abonados Analizados [%ld] **",LOG03,iContRowsFetch);
+    return TRUE;                                                                               
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnStatInterAbo                                             */
+/****************************************************************************/
+BOOL bfnStatInterAbo( void )
+{
+    int     iStat               = 0;
+
+    vDTrazasLog(szExeInfCtlPreCiclo, "\n\t Analiza Estadisticas de Abonados Clientes ",LOG06);
+
+    /************************************************************************/
+    /*   Valida Plan Tarifario y Cargo Basico Abonado                       */
+    /************************************************************************/
+    if (!bfnValPlanTarif())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Validar Plan Tarifario (bfnStatInterAbo) **",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*   Clasifica Condicion del Cliente                                    */
+    /************************************************************************/
+    if (!bfnClassCliente())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Clasificar Cliente (bfnStatInterAbo) **",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*   Clasifica Condicion del Abonado                                    */
+    /************************************************************************/
+    if (!bfnClassAbonado())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Clasificar Abonado (bfnStatInterAbo) **",LOG01);
+        return FALSE;
+    }
+    vPrintStAbonados();
+    /************************************************************************/
+    /*   Actualiza Estado de Abonados de Interfaz Pre-Ciclo                 */
+    /************************************************************************/
+    if (!bfnUpdateInterAbo())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Actualizar Interfaz Abonado (bfnStatInterAbo) **",LOG01);
+        return FALSE;
+    }
+    /********************************************************************/
+    /*  Valida si existe Combinacion de Analisis de Cartera             */
+    /********************************************************************/
+    for (iStat=0;iStat<stStatInterAbon.iNumStadisticas;iStat++)
+    {
+        if ((stStatInterAbon.stUnivStatInterAbo[iStat].iCodProducto     == stCtlInterAbo.iCodProducto      ) &&
+            (stStatInterAbon.stUnivStatInterAbo[iStat].iCodCiclFact     == stCtlInterAbo.iCodCiclFact      ) &&
+            (stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassCliente == stCtlInterAbo.iCodClassCliente  ) &&
+            (stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassAbonado == stCtlInterAbo.iCodClassAbonado  )  )
+
+        {
+        /********************************************************************/
+        /*  Actualiza Combinacion de Estadistica                            */
+        /********************************************************************/
+            vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnStatInterAbo) Actualiza Estadistica [%d]"
+                                            ,LOG06,iStat);
+            stStatInterAbon.stUnivStatInterAbo[iStat].iNumAbonados++;
+            break;
+        }
+        vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnStatInterAbo) Incrementa iStat [%d]",LOG06,iStat);
+    }
+    
+    /********************************************************************/
+    /*  Agrega Nueva Combinacion de Estadistica                         */
+    /********************************************************************/
+    if (iStat == stStatInterAbon.iNumStadisticas || stStatInterAbon.iNumStadisticas == 0)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnStatInterAbo) Agrega Nuevo Estadistica [%d] iStat[%d]"
+                                        ,LOG06,stStatInterAbon.iNumStadisticas,iStat);
+                                        
+        stStatInterAbon.stUnivStatInterAbo[iStat].iCodProducto     = stCtlInterAbo.iCodProducto      ;
+        stStatInterAbon.stUnivStatInterAbo[iStat].iCodCiclFact     = stCtlInterAbo.iCodCiclFact      ;
+        stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassCliente = stCtlInterAbo.iCodClassCliente  ;
+        stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassAbonado = stCtlInterAbo.iCodClassAbonado  ;
+        stStatInterAbon.stUnivStatInterAbo[iStat].iNumAbonados++;
+        stStatInterAbon.iNumStadisticas++;
+    }
+    return (TRUE);
+}
+
+
+
+
+
+/****************************************************************************/
+/*  Funcion :    bfnCargaStatCargosBasicos                                      */
+/****************************************************************************/
+BOOL bfnCargaStatCargosBasicos( void )
+{
+    int iStat=0;
+    /********************************************************************/
+    /*  Valida si existe Combinacion de Estadistica generada            */
+    /********************************************************************/
+    for (iStat=0;iStat<stStatCargoBasico.iNumStadisticas;iStat++)
+    {
+        if ((stCtlInterAbo.iIndEstado       == IND_ESTADO_FACTURACION_ABONADO_SI )  &&
+            (stCtlInterAbo.iCodProducto     == 
+                    stStatCargoBasico.stUnivStatCBas[iStat].iCodProducto    )       &&
+            (strcmp(stCtlInterAbo.szCodCargoBasico,
+                    stStatCargoBasico.stUnivStatCBas[iStat].szCodCargoBasico)==0    ))
+        {
+        /********************************************************************/
+        /*  Actualiza Combinacion de Estadistica                            */
+        /********************************************************************/
+            if (strcmp(stCtlInterAbo.szTipClie,COD_TIPCLIENTE_INDIVIDUAL)==0)
+            {
+                stStatCargoBasico.stUnivStatCBas[iStat].iNumCargosBasicos++;
+            }
+            else /*  Es Empresa o Familiar Solo 1 Cargo BasicoAboando 0  */
+            {
+                if (stCtlInterAbo.lNumAbonado == 0)
+                    stStatCargoBasico.stUnivStatCBas[iStat].iNumCargosBasicos++;
+            }
+            stStatCargoBasico.stUnivStatCBas[iStat].iNumAbonados++;
+            break;
+        }
+    }
+    /********************************************************************/
+    /*  Agrega Nueva Combinacion de Estadistica                         */
+    /********************************************************************/
+    if (iStat == stStatCargoBasico.iNumStadisticas || stStatCargoBasico.iNumStadisticas == 0)
+    {
+        if (stCtlInterAbo.iIndEstado       == IND_ESTADO_FACTURACION_ABONADO_SI )
+        {
+            if (strcmp(stCtlInterAbo.szTipClie,COD_TIPCLIENTE_INDIVIDUAL)==0)
+            {
+                stStatCargoBasico.stUnivStatCBas[iStat].iNumCargosBasicos++;
+            }
+            else /*  Es Empresa o Familiar Solo 1 Cargo BasicoAboando 0  */
+            {
+                if (stCtlInterAbo.lNumAbonado == 0)
+                    stStatCargoBasico.stUnivStatCBas[iStat].iNumCargosBasicos++;
+            }
+                
+                    stStatCargoBasico.stUnivStatCBas[iStat].iCodProducto      =     stCtlInterAbo.iCodProducto     ;
+            sprintf(stStatCargoBasico.stUnivStatCBas[iStat].szCodCargoBasico,"%s\0",stCtlInterAbo.szCodCargoBasico);
+                    stStatCargoBasico.stUnivStatCBas[iStat].iNumAbonados++;
+            stStatCargoBasico.iNumStadisticas++;
+        }
+    }
+    return (TRUE);
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnStatCargosAbon                                           */
+/****************************************************************************/
+BOOL bfnStatCargosAbon( void )
+{
+    vDTrazasLog(szExeInfCtlPreCiclo, "\n\t%s  ** Analiza Estadisticas de Cargos de Clientes ",LOG03,cfnGetTime(1));
+
+    /************************************************************************/
+    /*   Analiza Estadisticas de Cargos Basicos                             */
+    /************************************************************************/
+    if (!bfnStatCargosBasicos())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Analisis de Cargos Varios (bfnStatCargosAbon) **",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*   Analiza Estadisticas de Cargos Varios                              */
+    /************************************************************************/
+    if (!bfnStatCargosVarios())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Analisis de Cargos Varios (bfnStatCargosAbon) **",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*   Analiza Estadisticas de Cargos de Trafico                          */
+    /************************************************************************/
+    if (!bfnStatCargosTrafico())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Analisis de Cargos de Trafico (bfnStatCargosAbon) **",LOG01);
+        return FALSE;
+    }
+    /************************************************************************/
+    /*   Analiza Estadisticas de Cargos Servicios Suplementarios            */
+    /************************************************************************/
+    if (!bfnStatCargosServSupl())
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\n\t**  Error en Analisis de Cargos Servicios Suplementarios (bfnStatCargosAbon) **",LOG01);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnInsertStatCartera                                        */
+/****************************************************************************/
+
+BOOL bfnInsertStatCartera( void )
+{
+    int iStat=0;
+    
+    EXEC SQL BEGIN DECLARE SECTION ;
+    char    szhCodInforme   [7] ;EXEC SQL VAR szhCodInforme  IS STRING(7);
+    long    lhNumSecuInfo       ;
+    int     ihCodProducto       ;
+    int     iCodCiclFact        ;
+    int     iCodClassCliente    ;
+    int     iCodClassAbonado    ;
+    long    ihNumAbonados       ;
+    EXEC SQL END DECLARE SECTION ;    
+
+    sprintf(szhCodInforme,"%s\0",szCodInformeGenerar);
+    lhNumSecuInfo = lhNumSecuenciaInforme;
+    
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t%s **(bfnInsertStatCartera) [%d]",LOG03,cfnGetTime(1),stStatInterAbon.iNumStadisticas);
+    
+    for (iStat=0;iStat<stStatInterAbon.iNumStadisticas;iStat++)
+    {
+        ihCodProducto    = stStatInterAbon.stUnivStatInterAbo[iStat].iCodProducto       ;
+        iCodCiclFact     = stStatInterAbon.stUnivStatInterAbo[iStat].iCodCiclFact       ;
+        iCodClassCliente = stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassCliente   ;
+        iCodClassAbonado = stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassAbonado   ;
+        ihNumAbonados    = stStatInterAbon.stUnivStatInterAbo[iStat].iNumAbonados       ;
+    
+        EXEC SQL INSERT INTO FAD_CTLINFCARTERA (
+                COD_INFORME         ,
+                NUM_SECUINFO        , 
+                COD_PRODUCTO        ,
+                COD_CICLFACT        ,
+                COD_CLASSCLIENTE    ,
+                COD_CLASSABONADO    ,
+                NUM_ABONADOS        )               
+        VALUES (:szhCodInforme      ,
+                :lhNumSecuInfo      ,
+                :ihCodProducto      ,
+                :iCodCiclFact       ,
+                :iCodClassCliente   ,
+                :iCodClassAbonado   ,
+                :ihNumAbonados      );
+
+        if (SQLCODE)
+        {
+            vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnInsertStatCartera) Error En Insert de Estadisticas "
+                                             "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnUpdateInterAbo                                           */
+/****************************************************************************/
+BOOL bfnUpdateInterAbo( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION ;
+    static  char    szhRowId        [19];EXEC SQL VAR szhRowId          IS STRING(19);
+    static  int     ihIndEstado         ;
+    static  char    szhCodPlanTarif  [4];EXEC SQL VAR szhCodPlanTarif   IS STRING (4);
+    static  char    szhCodCargoBasico[4];EXEC SQL VAR szhCodCargoBasico IS STRING (4);
+    static  int     ihCodClassCliente;
+    static  int     ihCodClassAbonado;
+    EXEC SQL END DECLARE SECTION ;    
+
+    ihIndEstado               =       stCtlInterAbo.iIndEstado       ;
+    sprintf(szhCodPlanTarif   ,"%s\0",stCtlInterAbo.szCodPlanTarif  );
+    sprintf(szhCodCargoBasico ,"%s\0",stCtlInterAbo.szCodCargoBasico);
+    sprintf(szhRowId          ,"%s\0",stCtlInterAbo.szRowId);
+    ihCodClassCliente = stCtlInterAbo.iCodClassCliente;
+    ihCodClassAbonado = stCtlInterAbo.iCodClassAbonado;
+
+    if (strlen(szhCodPlanTarif) == 0)
+        sprintf(szhCodPlanTarif,"---\0");
+
+    if (strlen(szhCodCargoBasico) == 0)
+        sprintf(szhCodCargoBasico ,"---\0");
+
+    vDTrazasLog(szExeInfCtlPreCiclo,"\t\t**(bfnUpdateInterAbo) Valores de Datos "
+                                    "\n\t\t ihIndEstado       [%d]"
+                                    "\n\t\t szhCodPlanTarif   [%s]"
+                                    "\n\t\t szhCodCargoBasico [%s]"
+                                    "\n\t\t szhRowId;         [%s]"
+                                    ,LOG05
+                                    ,ihIndEstado       
+                                    ,szhCodPlanTarif   
+                                    ,szhCodCargoBasico 
+                                    ,szhRowId          );
+
+/* AEO 22/SEP/2000 */
+    EXEC SQL
+        UPDATE  FAT_CTLINTERABO
+        SET     IND_ESTADO      = :ihIndEstado       ,
+                COD_PLANTARIF   = :szhCodPlanTarif   ,
+                COD_CARGOBASICO = :szhCodCargoBasico ,
+                COD_CLASSCLIE   = :ihCodClassCliente ,
+                COD_CLASSABON   = :ihCodClassAbonado
+        WHERE   ROWID           = :szhRowId          ;
+
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+    {            
+        vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnUpdateInterAbo) Error En Update de Interfaz de Abonados "
+                                         "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo   ,"\t\t**(bfnUpdateInterAbo) Error En Update de Interfaz de Abonados "
+                                         "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnStatCargosVarios                                         */
+/****************************************************************************/
+BOOL bfnStatCargosVarios( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION  ;
+    char    szhCodInforme   [7] ;EXEC SQL VAR szhCodInforme  IS STRING(7);
+    long    lhNumSecuInfo       ;    
+    int     ihIndFactur         ;
+    int     ihIndSupertel       ;
+    char    szhCodTipClie   [3] ;EXEC SQL VAR szhCodTipClie  IS STRING(3);
+    long    lhCodTipDocum       ;
+    char    szhCodDespacho  [6] ;EXEC SQL VAR szhCodDespacho  IS STRING(6);
+    char    szhFecEmision[15]   ;EXEC SQL VAR szhFecEmision     IS STRING (15);
+
+    int     aihCodProducto  [MAX_CARGOS_VARIOS_FETCH];
+    long    aihCodCiclFact  [MAX_CARGOS_VARIOS_FETCH];
+    long    aihCodConcepto  [MAX_CARGOS_VARIOS_FETCH];
+    int     aihCantidad     [MAX_CARGOS_VARIOS_FETCH];
+    double  adhImpFacturable[MAX_CARGOS_VARIOS_FETCH];
+    int     ihValorCero ;
+    EXEC SQL END DECLARE SECTION ;    
+    int     iSqlRow         = 0;
+    int     iNumCargoVarios = 0;
+
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t%s  **(bfnStatCargosVarios) ", LOG03,cfnGetTime(1));
+
+    sprintf(szhCodInforme,"%s\0", szCodInformeGenerar          );
+            lhNumSecuInfo       = lhNumSecuenciaInforme         ;
+    sprintf(szhFecEmision,"%s\0", stLineaComando.szFecEmision  );            
+            ihIndFactur         =   1                           ;
+            ihIndSupertel       =   0                           ;
+    sprintf(szhCodTipClie,"I\0"                               );
+            lhCodTipDocum       =   0                           ;
+    sprintf(szhCodDespacho,"-----\0")                           ;
+
+    ihValorCero = 0;
+
+    EXEC SQL DECLARE C_CURSOR_CTLCARGOS_VARIOS CURSOR FOR
+        SELECT      COD_PRODUCTO    ,
+                    COD_CICLFACT    ,
+                    COD_CONCEPTO    ,
+                    CANT            ,
+                    IMP_CARGO
+        FROM   (    SELECT  /*+  INDEX (B ak_ge_cargos_codcliente ) */
+                            B.COD_CONCEPTO      COD_CONCEPTO,
+                            B.COD_CICLFACT      COD_CICLFACT,
+                            B.COD_PRODUCTO      COD_PRODUCTO,
+                            SUM(B.IMP_CARGO*C.CAMBIO)    IMP_CARGO   ,
+                            COUNT(1)            CANT
+                    FROM    GE_CARGOS       B, GE_CONVERSION C
+                    WHERE   TO_DATE (:szhFecEmision,'YYYYMMDDHH24MISS') BETWEEN C.FEC_DESDE AND C.FEC_HASTA
+                    AND     C.COD_MONEDA  = B.COD_MONEDA
+                    AND     B.COD_CLIENTE > :ihValorCero
+                    AND     B.IMP_CARGO   > :ihValorCero
+                    AND     B.NUM_FACTURA = :ihValorCero
+                    AND     B.NUM_TRANSACCION = :ihValorCero
+                    AND     B.COD_CICLFACT IN ( SELECT  COD_CICLFACT    
+                                                FROM    FA_CICLFACT
+                                                WHERE   FEC_EMISION <= TO_DATE (:szhFecEmision,'YYYYMMDDHH24MISS'))
+                    AND EXISTS (SELECT COD_CLIENTE FROM FAT_CTLINTERABO A WHERE A.COD_CLIENTE = B.COD_CLIENTE AND IND_ESTADO  = 1 )
+                    GROUP BY B.COD_CONCEPTO, B.COD_CICLFACT, B.COD_PRODUCTO
+                UNION ALL
+                    SELECT  /*+  INDEX (B ak_ge_cargos_codcliente ) */
+                            B.COD_CONCEPTO_DTO                  COD_CONCEPTO,
+                            B.COD_CICLFACT                      COD_CICLFACT, 
+                            B.COD_PRODUCTO                      COD_PRODUCTO,
+                            SUM(DECODE(TIP_DTO,:ihValorCero,(VAL_DTO*C.CAMBIO),(IMP_CARGO*VAL_DTO/100*-1)*C.CAMBIO)) IMP_CARGO,
+                            COUNT(1)                            CANT
+                    FROM    GE_CARGOS       B, GE_CONVERSION C
+                    WHERE   TO_DATE (:szhFecEmision,'YYYYMMDDHH24MISS') BETWEEN C.FEC_DESDE AND C.FEC_HASTA
+                    AND     C.COD_MONEDA  = B.COD_MONEDA
+                    AND     B.COD_CLIENTE > :ihValorCero
+                    AND     B.COD_CONCEPTO_DTO  IS NOT NULL
+                    AND     B.IMP_CARGO   > :ihValorCero
+                    AND     B.NUM_FACTURA = :ihValorCero
+                    AND     B.NUM_TRANSACCION = :ihValorCero
+                    AND     B.COD_CICLFACT IN ( SELECT  COD_CICLFACT 
+                                                FROM    FA_CICLFACT
+                                                WHERE   FEC_EMISION <= TO_DATE (:szhFecEmision,'YYYYMMDDHH24MISS'))
+                    AND EXISTS (SELECT COD_CLIENTE FROM FAT_CTLINTERABO A WHERE A.COD_CLIENTE = B.COD_CLIENTE AND A.IND_ESTADO = 1)
+                    GROUP BY B.COD_CONCEPTO_DTO,B.COD_CICLFACT,B.COD_PRODUCTO);
+    
+    EXEC SQL OPEN C_CURSOR_CTLCARGOS_VARIOS;
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,   "\n\n\t**  Error en Open Cursor (bfnStatCargosVarios) **"
+                                        "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }    
+    
+    EXEC SQL 
+        FETCH C_CURSOR_CTLCARGOS_VARIOS
+        INTO        :aihCodProducto  ,
+                    :aihCodCiclFact  ,
+                    :aihCodConcepto  ,
+                    :aihCantidad     ,
+                    :adhImpFacturable;
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+    {            
+        vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosVarios) Error En Fetch de Cargos Varios  "
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosVarios) Error En Fetch de Cargos Varios "
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    iSqlRow = SQLROWS;
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        for (iNumCargoVarios = 0; iNumCargoVarios < iSqlRow ; iNumCargoVarios++)
+        {
+            /************************************************************************/
+            /*  Inserta Registros de Cargos Varios en FAD_CTLINFCONC                */
+            /************************************************************************/
+                EXEC SQL 
+                    INSERT INTO FAD_CTLINFCONC(
+                                COD_INFORME     ,
+                                NUM_SECUINFO    ,
+                                IND_FACTUR      ,
+                                IND_SUPERTEL    ,
+                                COD_TIPCLIE     ,
+                                COD_TIPDOCUM    ,
+                                COD_DESPACHO    ,
+                                COD_PRODUCTO    ,
+                                COD_CICLFACT    ,
+                                COD_CONCEPTO    ,
+                                NUM_CONCEPTOS   ,
+                                IMP_FACTURABLE  ,
+                                NUM_MINUTOS     )
+                    VALUES  (   :szhCodInforme  ,
+                                :lhNumSecuInfo  ,
+                                :ihIndFactur    ,
+                                :ihIndSupertel  , 
+                                :szhCodTipClie  ,
+                                :lhCodTipDocum  ,
+                                :szhCodDespacho ,
+                                :aihCodProducto     [iNumCargoVarios],
+                                :aihCodCiclFact     [iNumCargoVarios],
+                                :aihCodConcepto     [iNumCargoVarios],
+                                :aihCantidad        [iNumCargoVarios],
+                                :adhImpFacturable   [iNumCargoVarios],
+                                :ihValorCero );
+
+            if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+            {            
+                vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosVarios) Error En Insert Cargos Varios "
+                                                    "\n\t\t Error Oracle [%d] [%s]"
+                                                    ,LOG01,SQLCODE,SQLERRM);
+                vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosVarios) Error En Insert Cargos Varios "
+                                                    "\n\t\t Error Oracle [%d] [%s]"
+                                                    ,LOG01,SQLCODE,SQLERRM);
+                return FALSE;
+            }
+        }
+    }
+    else
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosVarios) Arreglo de Cargos Varios Sobrepasado"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosVarios) Arreglo de Cargos Varios Sobrepasado"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    EXEC SQL CLOSE C_CURSOR_CTLCARGOS_VARIOS;
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\t%s  **(bfnStatCargosVarios) Cargos Generados [%d] de [%d]", LOG03,cfnGetTime(1),iNumCargoVarios,iSqlRow);
+    return TRUE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnStatCargosTrafico                                        */
+/*  SAAM-20030106 Se cambia la declaración del cursor por una declaracion   */
+/*  dinamica                                                                */
+/****************************************************************************/
+BOOL bfnStatCargosTrafico( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION  ;
+    char    szhCodInforme   [7] ;EXEC SQL VAR szhCodInforme  IS STRING(7);
+    long    lhNumSecuInfo       ;    
+    int     ihIndFactur         ;
+    int     ihIndSupertel       ;
+    char    szhCodTipClie   [3] ;EXEC SQL VAR szhCodTipClie  IS STRING(3);
+    long    lhCodTipDocum       ;
+    char    szhCodDespacho  [6] ;EXEC SQL VAR szhCodDespacho  IS STRING(6);
+    int     ihCodCiclFact       ;
+
+    int     aihCodProducto   [MAX_CARGOS_TRAFICO_FETCH];
+    int     aihCodCiclFact   [MAX_CARGOS_TRAFICO_FETCH];
+    long    aihCodConcepto   [MAX_CARGOS_TRAFICO_FETCH];
+    int     aihCantidad      [MAX_CARGOS_TRAFICO_FETCH];
+    double  adhImpFacturable [MAX_CARGOS_TRAFICO_FETCH];
+    long    alhSegConsumido  [MAX_CARGOS_TRAFICO_FETCH];
+    int     aihTipTrafico    [MAX_CARGOS_TRAFICO_FETCH];
+    EXEC SQL END DECLARE SECTION ;    
+    int     iSqlRow         = 0;
+    int     iNumCargoTrafico= 0;
+    char    szCadena[5000]; /* SAAM-20030106 */
+
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t%s  **(bfnStatCargosTrafico) ",LOG03,cfnGetTime(1));
+    
+    sprintf(szhCodInforme,"%s\0", szCodInformeGenerar   );
+            lhNumSecuInfo       = lhNumSecuenciaInforme  ;
+            ihCodCiclFact       = stLineaComando.iCodCiclFact;
+            ihIndFactur         =   1;
+            ihIndSupertel       =   0;
+    sprintf(szhCodTipClie,"I\0"    );
+            lhCodTipDocum       =   0;
+    sprintf(szhCodDespacho,"-----\0");
+
+
+    if (stLineaComando.iTipoTasacion==TIPO_TASA_CLASICA)
+    {
+        sprintf(szCadena,
+            "SELECT COD_PRODUCTO , "
+                "   COD_CICLFACT , "
+                "   COD_CONCEPTO , "
+                "   CANT         , "
+                "   IMP_CONSUMIDO, "
+                "   SEG_CONSUMIDO, "
+                "   TIP_TRAFICO  "
+              "FROM (SELECT  /*+  B PK_TA_ACUMAIREFRASOC */ "
+	             "            D.COD_FACTURACION  COD_CONCEPTO    , "
+	             "            B.COD_CICLFACT     COD_CICLFACT    , "
+	             "            D.COD_PRODUCTO     COD_PRODUCTO    , "
+	             "            SUM(SEG_CONSUMIDO) SEG_CONSUMIDO   , "
+	             "            SUM(IMP_CONSUMIDO) IMP_CONSUMIDO   , "
+	             "            COUNT(1)           CANT            , "
+	             "            1                  TIP_TRAFICO  "
+	             "    FROM    TA_CONCEPFACT       D   , "
+	             "            TA_ACUMAIREFRASOC   B   ,  "
+	             "            (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO  = 1 AND NUM_ABONADO > 0) A "
+	             "    WHERE   B.NUM_ABONADO       = A.NUM_ABONADO "
+	             "    AND     B.NUM_PROCESO       = 0 "
+	             "    AND     D.COD_PRODUCTO      = 1 "
+	             "    AND     D.IND_TABLA         = 1 "
+	             "    AND     B.IND_ENTSAL        = D.IND_ENTSAL "
+	             "    AND     B.COD_FRANHORASOC   = D.COD_TARIFICACION "
+	             "    AND     B.IND_DESTINO       = D.IND_DESTINO "  /* NUEVO 03-09-2002  */
+	             "    AND     B.COD_SERVICIO      = D.COD_SERVICIO " /* NUEVO 03-09-2002  */
+	             "    AND     B.COD_CICLFACT IN ( SELECT  COD_CICLFACT  "
+	             "                                FROM    FA_CICLFACT  "
+	             "                                WHERE   FEC_EMISION <= (    SELECT  FEC_EMISION  "
+	             "                                                            FROM    FA_CICLFACT  "
+	             "                                                            WHERE   COD_CICLFACT = :ihCodCiclFact)) "
+	             "    GROUP BY "
+	             "            D.COD_FACTURACION , "
+	             "            B.COD_CICLFACT    , "
+	             "            D.COD_PRODUCTO "
+	           "UNION ALL "
+	             "    SELECT  /*+  B PK_TA_ACUMOPER */  "
+	             "            D.COD_FACTURACION  COD_CONCEPTO, "
+	             "            B.COD_CICLFACT     COD_CICLFACT, "
+	             "            D.COD_PRODUCTO     COD_PRODUCTO, "
+	             "            SUM(SEG_CONSUMIDO) SEG_CONSUMIDO, "
+	             "            SUM(IMP_CONSUMIDO) IMP_CONSUMIDO, "
+	             "            COUNT(1)           CANT         , "
+	             "            2                  TIP_TRAFICO  "
+	             "    FROM    TA_CONCEPFACT   D   , "
+	             "            TA_ACUMOPER     B   , " 
+	             "            (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO  = 1 AND NUM_ABONADO > 0) A "
+	             "    WHERE   B.NUM_ABONADO       = A.NUM_ABONADO "
+	             "    AND     B.NUM_PROCESO       = 0 "
+	             "    AND     D.COD_PRODUCTO      = 1 "
+	             "    AND     D.IND_TABLA         = 2 "
+	             "    AND     B.COD_OPERADOR      = D.COD_TARIFICACION "
+	             "    AND     B.COD_CICLFACT IN ( SELECT  COD_CICLFACT  "
+	             "                                FROM    FA_CICLFACT "
+	             "                                WHERE   FEC_EMISION <= (    SELECT  FEC_EMISION  "
+	             "                                                            FROM    FA_CICLFACT  "
+	             "                                                            WHERE   COD_CICLFACT = :ihCodCiclFact)) "
+	             "    GROUP BY "
+	             "            D.COD_FACTURACION   , "
+	             "            B.COD_CICLFACT      , "
+	             "            D.COD_PRODUCTO      "
+	             "UNION ALL "
+	             "    SELECT  /*+ INDEX (B PK_TA_ACUMLLAMADASROA) */ "
+	             "            D.COD_FACTURACION   COD_CONCEPTO , "
+	             "            B.COD_CICLFACT      COD_CICLFACT , "
+	             "            D.COD_PRODUCTO      COD_PRODUCTO , "
+	             "          SUM(SEG_CONSUMIDO)   SEG_CONSUMIDO, "
+	             "          SUM(IMP_CONSUMIDO)   IMP_CONSUMIDO, "
+	             "            COUNT(1)            CANT         , "
+	             "            3                   TIP_TRAFICO  "
+	             "  FROM    TA_ACUMLLAMADASROA  B ,  "
+	             "          (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO  = 1 AND NUM_ABONADO > 0) A, "
+	             "          TA_CONCEPFACT D  "
+	             "    WHERE   D.COD_PRODUCTO      = 1 "
+	             "    AND     D.IND_TABLA         = 3 "
+	             "    AND     B.COD_OPERADOR      = D.COD_TARIFICACION "
+	             "    AND     B.NUM_ABONADO       = A.NUM_ABONADO "
+	             "    AND     B.COD_CICLFACT IN ( SELECT COD_CICLFACT  "
+	                                              " FROM FA_CICLFACT "
+	                                             " WHERE FEC_EMISION <= ( SELECT FEC_EMISION  "
+	             	                                                      " FROM FA_CICLFACT "
+	             	                                                     " WHERE COD_CICLFACT = :ihCodCiclFact)) "
+	             "    AND     B.NUM_PROCESO       = 0 "
+	             "    GROUP BY "
+	             "            D.COD_FACTURACION                   , "
+	             "            B.COD_CICLFACT                      , "
+	             "            D.COD_PRODUCTO  ) "
+	             "UNION ALL "
+	             "    SELECT  D.COD_CONCFACT          COD_CONCEPTO, "
+	             "            B.COD_PERIODO           COD_CICLFACT, "
+	             "            1                       COD_PRODUCTO, "
+	             "            SUM(SEG_CONSUMIDO)      SEG_CONSUMIDO, "
+	             "            SUM(IMP_CONSUMIDO)      IMP_CONSUMIDO, "
+	             "            COUNT(1)                CANT         , "
+	             "            4                       TIP_TRAFICO  "
+	             "    FROM    FA_CONCEPTOS        E , "
+	             "            FA_FACTCARRIERS     D , "
+	             "            FA_ACUMFORTAS       B ,  "
+	             "            (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO  = 1 AND NUM_ABONADO > 0) A "
+	             "  WHERE   B.NUM_ABONADO   = A.NUM_ABONADO "
+	             "  AND     B.IND_ALQUILER  = 0 "
+	             "    AND     B.COD_PERIODO IN ( SELECT   COD_CICLFACT  "
+	             "                                FROM    FA_CICLFACT "
+	             "                                WHERE   FEC_EMISION <= (    SELECT  FEC_EMISION  "
+	             "                                                            FROM    FA_CICLFACT "
+	             "                                                            WHERE   COD_CICLFACT = :ihCodCiclFact)) "
+	             "  AND     B.NUM_PROCESO   = 0 "
+	             "  AND     B.COD_TIPCONCE  = 4 "
+	             "  AND     B.COD_OPERADOR  = D.COD_CONCCARRIER "
+	             "  AND     D.COD_CONCFACT  = E.COD_CONCEPTO "
+	             "   AND     E.COD_TIPCONCE  = 4 "
+	             "  GROUP BY  "
+	             "          D.COD_CONCFACT, "
+	             "            B.COD_PERIODO   ) " );
+    }
+    else if (stLineaComando.iTipoTasacion==TIPO_TASA_ON_LINE)
+    {
+        sprintf(szCadena,
+            "SELECT COD_PRODUCTO , "
+                  " COD_CICLFACT , "
+                  " COD_CONCEPTO , "
+                  " CANT, "
+                  " IMP_CONSUMIDO, "
+                  " SEG_CONSUMIDO, "
+                  " TIP_TRAFICO "
+             "FROM ( SELECT  TA.COD_CARG  COD_CONCEPTO , "
+                            " TA.COD_CICLFACT  COD_CICLFACT , "
+                            " TP.COD_PRODUCTO  COD_PRODUCTO , "
+                            " SUM(TA.DUR_FACT) SEG_CONSUMIDO, "
+                            " SUM(TA.MTO_FACT) IMP_CONSUMIDO, "
+                            " COUNT(1) CANT , "
+                            " 0 TIP_TRAFICO "
+                      " FROM TA_PLANTARIF TP, TOL_ACUMOPER_TO TA, TA_OPERADORES TT, "
+                          " (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO= 1 AND NUM_ABONADO > 0) FC "
+                      "WHERE TA.NUM_ABONADO   = FC.NUM_ABONADO "
+                      "  AND TP.COD_PLANTARIF = TA.COD_PLAN "
+                      "  AND TA.COD_OPERADOR  = TT.COD_OPERADOR "  /***para todos los casos salvo operadora propia y roaming*/
+                      "  AND TT.COD_TOPE <> 'M' "
+                      "  AND TA.COD_CICLFACT IN ( SELECT COD_CICLFACT "
+                                                  " FROM FA_CICLFACT "
+                                                  " WHERE FEC_EMISION <= (SELECT FEC_EMISION "
+                                                                          " FROM FA_CICLFACT "
+                                                                         " WHERE COD_CICLFACT = :ihCodCiclFact)) "
+                      "  AND TA.NUM_PROCESO = 0 "
+                      "GROUP BY TP.COD_PRODUCTO, TA.COD_CICLFACT, TA.COD_CARG "        
+                "UNION ALL "
+                      "SELECT TA.COD_CARG COD_CONCEPTO , "
+                      	     "TA.COD_CICLFACT  COD_CICLFACT , "
+                      	     "TP.COD_PRODUCTO  COD_PRODUCTO , "
+                      	     "SUM(TA.DUR_FACT) SEG_CONSUMIDO, "
+                      	     "SUM(TA.MTO_FACT) IMP_CONSUMIDO, "
+                      	     "COUNT(1) CANT , "
+                      	     "0 TIP_TRAFICO "
+                       " FROM TA_PLANTARIF TP, TOL_ACUMOPER_TO TA, TA_OPERADORES TT, "             
+                      		 " (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO = 1 AND NUM_ABONADO > 0) FC "
+                      " WHERE TA.NUM_ABONADO  = FC.NUM_ABONADO "
+                        " AND TP.COD_PLANTARIF = TA.COD_PLAN "
+                        " AND TA.COD_OPERADOR = TT.COD_OPERADOR "  /***para caso operadora propia*/
+                        " AND TT.COD_TOPE = 'M' "
+                        " AND TT.COD_DOPE = 'P' "
+                        " AND TA.COD_CICLFACT IN ( SELECT COD_CICLFACT "
+              	                                    " FROM FA_CICLFACT "
+              								       " WHERE FEC_EMISION <= (SELECT  FEC_EMISION "
+              										 					   " FROM  FA_CICLFACT "
+              															  " WHERE  COD_CICLFACT = :ihCodCiclFact)) "
+                         "AND  TA.NUM_PROCESO = 0 "
+                         "GROUP BY TP.COD_PRODUCTO, TA.COD_CICLFACT, TA.COD_CARG "        
+                      "  UNION ALL "
+                           " SELECT TA.COD_CARG COD_CONCEPTO , "
+                                  " TA.COD_CICLFACT  COD_CICLFACT , "
+                                  " TP.COD_PRODUCTO  COD_PRODUCTO , "
+                                  " SUM(TA.DUR_FACT) SEG_CONSUMIDO, "
+                                  " SUM(TA.MTO_FACT) IMP_CONSUMIDO, "
+                                  " COUNT(1)         CANT , "
+                                  " 3 TIP_TRAFICO "
+                      "     FROM    TA_PLANTARIF TP, TOL_ACUMOPER_TO TA, TA_OPERADORES TT,"
+                      			  " (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO = 1 AND NUM_ABONADO > 0) FC "
+                         " WHERE TA.NUM_ABONADO   = FC.NUM_ABONADO "
+                           " AND TP.COD_PLANTARIF = TA.COD_PLAN "
+                           " AND TA.COD_OPERADOR = TT.COD_OPERADOR "
+                           " AND TT.COD_TOPE = 'M' "
+                           " AND TT.COD_DOPE <> 'P' "
+                           " AND TT.IND_PORTADOR = 0 "
+                           " AND TA.COD_CICLFACT IN ( SELECT COD_CICLFACT  "
+                      							        " FROM FA_CICLFACT "
+                      								   " WHERE FEC_EMISION <= (SELECT FEC_EMISION  "
+                      														   " FROM FA_CICLFACT "
+                      													      " WHERE COD_CICLFACT = :ihCodCiclFact)) "
+                           " AND   TA.NUM_PROCESO = 0 "
+                           " GROUP BY  TP.COD_PRODUCTO, TA.COD_CICLFACT, TA.COD_CARG "
+                      "  UNION ALL "
+                           " SELECT  D.COD_CONCFACT     COD_CONCEPTO, "
+			                       " B.COD_PERIODO      COD_CICLFACT, "
+			                       " 1 COD_PRODUCTO, "
+			                       " SUM(SEG_CONSUMIDO) SEG_CONSUMIDO, "
+			                       " SUM(IMP_CONSUMIDO) IMP_CONSUMIDO, "
+			                       " COUNT(1) CANT , "
+			                       " 4 TIP_TRAFICO  "
+                            "  FROM  FA_CONCEPTOS E, FA_FACTCARRIERS D, FA_ACUMFORTAS B, "
+                            	   " (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO = 1 AND NUM_ABONADO > 0) A "
+                            " WHERE  B.NUM_ABONADO   = A.NUM_ABONADO "
+                              " AND  B.IND_ALQUILER  = 0 "
+                              " AND  B.COD_PERIODO IN ( SELECT COD_CICLFACT "
+                                                        " FROM FA_CICLFACT "
+                                                       " WHERE FEC_EMISION <= (SELECT FEC_EMISION "
+                                                                               " FROM FA_CICLFACT "
+                                                                              " WHERE COD_CICLFACT = :ihCodCiclFact)) "
+                             " AND B.NUM_PROCESO  = 0 "
+                             " AND B.COD_TIPCONCE = 4 "
+                             " AND B.COD_OPERADOR = D.COD_CONCCARRIER "
+                             " AND D.COD_CONCFACT = E.COD_CONCEPTO "
+                             " AND E.COD_TIPCONCE = 4 "
+                            " GROUP BY D.COD_CONCFACT, B.COD_PERIODO) ");
+    }
+    
+
+
+    vDTrazasLog  (szExeInfCtlPreCiclo,"\n\t**  Cadena : [%s]  **",LOG05,szCadena);
+
+    EXEC SQL PREPARE sql_CTLCARGOS_TRAFICO FROM :szCadena;
+  
+ 
+    if (SQLCODE)  {
+        vDTrazasLog  (szExeInfCtlPreCiclo,"\n\t**  Error en SQL-PREPARE sql_CTLCARGOS_TRAFICO **"
+                                          "\n\t\t=> Error : [%ld]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo,"\n\t**  Error en SQL-PREPARE sql_CTLCARGOS_TRAFICO **"
+                                          "\n\t\t=> Error : [%ld]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+                                    
+    EXEC SQL DECLARE C_CURSOR_CTLCARGOS_TRAFICO CURSOR FOR sql_CTLCARGOS_TRAFICO;
+    if (SQLCODE)  {
+        vDTrazasLog  (szExeInfCtlPreCiclo,"\n\t**  Error en SQL-DECLARE C_CURSOR_CTLCARGOS_TRAFICO  **"
+                                          "\n\t\t=> Error : [%ld]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo,"\n\t**  Error en SQL-DECLARE C_CURSOR_CTLCARGOS_TRAFICO  **"
+                                          "\n\t\t=> Error : [%ld]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }                           
+
+    EXEC SQL OPEN C_CURSOR_CTLCARGOS_TRAFICO USING :ihCodCiclFact;
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,   "\n\n\t**  Error en Open Cursor (bfnStatCargosTrafico) **"
+                                        "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }    
+    
+    EXEC SQL 
+        FETCH C_CURSOR_CTLCARGOS_TRAFICO
+        INTO        :aihCodProducto  ,
+                    :aihCodCiclFact  ,
+                    :aihCodConcepto  ,
+                    :aihCantidad     ,
+                    :adhImpFacturable,
+                    :alhSegConsumido ,
+                    :aihTipTrafico   ;
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+    {            
+        vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosTrafico) Error En Fetch de Cargos Trafico "
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosTrafico) Error En Fetch de Cargos Trafico "
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    iSqlRow = SQLROWS;
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        for (iNumCargoTrafico = 0; iNumCargoTrafico < iSqlRow ; iNumCargoTrafico++)
+        {
+            if (aihTipTrafico  [iNumCargoTrafico] == 3) /*  Roaming */
+                adhImpFacturable [iNumCargoTrafico] = (double)(adhImpFacturable [iNumCargoTrafico] * dValorCTLDolar);
+                
+            /************************************************************************/
+            /*  Inserta Registros de Cargos Trafifo en FAD_CTLINFCONC               */
+            /************************************************************************/
+                EXEC SQL 
+                    INSERT INTO FAD_CTLINFCONC(
+                                COD_INFORME     ,
+                                NUM_SECUINFO    ,
+                                IND_FACTUR      ,
+                                IND_SUPERTEL    ,
+                                COD_TIPCLIE     ,
+                                COD_TIPDOCUM    ,
+                                COD_DESPACHO    ,
+                                COD_PRODUCTO    ,
+                                COD_CICLFACT    ,
+                                COD_CONCEPTO    ,
+                                NUM_CONCEPTOS   ,
+                                IMP_FACTURABLE  ,
+                                NUM_MINUTOS     )
+                    VALUES  (   :szhCodInforme  ,
+                                :lhNumSecuInfo  ,
+                                :ihIndFactur    ,
+                                :ihIndSupertel  , 
+                                :szhCodTipClie  ,
+                                :lhCodTipDocum  ,
+                                :szhCodDespacho ,
+                                :aihCodProducto     [iNumCargoTrafico],
+                                :aihCodCiclFact     [iNumCargoTrafico],
+                                :aihCodConcepto     [iNumCargoTrafico],
+                                :aihCantidad        [iNumCargoTrafico],
+                                :adhImpFacturable   [iNumCargoTrafico],
+                                :alhSegConsumido    [iNumCargoTrafico] );
+
+            if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+            {            
+                vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosTrafico) Error En Insert Cargos Trafico "
+                                                    "\n\t\t Error Oracle [%d] [%s]"
+                                                    ,LOG01,SQLCODE,SQLERRM);
+                vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosTrafico) Error En Insert Cargos Trafico "
+                                                    "\n\t\t Error Oracle [%d] [%s]"
+                                                    ,LOG01,SQLCODE,SQLERRM);
+                return FALSE;
+            }
+
+        }
+    }
+    else
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosTrafico) Arreglo de Cargos de Trafico Sobrepasado"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosTrafico) Arreglo de Cargos de Trafico Sobrepasado"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    EXEC SQL CLOSE C_CURSOR_CTLCARGOS_TRAFICO;
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\t%s  **(bfnStatCargosTrafico) Cargos Generados [%d] de [%d]", LOG03,cfnGetTime(1),iNumCargoTrafico,iSqlRow);
+    return TRUE;
+}
+
+
+/****************************************************************************/
+/*  Funcion :   bfnStatCargosBasicos                                        */
+/****************************************************************************/
+BOOL bfnStatCargosBasicos( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION  ;
+    char    szhCodInforme   [7] ;EXEC SQL VAR szhCodInforme     IS STRING(7);
+    long    lhNumSecuInfo       ;    
+    int     ihIndFactur         ;
+    int     ihIndSupertel       ;
+    char    szhCodTipClie   [3] ;EXEC SQL VAR szhCodTipClie     IS STRING(3);
+    long    lhCodTipDocum       ;
+    char    szhCodDespacho  [6] ;EXEC SQL VAR szhCodDespacho    IS STRING(6);
+    int     ihCodCiclFact       ;
+    int     ihCodProducto       ;
+    long    ihCodConcepto       ;
+    int     ihCantidad          ;
+    double  dhImpFacturable     ;
+    long    lhSegConsumido      ;
+    char    szhCodCBasico   [4] ;EXEC SQL VAR szhCodCBasico     IS STRING(4);
+    EXEC SQL END DECLARE SECTION;
+    int iStat=0;
+
+    sprintf(szhCodInforme,"%s\0", szCodInformeGenerar   );
+            lhNumSecuInfo       = lhNumSecuenciaInforme  ;
+            ihCodCiclFact       = stLineaComando.iCodCiclFact;
+            ihIndFactur         =   1;
+            ihIndSupertel       =   0;
+    sprintf(szhCodTipClie,"I\0"    );
+            lhCodTipDocum       =   0;
+    sprintf(szhCodDespacho,"-----\0");
+            lhSegConsumido      = 0;
+    
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t%s  **(bfnStatCargosBasicos) ",LOG03,cfnGetTime(1));
+
+    for (iStat=0;iStat<stStatCargoBasico.iNumStadisticas;iStat++)
+    {
+        ihCodProducto   = stStatCargoBasico.stUnivStatCBas[iStat].iCodProducto;
+        ihCodConcepto   = (ihCodProducto == 1?stCodCargosBasicos.lCodAbonoCel:stCodCargosBasicos.lCodAbonoBeep);
+        ihCantidad      = stStatCargoBasico.stUnivStatCBas[iStat].iNumCargosBasicos;
+        sprintf(szhCodCBasico,"%s\0",stStatCargoBasico.stUnivStatCBas[iStat].szCodCargoBasico);
+        dhImpFacturable = (double)((double)(ihCantidad) * dfnValorCBasico(szhCodCBasico,ihCodProducto));
+
+        vDTrazasLog(szExeInfCtlPreCiclo,
+            "\n\t\t**(bfnStatCargosBasicos) Inserta Cargos Basicos"
+            "\n\t\t[%d]** Codigo Informe            [%s]"
+            "\n\t\t[%d]** Numero Secuencia          [%ld]"      
+            "\n\t\t[%d]** Indicador Facturacion     [%d]"       
+            "\n\t\t[%d]** Indicador Supertelefono   [%d]"       
+            "\n\t\t[%d]** Tipo Cliente              [%s]"       
+            "\n\t\t[%d]** Tipo Documento            [%ld]"      
+            "\n\t\t[%d]** Codigo Despacho           [%s]"       
+            "\n\t\t[%d]** Codigo Producto           [%d]"       
+            "\n\t\t[%d]** Ciclo Facturacion         [%d]"      
+            "\n\t\t[%d]** Codigo Concepto           [%d]"       
+            "\n\t\t[%d]** Cargo Basico              [%s]"      
+            "\n\t\t[%d]** Cantidad  Cargos Basicos  [%d]"       
+            "\n\t\t[%d]** Importe Facturable        [%.f]"      
+            "\n\t\t[%d]** Segundos Consumidos       [%ld]"      
+            ,LOG03
+            ,iStat,szhCodInforme  
+            ,iStat,lhNumSecuInfo  
+            ,iStat,ihIndFactur    
+            ,iStat,ihIndSupertel  
+            ,iStat,szhCodTipClie  
+            ,iStat,lhCodTipDocum  
+            ,iStat,szhCodDespacho 
+            ,iStat,ihCodProducto  
+            ,iStat,ihCodCiclFact  
+            ,iStat,ihCodConcepto  
+            ,iStat,szhCodCBasico
+            ,iStat,ihCantidad     
+            ,iStat,dhImpFacturable
+            ,iStat,lhSegConsumido  );
+
+        /****************************************************************/
+        /*  Inserta Cargos Basicos de Pre-Ciclo                         */
+        /****************************************************************/
+
+        EXEC SQL 
+            INSERT INTO FAD_CTLINFCONC(
+                        COD_INFORME     ,
+                        NUM_SECUINFO    ,
+                        IND_FACTUR      ,
+                        IND_SUPERTEL    ,
+                        COD_TIPCLIE     ,
+                        COD_TIPDOCUM    ,
+                        COD_DESPACHO    ,
+                        COD_PRODUCTO    ,
+                        COD_CICLFACT    ,
+                        COD_CONCEPTO    ,
+                        NUM_CONCEPTOS   ,
+                        IMP_FACTURABLE  ,
+                        NUM_MINUTOS     ,
+                        COD_CARGOBASICO )
+            VALUES  (   :szhCodInforme  ,
+                        :lhNumSecuInfo  ,
+                        :ihIndFactur    ,
+                        :ihIndSupertel  , 
+                        :szhCodTipClie  ,
+                        :lhCodTipDocum  ,
+                        :szhCodDespacho ,
+                        :ihCodProducto  ,
+                        :ihCodCiclFact  ,
+                        :ihCodConcepto  ,
+                        :ihCantidad     ,
+                        :dhImpFacturable,
+                        :lhSegConsumido ,
+                        :szhCodCBasico  );
+                        
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+        {            
+            vDTrazasLog(szExeInfCtlPreCiclo,"\t\t**(bfnStatCargosBasicos) Error En Insert Cargos Basicos "
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+            vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosBasicos) Error En Insert Cargos Basicos "
+                                                "\n\t\t Error Oracle [%d] [%s]"
+                                                ,LOG01,SQLCODE,SQLERRM);
+            return FALSE;
+        }
+    }
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\t%s  **(bfnStatCargosBasicos) Cargos Basicos Generados [%d] ", LOG03,cfnGetTime(1),iStat,iStat);
+    return TRUE;
+}
+
+/****************************************************************************/
+/*  Funcion :   bfnStatCargosServSupl                                       */
+/****************************************************************************/
+BOOL bfnStatCargosServSupl( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION  ;
+    char    szhCodInforme   [7] ;EXEC SQL VAR szhCodInforme  IS STRING(7);
+    long    lhNumSecuInfo       ;    
+    int     ihIndFactur         ;
+    int     ihIndSupertel       ;
+    char    szhCodTipClie   [3] ;EXEC SQL VAR szhCodTipClie  IS STRING(3);
+    long    lhCodTipDocum       ;
+    char    szhCodDespacho  [6] ;EXEC SQL VAR szhCodDespacho  IS STRING(6);
+    int     ihCodCiclFact       ;
+    long    lhSegConsumido      ;
+    char    szhFecEmision [15]  ;EXEC SQL VAR szhFecEmision IS STRING (15);
+    char    szhCodMoneda   [4]  ;EXEC SQL VAR szhCodMoneda  IS STRING(4);
+    
+    int     aihCodProducto   [MAX_CARGOS_SERVSUPL_FETCH];
+    long    aihCodConcepto   [MAX_CARGOS_SERVSUPL_FETCH];
+    VARCHAR aszhCodMoneda    [MAX_CARGOS_SERVSUPL_FETCH][4];
+    int     aihCantidad      [MAX_CARGOS_SERVSUPL_FETCH];
+    double  adhImpFacturable [MAX_CARGOS_SERVSUPL_FETCH];
+    EXEC SQL END DECLARE SECTION ;    
+    int     iSqlRow         = 0;
+    int     iNumServSupl= 0;
+
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t%s  **(bfnStatCargosServSupl) ",LOG03,cfnGetTime(1));
+    
+    if (stLineaComando.iIndFacturacion == iIND_FACT_NOPROCESADO)
+    {
+        sprintf(szhFecEmision  ,"%s\0",stLineaComando.szFecEmision     );    
+        sprintf(szhCodInforme,"%s\0", szCodInformeGenerar   );
+                lhNumSecuInfo       = lhNumSecuenciaInforme  ;
+                ihCodCiclFact       = stLineaComando.iCodCiclFact;
+                ihIndFactur         =   1;
+                ihIndSupertel       =   0;
+        sprintf(szhCodTipClie,"I\0"    );
+                lhCodTipDocum       =   0;
+        sprintf(szhCodDespacho,"-----\0");
+                lhSegConsumido     =   0;
+    
+        EXEC SQL DECLARE C_CURSOR_CTLCARGOS_SERVSUPL CURSOR FOR
+            SELECT  A.COD_PRODUCTO      ,
+                    A.COD_CONCEPTO      ,
+                    T.COD_MONEDA        ,
+                    COUNT(A.COD_CONCEPTO),
+                    SUM(T.IMP_TARIFA)   
+            FROM    (SELECT DISTINCT NUM_ABONADO FROM FAT_CTLINTERABO WHERE IND_ESTADO  = 1 AND NUM_ABONADO > 0) I,
+                    GA_SERVSUPLABO  A   , 
+                    GA_SERVSUPL     B   ,
+                    GA_TARIFAS      T
+            WHERE   T.COD_ACTABO = 'FA'
+            AND     T.COD_TIPSERV = 2
+            AND     T.IMP_TARIFA > 0
+            AND     (   TO_DATE(:szhFecEmision,'YYYYMMDDHH24MISS') 
+                        BETWEEN T.FEC_DESDE AND T.FEC_HASTA OR  T.FEC_HASTA IS NULL)
+            AND     A.NUM_ABONADO   = I.NUM_ABONADO
+            AND     A.COD_SERVICIO  = T.COD_SERVICIO
+            AND     A.COD_PRODUCTO  = T.COD_PRODUCTO
+            AND     A.IND_ESTADO    IN (1, 2, 5)
+            AND     B.COD_PRODUCTO  = A.COD_PRODUCTO
+            AND     B.COD_SERVICIO  = A.COD_SERVICIO
+            AND     A.COD_CONCEPTO IS NOT NULL
+            GROUP BY
+                    A.COD_PRODUCTO      ,
+                    A.COD_CONCEPTO      ,
+                    T.COD_MONEDA        ;
+    
+        EXEC SQL OPEN C_CURSOR_CTLCARGOS_SERVSUPL;
+        if(SQLCODE != SQLOK)
+        {
+            vDTrazasLog(szExeInfCtlPreCiclo,   "\n\n\t**  Error en Open Cursor (bfnStatCargosServSupl) **"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+            return FALSE;
+        }    
+        
+        EXEC SQL 
+            FETCH C_CURSOR_CTLCARGOS_SERVSUPL
+            INTO        :aihCodProducto  ,
+                        :aihCodConcepto  ,
+                        :aszhCodMoneda   ,
+                        :aihCantidad     ,
+                        :adhImpFacturable;
+    
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+        {            
+            vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosServSupl) Error En Fetch de Servicios Suplementarios "
+                                                "\n\t\t Error Oracle [%d] [%s]"
+                                                ,LOG01,SQLCODE,SQLERRM);
+            vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosServSupl) Error En Fetch de Servicios Suplementarios "
+                                                "\n\t\t Error Oracle [%d] [%s]"
+                                                ,LOG01,SQLCODE,SQLERRM);
+            return FALSE;
+        }
+        iSqlRow = SQLROWS;
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            for (iNumServSupl = 0; iNumServSupl < iSqlRow ; iNumServSupl++)
+            {
+                /************************************************************************/
+                /*   Conversion de Monedas                                              */
+                /************************************************************************/
+                sprintf(szhCodMoneda,"%.*s\0" , aszhCodMoneda[iNumServSupl].len , aszhCodMoneda[iNumServSupl].arr );
+                if (strcmp(szhCodMoneda, "002")==0) /*  Dolar  */
+                    adhImpFacturable[iNumServSupl] = adhImpFacturable [iNumServSupl] * dValorCTLDolar;
+                if (strcmp(szhCodMoneda, "003")==0) /*  U.F.   */
+                    adhImpFacturable[iNumServSupl] = adhImpFacturable [iNumServSupl] * dValorCTLUF   ;
+                /************************************************************************/
+                /*  Inserta Registros de Cargos Varios en FAD_CTLINFCONC                */
+                /************************************************************************/
+                    EXEC SQL 
+                        INSERT INTO FAD_CTLINFCONC(
+                                    COD_INFORME     ,
+                                    NUM_SECUINFO    ,
+                                    IND_FACTUR      ,
+                                    IND_SUPERTEL    ,
+                                    COD_TIPCLIE     ,
+                                    COD_TIPDOCUM    ,
+                                    COD_DESPACHO    ,
+                                    COD_PRODUCTO    ,
+                                    COD_CICLFACT    ,
+                                    COD_CONCEPTO    ,
+                                    NUM_CONCEPTOS   ,
+                                    IMP_FACTURABLE  ,
+                                    NUM_MINUTOS     )
+                        VALUES  (   :szhCodInforme  ,
+                                    :lhNumSecuInfo  ,
+                                    :ihIndFactur    ,
+                                    :ihIndSupertel  , 
+                                    :szhCodTipClie  ,
+                                    :lhCodTipDocum  ,
+                                    :szhCodDespacho ,
+                                    :aihCodProducto     [iNumServSupl],
+                                    :ihCodCiclFact  ,
+                                    :aihCodConcepto     [iNumServSupl],
+                                    :aihCantidad        [iNumServSupl],
+                                    :adhImpFacturable   [iNumServSupl],
+                                    :lhSegConsumido );
+    
+                if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+                {            
+                    vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosServSupl) Error En Insert Servicios Suplementarios "
+                                                        "\n\t\t Error Oracle [%d] [%s]"
+                                                        ,LOG01,SQLCODE,SQLERRM);
+                    vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosServSupl) Error En Insert Servicios Suplementarios "
+                                                        "\n\t\t Error Oracle [%d] [%s]"
+                                                        ,LOG01,SQLCODE,SQLERRM);
+                    return FALSE;
+                }
+    
+            }
+        }
+        else
+        {
+            vDTrazasLog(szExeInfCtlPreCiclo   , "\t\t**(bfnStatCargosServSupl) Arreglo de Servicios Suplementarios Sobrepasado"
+                                                "\n\t\t Error Oracle [%d] [%s]"
+                                                ,LOG01,SQLCODE,SQLERRM);
+            vDTrazasError(szExeInfCtlPreCiclo , "\t\t**(bfnStatCargosServSupl) Arreglo de Servicios Suplementarios Sobrepasado"
+                                                "\n\t\t Error Oracle [%d] [%s]"
+                                                ,LOG01,SQLCODE,SQLERRM);
+            return FALSE;
+        }
+        EXEC SQL CLOSE C_CURSOR_CTLCARGOS_SERVSUPL;
+    }
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\t%s  **(bfnStatCargosServSupl) Cargos Generados [%d] de [%d]", LOG03,cfnGetTime(1),iNumServSupl,iSqlRow);
+    return TRUE;
+}
+
+
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnValTipClie                                               */
+/****************************************************************************/
+BOOL bfnValTipClie( void )
+{
+    int i=0;
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szhCodPlanTarif[4];
+    long    lhCodCliente      ;
+    EXEC SQL END DECLARE SECTION;
+    
+    lhCodCliente = stCtlInterAbo.lCodCliente;
+    
+    EXEC SQL    SELECT  COD_PLANTARIF 
+                INTO    :szhCodPlanTarif
+                FROM    GA_EMPRESA
+                WHERE   COD_CLIENTE = :lhCodCliente
+                AND     ROWNUM = 1      ;
+        
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select GA_EMPRESA (bfnValTipClie)", LOG01);
+        return FALSE;
+    }
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        sprintf(stCtlInterAbo.szTipClie,"%s\0",COD_TIPCLIENTE_INDIVIDUAL);
+        return TRUE;
+    }
+    sprintf(stCtlInterAbo.szTipClie,"%s\0",COD_TIPCLIENTE_EMPRESA);
+    for (i=0;i<iNumRegPlanFamiliar;i++)
+    {
+        if (strcmp(szCodPlanTarifFamiliar[i],szhCodPlanTarif)==0)
+        {
+            sprintf(stCtlInterAbo.szTipClie,"%s\0",COD_TIPCLIENTE_FAMILIAR);
+            break;
+        }
+    }
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnValPlanTarif()                                           */
+/****************************************************************************/
+BOOL bfnValPlanTarif( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION  ;
+    char   szhCodPlanTarif[4]       ;EXEC SQL VAR szhCodPlanTarif   IS STRING (4);
+    char   szhCodCargoBasico[4]     ;EXEC SQL VAR szhCodCargoBasico IS STRING (4);
+    long   lhCodCliente             ;
+    long   lhNumAbonado             ;
+    char   szhFecDesde[15]          ;EXEC SQL VAR szhFecDesde   IS STRING (15);
+    char   szhFecHasta[15]          ;EXEC SQL VAR szhFecHasta   IS STRING (15);
+    EXEC SQL END DECLARE SECTION    ;
+
+    lhCodCliente = stCtlInterAbo.lCodCliente    ;
+    lhNumAbonado = stCtlInterAbo.lNumAbonado    ;
+    sprintf(szhFecDesde,"%s\0",stLineaComando.szFecDesdeCFijos);
+    sprintf(szhFecHasta,"%s\0",stLineaComando.szFecHastaCFijos);
+
+    if ((stCtlInterAbo.iCodProducto == 1) || (stCtlInterAbo.iCodProducto == 5))
+    {
+        EXEC SQL
+        SELECT  COD_PLANTARIF       ,
+                COD_CARGOBASICO
+        INTO    :szhCodPlanTarif    ,
+                :szhCodCargoBasico  
+        FROM    GA_INTARCEL
+        WHERE   COD_CLIENTE = :lhCodCliente
+        AND     NUM_ABONADO = :lhNumAbonado
+        AND     ((  FEC_DESDE  <= TO_DATE(:szhFecDesde,'YYYYMMDDHH24MISS')  AND
+                    FEC_HASTA  >= TO_DATE(:szhFecDesde,'YYYYMMDDHH24MISS'))
+            OR   (  FEC_DESDE  <= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')  AND
+                    FEC_HASTA  >= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS'))
+            OR   (  FEC_DESDE  <= TO_DATE(:szhFecDesde,'YYYYMMDDHH24MISS')  AND
+                    FEC_HASTA  >= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')))                    
+        AND     ROWNUM      = 1;
+    }
+    else if (stCtlInterAbo.iCodProducto == 2)
+    {
+        EXEC SQL
+        SELECT  COD_PLANTARIF       ,
+                COD_CARGOBASICO 
+        INTO    :szhCodPlanTarif    ,
+                :szhCodCargoBasico
+        FROM    GA_INTARBEEP
+        WHERE   COD_CLIENTE = :lhCodCliente
+        AND     NUM_ABONADO = :lhNumAbonado
+        AND     ((  FEC_DESDE  <= TO_DATE(:szhFecDesde,'YYYYMMDDHH24MISS')  AND
+                    FEC_HASTA  >= TO_DATE(:szhFecDesde,'YYYYMMDDHH24MISS'))
+            OR   (  FEC_DESDE  <= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')  AND
+                    FEC_HASTA  >= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS'))
+            OR   (  FEC_DESDE  <= TO_DATE(:szhFecDesde,'YYYYMMDDHH24MISS')  AND
+                    FEC_HASTA  >= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')))                    
+        AND     ROWNUM      = 1;
+    }
+    
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select GA_INTARCEL/GA_INTARBEEP (bfnValPlanTarif)", LOG01);
+        return FALSE;
+    }
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        sprintf(stCtlInterAbo.szCodPlanTarif  ,"---\0");
+        sprintf(stCtlInterAbo.szCodCargoBasico,"---\0");
+    }
+    else
+    {
+        sprintf(stCtlInterAbo.szCodPlanTarif  ,"%s\0",szhCodPlanTarif    );
+        sprintf(stCtlInterAbo.szCodCargoBasico,"%s\0",szhCodCargoBasico  );
+    }
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnClassCliente()                                           */
+/****************************************************************************/
+BOOL bfnClassCliente( void )
+{
+    if (stCtlInterAbo.iIndSupertel == IND_SUPERTELEFONO_ACTIVO)
+    {
+        stCtlInterAbo.iCodClassCliente= COD_CLASSCLIENTE_STB;
+    }
+    else if (strcmp(stCtlInterAbo.szTipClie, "F")==0)
+    {
+        stCtlInterAbo.iCodClassCliente= COD_CLASSCLIENTE_FAMILIAR;
+    }
+    else if (strcmp(stCtlInterAbo.szTipClie, "E")==0)
+    {
+        stCtlInterAbo.iCodClassCliente= COD_CLASSCLIENTE_EMPRESA;
+    }
+    else
+    {
+        stCtlInterAbo.iCodClassCliente= COD_CLASSCLIENTE_INDIVIDUAL;
+    }
+    return TRUE;    
+}
+
+
+/****************************************************************************/
+/*  Funcion :   bfnClassAbonado()                                           */
+/****************************************************************************/
+BOOL bfnClassAbonado( void )
+{
+    switch (stCtlInterAbo.iIndActuac)
+    {
+        case    IND_ACTUAC_BAJA:
+                {
+                    if (strcmp(stCtlInterAbo.szFecBaja,stLineaComando.szFecDesdeCFijos) >= 0 &&
+                        strcmp(stCtlInterAbo.szFecBaja,stLineaComando.szFecHastaCFijos) <= 0 )
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_BAJAS;
+                    }
+                    else
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_BAJAS_ANTIGUA;
+                    }
+                }
+                break;
+        case    IND_ACTUAC_TRASPASO:
+                {
+                    if (strcmp(stCtlInterAbo.szFecBaja,stLineaComando.szFecDesdeCFijos) >= 0 &&
+                        strcmp(stCtlInterAbo.szFecBaja,stLineaComando.szFecHastaCFijos) <= 0 )
+                    {
+                        stCtlInterAbo.iCodClassAbonado= COD_CLASSABONADO_TRASPASO;
+                    }
+                    else
+                    {
+                        stCtlInterAbo.iCodClassAbonado= COD_CLASSABONADO_TRASPASO_ANTIGUO;
+                    }
+                }
+                break;
+        case    IND_ACTUAC_LIQUIDACION:
+                {
+                    stCtlInterAbo.iCodClassAbonado= COD_CLASSABONADO_LIQUIDACION;
+                }
+                break;
+        case    IND_ACTUAC_RECHAZO:
+                {
+                    stCtlInterAbo.iCodClassAbonado= COD_CLASSABONADO_RECHAZO;
+                }
+                break;
+        case    IND_ACTUAC_ANULACION_BAJA:
+                {
+                    stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_ANULACION_BAJA;
+                }
+                break;
+        case    IND_ACTUAC_NORMAL:
+                {   
+                    if (strcmp(stCtlInterAbo.szFecAlta,stLineaComando.szFecDesdeCFijos) > 0 &&
+                        strcmp(stCtlInterAbo.szFecAlta,stLineaComando.szFecHastaCFijos) < 0 )
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_NUEVOS;
+                    }
+                    else if (stCtlInterAbo.iIndBloqueo == IND_BLOQUEADO || stCtlInterAbo.iIndBloqueo == IND_BLOQUEADO_FACTURADO)
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_BLOQUEADOS;
+                    }
+                    else if (stCtlInterAbo.iCtaControlada == IND_CUENTACONTROLADA_ACTIVO)
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_CTA_CONT;
+                    }
+                    else if (stCtlInterAbo.iIndCambio == IND_CAMBIOCICLO_ACTIVO)
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_CAMBIO_CICLO;
+                    }
+                    else
+                    {
+                        stCtlInterAbo.iCodClassAbonado = COD_CLASSABONADO_ANTIGUOS;
+                    }
+                }
+                break;
+    }
+    
+
+    switch (stCtlInterAbo.iCodClassAbonado)
+    {
+        case    COD_CLASSABONADO_BAJAS:
+        case    COD_CLASSABONADO_BAJAS_ANTIGUA:
+        case    COD_CLASSABONADO_TRASPASO:
+        case    COD_CLASSABONADO_TRASPASO_ANTIGUO:
+        case    COD_CLASSABONADO_LIQUIDACION:
+        case    COD_CLASSABONADO_RECHAZO:
+        case    COD_CLASSABONADO_ANULACION_BAJA:
+        case    COD_CLASSABONADO_BLOQUEADOS:
+                {
+                    stCtlInterAbo.iIndEstado = IND_ESTADO_FACTURACION_ABONADO_NO;
+                }
+                break;
+        default:
+                {
+                    stCtlInterAbo.iIndEstado = IND_ESTADO_FACTURACION_ABONADO_SI;
+                }
+                break;
+    }
+    return TRUE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnInsertHeaderInfCtl                                       */
+/****************************************************************************/
+BOOL bfnInsertHeaderInfCtl( void )
+{
+    
+    EXEC SQL BEGIN DECLARE SECTION ;
+    char    szhCodInforme   [7] ;EXEC SQL VAR szhCodInforme  IS STRING(7);
+    long    lhNumSecuInfo       ;
+    int     ihIndActivo         ;    
+    char    szhFecEmision   [15];EXEC SQL VAR szhFecEmision  IS STRING(15);
+    char    szhFecPerDesde  [15];EXEC SQL VAR szhFecPerDesde IS STRING(15);
+    char    szhFecPerHasta  [15];EXEC SQL VAR szhFecPerHasta IS STRING(15);
+    char    szhCodUsuario   [50];EXEC SQL VAR szhCodUsuario  IS STRING(50);
+    char    szhCodUsuaSoli  [50];EXEC SQL VAR szhCodUsuaSoli IS STRING(50);
+    int     ihCodCiclFact       ;
+    EXEC SQL END DECLARE SECTION ;    
+
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t%s**(bfnInsertHeaderInfCtl)",LOG03,cfnGetTime(1));
+    
+    sprintf(szhCodInforme,"%s\0",szCodInformeGenerar);
+    lhNumSecuInfo   = lhNumSecuenciaInforme           ;
+    ihCodCiclFact   = stLineaComando.iCodCiclFact          ;    
+    ihIndActivo     = COD_INFORME_CONTROL_INACTIVO  ;
+    sprintf(szhFecEmision  ,"%s\0",stLineaComando.szFecEmision     );
+    sprintf(szhFecPerDesde ,"%s\0",stLineaComando.szFecDesdeCFijos );
+    sprintf(szhFecPerHasta ,"%s\0",stLineaComando.szFecHastaCFijos );
+    
+
+
+    /****************************************************************************/
+    /*  Actualiza Informe Anterior de Facturacion de Ciclo Como Inactivos.      */
+    /****************************************************************************/
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t\t**(bfnInsertHeaderInfCtl) Actualiza Informe Anterior como Inactivo"
+                                    "\n\t\t** Cod. Informe          [%s]"
+                                    "\n\t\t** Codigo Ciclo Factur.  [%d]"
+                                    "\n\t\t** Ind. Activo           [%d]"
+                                    ,LOG03
+                                    ,szhCodInforme  
+                                    ,ihCodCiclFact  
+                                    ,COD_INFORME_CONTROL_INACTIVO);
+    EXEC SQL 
+        UPDATE  FAD_CTLINFHEADER
+        SET     IND_ACTIVO  = :ihIndActivo
+        WHERE   COD_INFORME = :szhCodInforme
+        AND     COD_CICLFACT= :ihCodCiclFact;
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+    {            
+        vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnInsertHeaderInfCtl) Error En Update de Header de Informe"
+                                         "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    /****************************************************************************/
+    /*  Genera Nuevo registro Header de Informe de Facturacion de Ciclo         */
+    /****************************************************************************/
+
+    ihIndActivo     = COD_INFORME_CONTROL_ACTIVO            ;
+    sprintf(szhCodUsuario  ,"%s\0",stLineaComando.szUser    );
+    sprintf(szhCodUsuaSoli ,"%s\0",stLineaComando.szUser    );
+
+
+    vDTrazasLog(szExeInfCtlPreCiclo   ,"\n\t\t**(bfnInsertHeaderInfCtl)"
+                                    "\n\t\t** Cod. Informe          [%s]"
+                                    "\n\t\t** Secuencia Infortme    [%d]"
+                                    "\n\t\t** Ind. Activo           [%d]"
+                                    "\n\t\t** Fec. Emision          [%s]"
+                                    "\n\t\t** Fec. Periodo Desde    [%s]"
+                                    "\n\t\t** Fec. Periodo Hasta    [%s]"
+                                    "\n\t\t** Usuario Generador     [%s]"
+                                    "\n\t\t** Usuario Solicitante   [%s]"
+                                    "\n\t\t** Codigo Ciclo Factur.  [%ld]"
+                                    ,LOG03
+                                    ,szhCodInforme  
+                                    ,lhNumSecuInfo  
+                                    ,ihIndActivo    
+                                    ,szhFecEmision  
+                                    ,szhFecPerDesde 
+                                    ,szhFecPerHasta 
+                                    ,szhCodUsuario  
+                                    ,szhCodUsuaSoli 
+                                    ,ihCodCiclFact  );
+
+    EXEC SQL INSERT INTO FAD_CTLINFHEADER(
+                COD_INFORME    ,
+                NUM_SECUINFO   ,
+                IND_ACTIVO     ,
+                FEC_EMISION    ,
+                FEC_PERDESDE   ,
+                FEC_PERHASTA   ,
+                COD_USUAGEN    ,
+                COD_USUASOL    ,
+                COD_CICLFACT   )        
+    VALUES (    :szhCodInforme  ,
+                :lhNumSecuInfo  ,
+                :ihIndActivo    ,
+                SYSDATE         ,
+                TO_DATE(:szhFecPerDesde ,'YYYYMMDDHH24MISS'),
+                TO_DATE(:szhFecPerHasta ,'YYYYMMDDHH24MISS'),
+                :szhCodUsuario  ,
+                :szhCodUsuaSoli ,
+                :ihCodCiclFact  );
+                 
+    if (SQLCODE) 
+    {            
+        vDTrazasLog(szExeInfCtlPreCiclo   ,"\t\t**(bfnInsertHeaderInfCtl) Error En Insert de Header de Informe"
+                                         "\n\t\t Error Oracle [%d] [%s]"
+                                        ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnGetSecuInfo Selecciona Numero de Secuencia de Informe    */
+/****************************************************************************/
+BOOL bfnGetSecuInfo ( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int     ihCodTipInforme ;
+    long    lhNumSecuInfo   ;
+    char    szhCodInformeGenerar[7];EXEC SQL VAR szhCodInformeGenerar IS STRING (7);
+    EXEC SQL END DECLARE SECTION;
+
+    if (stLineaComando.iIndFacturacion == iIND_FACT_NOPROCESADO)
+    {
+        ihCodTipInforme = COD_INFORME_FAD_CTL_PRE_CICLO;
+    }
+    else if (stLineaComando.iIndFacturacion == iIND_FACT_ENPROCESO)
+    {
+        ihCodTipInforme  = COD_INFORME_FAD_CTL_PST_CICLO;
+    }
+    else if (stLineaComando.iIndFacturacion == iIND_FACT_TERMINADO)
+    {
+        ihCodTipInforme = COD_INFORME_FAD_CTL_PST_CICLO;
+    }
+
+
+    EXEC SQL
+        SELECT  FA_SEQ_CTLINFORMES.NEXTVAL 
+        INTO    :lhNumSecuInfo 
+        FROM DUAL;
+
+    if(SQLCODE != SQLOK)
+    {
+
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en lhNumSecuInfo"
+                                        "\n\t\t Error [%d] [%s]"
+                                        , LOG01, SQLCODE, SQLERRM);
+        return FALSE;
+    }
+    lhNumSecuenciaInforme = lhNumSecuInfo;
+
+    EXEC SQL
+        SELECT  COD_INFORME 
+        INTO    :szhCodInformeGenerar
+        FROM    FAD_CTLINFOPARAM 
+        WHERE   COD_TIPINFORME = :ihCodTipInforme;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\n\tError en szhCodInformeGenerar"
+                                        "\n\t\t Error [%d] [%s]"
+                                        , LOG01, SQLCODE, SQLERRM);
+        return FALSE;
+    }
+    sprintf(szCodInformeGenerar,"%s\0",szhCodInformeGenerar);
+    vDTrazasLog (szExeInfCtlPreCiclo, "\n\t\t Informe  de Control [%s]"
+                                    "\n\t\t Secuencia Informe   [%ld]"
+                                    , LOG03, szCodInformeGenerar, lhNumSecuenciaInforme);
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnEstadoProcCiclo                                          */
+/****************************************************************************/
+BOOL bfnEstadoProcCiclo( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int     ihIndFacturacion        ;
+    int     ihCodCiclFact           ;
+    int     ihCodCiclo              ;
+    char    szhFecEmision[15]       ;EXEC SQL VAR szhFecEmision     IS STRING (15);
+    char    szhFecDesdeCFijos[15]   ;EXEC SQL VAR szhFecDesdeCFijos IS STRING (15);
+    char    szhFecHastaCFijos[15]   ;EXEC SQL VAR szhFecHastaCFijos IS STRING (15);
+    int     ihTipoTasacion; /* SAAM-20030106 */
+    EXEC SQL END DECLARE SECTION;
+
+    ihCodCiclFact = stLineaComando.iCodCiclFact;
+    
+    EXEC SQL    SELECT  IND_FACTURACION                         ,
+                        COD_CICLO                               ,
+                        TO_CHAR(FEC_EMISION,'YYYYMMDDHH24MISS') ,
+                        TO_CHAR(FEC_DESDECFIJOS,'YYYYMMDDHH24MISS') ,
+                        TO_CHAR(FEC_HASTACFIJOS,'YYYYMMDDHH24MISS') ,
+                        IND_TASADOR /* SAAM-20030106 */
+                INTO    :ihIndFacturacion   ,
+                        :ihCodCiclo         ,
+                        :szhFecEmision      ,
+                        :szhFecDesdeCFijos  ,
+                        :szhFecHastaCFijos  ,
+                        :ihTipoTasacion /* SAAM-20030106 */
+                    FROM    FA_CICLFACT
+                WHERE   COD_CICLFACT = :ihCodCiclFact;
+    
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select en FA_CICLFACT (bfnEstadoProcCiclo)", LOG01);
+        return FALSE;
+    }
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tCodigo de Ciclo de Facturacion No Valido (bfnEstadoProcCiclo)", LOG01);
+        return FALSE;
+    }
+    stLineaComando.iIndFacturacion          = ihIndFacturacion          ;
+    stLineaComando.iCodCiclo                = ihCodCiclo                ;
+    sprintf(stLineaComando.szFecEmision     ,"%s\0",szhFecEmision      );
+    sprintf(stLineaComando.szFecDesdeCFijos ,"%s\0",szhFecDesdeCFijos  );
+    sprintf(stLineaComando.szFecHastaCFijos ,"%s\0",szhFecHastaCFijos  );
+    stLineaComando.iTipoTasacion = ihTipoTasacion;
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnCargaCargosBasicos                                       */
+/****************************************************************************/
+BOOL bfnCargaCargosBasicos( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int     aihCodProducto       [MAX_REG_CARGOBASICO];
+    VARCHAR aszhCodCargoBasico   [MAX_REG_CARGOBASICO][4];
+    double  adhImporteCBasico    [MAX_REG_CARGOBASICO];
+    VARCHAR aszhCodMoneda        [MAX_REG_CARGOBASICO][4];
+    EXEC SQL END DECLARE SECTION;
+    
+    char    szhFecEmision [15]  ;EXEC SQL VAR szhFecEmision IS STRING (15);
+    int     iNumRegCBasico  ;
+
+    memset(&stTaCargosBasico ,0,sizeof(TACARGOSBASICO));
+    sprintf(szhFecEmision  ,"%s\0",stLineaComando.szFecEmision     );    
+
+
+
+    EXEC SQL    
+    SELECT  COD_PRODUCTO        ,
+            COD_CARGOBASICO     ,
+            IMP_CARGOBASICO     ,
+            COD_MONEDA          
+    INTO    :aihCodProducto     ,
+            :aszhCodCargoBasico ,
+            :adhImporteCBasico  ,
+            :aszhCodMoneda      
+    FROM    TA_CARGOSBASICO 
+    WHERE   ( TO_DATE(:szhFecEmision,'YYYYMMDDHH24MISS')
+                BETWEEN FEC_DESDE AND 
+                        FEC_HASTA OR 
+                        FEC_HASTA IS NULL);
+
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo,  "\n\tError en Select TA_CARGOSBASICO (bfnCargaCargosBasicos)"
+                                            "\n\t\t Error Oracle [%d] [%s]"
+                                            ,LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        for (iNumRegCBasico = 0; iNumRegCBasico < SQLROWS; iNumRegCBasico++)
+        {
+            stTaCargosBasico.stCBasico[iNumRegCBasico].iCodProducto = 
+                            aihCodProducto[iNumRegCBasico];
+
+            sprintf(stTaCargosBasico.stCBasico[iNumRegCBasico].szCodCargoBasico,
+                    "%.*s\0" , aszhCodCargoBasico[iNumRegCBasico].len , aszhCodCargoBasico[iNumRegCBasico].arr );
+
+            stTaCargosBasico.stCBasico[iNumRegCBasico].dImpCarboBasico =
+                            adhImporteCBasico[iNumRegCBasico];
+
+            sprintf(stTaCargosBasico.stCBasico[iNumRegCBasico].szCodMoneda,
+                    "%.*s\0" , aszhCodMoneda[iNumRegCBasico].len,aszhCodMoneda[iNumRegCBasico].arr);
+                    
+            stTaCargosBasico.iNumStadisticas++;
+            
+            vDTrazasLog(szExeInfCtlPreCiclo   ,"\t Cargo Basico  [%d][%s][%.f][%s]"
+                                            ,LOG03
+                                            ,stTaCargosBasico.stCBasico[iNumRegCBasico].iCodProducto
+                                            ,stTaCargosBasico.stCBasico[iNumRegCBasico].szCodCargoBasico
+                                            ,stTaCargosBasico.stCBasico[iNumRegCBasico].dImpCarboBasico
+                                            ,stTaCargosBasico.stCBasico[iNumRegCBasico].szCodMoneda );
+        }
+        return TRUE;
+    }
+    vDTrazasError(szExeInfCtlPreCiclo, "\n\tDesbordamiento de Arreglo de Cargos Basicos ", LOG01);
+    return FALSE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnCargaPlanFamiliar                                        */
+/****************************************************************************/
+BOOL bfnCargaPlanFamiliar( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szhCodPlanTarif[MAX_REGPLAN_FAMILIAR][4];
+    EXEC SQL END DECLARE SECTION;
+    
+    EXEC SQL    SELECT  COD_PLANTARIF 
+                INTO    :szhCodPlanTarif
+                FROM    TA_PLANTARIF
+                WHERE   IND_FAMILIAR = 1;
+
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select TA_PLANTARIF (bfnCargaPlanFamiliar)", LOG01);
+        return FALSE;
+    }
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        for (iNumRegPlanFamiliar = 0; iNumRegPlanFamiliar < SQLROWS; iNumRegPlanFamiliar++)
+        {
+            sprintf(szCodPlanTarifFamiliar[iNumRegPlanFamiliar],"%s\0",szhCodPlanTarif[iNumRegPlanFamiliar]);
+            
+            vDTrazasLog(szExeInfCtlPreCiclo   ,"\t PLAN TARIFARIO FAMILIAR [%d][%s]"
+                                            ,LOG04
+                                            ,iNumRegPlanFamiliar
+                                            ,szhCodPlanTarif[iNumRegPlanFamiliar]);
+        }
+        return TRUE;
+    }
+    vDTrazasError(szExeInfCtlPreCiclo, "\n\tDesbordamiento de Arreglo de PLantes Tarifarios Familiar", LOG01);
+    return FALSE;
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   bfnCargaMonedas                                             */
+/****************************************************************************/
+BOOL bfnCargaMonedas( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szhCodMoneda[4] ;   EXEC SQL VAR szhCodMoneda IS STRING (4);
+    double  dhValorUF    = 0;
+    double  dhValorDolar = 0;
+    EXEC SQL END DECLARE SECTION;
+    char    szhFecEmision [15]  ;EXEC SQL VAR szhFecEmision IS STRING (15);
+    sprintf(szhFecEmision  ,"%s\0",stLineaComando.szFecEmision     );    
+    
+    sprintf(szhCodMoneda,"002\0");    /*  Dolar */
+
+    EXEC SQL    SELECT  CAMBIO 
+                INTO    :dhValorDolar
+                FROM    GE_CONVERSION
+                WHERE   COD_MONEDA = :szhCodMoneda
+                AND     ( TO_DATE(TO_CHAR(TO_DATE(:szhFecEmision,'YYYYMMDDHH24MISS'),'YYYYMM') || '01','YYYYMMDD')
+                               BETWEEN FEC_DESDE AND FEC_HASTA OR 
+                                    FEC_HASTA IS NULL);
+
+                
+
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select GE_CONVERSION-Dolar(bfnCargaMonedas)", LOG01);
+        return FALSE;
+    }
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        EXEC SQL    
+                SELECT  CAMBIO 
+                INTO    :dhValorDolar
+                FROM    GE_CONVERSION
+                WHERE   COD_MONEDA = :szhCodMoneda
+                AND     FEC_DESDE   = ( SELECT  MAX(FEC_DESDE) 
+                                        FROM    GE_CONVERSION
+                                        WHERE   COD_MONEDA = :szhCodMoneda);
+        if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+            vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select GE_CONVERSION-Dolar(2)(bfnCargaMonedas)", LOG01);
+            return FALSE;
+        }
+    }
+
+
+    sprintf(szhCodMoneda,"003\0");  /*  U.F.  */
+
+    EXEC SQL    SELECT  CAMBIO 
+                INTO    :dhValorUF
+                FROM    GE_CONVERSION
+                WHERE   COD_MONEDA = :szhCodMoneda
+                AND     ( TO_DATE(TO_CHAR(TO_DATE(:szhFecEmision,'YYYYMMDDHH24MISS'),'YYYYMM') || '01','YYYYMMDD')
+                               BETWEEN FEC_DESDE AND FEC_HASTA OR 
+                                    FEC_HASTA IS NULL);
+
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select GE_CONVERSION-U.F. (bfnCargaMonedas)", LOG01);
+        return FALSE;
+    }
+        if(SQLCODE == SQLNOTFOUND)
+    {
+        EXEC SQL    
+                SELECT  CAMBIO 
+                INTO    :dhValorUF
+                FROM    GE_CONVERSION
+                WHERE   COD_MONEDA = :szhCodMoneda
+                AND     FEC_DESDE   = ( SELECT  MAX(FEC_DESDE) 
+                                        FROM    GE_CONVERSION
+                                        WHERE   COD_MONEDA = :szhCodMoneda);
+        if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+            vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select GE_CONVERSION-UF (2)(bfnCargaMonedas)", LOG01);
+            return FALSE;
+        }
+    }
+    vDTrazasLog(szExeInfCtlPreCiclo ,"\t\t ** Valores de Monedas "
+                                     "\n\t\t==> Valor Dolar   [%.f]"
+                                     "\n\t\t==> Valor U.F.    [%.f]"
+                                    ,LOG03
+                                    ,dhValorDolar
+                                    ,dhValorUF     );
+                                    
+    dValorCTLDolar  = dhValorDolar  ;
+    dValorCTLUF     = dhValorUF     ;
+    return TRUE;
+}
+
+
+
+/****************************************************************************/
+/*  Funcion :   dfnValorCBasico                                            */
+/****************************************************************************/
+double dfnValorCBasico(char *szCBas,int iCodProducto)
+{
+    int i;
+    double dValorCambio;
+    
+    for (i= 0; i < stTaCargosBasico.iNumStadisticas; i++)
+    {
+        if ((strcmp(stTaCargosBasico.stCBasico[i].szCodCargoBasico,szCBas)==0            )  && 
+                   (stTaCargosBasico.stCBasico[i].iCodProducto            == iCodProducto))
+        {
+            if (strcmp(stTaCargosBasico.stCBasico[i].szCodMoneda,"002") == 0)
+            {
+                dValorCambio = dValorCTLDolar;
+            }
+            else if (strcmp(stTaCargosBasico.stCBasico[i].szCodMoneda,"003") == 0)
+            {
+                dValorCambio = dValorCTLUF   ;
+            }
+            else
+            {
+                dValorCambio = 1;
+            }
+            return (stTaCargosBasico.stCBasico[i].dImpCarboBasico*dValorCambio);
+        }
+    }
+    return (0.0);
+}
+
+
+
+
+/****************************************************************************/
+/*  Funcion :   vPrintStAbonados                                            */
+/****************************************************************************/
+void vPrintStAbonados( void )
+{
+    vDTrazasLog(szExeInfCtlPreCiclo,
+            "\n\t\t**(vPrintStAbonados) Valores de Interfaz Abonado "
+            "\n\t\t** Row Id            [%s]"
+            "\n\t\t** Cod. Cliente      [%ld]"
+            "\n\t\t** Num. Abonado      [%ld]"
+            "\n\t\t** Cod. Producto     [%d]" 
+            "\n\t\t** Ind. Cambio       [%d]" 
+            "\n\t\t** Cod. CiclFact     [%ld]"
+            "\n\t\t** Fecha Alta        [%s]" 
+            "\n\t\t** Fecha Baja        [%s]" 
+            "\n\t\t** Ind. Actuac       [%d]" 
+            "\n\t\t** Ind. Supertel     [%d]" 
+            "\n\t\t** Ind. Factur       [%d]" 
+            "\n\t\t** Ind. Bloqueo      [%d]" 
+            "\n\t\t** Cod. Empresa      [%ld]"
+            "\n\t\t** Tipo Cliente      [%s]" 
+            "\n\t\t** Plan Tarifario    [%s]" 
+            "\n\t\t** Cargo Basico      [%s]" 
+            "\n\t\t** Clase Cliente     [%d]" 
+            "\n\t\t** Clase Abonado     [%d]" 
+            "\n\t\t** Ind. Estado Fact. [%d]" 
+            ,LOG05
+            ,stCtlInterAbo.szRowId
+            ,stCtlInterAbo.lCodCliente
+            ,stCtlInterAbo.lNumAbonado
+            ,stCtlInterAbo.iCodProducto
+            ,stCtlInterAbo.iIndCambio  
+            ,stCtlInterAbo.iCodCiclFact
+            ,stCtlInterAbo.szFecAlta   
+            ,stCtlInterAbo.szFecBaja   
+            ,stCtlInterAbo.iIndActuac  
+            ,stCtlInterAbo.iIndSupertel
+            ,stCtlInterAbo.iIndFactur  
+            ,stCtlInterAbo.iIndBloqueo 
+            ,stCtlInterAbo.lCodEmpresa 
+            ,stCtlInterAbo.szTipClie
+            ,stCtlInterAbo.szCodPlanTarif  
+            ,stCtlInterAbo.szCodCargoBasico
+            ,stCtlInterAbo.iCodClassCliente
+            ,stCtlInterAbo.iCodClassAbonado
+            ,stCtlInterAbo.iIndEstado);
+}
+
+
+/****************************************************************************/
+/*  Funcion :   vPrintStCartera                                             */
+/****************************************************************************/
+void vPrintStCartera( void )
+{
+    int iStat=0;
+    for (iStat=0;iStat<stStatInterAbon.iNumStadisticas;iStat++)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,
+            "\n\t\t**(vPrintStCartera) Estadisticas de Cartera de Clientes"
+            "\n\t\t** Cod. Producto         [%d]"
+            "\n\t\t** Cod. CiclFact         [%d]"
+            "\n\t\t** Cod. Class.Cliente    [%ld]"
+            "\n\t\t** Cod. Class.Abonado    [%ld]"
+            "\n\t\t** Cantidad Abonados     [%d]"
+            ,LOG05                                 
+            ,stStatInterAbon.stUnivStatInterAbo[iStat].iCodProducto
+            ,stStatInterAbon.stUnivStatInterAbo[iStat].iCodCiclFact
+            ,stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassCliente
+            ,stStatInterAbon.stUnivStatInterAbo[iStat].iCodClassAbonado
+            ,stStatInterAbon.stUnivStatInterAbo[iStat].iNumAbonados );
+    }
+}
+
+/****************************************************************************/
+/*  Funcion :   vPrintStCBasicos                                            */
+/****************************************************************************/
+void vPrintStCBasicos( void )
+{
+    int iStat=0;
+    for (iStat=0;iStat<stStatCargoBasico.iNumStadisticas;iStat++)
+    {
+        vDTrazasLog(szExeInfCtlPreCiclo,
+            "\n\t\t**(vPrintStCBasicos) Estadisticas de Cargos Basicos"
+            "\n\t\t[%d]** Codigo Producto           [%ld]"
+            "\n\t\t[%d]** Codigo Cargo Basico       [%s]"
+            "\n\t\t[%d]** Cantidad  Cargos Basicos  [%ld]"
+            "\n\t\t[%d]** Cantidad Abonados         [%d]"
+            ,LOG03
+            ,iStat,stStatCargoBasico.stUnivStatCBas[iStat].iCodProducto
+            ,iStat,stStatCargoBasico.stUnivStatCBas[iStat].szCodCargoBasico
+            ,iStat,stStatCargoBasico.stUnivStatCBas[iStat].iNumCargosBasicos
+            ,iStat,stStatCargoBasico.stUnivStatCBas[iStat].iNumAbonados);
+    }
+}
+
+/****************************************************************************/
+/*  Funcion :   bCargaCodCBasicos                                           */
+/****************************************************************************/
+BOOL  bCargaCodCBasicos( void )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhCodAbonoCel;
+        long lhCodAbonoBeep;
+    EXEC SQL END DECLARE SECTION;
+    
+    EXEC SQL
+        SELECT COD_ABONOCEL,
+               COD_ABONOBEEP INTO
+               :lhCodAbonoCel,
+               :lhCodAbonoBeep
+        FROM FA_DATOSGENER;
+               
+    if(SQLCODE != SQLOK )
+    {
+        vDTrazasError(szExeInfCtlPreCiclo, "\n\tError en Select FA_DATOSGENER", LOG01);
+        return FALSE;
+    }
+
+    stCodCargosBasicos.lCodAbonoCel  = lhCodAbonoCel;
+    stCodCargosBasicos.lCodAbonoBeep = lhCodAbonoBeep;
+    return TRUE;
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

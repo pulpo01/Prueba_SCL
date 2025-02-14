@@ -1,0 +1,257 @@
+CREATE OR REPLACE PACKAGE BODY VE_ACTUALIZADCTO_CARGO_PG AS
+
+
+PROCEDURE VE_ACTUALIZADCTO_CARGO_PR(EV_TRANSAC   IN VARCHAR2,
+  					              EV_NUMCARGO  IN VARCHAR2,
+  				  	              EV_CODACTABO IN VARCHAR2)
+
+IS
+/*
+<documentación tipodoc = "Procedimiento">
+<elemento nombre = "VE_ACTUALIZADCTO_CARGO_PR" lenguaje="PL/SQL" fecha="13-10-2005" versión"1.0.0" diseñador"Igor Gonzalez" programador="Orlando Cabezas" ambiente="BD">
+<retorno>0</retorno>
+<descripción>"Procedimiento que realiza descuento a los cargos segun precio lista" </descripción>
+<parámetros>
+<entrada>
+<param nom="EV_TRANSAC"   tipo="varchar2">"numero de transaccion"</param>
+<param nom="EV_NUMCARGO"     tipo="varchar2">"numero de cargo"</param>
+<param nom="EV_CODACTABO"    tipo="varchar2">"actuacion"</param>
+</entrada>
+<salida>
+</salida>
+</parámetros>
+</elemento>
+</documentación>
+*/
+--
+-- Procedimiento de actualizacion de descuento
+--
+  LN_CODCLIENTE    GE_CARGOS.COD_CLIENTE%TYPE;
+  LN_CODCONCEPTO   GE_CARGOS.COD_CONCEPTO%TYPE;
+
+  LN_COD_CONCEPTO  GE_CARGOS.COD_CONCEPTO%TYPE;
+
+  LV_NUMSERIE      GE_CARGOS.NUM_SERIE%TYPE;
+  LN_IMPCARGO      GE_CARGOS.IMP_CARGO%TYPE;
+  LN_VALDTO        GE_CARGOS.VAL_DTO%TYPE;
+  LN_CODUSO        GA_EQUIPABOSER.COD_USO%TYPE;
+  LN_NUMABONADO    GA_EQUIPABOSER.NUM_ABONADO%TYPE;
+
+  LN_CALCULODTO	  GE_CARGOS.IMP_CARGO%TYPE;
+  LN_PRECIOREAL	  AL_PRECIOS_VENTA.PRC_VENTA%TYPE;
+  LV_CODARTICULO   AL_ARTICULOS.COD_ARTICULO%TYPE;
+  LV_INDEQUIACC    AL_ARTICULOS.IND_EQUIACC%TYPE;
+
+  LV_TRANSAC       GA_TRANSACABO.NUM_TRANSACCION%TYPE;
+
+  LN_INDRECAMBIO   AL_PRECIOS_VENTA.IND_RECAMBIO%TYPE:= 9;
+  LN_CODESTADO     AL_MOVIMIENTOS.COD_ESTADO%TYPE;
+  LN_TIP_STOCK     AL_MOVIMIENTOS.TIP_STOCK%TYPE;
+  LN_TIP_DTO       GE_CARGOS.TIP_DTO%TYPE:=0;
+  LV_CODACT        GA_ERRORES.COD_ACT%Type:= 'S';
+
+  LV_NOMBRETABLA   VARCHAR2(255):='';
+  LV_ERROR         CHAR(1):= '0';
+  LV_msgerror     VARCHAR2(255):='';
+  LV_EQUIPO        CHAR(1):= 'E';
+  LN_CODPRODUCTO   NUMBER := 1;
+  LV_ERROR_PL      VARCHAR2(50):= 'VE_ACTUALIZADCTO_CARGO';
+  LV_COD_RETORNO   VARCHAR2(15);
+  LV_MENS_RETORNO  VARCHAR2(60);
+  LN_COD_TIPCONCE  FA_CONCEPTOS.COD_TIPCONCE%TYPE:=2;
+
+  ERROR_PROCESO EXCEPTION;
+BEGIN
+    LV_TRANSAC    := TO_NUMBER(EV_TRANSAC);
+    LN_NUMABONADO := 0;
+    LV_NOMBRETABLA:='';
+
+	BEGIN
+	   LV_NOMBRETABLA:='GE_CARGOS';
+
+	   SELECT COD_CLIENTE, COD_CONCEPTO, NUM_SERIE, IMP_CARGO, NVL(VAL_DTO,0),NUM_ABONADO
+	     INTO LN_CODCLIENTE, LN_CODCONCEPTO, LV_NUMSERIE, LN_IMPCARGO, LN_VALDTO,LN_NUMABONADO
+	     FROM GE_CARGOS
+		WHERE NUM_CARGO = EV_NUMCARGO;
+
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+             LV_msgerror := 'No se encuentra cargo ' || EV_NUMCARGO;
+             RAISE ERROR_PROCESO;
+
+        WHEN OTHERS THEN
+             LV_msgerror := LV_ERROR_PL || SUBSTR(SQLERRM,1,150);
+             RAISE ERROR_PROCESO;
+    END;
+
+    IF	LN_VALDTO = 0 THEN
+
+			BEGIN
+			   LV_NOMBRETABLA:='AL_ARTICULOS';
+
+				SELECT COD_ARTICULO, IND_EQUIACC
+				  INTO LV_CODARTICULO, LV_INDEQUIACC
+				  FROM AL_ARTICULOS
+				 WHERE COD_CONCEPTOART = LN_CODCONCEPTO;
+		    EXCEPTION
+		        WHEN NO_DATA_FOUND THEN
+		             LV_COD_RETORNO  :='0';
+					 LV_MENS_RETORNO :='';
+					 LV_NOMBRETABLA  :='';
+					 LV_INDEQUIACC   :='';
+
+		        WHEN OTHERS THEN
+		             LV_msgerror := LV_ERROR_PL || SUBSTR(SQLERRM,1,150);
+		             RAISE ERROR_PROCESO;
+		    END;
+
+		    IF LV_INDEQUIACC = LV_EQUIPO THEN
+
+				BEGIN
+				   LV_NOMBRETABLA:='AL_MOVIMIENTOS';
+
+				    SELECT A.COD_USO,A.TIP_STOCK,A.COD_ESTADO
+					INTO   LN_CODUSO ,LN_TIP_STOCK,LN_CODESTADO
+					FROM   AL_MOVIMIENTOS A
+					WHERE  A.NUM_SERIE= LV_NUMSERIE AND
+					       A.FEC_MOVIMIENTO	IN (SELECT MAX(B.FEC_MOVIMIENTO)
+						   			  		    FROM AL_MOVIMIENTOS B
+						   			  			WHERE B.NUM_SERIE = A.NUM_SERIE);
+
+			    EXCEPTION
+			        WHEN NO_DATA_FOUND THEN
+			             LV_msgerror := 'No se encuentra código de uso , serie :'|| LV_NUMSERIE;
+			             RAISE ERROR_PROCESO;
+
+			        WHEN OTHERS THEN
+			             LV_msgerror := LV_ERROR_PL || SUBSTR(SQLERRM,1,150);
+			             RAISE ERROR_PROCESO;
+			    END;
+
+				BEGIN
+				   LV_NOMBRETABLA:='AL_PRECIOS_VENTA';
+
+					SELECT PRC_VENTA
+					  INTO LN_PRECIOREAL
+					  FROM AL_PRECIOS_VENTA
+					 WHERE TIP_STOCK    = LN_TIP_STOCK
+					   AND COD_ARTICULO = LV_CODARTICULO
+					   AND COD_USO      = LN_CODUSO
+ 				       AND COD_ESTADO   = LN_CODESTADO
+					   AND IND_RECAMBIO = LN_INDRECAMBIO
+					   AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA;
+
+			    EXCEPTION
+			        WHEN NO_DATA_FOUND THEN
+			             LV_msgerror := 'No se encuentra precio venta, articulo : ' || LV_CODARTICULO;
+			             RAISE ERROR_PROCESO;
+
+			        WHEN OTHERS THEN
+			             LV_msgerror := LV_ERROR_PL || SUBSTR(SQLERRM,1,150);
+						 --LV_msgerror := '1SQLERRM:' || TO_CHAR(SQLCODE) || SUBSTR(SQLERRM,1,150);
+			             RAISE ERROR_PROCESO;
+			    END;
+
+				BEGIN
+
+				     IF LN_PRECIOREAL >= LN_IMPCARGO THEN
+
+		 			     LV_CODACT:='U';
+					     LV_NOMBRETABLA:='GE_CARGOS';
+
+						 --Efectuar calculo --
+						 LN_CALCULODTO := LN_PRECIOREAL - LN_IMPCARGO ;
+
+						--Obtiene codigo concepto dto ---
+						SELECT COD_CONCEPTO
+						INTO LN_COD_CONCEPTO
+						FROM FA_CONCEPTOS
+						WHERE COD_CONCORIG = LN_CODCONCEPTO
+						AND   COD_TIPCONCE = LN_COD_TIPCONCE;
+
+						 --Actualizar Dcto de Cargo --
+						 UPDATE GE_CARGOS
+						 	SET IMP_CARGO        = LN_PRECIOREAL,
+							    VAL_DTO          = LN_CALCULODTO,
+							    TIP_DTO          = LN_TIP_DTO,
+							    COD_CONCEPTO_DTO = LN_COD_CONCEPTO
+						  WHERE NUM_CARGO = EV_NUMCARGO;
+
+					 END IF;
+
+				EXCEPTION
+		                   WHEN ERROR_PROCESO THEN
+				     LV_COD_RETORNO :=1;
+			             RAISE ERROR_PROCESO;
+			           WHEN NO_DATA_FOUND THEN
+			             LV_msgerror := 'No se encuentra concepto desc. para concepto: ' || LN_CODCONCEPTO;
+			             RAISE ERROR_PROCESO;
+				   WHEN OTHERS THEN
+			             LV_msgerror := LV_ERROR_PL || ' SQLERRM:' || SUBSTR(SQLERRM,1,150);
+			             RAISE ERROR_PROCESO;
+				END;
+
+			END IF; --RESTRICCIÓN  DE EQUIPO
+    END IF; --RESTRICCIÓN DE DESCUENTO
+
+	-- ADO --
+	LV_COD_RETORNO :='0';
+	LV_MENS_RETORNO:='';
+	LV_NOMBRETABLA  :='';
+
+	IF LV_TRANSAC<>0 THEN
+	    --se actualiza transacabo, sin error --
+	    INSERT INTO GA_TRANSACABO
+	          (num_transaccion, cod_retorno, des_cadena)
+	    VALUES
+	          (LV_TRANSAC,0,'');
+    END IF;
+
+
+ EXCEPTION
+   WHEN ERROR_PROCESO THEN
+	    -- ADO --
+		ROLLBACK;
+		LV_COD_RETORNO :=1;
+		LV_MENS_RETORNO:=SUBSTR(LV_msgerror,1,60);
+		IF LV_TRANSAC<>0 THEN
+	       INSERT INTO GA_TRANSACABO
+	               (num_transaccion, cod_retorno, des_cadena)
+	       VALUES
+	               (LV_TRANSAC,1,LV_msgerror);
+	    END IF;
+
+		INSERT INTO GA_ERRORES
+		( COD_ACTABO, CODIGO, FEC_ERROR, COD_PRODUCTO, NOM_PROC, NOM_TABLA, COD_ACT, COD_SQLCODE, COD_SQLERRM )
+		VALUES
+		(EV_CODACTABO, LN_NUMABONADO,  SYSDATE, LN_CODPRODUCTO, 'VE_ACTUALIZADCTO_CARGO', LV_NOMBRETABLA, LV_CODACT, LV_COD_RETORNO, LV_MENS_RETORNO);
+		COMMIT;
+
+   WHEN OTHERS THEN
+        LV_msgerror    := LV_ERROR_PL || ' SQLERRM:' || TO_CHAR(SQLCODE) || ' ' || SUBSTR(SQLERRM,1,150);
+	    -- ADO --
+		ROLLBACK;
+
+		LV_MENS_RETORNO:=SUBSTR(LV_msgerror,1,60);
+		IF LV_TRANSAC<>0 THEN
+	       INSERT INTO GA_TRANSACABO
+	               (num_transaccion, cod_retorno, des_cadena)
+	       VALUES
+	               (LV_TRANSAC,LV_COD_RETORNO,LV_msgerror );
+	    END IF;
+
+
+		LV_COD_RETORNO :=SUBSTR(TO_CHAR(SQLCODE),1,15);
+
+		INSERT INTO GA_ERRORES
+		( COD_ACTABO, CODIGO, FEC_ERROR, COD_PRODUCTO, NOM_PROC, NOM_TABLA, COD_ACT, COD_SQLCODE, COD_SQLERRM )
+		VALUES
+		(EV_CODACTABO, LN_NUMABONADO,  SYSDATE, LN_CODPRODUCTO, 'VE_ACTUALIZADCTO_CARGO', LV_NOMBRETABLA, LV_CODACT,LV_COD_RETORNO ,LV_MENS_RETORNO );
+		COMMIT;
+
+
+END VE_ACTUALIZADCTO_CARGO_PR;
+
+END VE_ACTUALIZADCTO_CARGO_PG;
+/
+SHOW ERRORS

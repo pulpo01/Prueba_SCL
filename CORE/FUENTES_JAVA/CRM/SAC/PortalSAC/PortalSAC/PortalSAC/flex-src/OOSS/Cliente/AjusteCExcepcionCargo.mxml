@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute"  width="980" height="458" initialize="init();" verticalAlign="top"  backgroundColor="#FFFFFF" xmlns:componentes="user.libreria.componentes.*">
+
+	<mx:Script>
+	<![CDATA[
+		import mx.core.Application;
+		import mx.collections.ArrayCollection;
+		import mx.messaging.messages.HTTPRequestMessage;
+	 	import mx.controls.Alert;
+	 	import mx.events.*;
+	    import mx.modules.ModuleManager;
+		import mx.modules.IModuleInfo;
+		import mx.rpc.events.FaultEvent;
+		import mx.events.ValidationResultEvent;
+		import mx.controls.AdvancedDataGrid;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		
+		import generated.webservices.orquestador.*;
+	   	import user.libreria.componentes.DatosEncabezadoOOSS;
+	   	import user.libreria.clases.StringUtil;
+	   	import OOSS.General.DocsAjusteParcial;
+	   		 
+		public var info:IModuleInfo;
+	 	public var grillaGlobal:AdvancedDataGrid = new AdvancedDataGrid();
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject; 					
+	 	public var searchingPopUpView:Class = BarraDeProgreso2;
+	 	public var wsORQ:WSSEGPortal= new WSSEGPortal();
+	 	public var datoDTO:EjecucionAjusteCExcepcionCargosSACDTO = new EjecucionAjusteCExcepcionCargosSACDTO();
+	 	public var FiltroDTO:FiltroDetDocAjusteCCargosSACDTO = new FiltroDetDocAjusteCCargosSACDTO();
+	 	public var numTransaccion:String;
+	 	
+	 	[ArrayElementType("FoliosFacturasSACVO")]
+		public var arrayFoliosFacturasdata:Array;
+	 	
+		[ArrayElementType("DetalleDocumentoSACVO")]
+		public var arrayDetalleDocumento:Array;
+	
+		[ArrayElementType("DetalleAjusteVO")]
+		public var arrayDetalleAjuste:Array = new Array();
+	 	
+		[Embed(source="/recursosInterfaz/imagenes/iconos/alert/warning.png")]
+		public var iconWarning:Class; 		
+	 	
+	 	public var num:Boolean = true;
+	 	public var mtoOOSS:Number;
+	 	public var mtoOOSSPuntual:Number;
+	 	public var tipoAjuste:int; // 0=Total , 1=Parcial
+	 	public var docsAjusteParcial:Class = DocsAjusteParcial;
+		public const ajusteOOSS:String = "excepcion";
+		
+		/* --------------------------------------------------------------------------------		
+			METODOS
+		-------------------------------------------------------------------------------- */
+		include "../../user/includes/datosEncabezadoOOSS.as";
+		include "../../user/includes/ajustes/codigo.as";
+		
+				
+		private function init():void	{
+			
+			// Traigo los datos de la cuenta para el encabezado
+			datosCuenta(parentApplication.ctaSelect);
+			
+			if (StringUtil.getValor("pedirPasswordFranquicias","VALOR") == "SI")	{
+				txtUsuario.text = Application.application.usuario.username;
+				winPassword.visible = true;
+			} // if
+				
+		} // init
+		
+		// -----------------------------------------------------------------------------------------------------
+	
+		private function ejecutarAjuste():void	{
+		
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));		
+		
+			// Si es parcial, debo llenar el dto con los detalles
+			if (tipoAjuste == 1)	{
+				for (var cantidad:Number=0; cantidad<arrayDetalleDocumento.length; cantidad++)	{
+					if (arrayDetalleDocumento[cantidad].montoNIC > 0)	{
+						var detAjuste:DetalleAjusteVO = new DetalleAjusteVO();
+						detAjuste.codProducto = arrayDetalleDocumento[cantidad].codProducto;
+						detAjuste.importeConcepto = arrayDetalleDocumento[cantidad].montoNIC;
+						detAjuste.numAbonado = arrayDetalleDocumento[cantidad].numAbonado;
+						detAjuste.codCentrEmi = arrayDetalleDocumento[cantidad].codCentrEmi;
+						detAjuste.codTipDocum = arrayDetalleDocumento[cantidad].codTipDocum;
+						detAjuste.codVendedor = arrayDetalleDocumento[cantidad].codVendedor;
+						detAjuste.letra = arrayDetalleDocumento[cantidad].letra;
+						detAjuste.monto = arrayDetalleDocumento[cantidad].monto;
+						detAjuste.nroSecuencia = arrayDetalleDocumento[cantidad].nroSecuencia;
+					
+						arrayDetalleAjuste.push(detAjuste);
+						detAjuste = null;
+					} // if			
+				} // for					
+			} // if
+			
+			cargaDatosComunesDTOEjecutar(datoDTO);
+			datoDTO.arrayDetalleAjusteSACVO = arrayDetalleAjuste;		// Array con detalles documento
+			datoDTO.codNC = cboNotas.selectedItem.codNC.toString();		// Codigo nota credito
+			datoDTO.desNC = cboNotas.selectedItem.desNC.toString();		// Descripcion nota credito
+			datoDTO.observacion = txtComentario.text;					// Comentario			
+			wsORQ.addejecutarAjusteCExcepcionCargosEventListener(getDataEjecutaExcepcion);
+			wsORQ.ejecutarAjusteCExcepcionCargos(datoDTO);
+		
+		} // ejecutarAjuste
+	
+		// -----------------------------------------------------------------------------------------------------
+		
+		private function validaRequeridos():Boolean	{
+	
+			var mensaje:String = null
+	
+			// datos requeridos
+			if (IdMtoPago.text.length==0 || txtComentario.text.length==0 || coCausaPago.selectedIndex==-1 || coOrigenPago.selectedIndex==-1 || cboNotas.selectedIndex==-1 || txtComentario.text.length == 0 )	
+				mensaje = "Debe ingresar todos los datos requeridos identificados con (*).";
+	
+			// Si se ajusta en forma parcial y se abrio la pantalla de detalles del documento
+			if (tipoAjuste == 1 && docsAjusteParcial.arrayDocs == null)
+				mensaje = "No se han seleccionado detalles de un folio.";
+				
+			if (parseInt(IdMtoPago.text) <= 0)
+				mensaje = "El monto del ajuste debe ser mayor de cero.";
+						
+			if (mensaje != null)	{			
+				Alert.show( mensaje, 
+				"Advertencia", 
+				mx.controls.Alert.OK,
+				this,
+				null,
+				null,
+				mx.controls.Alert.OK );
+				
+				return false;
+			} // if
+	
+			return true;		
+				
+		} // validaRequeridos
+	
+		// -----------------------------------------------------------------------------------------------------
+	
+		private function cargarOOSS():void {
+		
+			if (StringUtil.trim(txtClave.text).length > 0)	{
+				winPassword.visible = false;
+				executeWSCarga();
+			} // if
+			else
+				Alert.show( "Debe ingresar su clave de acceso", 
+				"Advertencia", 
+				mx.controls.Alert.OK,
+				this,
+				null,
+				iconWarning,
+				mx.controls.Alert.OK );
+					
+	} // cargarOOSS
+	
+	// -----------------------------------------------------------------------------------------------------
+
+	private function ejecutaOOSS():void	{
+		
+		if (validaRequeridos())
+			ejecutarAjuste();
+						
+	} // ejecutaOOSS
+		
+	// -----------------------------------------------------------------------------------------------------
+	
+
+	]]>	
+	</mx:Script>
+
+	<mx:StringValidator id="valObservacion" requiredFieldError="Ingrese el comentario de la OOSS" source="{txtComentario}" property="text" />
+	
+	<mx:Panel width="953" height="398" layout="absolute" title="&gt;&gt; Ajuste Nota Crédito" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1" verticalCenter="-4" backgroundAlpha="1.0" modalTransparency="0">
+		<mx:backgroundImage>@Embed(source='../../recursosInterfaz/imagenes/otros/fondo.jpg')</mx:backgroundImage>
+		<componentes:DatosEncabezadoOOSS id="DatosEncabezadoOOSS"  x="10" y="10"/>
+		<mx:Label text="Saldo Cliente ($)" styleName="TituloCampo" width="112" fontSize="10" x="39.5" y="170" />
+		<mx:Label width="250.5" id="mtoSaldoCliente" fontSize="10" x="169.5" y="170"/>
+		<mx:Label text="Monto Ajuste ($)" styleName="TituloCampo" width="120" x="472" y="170" fontSize="10" id="lblMonto1"/>
+		<mx:TextInput editable="true" enabled="true" width="267" id="IdMtoPago" fontSize="10" x="624.5" y="170" styleName="TextoCampo" maxChars="15" restrict="0123456789." height="22"/>
+		<mx:Label text="Tipo de Ajuste" styleName="TituloCampo" width="103.25" fontSize="10" x="39.5" y="200" />
+		<mx:RadioButton label="Por Cliente" enabled="true" width="131" id="optTipoT" groupName="Opcion" click="selectT()" x="169.5" y="200" fontSize="10" selected="true"/>
+		<mx:RadioButton label="Por Documento" groupName="Opcion" id="optTipoP" enabled="true" click="selectP()" visible="true" x="282" y="200" fontSize="10"/>
+		<mx:Label text="Folio:" styleName="TituloCampo" width="86" fontSize="10" visible="false" x="493" y="202" id="titFolio"/>
+		<mx:ComboBox width="227.5" id="coFoliosFacturas" color="#000000" fontWeight="bold" themeColor="#CBDEEB" fontSize="10" visible="false" x="624" y="200"></mx:ComboBox>
+		<mx:Label text="Causa de Pago" styleName="TituloCampo" width="103.25" fontSize="10" x="39.5" y="230"  />
+		<mx:ComboBox width="292.5" id="coCausaPago"  color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" y="230" x="169.5" styleName="TextoCampo"></mx:ComboBox>
+		<mx:Label text="Origen Pago" styleName="TituloCampo" width="99" x="493" y="230" fontSize="10"/>
+		<mx:ComboBox width="267" id="coOrigenPago" color="#000000" fontWeight="bold" themeColor="#CBDEEB" fontSize="10" x="624.5" y="230" styleName="TextoCampo" fontFamily="Verdana"></mx:ComboBox>
+		<mx:Label text="Nota Crédito" styleName="TituloCampo" width="136" fontSize="10" x="39.5" y="260" />
+		<mx:Label text="Comentario" styleName="TituloCampo" width="136" fontSize="10" x="39.5" y="292" />
+		<mx:ComboBox width="292.5" id="cboNotas" color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" x="169.5" y="260" styleName="TextoCampo" fontFamily="Verdana"></mx:ComboBox>
+		<mx:TextInput height="22" width="722" id="txtComentario" editable="true" enabled="true" maxChars="255" displayAsPassword="false" fontSize="10" x="169.5" y="290" styleName="TextoCampo" />
+		<mx:Button label="Ejecutar" click="ejecutaOOSS()" x="379.5" y="320" id="IdEjecutar" visible="true" fontSize="10"/>
+		<mx:Button label="Cerrar" width="84" click="cerrar()" x="477.5" y="320" id="idCerrar" visible="true" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="111.75" y="260" width="31" color="#FF0000" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="111.75" y="292" width="31" color="#FF0000" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="130.75" y="230" width="31" color="#FF0000" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="576.5" y="230" width="31" color="#FF0000" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="576.5" y="170" width="31" color="#FF0000" fontSize="10" id="lblMonto2"/>
+		<mx:Button x="859.5" y="199" width="32" id="btnDocs" click="selectFolio()" visible="false" toolTip="Detalles del Documento">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkAddItem.gif')</mx:icon>
+		</mx:Button>
+	</mx:Panel>
+
+	<!-- ventana de solicitud de password -->
+	<mx:TitleWindow id="winPassword" xmlns:mx="http://www.adobe.com/2006/mxml" width="306.5" visible="false" height="184" title="&gt;&gt; Solicitud de Password" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="-4" alpha="1.0" borderAlpha="1.0" verticalCenter="-3" backgroundAlpha="1">
+	<mx:Canvas width="278" height="132"  alpha="1" backgroundColor="#FFFFFF" backgroundAlpha="100">
+		<mx:Button click="cargarOOSS()" x="23.75" y="91" label="Continuar" width="110" height="31" fontSize="10" id="btnContinuar" tabIndex="2">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkNextOn.gif')</mx:icon>
+		</mx:Button>
+		<mx:Button click="cerrar()" x="141.75" y="91" label="Cancelar" width="110" height="31" fontSize="10" id="btnCancelar" tabIndex="3">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/exit.png')</mx:icon>
+		</mx:Button>
+		<mx:Label x="39.25" y="50" text="Clave " fontSize="11" fontWeight="bold"/>
+		<mx:TextInput x="105.75" y="49" id="txtClave" displayAsPassword="true" editable="true" fontSize="10" width="146" maxChars="30" tabIndex="1"/>
+		<mx:TextInput x="105.75" y="18" id="txtUsuario" displayAsPassword="false" editable="false" fontSize="10" width="146" maxChars="30"/>
+		<mx:Label x="39.25" y="20" text="Usuario" fontSize="11" fontWeight="bold"/>
+	</mx:Canvas>
+	</mx:TitleWindow>
+	
+</mx:Module>

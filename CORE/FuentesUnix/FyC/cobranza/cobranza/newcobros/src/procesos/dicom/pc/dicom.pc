@@ -1,0 +1,2426 @@
+/* ================================================================================================================ */
+/*
+    Tipo        :  COLA DE PROCESO
+
+    Nombre      :  dicom.pc
+
+    Descripcion :  Ejecuta las acciones tendientes al envio, de los clientes a DICOM, si lo ameritan.
+
+    Recibe      :  Usuario/Password. ( por defecto asume los de la cuenta )
+                   Nivel de Log ( por defecto asume 3 : Log Normal ) 
+                   Nombre de la Cola (Opcional), para nombrar archivos de log
+                   
+    Devuelve    :  Valor entero para indicar el status de termino.
+                   Interactua con la Base de Datos y el archivo de Log para registrar
+                   como se desarrolla su ejecucion.
+    
+    Autor       :  Manuel Garcia G.
+    Fecha       :  17 - Mayo - 2001.
+*/ 
+/* ================================================================================================================ */
+
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+
+#include "dicom.h"
+
+#define 		iLOGNIVEL_DEF     3       	/* Define el nivel de Log por Defecto */
+#define 		iTamReg         177       	/* Define el tamaño del registro para el archivo de rechazos Dicom */  
+
+LINEACOMANDO  	stLineaComando;     		/* Datos con los que se invoco al proceso */
+char 			szgCodProceso[6]  = "";
+char 			szArchivoLog[256] = ""; 	/* log */
+
+long 			lAuxSeqGlobal = 0;          /* variable de ambito global ( Auxiliar Secuencia ) */
+
+EXEC SQL INCLUDE sqlca;
+
+int main( int argc, char *argv[] )
+{
+   char modulo[] = "main";
+    int iResult = 0;
+    EXEC SQL BEGIN DECLARE SECTION;
+    	char	szhCodEstado[2]; 		EXEC SQL VAR szhCodEstado IS STRING (2);
+    EXEC SQL END DECLARE SECTION;
+    
+    fprintf(stdout, "\n%s DICOM pid(%ld) VERSION [%s]\n", szGetTime(1),getpid(),szVERSION);
+    fflush (stdout);
+
+    /*- Validacion de parametros de entrada -*/
+    memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+    if (ifnValidaParametros(argc,argv,&stLineaComando) != 0)    
+    {
+        fprintf (stdout,"\n\tError >> Fallo la Validacion de Parametros \n");
+        fflush  (stdout);
+        iResult = -1; /* Fallo validacion */
+    }
+    else
+    {    
+        /*- Conexion a la Base de Datos -*/
+        if (ifnConexionDB(&stLineaComando) != 0)   
+        {
+            fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+            fflush  (stdout);
+            iResult = -2; /* Fallo conexion */
+        }
+        else
+        {
+            /*- Prepara Archivo de Log -*/ 
+            if (ifnPreparaArchivoLog() != 0)    
+            {
+                fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+                fflush  (stdout);
+                iResult = -3;  /* Fallo Log */
+            }
+            else
+            {
+                /*- Ejecuta el proceso propiamente tal -*/
+                if (ifnEjecutaCola() != 0)   
+                {
+                    fprintf (stdout,"\n\tError >> Fallo el proceso \n");
+                    fflush  (stdout);
+                    iResult = -4; /* Fallo Proceso */
+                }
+                else /* DICOM salio con 0 ( supuestamente cola de vuelta en wait ) */
+                {
+                    EXEC SQL 
+                    SELECT COD_ESTADO 
+                    INTO :szhCodEstado
+                    FROM CO_COLASPROC 
+                    WHERE COD_PROCESO='DICOM';
+                    
+                    if (SQLCODE)
+                    {
+                        fprintf (stdout,"\n\tError >> Fallo el proceso ( Validacion Cola Wait ) \n");
+                        fflush  (stdout);
+                        ifnMailAlert("DICOM","TODOS","FALLO LA VALIDACION FINAL DE LA COLA.");
+                        iResult = -5; /* Fallo Proceso */
+                    }
+                    else
+                    {
+                        if ( strcmp(szhCodEstado,"W")!=0 )
+                        {
+                            /* LA COLA ESTA EN UN ESTADO DISTINTO DE WAIT */
+                            /* SEÑALAR ESTO COMO ERROR E INTENTAR FORZARLA A WAIT */
+                            ifnTrazasLog(modulo,"Regresando la Cola a Espera (%s)",LOG02,szhCodEstado);
+                            EXEC SQL 
+                            UPDATE CO_COLASPROC
+                            SET COD_ESTADO = 'W'
+                            WHERE COD_PROCESO = 'DICOM' ;
+                            if (SQLCODE)
+                            {
+                                fprintf (stdout,"\n\tError >> Fallo el proceso ( Update Cola Wait ) %s\n",SQLERRM );
+                                fflush  (stdout);
+                                ifnMailAlert("DICOM","TODOS","FALLO AL ACTUALIZAR LA COLA A 'WAIT'.");
+                                iResult = -6; /* Fallo Proceso */
+                            }                            
+                            EXEC SQL COMMIT;
+                            if (SQLCODE)
+                            {
+                                fprintf (stdout,"\n\tError >> Fallo el proceso ( Commit Cola Wait ) %s\n", SQLERRM );
+                                fflush  (stdout);
+                                ifnMailAlert("DICOM","TODOS","FALLO EL COMMIT DE LA COLA 'WAIT'.");
+                                iResult = -7; /* Fallo Proceso */
+                            }                            
+                            ifnTrazasLog(modulo,"OK. Cola forzada a espera",LOG02);
+                        }
+                    }
+                }
+
+                vfnCierraArchivoLog();
+            }
+        }
+    }
+
+    return iResult;
+   
+} /* end main */    
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    char modulo[]="ifnValidaParametros";
+
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+    extern char  *optarg;
+    extern  int  optind, opterr, optopt;
+            int  iOpt=0;
+           char  opt[] = ":u:l:n:";
+/*-- Variables locales -----------------------------------------------------------*/  
+           char  *psztmp = "";
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+            int  Userflag=0;
+            int  Logflag=0;
+
+/*-- Seteo de Valores Iniciles y por defecto -------------------------------------*/
+    opterr=0;
+    stStatus.iLogNivel = iLOGNIVEL_DEF ;
+    memset(szgCodProceso,0,sizeof(szgCodProceso));
+    strcpy(szgCodProceso,"DICOM"); /*valor por defecto es "DICOM" por DICOM */
+    
+/*-- En caso de Invocacion sin Parametros ----------------------------------------*/
+    if(argc == 1)
+    {
+        return 0; /*ok asume valores por defecto */
+    }
+
+/*-- Analisis de los argumentos recibidos ----------------------------------------*/
+    while ((iOpt=getopt(argc, argv, opt))!=EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':  /*-- Usuario/Password --*/
+                 if(!Userflag)
+                {
+                    strcpy(pstLC->szUsuarioOra, optarg);                      
+                    Userflag=1;
+                    if ((psztmp=(char *)strchr(pstLC->szUsuarioOra,'/'))==(char *)NULL)
+                    {
+                        fprintf (stderr,"\n\tError >> Usuario no valido. Requiere '/' \n");
+                        fflush  (stderr);
+                        return -1;
+                    }
+                    else
+                    {
+                        strncpy (pstLC->szOraAccount,pstLC->szUsuarioOra,psztmp-pstLC->szUsuarioOra);
+                        strcpy  (pstLC->szOraPasswd, psztmp+1);
+                    }
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+
+            case 'l': /*-- Nivel de Log --*/
+                if(!Logflag)
+                {
+                    stStatus.iLogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=1;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+            case 'n': /*-- Nombre de la Cola (codigo del proceso) --*/
+                strcpy(szgCodProceso,optarg);
+                break;
+            case '?':
+                fprintf (stderr,"\n\tError >> opcion '-%c' es desconocida\n",optopt);
+                fflush  (stderr);
+                return -1;
+
+            case ':':
+                fprintf (stderr,"\n\tError >> falta argumento para opcion '-%c'\n",optopt);
+                fflush  (stderr);
+                return -1;
+        }
+    } 
+    pstLC->iLogLevel=stStatus.iLogNivel;
+       return 0;
+
+} /* bfnValidaParamatros */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB(LINEACOMANDO *pstLC)
+{
+    char modulo[]="ifnConexionDB";
+    
+    if( bfnOraConnect(pstLC->szOraAccount,pstLC->szOraPasswd) == FALSE )
+    {
+        fprintf (stderr,"\nNo hay conexion a ORACLE \n");
+        fflush  (stderr);
+        return -1;
+    }
+    
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog()
+{
+    char modulo[]="ifnPreparaArchivoLog";
+
+    /* char *szAux; */
+    int sts=0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+    EXEC SQL END DECLARE SECTION;
+ 
+    sprintf(stStatus.szFileName,"%s",szgCodProceso);
+
+	sprintf(szhPathLogSched,"%s/CO_SCHEDULER",getenv("XPC_LOG"));
+    
+    sprintf(stStatus.szLogPathGene,"%s",szhPathLogSched);
+    sts = ifnAbreArchivoLog(1); 
+    
+    return sts;
+    
+} /* end ifnPreparaArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* if iCreaDir != 0 : crear directorio antes que el archivo                      */
+/* ============================================================================= */
+int ifnAbreArchivoLog(int iCrearDir)
+{
+    char modulo[]="ifnAbreArchivoLog";
+    char szArchivoErr[256]=""; /* errores */
+    char szArchivoEst[256]=""; /* estadisticas */
+    char szComando[256]="";
+    static char szAux[9];
+    
+    memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log */         
+    memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores */     
+    memset(szArchivoEst,0,sizeof(szArchivoEst)); /* estadisticas */
+
+    strcpy (szAux,(char *)szSysDate("YYYYMMDD"));
+    sprintf(szComando,"mkdir -p %s/%s",stStatus.szLogPathGene,szAux);
+    if (system (szComando)!=0) 
+    {
+        fprintf (stderr,"Error al intentar crear directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+    sprintf(szArchivoLog,"%s/%s/%s.log",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    sprintf(szArchivoErr,"%s/%s/%s.err",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    sprintf(szArchivoEst,"%s/%s/%s.est",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    
+    if((stStatus.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Log\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    if((stStatus.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Errores\n");
+        fflush  (stderr);
+        return -1;    
+    }
+
+    if((stStatus.EstFile = fopen(szArchivoEst,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Estadisticas\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    ifnTrazasLog(modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n", INFALL
+                       ,szSysDate("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+    return 0;
+    
+}/* end ifnAbreArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs  */
+/* ============================================================================= */
+void vfnCierraArchivoLog(void)
+{
+    char modulo[]="vfnCierraArchivoLog";
+    
+    ifnTrazasLog(modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n", INFALL
+                       ,szSysDate("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+    if ( fclose(stStatus.LogFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Log\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.ErrFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Errores\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.EstFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Estadisticas\n");
+        fflush  (stderr);
+    }
+        
+    return;    
+} /* end vfnCierraArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnEjecutaCola() : Ejecuta la cola de acciones                               */
+/* ============================================================================= */
+int ifnEjecutaCola(void)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	  	long 	lhSeqProceso;  
+		char 	szhConsulta[1024]	= "";	EXEC SQL VAR szhConsulta IS STRING(1024);
+  		char	szhSecuencia[11]       = "";	EXEC SQL VAR szhSecuencia IS STRING(11);                                                      
+  		int	    ihExisteDicom          = 0;
+		char	szhRechazos[21]		= "";	EXEC SQL VAR szhRechazos IS STRING(21);  		                                              
+  	    rg_codetarch sthCoDetAr			;   /* HOSTARRAY */
+   	EXEC SQL END DECLARE SECTION;
+   	
+   	FILE *fa = (FILE *)NULL;
+   	
+   	char    szPathArchivo[255];
+    char    szNombreArchivo[35];
+    char    szArchivoSal[512];
+   	char 	modulo[] = "ifnEjecutaCola";
+    char	szFechaHoy[9], szCodigoEnt[6], szCambioEnt[6];
+	char 	szTipoDia[10],  szTextReg[1025] ="";    
+    char 	szComando[512];
+    char 	szError[1024];
+	char	szIniProc[9], szFinProc[9], szTmpProc[9];
+    int     iContBloque=0,iFilasBloque,i, rr, ilargo, iDifSegs = 0;
+    long	lTotalRows = 0, lRowsThisLoop = 0, lRowsProcessed = 0, lFilasRecupera=0, lReg=0;
+    BOOL	bFinal = FALSE;
+    int     lhRetRechazo=0;
+	memset( szError, '\0', sizeof( szError ) );
+	
+    ifnTrazasLog( modulo, "Corriendo la cola lanzada ", LOG05 );
+    ifnTrazasLog(modulo,"DICOM VERSION [%s]\n",LOG03, szVERSION);
+    if( !bfnCambiaEstadoCola( szgCodProceso, "L", "R" ) ) /*'Launched->Running'*/
+    {
+        if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback 'L->R' : %s", LOG00, SQLERRM );
+        return -1;
+    }
+    else
+    {    
+        if( !bfnOraCommit() )    
+        {    
+            ifnTrazasLog( modulo, "En Commit 'L->R' : %s", LOG00, SQLERRM );
+            if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+            return FALSE;    
+        }
+    }
+    
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )
+	{
+	    ifnTrazasLog( modulo, "Error al realizar carga de bGetParamDecimales().", LOG03 );
+	    return -1;
+	}
+
+	/* Nota : El proceso Dicom correra solamente en la madrugada de un dia habil */
+	strcpy( szFechaHoy, ( char *)szSysDate("YYYYMMDD") );
+	memset( szTipoDia, '\0', sizeof( szTipoDia ) );
+    if ( !ifnEsDiaHabil( szTipoDia, szFechaHoy) )
+    {
+        ifnTrazasLog( modulo, "El proceso DICOM no corre hoy por ser '%s'", LOG02, szTipoDia );
+        return 0; 
+    }
+    
+    
+    /* termino prematuro normal */
+    sprintf( szIniProc, "%s", szSysDate("HH24:MI:SS") );
+	EXEC SQL 
+	SELECT VAL_PARAMETRO
+	  INTO 	:szhSecuencia
+  	  FROM GED_PARAMETROS
+ 	 WHERE NOM_PARAMETRO = 'INDICE_SEC_DICOM'
+   	   AND COD_MODULO = 'CO'
+	   AND COD_PRODUCTO = 1;	   
+   	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog(modulo,"Busqueda GED_PARAMETROS %s",LOG00,SQLERRM);
+		return -1; /* Mail */
+	}
+    rtrim(szhSecuencia);
+    if(!strcmp(szhSecuencia,"PARTE1")) /* Verifica que sea la Primera parte de la secuencia del programa */
+	{
+		EXEC SQL 
+		SELECT 1
+		INTO 	:ihExisteDicom
+		FROM DUAL
+		WHERE EXISTS (SELECT 1
+		   	            FROM CO_DET_ARCHIVOS
+					   WHERE COD_PROCESO ='DICOM');					   
+	   	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog(modulo,"busqueda CO_DET_ARCHIVOS %s",LOG00,SQLERRM);
+			return -1; /* Mail */
+		}
+		else if( SQLCODE == SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "No es reproceso, procedo a eliminar clientes dados de baja", LOG03 );
+			ihExisteDicom=0;	
+		}
+		if( ihExisteDicom !=1) /* Verifica que no sea un reproceso*/			
+		{   /* Obtenemos la secuencia para el registro de los procesos */
+		    /*-- (1) --*/
+		    EXEC SQL 
+		    DELETE 	FROM CO_DICOM
+		    WHERE 	COD_ENVIO 		= 'B'
+		    AND 	COD_MOVIMIENTO 	= 'SM';		
+	        if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			    {                                       
+			        ifnTrazasLog(modulo,"Delete CO_DICOM %s",LOG00,SQLERRM);
+			        return -1;/*Mail*/
+			    }
+		    EXEC SQL 
+		    SELECT 	CO_SEC_DICOM.NEXTVAL
+		    INTO 	:lhSeqProceso
+		    FROM 	DUAL;
+		    if( SQLCODE )
+		    {
+		        ifnTrazasLog( modulo, "Select CO_SEQ_DICOM %s", LOG00, SQLERRM );
+		        return -1;/*Mail*/
+		    }
+	         
+		    ifnTrazasLog( modulo, "CO_SEC_DICOM.NEXTVAL -> [%d]", LOG03, lhSeqProceso );
+		}
+		else 
+		{
+		    EXEC SQL 
+		    SELECT 	MAX(NUM_PROCESO)
+		    INTO 	:lhSeqProceso
+			 FROM CO_DET_ARCHIVOS
+			WHERE COD_PROCESO = 'DICOM';
+
+           /***** GAC 28.09.03 Homol.CH-1109 ******
+			WHERE EXISTS (SELECT 1
+			                 FROM CO_DET_ARCHIVOS
+							WHERE COD_PROCESO = 'DICOM');
+           ***** GAC 28.09.03 Homol.CH-1109 ******/
+
+			if( SQLCODE )
+			{
+				ifnTrazasLog( modulo, "Select CO_DET_ARCHIVOS %s.", LOG00, SQLERRM );
+				return -1;	/*Mail*/
+			}
+					ifnTrazasLog( modulo, "CO_SEQ_DICOM.NEXTVAL->[%ld].", LOG03, lhSeqProceso );			
+		}
+		
+		EXEC SQL
+		SELECT VAL_PARAMETRO
+		INTO :szhRechazos	
+		FROM GED_PARAMETROS
+		WHERE COD_MODULO = 'CO'
+		AND NOM_PARAMETRO = 'PROC_RECHAZO_DICOM'
+		AND COD_PRODUCTO = 1;	   
+			   
+		if( SQLCODE != SQLOK || SQLCODE == SQLNOTFOUND)
+	    {   
+			ifnTrazasLog(modulo,"(GED_PARAMETROS %s ", LOG00, SQLERRM );  
+			return -1;    
+	    }
+		
+		rtrim( szhRechazos );
+	
+    	/* Procesamos los rechazos enviados por Dicom */
+		/* szhRechazos = 0  No Procesamos los rechazos  ; szhRechazos != 0  Procesamos los rechazos */
+		if( strcmp( szhRechazos, "0" ) )
+		{
+            lhRetRechazo = ifnRechazosDicom( szError, lhSeqProceso );
+	    	if( lhRetRechazo < 0 ) 
+	        	ifnMailAlert( "DICOM", "TODOS", "%s", szError ); 
+	        else if( lhRetRechazo > 0 ) 
+	        	ifnTrazasLog( modulo, "Marco error la funcion ifnRechazosDicom", LOG05 );
+	    }
+	    /* Procesamos los nuevos envios a Dicom, ya sean altas o bajas de documentos */
+		if( ifnDicom( szError, lhSeqProceso ) < 0 ) 
+		{	
+				return -1;	/*Mail*/
+		}							
+
+	    sprintf( szhSecuencia, "PARTE2" );
+		
+		if( !bfnActualizaIndiceSec( szhSecuencia, "INDICE_SEC_DICOM" ) )
+		{
+	        ifnTrazasLog( modulo, "Fallo bfnActualizaIndiceSec.", LOG01 );
+	        return -1; /* MAIL ALERT */
+		}
+	
+		if( !bfnOraCommit() )    
+		{    
+			ifnTrazasLog( modulo, "En Commit bfnActualizaIndiceSec => [%s].", LOG00, SQLERRM );
+			if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback bfnActualizaIndiceSec => [%s].", LOG00, SQLERRM );
+			return -1;    
+		}
+	} /* fin de la PARTE 1 de la secuencia */       
+
+    if(!strcmp(szhSecuencia,"PARTE2")) /* Inicio PARTE 2 de la secuencia del programa */
+	{	
+		EXEC SQL 
+		SELECT 	NVL( MAX( NUM_PROCESO ), -1 )
+		 INTO 	:lhSeqProceso
+		 FROM CO_DET_ARCHIVOS
+		WHERE COD_PROCESO = 'DICOM';
+
+        /***** GAC 28.09.03 Homol.CH-1109 ******
+		WHERE EXISTS (SELECT 1
+		             FROM CO_DET_ARCHIVOS
+				WHERE COD_PROCESO = 'DICOM');
+        ***** GAC 28.09.03 Homol.CH-1109 ******/
+
+		if( SQLCODE )
+		{
+		  ifnTrazasLog( modulo, "Select CO_DET_ARCHIVOS %s.", LOG00, SQLERRM );
+		  return -1;	/*Mail*/
+		}
+
+		if( lhSeqProceso < 0 )
+		{
+			ifnTrazasLog( modulo, "No existen registros en CO_DET_ARCHIVOS, para proceso DICOM.", LOG03 );
+			sprintf( szhSecuencia, "PARTE1" );
+			if( !bfnActualizaIndiceSec( szhSecuencia, "INDICE_SEC_DICOM" ) )
+			{
+			ifnTrazasLog( modulo, "Fallo bfnActualizaIndiceSec.", LOG01 );
+			return -1; /* MAIL ALERT */
+			}
+			return 0;	/*Mail*/
+		}
+	   	   
+	   sprintf(szhConsulta,"SELECT "
+							"COD_ENTIDAD, "
+							"TXT_REGISTRO "
+							"FROM	CO_DET_ARCHIVOS "
+							"WHERE	COD_PROCESO = 'DICOM' "
+							"ORDER BY COD_ENTIDAD,TIP_REGITRO");							
+      	
+		EXEC SQL PREPARE Query_det_arch FROM :szhConsulta; 
+
+		if(sqlca.sqlcode < SQLOK)
+		{
+	        ifnTrazasLog(modulo,"Error al abrir cursor dinamico sobre tabla CO_DET_ARCHIVOS > %s" ,LOG00,SQLERRM);
+	        return -1;
+		}
+		EXEC SQL DECLARE Cursor_det_arch CURSOR FOR Query_det_arch;
+		if(sqlca.sqlcode < SQLOK)
+		{
+	        ifnTrazasLog(modulo,"Error al abrir cursor dinamico sobre tabla CO_DET_ARCHIVOS > %s" ,LOG00,SQLERRM);
+	        return -1;
+		} 
+
+		EXEC SQL OPEN Cursor_det_arch;
+		if(sqlca.sqlcode < SQLOK)
+		{
+	        ifnTrazasLog(modulo,"Error al abrir cursor dinamico sobre tabla CO_DET_ARCHIVOS > %s" ,LOG00,SQLERRM);
+	        return -1;
+		} 
+		
+		lReg = 0;
+		sprintf(szCambioEnt,"-1");
+		lFilasRecupera = 0;
+		iContBloque = 0;
+		iFilasBloque = 0;
+		
+		while( !bFinal ) 
+		{
+			EXEC SQL FETCH Cursor_det_arch
+			INTO :sthCoDetAr;
+			
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+			{
+		        ifnTrazasLog( modulo, "Error en FETCH cursor dinamico Cursor_det_arch > %s", LOG00, SQLERRM );
+		        return -1;
+			}
+			if( SQLCODE == SQLNOTFOUND )
+				bFinal = TRUE;
+
+			lFilasRecupera = lFilasRecupera + sqlca.sqlerrd[2] - iContBloque; 
+			iFilasBloque = sqlca.sqlerrd[2] - iContBloque;
+			iContBloque = sqlca.sqlerrd[2];                           
+			for(i=0; i < iFilasBloque; i++)
+			{
+				 strcpy(szTextReg,sthCoDetAr.szTxtReg[i]);
+	 			 strcpy(szCodigoEnt,sthCoDetAr.szCodEntidad[i]);	 
+	             ilargo = strlen( szTextReg ) - 1;
+				 for( rr = ilargo; rr >= 0; rr = rr - 1 ) if( szTextReg[rr] != ' ' ) break ;
+				 szTextReg[rr] = '\0';
+	 			
+	             ilargo = strlen( szCodigoEnt ) - 1;
+				 for( rr = ilargo; rr >= 0; rr = rr - 1 ) if( szCodigoEnt[rr] != ' ' ) break ;
+				 szCodigoEnt[rr + 1] = '\0';
+	 			 if( strcmp( szCodigoEnt, szCambioEnt ) )
+	 			 {	
+	 			 	if(strcmp(szCambioEnt,"-1"))
+	 			 	{
+	 			 		fclose(fa);
+	 			 	}
+	 		 		strcpy(szCambioEnt,szCodigoEnt);
+				 									/* definir el nombre del archivo a escribir */
+				    sprintf(szPathArchivo,"%s/%s/envios",getenv("XPC_DAT"),szCodigoEnt);
+				    memset(szArchivoSal,'\0',sizeof(szArchivoSal));
+				    sprintf(szArchivoSal,"mkdir -p %s",szPathArchivo);
+				    if (system (szArchivoSal)!=0) 
+				    {
+				        ifnTrazasLog(modulo,"Fallo la creacion del directorio del archivo de salida '%s'",LOG01,szPathArchivo);
+				        return 1; /* termina el proceso */
+				    }
+				
+				    sprintf(szNombreArchivo,"%s_%ld.txt",szCodigoEnt,lhSeqProceso);
+				    memset(szArchivoSal,'\0',sizeof(szArchivoSal));
+				    sprintf(szArchivoSal,"%s/%s",szPathArchivo,szNombreArchivo);
+				            
+				    if ( (fa=fopen(szArchivoSal,"w")) == (FILE *)NULL ) /* append */
+				    {
+				        ifnTrazasLog(modulo,"Fallo la apertura del archivo '%s'",LOG01,szArchivoSal);
+				        return 1; /* termina el proceso */
+				    }
+				 
+				    ifnTrazasLog(modulo,"szArchivoSal : %s",LOG05,szArchivoSal);
+				    /*ifnTrazasLog(modulo,"NumIdent  : %s",LOG05,szhNumIdent);*/
+				 }
+ 				 lReg++; /* Total de registros */								
+				 fprintf( fa, "%s\n", szTextReg );
+			} /* for(i=0; i < iFilasBloque; i++) */
+		}
+		fclose(fa);
+		EXEC SQL CLOSE Cursor_det_arch;
+		if ( SQLCODE )
+		{
+			ifnTrazasLog(modulo,"Close Cursor_det_arch %s",LOG00,SQLERRM);
+		}
+
+   	    sprintf(szhSecuencia,"PARTE3");		
+
+		if( !bfnActualizaIndiceSec( szhSecuencia, "INDICE_SEC_DICOM" ) )
+		{
+	        ifnTrazasLog( modulo, "Fallo bfnActualizaIndiceSec.", LOG01 );
+	        return -1; /* MAIL ALERT */
+		}
+
+		if( !bfnOraCommit() )    
+		{    
+			ifnTrazasLog( modulo, "En Commit bfnActualizaIndiceSec => [%s].", LOG00, SQLERRM );
+			if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback bfnActualizaIndiceSec => [%s].", LOG00, SQLERRM );
+			return -1;    
+		}
+    } /* End parte 2 del PROCESO */  	
+
+    /* Begin Parte 3 del prceso  */
+    if(!strcmp(szhSecuencia,"PARTE3") )
+    {
+	    EXEC SQL
+	    DELETE FROM CO_DET_ARCHIVOS
+	     WHERE COD_PROCESO = 'DICOM';
+	    if (SQLCODE != SQLOK && SQLCODE !=SQLNOTFOUND )
+	    {
+	        ifnTrazasLog(modulo,"Error Delete de registros > %s" ,LOG00,SQLERRM);
+	        return -1;
+	    }
+
+		if( !bfnOraCommit() )    
+		{    
+			ifnTrazasLog( modulo, "En Commit Delete de registros => [%s].", LOG00, SQLERRM );
+			if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback Delete de registros => [%s].", LOG00, SQLERRM );
+			return -1;    
+		}
+ 
+   	    sprintf(szhSecuencia,"PARTE1");		
+
+		if( !bfnActualizaIndiceSec( szhSecuencia, "INDICE_SEC_DICOM" ) )
+		{
+	        ifnTrazasLog( modulo, "Fallo bfnActualizaIndiceSec.", LOG01 );
+	        return -1; /* MAIL ALERT */
+		}
+
+		if( !bfnOraCommit() )    
+		{    
+			ifnTrazasLog( modulo, "En Commit bfnActualizaIndiceSec => [%s].", LOG00, SQLERRM );
+			if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback bfnActualizaIndiceSec => [%s].", LOG00, SQLERRM );
+			return -1;    
+		}
+    } /* FIN PARTE3 */
+    sprintf(szFinProc,"%s",szSysDate("HH24:MI:SS"));
+    
+    /* Informacion Estadistica */
+    if ( (iDifSegs=ifnRestaHoras(szIniProc,szFinProc,szTmpProc)) >= 0 )
+    {
+        ifnTrazasLog(modulo,"\n\t RESUMEN DEL PROCESO DICOM"
+                            "\n\t       HORA INICIO  : %s "
+                            "\n\t       HORA TERMINO : %s "
+                            "\n\t       TIEMPO TOTAL : %s  (%d segs)"
+                            "\n",EST00
+                            ,szIniProc,szFinProc,szTmpProc,iDifSegs);
+    }
+    ifnTrazasLog(modulo,"Parametros SHELL TraspasaDicom.sh.", LOG03 );
+    memset(szComando, '\0', sizeof(szComando));
+    sprintf(szComando,"%s/TraspasaDicom.sh %d %s >> %s", getenv("XPC_KSH"), stStatus.iLogNivel, szgCodProceso, szArchivoLog );
+    ifnTrazasLog( modulo, "%s", LOG05, szComando );  
+
+    if ( system(szComando) ) 
+    {
+        ifnTrazasLog( modulo, "FALLO LA SHELL DE TRASPASO DE ARCHIVOS DE DICOM", LOG01, szComando );  
+    }
+
+    ifnTrazasLog( modulo, "Volviendo la cola a espera ", LOG05 );
+    if( !bfnCambiaEstadoCola( szgCodProceso, "R", "W") ) /*'Running->Wait'*/
+    {
+        if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback 'R->W' : %s", LOG00, SQLERRM );
+        return -1;
+    }
+    else
+    {    
+        if( !bfnOraCommit() )    
+        {    
+            ifnTrazasLog( modulo, "En Commit 'R->W' : %s", LOG00, SQLERRM );
+            if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+            return -1;    
+        }
+    }
+    
+    ifnTrazasLog( modulo, "saliendo de %s ( Cola Wait )", LOG02, szgCodProceso );
+    return 0;
+}
+/* ==================================================================================================== */
+/* ==================================================================================================== */
+/*  ifnRDicom() : Ejecuta las acciones que correspondan para rechazos de Dicom   						*/
+/* ==================================================================================================== */
+int ifnRechazosDicom( char* szDescError, long lSeqProceso )
+{
+/*
+	Funcion			:	ifnRechazosDicom.
+	Descripcion		:	Procesa archivos de rechazos DICOM, los registros procesados exitosamente se
+						insertan en la tabla co_rdicomdoc, en caso contrario se agregan al archivo
+						de registro de errores del proceso en curso.
+	Parametros		:	szDescError		Cadena de retorno de la descripcion del error, en la funcion (IN/OUT).
+					lSeqProceso		Numero de secuencia del proceso.
+	Retorno			:	0			OK.
+					1			Error en la funcion.
+					-1			Error grave en el proceso dicom. 
+*/
+	EXEC SQL BEGIN DECLARE SECTION;
+	 
+      	char 	szhArchProc[51];   		EXEC SQL VAR szhArchProc	IS STRING(51);
+        long	lhSeqProceso;
+		int		ihSwBueno;                   
+		double	dhMtoBuenos;              
+		char	szhRowid[19];
+		td_DatRzoDicom 	sthDatRzoDicom[ARRAY_RZODICOM];   
+		td_Archivos 	stArchivosDirectorio[30];    
+    EXEC SQL END DECLARE SECTION;        
+
+	char	szNumIdent[iLENNUMIDENT], szDigVerif[2], szCodReczo[6], szNomMaest[61], szCodCerti[6], szNumFolio[17], szImpDeuda[11];
+
+	char	szIniProc[9], szFinProc[9], szTmpProc[9];
+    int 	iDifSegs = 0, ihFlgError = 0;
+    
+    FILE	*fpArchivos = (FILE*) NULL;      
+    FILE	*fpArchivoTrab = (FILE*) NULL;      
+    FILE	*fpArchivoErrores = (FILE*) NULL;      
+    
+    char	szArchivos[100], szPathTrabajo[100], szhArchivoLeido[100], szArchivoErrores[100], szArchivoTrabajo[100];
+    char	szComando[100], szRecord[iTamReg];
+    long	j, i, lTotalArch = 0, lTotalReg = 0;
+    int     iError, ilong, rr;
+    char 	modulo[] = "ifnRechazosDicom";
+    
+	lhSeqProceso = lSeqProceso;    
+
+    ifnTrazasLog( modulo, "Iniciando Proceso Rechazos Dicom [%s].", LOG03, modulo );  
+    
+    sprintf(szIniProc,"%s",szSysDate("HH24:MI:SS"));
+
+    /* aca llamamos la shell de recuperacion de archivos */
+    ifnTrazasLog( modulo, "Parametros SHELL GetArchRechDicom.sh. [%d] [%s] [%s]", 
+    						LOG03, stStatus.iLogNivel, szgCodProceso, szArchivoLog );
+
+    memset(szComando,'\0',sizeof(szComando));
+    sprintf(szComando,"%s/GetArchRechDicom.sh %d %s >> %s", getenv("XPC_KSH"), stStatus.iLogNivel, szgCodProceso, szArchivoLog );
+    ifnTrazasLog(modulo,"%s",LOG05,szComando);  
+    if ( system(szComando) ) 
+    {
+        ifnTrazasLog( modulo, "FALLO LA SHELL DE RECUPERACION DE ARCHIVOS DE RECHAZOS DICOM", LOG01, szComando );  
+        return -1;
+    }
+
+	memset( szPathTrabajo, '\0', sizeof( szPathTrabajo ) );
+	memset( szArchivos, '\0', sizeof( szArchivos ) );
+
+	/* se define el directorio de trabajo */
+	sprintf( szPathTrabajo,"%s/%s/rechazos/", getenv("XPC_DAT"), szgCodProceso ); 
+
+    ilong = strlen(szPathTrabajo) - 1;
+    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szPathTrabajo[rr] != ' ') break ;
+    szPathTrabajo[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+    ifnTrazasLog( modulo, "Path de trabajo actual [%s].", LOG03, szPathTrabajo );  
+	    
+    /* abrimos el archivo que contiene los nombres de los archivos del directorio a procesar, lo crea la shell */
+    sprintf( szArchivos, "%sArchivos.dat", szPathTrabajo );
+    
+    if( ( fpArchivos = fopen( szArchivos, "r" ) ) == (FILE*)NULL )
+    {    
+        ifnTrazasLog( modulo, "Error al abrir Archivo [%s].", LOG03, szArchivos );  
+        return 1;  
+    }
+
+	/* recuperamos todos los archivos, que se encuentren a procesar en el directorio */
+	iError = 0;
+	i = 0;
+
+	memset( &stArchivosDirectorio, 0, sizeof( td_Archivos ) );    
+
+	while( fscanf( fpArchivos, "%s", szhArchivoLeido ) != EOF )
+	{
+	    ilong = strlen(szhArchivoLeido) - 1;
+	    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szhArchivoLeido[rr] != ' ' || szhArchivoLeido[rr] != '\0' ) break;
+	    szhArchivoLeido[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+			strcpy( stArchivosDirectorio[lTotalArch++].szNomArchivo, szhArchivoLeido );
+		ifnTrazasLog( modulo, "Nombre de archivo recuperado [%s].", LOG03, szhArchivoLeido );  
+    } /* while( 1 ) */  
+    
+    fclose( fpArchivos );
+    
+    if( iError == 1 )
+    	return 1;		/* se sale, no procesa archivos de rechazos */
+		
+	/* recorremos la estructura con los nombres de archivos del directorio */
+	for( i = 0; i < lTotalArch; i++ )
+	{
+	    iError = 0;
+	    
+		memset( &sthDatRzoDicom, 0, sizeof( td_DatRzoDicom ) );
+		
+        /* tratamos de abrir archivo de rechazos */
+		memset( szArchivoTrabajo, '\0', sizeof( szArchivoTrabajo ) );
+        sprintf( szArchivoTrabajo, "%s%s", szPathTrabajo, stArchivosDirectorio[i].szNomArchivo );					
+	    if( ( fpArchivoTrab = fopen( szArchivoTrabajo, "r" ) ) == (FILE*)NULL )
+	    {    
+            ifnTrazasLog( modulo, "Error al abrir Archivo [%s].", LOG03, szArchivoTrabajo );  
+	        continue;    	/* sigue con el siguiente archivo, si existe */
+	    }
+		                    
+		/* llenamos la estructura, con los registros del archivo leido */
+        ifnTrazasLog( modulo, "Llenando la estructura a partir del Archivo [%s]", LOG05, szArchivoTrabajo );  
+		lTotalReg = 0;
+		memset( &sthDatRzoDicom, 0, sizeof( td_DatRzoDicom ) );   
+                                              
+        while( 1 )
+        {
+	        memset( szRecord, '\0', sizeof( szRecord ) );
+            if ( (char *)NULL == fgets( szRecord, iTamReg * 2, fpArchivoTrab ) ) 
+            {   
+                if( feof( fpArchivoTrab ) )
+                {
+                    ifnTrazasLog(modulo,"Alcanzado Fin de Archivo [%s].", LOG05, szArchivoTrabajo );  
+                    break;
+                }
+                else 
+                {
+                    ifnTrazasLog( modulo, "en la lectura del Archivo [%s].", LOG01, szArchivoTrabajo );  
+                    iError = 1;   /* se procesa siguiente archivo */ 
+                    break;
+                }
+            }
+            else 
+            {
+			    szRecord[iTamReg] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+                j = strlen( szRecord );
+                ifnTrazasLog( modulo, "Largo del Registro Leido [%d]", LOG05, j ); 
+                if ( j < iTamReg - 1 )
+                {
+                    ifnTrazasLog( modulo, "Registro con menos caracteres de lo esperado [%s]", LOG05, szRecord );  
+                }
+                else if ( j > iTamReg )
+                {
+                    ifnTrazasLog( modulo, "Registro con mas caracteres de lo esperado [%s]", LOG05, szRecord );  
+                }
+                else	/* traspasamos datos a variables */
+                {
+                    ifnTrazasLog( modulo, "Registro a procesar [%s]", LOG05, szRecord );  
+
+					memset( szNumIdent, '\0', sizeof( szNumIdent ) );
+                    memset( szDigVerif, '\0', sizeof( szDigVerif ) );
+                    memset( szNomMaest, '\0', sizeof( szNomMaest ) );
+                    memset( szCodCerti, '\0', sizeof( szCodCerti ) );
+                    memset( szNumFolio, '\0', sizeof( szNumFolio ) );
+                    memset( szImpDeuda, '\0', sizeof( szImpDeuda ) );
+                    memset( szCodReczo, '\0', sizeof( szCodReczo ) );
+                                          		
+                    strncpy( szNumIdent, &szRecord[0], 9 );
+                    strncpy( szDigVerif, &szRecord[9], 1 );
+                    strncpy( szNomMaest, &szRecord[79],60 );
+                    strncpy( szCodCerti, &szRecord[139],3 );
+                    strncpy( szNumFolio, &szRecord[142],16 );
+                    strncpy( szImpDeuda, &szRecord[160],12 );
+                    strncpy( szCodReczo, &szRecord[174],2 );
+                       
+				    ilong = strlen(szNumIdent) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szNumIdent[rr] != ' ' || szNumIdent[rr] != '\0' ) break;
+				    szNumIdent[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+	
+				    ilong = strlen(szDigVerif) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szDigVerif[rr] != ' ' || szDigVerif[rr] != '\0' ) break;
+				    szDigVerif[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+	
+				    ilong = strlen(szNomMaest) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szNomMaest[rr] != ' ' || szNomMaest[rr] != '\0' ) break;
+				    szNomMaest[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+	
+				    ilong = strlen(szCodCerti) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szCodCerti[rr] != ' ' || szCodCerti[rr] != '\0' ) break;
+				    szCodCerti[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+	
+				    ilong = strlen(szNumFolio) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szNumFolio[rr] != ' ' || szNumFolio[rr] != '\0' ) break;
+				    szNumFolio[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+				    ilong = strlen(szImpDeuda) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szImpDeuda[rr] != ' ' || szImpDeuda[rr] != '\0' ) break;
+				    szImpDeuda[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+				    ilong = strlen(szCodReczo) - 1;
+				    for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szCodReczo[rr] != ' ' || szCodReczo[rr] != '\0' ) break;
+				    szCodReczo[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+                    sprintf( sthDatRzoDicom[lTotalReg].szNumIdent,"%d-%1s", atol(szNumIdent), szDigVerif );
+                    sprintf( sthDatRzoDicom[lTotalReg].szNomMaest,"%s\0", szNomMaest );
+                    sprintf( sthDatRzoDicom[lTotalReg].szCodCertif,"%s\0", szCodCerti );
+                    sthDatRzoDicom[lTotalReg].lNumFolio   = atol( szNumFolio );
+					sthDatRzoDicom[lTotalReg].dMontoDocto = atof( szImpDeuda );                                      
+					sprintf( sthDatRzoDicom[lTotalReg].szCodRechazo, "%s\0", szCodReczo );                                      
+					sprintf(sthDatRzoDicom[lTotalReg].szRegistro, "%s", szRecord );                                      
+	                lTotalReg++;
+                }
+            } /* if ( (char *)NULL == fgets( szRecord, iTamReg, fpArchivoTrab ) ) */
+        }/* while( 1 ) */
+        
+		if( iError == 1 )
+			continue;		/* procesamos siguiente archivo */
+			
+        /* procesamos los registros contenidos en la estructura */
+        for( j = 0; j < lTotalReg; j++ )
+        { 
+			iError = 0;
+			ihSwBueno = 0;
+			dhMtoBuenos = 0;                                
+			
+            ifnTrazasLog( modulo, 	"Datos a procesar Registro [%d]\n"
+									"sthDatRzoDicom.szNumIdent[]  = %s,\n"
+									"sthDatRzoDicom.szNomMaest[]  = %s,\n"
+									"sthDatRzoDicom.szCodCertif[] = %s,\n"
+									"sthDatRzoDicom.lNumFolio[]   = %d,\n"
+									"sthDatRzoDicom.dMontoDocto[] = %0.f,\n"
+									"sthDatRzoDicom.szCodRechazo[]= %s,\n"
+									"sthDatRzoDicom.szRegistro[]  = %s,\n",
+									LOG03,                        
+									j,
+									sthDatRzoDicom[j].szNumIdent,
+									sthDatRzoDicom[j].szNomMaest,
+									sthDatRzoDicom[j].szCodCertif,
+									sthDatRzoDicom[j].lNumFolio,  
+									sthDatRzoDicom[j].dMontoDocto,
+									sthDatRzoDicom[j].szCodRechazo,
+									sthDatRzoDicom[j].szRegistro );
+
+			/* verificamos si el documento esta en la CO_DICOMDOC */
+			EXEC SQL
+			SELECT 	ROWIDTOCHAR(ROWID)  
+			INTO	:szhRowid
+			FROM	CO_DICOMDOC
+			WHERE	NUM_IDENT	 = :sthDatRzoDicom[j].szNumIdent
+			AND     NUM_FOLIO	 = :sthDatRzoDicom[j].lNumFolio
+			AND     IMPORTE_DEBE = :sthDatRzoDicom[j].dMontoDocto;
+
+            if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+            {
+                sprintf( szDescError, "Fallo SELECT CO_DICOMDOC." );
+                ifnTrazasLog( modulo, "Fallo SELECT CO_DICOMDOC. Num_Ident [%s]. %s.", 
+                					  LOG00, sthDatRzoDicom[j].szNumIdent, SQLERRM );
+                if( SQLCODE == 1012 )
+					iError = -1;		/* error grave se para proceso */
+                else
+                	iError = 1;			/* error con el cliente */
+            
+            	break;
+			}
+			else if( SQLCODE != SQLNOTFOUND )
+			{
+                ifnTrazasLog(modulo, "Documento Encontrado. Rowid.", LOG03 );
+
+	            /* lo tratamos de insertar en la CO_RDICOCMDOC */
+	            EXEC SQL 
+	            INSERT INTO 
+	            CO_RDICOMDOC
+	            ( 	NUM_IDENT, 		COD_TIPIDENT, 		COD_CLIENTE, 		NUM_ABONADO, 	
+	            	NUM_FOLIO,		COD_TIPDOCUM, 		NUM_CUOTAS, 		SEC_CUOTA, 		
+	            	FEC_VENCIMIE, 	FEC_EFECTIVIDAD, 	IMPORTE_DEBE,       IMPORTE_HABER, 
+	            	FEC_ALTA, 		NUM_PROCESO, 		COD_ESTADO, 		FEC_ESTADO, 
+	            	FEC_RECHAZO,	NOM_USUARIO,		COD_RECHAZO,
+	            	NOM_DICOM,		COD_ORIGEN 			
+	            )
+					SELECT 
+					NUM_IDENT, 		COD_TIPIDENT, 		COD_CLIENTE, 		NUM_ABONADO, 	
+					NUM_FOLIO,		COD_TIPDOCUM, 		NUM_CUOTAS, 		SEC_CUOTA, 		
+					FEC_VENCIMIE, 	FEC_EFECTIVIDAD, 	IMPORTE_DEBE,       IMPORTE_HABER, 
+					FEC_ALTA, 		:lhSeqProceso, 		'I', 				SYSDATE, 
+					SYSDATE,		USER,				:sthDatRzoDicom[j].szCodRechazo,
+					:sthDatRzoDicom[j].szNomMaest,		TO_NUMBER(:sthDatRzoDicom[j].szCodCertif)
+					FROM	CO_DICOMDOC
+					WHERE	ROWID	= CHARTOROWID(:szhRowid);
+			            
+	            if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	            {
+	                sprintf( szDescError, "Rechazos Dicom. Fallo Insert en tabla CO_RDICOMDOC." );
+	                ifnTrazasLog(modulo, "Rechazos Dicom. Num_Ident [%s], Fallo Insert en tabla CO_RDICOMDOC. %s.", 
+	                					 LOG00, sthDatRzoDicom[j].szNumIdent, SQLERRM );
+	                if( SQLCODE == 1012 )
+						iError = -1;		/* error grave se para proceso */
+	                else
+	                	iError = 1;			/* error con el cliente */
+
+                	break;
+	            }
+			            
+				EXEC SQL 
+				DELETE 	FROM CO_DICOMDOC
+				WHERE	ROWID	= CHARTOROWID(:szhRowid);
+
+	            if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	            {
+	                sprintf( szDescError, "Rechazos Dicom. Fallo Delete de CO_DICOMDOC." );
+	                ifnTrazasLog(modulo, "Rechazos Dicom. Fallo Delete de CO_DICOMDOC. %s.", LOG00, SQLERRM );
+	                if( SQLCODE == 1012 )
+					{
+						iError = -1;		/* error grave se para proceso */
+						break;
+					}
+	                else
+	                	iError = 1;			/* error con el cliente */
+	            }
+				else
+				{
+					ihSwBueno = 1;                   
+					dhMtoBuenos = sthDatRzoDicom[j].dMontoDocto;
+				}
+        	}
+            else	/* el documento no esta en la CO_DICOMDOC, lo marcamos para insertar en archivo de errores */
+            	iError = 1;         
+            	
+			ifnTrazasLog( modulo, "Valores antes de transformer dhMtoBuenos = [%.4f].", LOG06, dhMtoBuenos );  
+			dhMtoBuenos = fnCnvDouble( dhMtoBuenos, 0 );
+			ifnTrazasLog( modulo, "Valores despues de transformer dhMtoBuenos = [%.4f].", LOG06, dhMtoBuenos );
+
+			/* se registra en la co_archivos */            	
+            EXEC SQL 
+            UPDATE CO_ARCHIVOS
+            SET    TOT_REGISTROS = TOT_REGISTROS + 1,
+                   REG_BUENOS    = REG_BUENOS + :ihSwBueno,
+                   MTO_BUENOS    = MTO_BUENOS + :dhMtoBuenos
+            WHERE  NUM_PROCESO 	 = :lhSeqProceso
+            AND    COD_PROCESO 	 = 'RDICO'
+            AND    NOM_ARCHIVO   = :stArchivosDirectorio[i].szNomArchivo
+            AND    COD_ENTIDAD   = 'DICOM';
+            
+            if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+            {
+                sprintf( szDescError, "Rechazos Dicom. Fallo actualizacion de la tabla CO_ARCHIVOS" );
+                ifnTrazasLog( modulo, "Rechazos Dicom. Fallo actualizacion de la tabla CO_ARCHIVOS %s", LOG00, SQLERRM );
+				iError = -1;		/* error grave se para proceso */
+				break;
+            }
+            else if ( SQLCODE == SQLNOTFOUND )
+            {   
+            	/* no existe registro para el archivo en la tabla. Lo creamos ahora */
+                EXEC SQL
+                INSERT INTO CO_ARCHIVOS
+                (
+                    NUM_PROCESO	,	COD_PROCESO	,	FEC_PROCESO,
+                    COD_ENTIDAD	,   NOM_ARCHIVO	,   TOT_REGISTROS,
+                    REG_BUENOS	,   MTO_BUENOS	,   NOM_USUARIO
+                )
+                VALUES
+                (
+ 					:lhSeqProceso,	'RDICO',								SYSDATE,
+                    'DICOM'		,   :stArchivosDirectorio[i].szNomArchivo, 	1,
+                    :ihSwBueno	,	:dhMtoBuenos,   						USER
+                );
+                if ( SQLCODE )
+                {
+                    sprintf( szDescError, "Rechazos Dicom. Fallo insercion en la tabla CO_ARCHIVOS" );
+                    ifnTrazasLog( modulo, "Rechazos Dicom. Fallo insercion en CO_ARCHIVOS Proceso [RDICO], Archivo [%s], %s.", 
+                    					   LOG00, stArchivosDirectorio[i].szNomArchivo, SQLERRM );
+					iError = -1;		/* error grave se para proceso */
+					break;
+                }
+            } /* if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) */
+
+	        if( !bfnOraCommit() )    
+	        {    
+	            ifnTrazasLog( modulo, "En Commit Rechazos Dicom : %s", LOG00, SQLERRM );
+	            if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+	            iError = -1;    
+	            break;
+	        }
+
+			if( iError == 1 )	/* el cliente registro error en proceso, va a archivo auxiliar de errores */        
+			{
+				memset( szArchivoErrores, '\0', sizeof( szArchivoErrores ) );
+		        /* tratamos de abrir archivo de errores */
+		        sprintf( szArchivoErrores, "%sRechazoMovil_%d.dat", szPathTrabajo, lhSeqProceso );					
+			    if( ( fpArchivoErrores = fopen( szArchivoErrores, "a" ) ) == (FILE*)NULL )
+			    {    
+		            ifnTrazasLog( modulo, "Error al abrir Archivo de Errores [%s].\n"
+		            					  "Registro [%s].", 
+		            					  LOG03, szArchivoErrores, sthDatRzoDicom[j].szRegistro );  
+					break;
+			    }
+			    else
+			    {
+			    	fprintf( fpArchivoErrores, "%s", sthDatRzoDicom[j].szRegistro );                                      
+					fclose( fpArchivoErrores );							    
+				} /* if( ( fpArchivoErrores = fopen( szArchivoErrores, "a" ) ) == (FILE*)NULL ) */	
+			
+				iError = 0;
+			}
+             
+        } /* for( j = 0; j < lTotalReg; j++ ) */
+        
+		fclose( fpArchivoTrab );
+		
+		if( iError < 0 )
+			/* ocurrio un error grave, se termina proceso */
+			return -1;              
+		else 
+		{
+			/* se comprime el archivo, todo se proceso */
+		    if( iError == 0 )
+		    {
+			    sprintf( szComando, "compress %s", szArchivoTrabajo );
+			    if( system( szComando ) != 0 ) 
+			    {
+			        ifnTrazasLog( modulo, "Error al intentar comprimir archivo [%s].", LOG03, szArchivoTrabajo );  
+			        fprintf( stderr, "Error al intentar comprimir archivo [%s].", szArchivoTrabajo );
+			        return -1;
+		    	}
+		    } 	/* if( iError == 0 ) */
+		} /* if( iError < 0 ) */
+			
+	} /* for( i = 0; i < lTotalArch; i++ ) */  
+	
+    sprintf(szFinProc,"%s",szSysDate("HH24:MI:SS"));
+    
+    /* Informacion Estadistica */
+    if( ( iDifSegs = ifnRestaHoras( szIniProc, szFinProc, szTmpProc ) ) >= 0 )
+    {
+        ifnTrazasLog(modulo,"\n\t RESUMEN DEL PROCESO RDICO"
+                            "\n\t       HORA INICIO  : %s "
+                            "\n\t       HORA TERMINO : %s "
+                            "\n\t       TIEMPO TOTAL : %s  (%d segs)"
+                            "\n",EST00
+                            ,szIniProc,szFinProc,szTmpProc,iDifSegs);
+    }
+
+    ifnTrazasLog( modulo, "Saliendo de [%s]", LOG05, modulo );
+
+	return 0;
+} /* int ifnRDicom(char* szDescError, long lSeqProceso ) */
+
+/* ==================================================================================================== */
+/* ==================================================================================================== */
+/*  ifnDicom() : Ejecuta las acciones que correspondan                           						*/
+/* ==================================================================================================== */
+int ifnDicom( char* szDescError, long lSeqProceso )
+{
+    char 	modulo[] = "ifnDicom";
+	int 	j,iSqlAuxStatus;
+    long 	lTotalRows = 0,lRowsThisLoop = 0,lRowsProcessed = 0;
+	char	szIniProc[9], szFinProc[9], szTmpProc[9];
+    int 	iDifSegs = 0, ihFlgError = 0;
+    char 	szComando[512];
+    int 	ilong = 0,rr 	= 0;
+	char	szRetorno[100];
+
+	EXEC SQL BEGIN DECLARE SECTION;
+    	long 	lhSeqProceso;
+        char 	szhCodMovimiento[6]; 	EXEC SQL VAR szhCodMovimiento IS STRING(6);
+	    char 	szhNumIdent[iLENNUMIDENT]; 		EXEC SQL VAR szhNumIdent IS STRING(iLENNUMIDENT);
+	   	td_Movtos_Clientes  sthMovtosClientes;   	/* host array para los movimientos de los clientes */
+       	char	szhNumIdentAux[iLENNUMIDENT];		EXEC SQL VAR szhNumIdentAux IS STRING(iLENNUMIDENT);
+		char	szDigVerif[2];			EXEC SQL VAR szDigVerif IS STRING(2);
+		double	dhMontoMinimoDeuda = 0;
+		int		ihDiasVenc     	= 0;                    
+		int     ihCntClientes =0; /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+    EXEC SQL END DECLARE SECTION;
+
+    lhSeqProceso = lSeqProceso;
+	ifnTrazasLog( modulo,"Iniciando Proceso Dicom en %s",LOG05,modulo);
+
+	EXEC SQL
+	SELECT  VAL_NUMERICO
+	INTO    :ihDiasVenc
+	FROM    FAD_PARAMETROS
+	WHERE   COD_PARAMETRO = 3
+	AND     TIP_PARAMETRO = 'NUMBER'
+	AND     COD_MODULO    = 'CO';                          
+
+    if( SQLCODE != SQLOK )
+    {
+        sprintf( szDescError, "Error FAD_PARAMETROS %s", SQLERRM);
+        ifnTrazasLog( modulo, "Error FAD_PARAMETROS %s", LOG00, SQLERRM );
+        return -1; /*Mail*/
+    }
+
+	EXEC SQL
+	SELECT  VAL_NUMERICO
+	INTO    :dhMontoMinimoDeuda
+	FROM    FAD_PARAMETROS
+	WHERE   COD_PARAMETRO = 4
+	AND     TIP_PARAMETRO = 'NUMBER'
+	AND     COD_MODULO    = 'CO';                          
+    
+    if( SQLCODE != SQLOK )
+    {
+        sprintf( szDescError, "Error FAD_PARAMETROS %s", SQLERRM);
+        ifnTrazasLog( modulo, "Error FAD_PARAMETROS %s", LOG00, SQLERRM );
+        return -1; /*Mail*/
+    }
+    
+    /* actualizamos inconsistencias debido a un termino abrupto del programa */
+    /* lo que puede dejar como resultado algun cliente en estado de proceso */
+    /* campo COD_MOVIMIENTO = 'EP' en la tabla CO_DICOM */
+	EXEC SQL
+	UPDATE CO_DICOM
+	   SET COD_MOVIMIENTO = 'M'
+	 WHERE COD_MOVIMIENTO = 'EP';
+	
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		sprintf( szDescError, "Error al actualizar inconsistencias CO_DICOM => [%s].", SQLERRM );
+		ifnTrazasLog( modulo, "Error al actualizar inconsistencias CO_DICOM => [%s].", LOG00, SQLERRM );
+		return -1;
+	}
+
+    /*-- (3) --*/
+    EXEC SQL
+    DECLARE curMOVTOS CURSOR FOR
+    SELECT  NUM_IDENT, COD_TIPIDENT
+    FROM 	CO_DICOM
+    WHERE 	COD_MOVIMIENTO != 'SM';
+    
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        sprintf(szDescError,"Fallo la declaracion del cursor de rut con movimientos %s",SQLERRM);
+        ifnTrazasLog(modulo,"Declare curMOVTOS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+
+    EXEC SQL 
+    OPEN curMOVTOS;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        sprintf(szDescError,"Fallo la apertura del cursor de rut con movimientos %s",SQLERRM);
+        ifnTrazasLog(modulo,"Open curMOVTOS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+    
+    ihFlgError = 0;
+    strcpy( szhCodMovimiento, "M" ); /* define valor inicial != NULL , por si acaso */
+    
+    while (1) 
+    {
+        EXEC SQL 
+        FETCH curMOVTOS
+        INTO :sthMovtosClientes;   
+        
+        iSqlAuxStatus = SQLCODE;
+            
+        if(iSqlAuxStatus != SQLOK && iSqlAuxStatus != SQLNOTFOUND)
+        {
+            sprintf(szDescError,"Fallo el fetch del cursor de rut con movimientos");
+            ifnTrazasLog(modulo,"Fetch curMOVTOS [%d] %s",LOG00, iSqlAuxStatus, SQLERRM);
+            ihFlgError = 1; /*NoMail*/
+            break;
+        }
+
+        lTotalRows = SQLROWS;    /* Total de filas recuperadas */
+    	lRowsThisLoop = (lTotalRows - lRowsProcessed );    /* filas recuperadas en esta iteracion (Total-Procesadas) */
+
+        /* procesa solo los clientes recuperados en este fetch */
+        ifnTrazasLog( modulo, "lTotalRows : %ld   lRowsThisLoop : %ld", LOG05, lTotalRows, lRowsThisLoop );
+        ihFlgError = 0;
+        for( j = 0; j < lRowsThisLoop; j++ ) 
+        {   
+            ihFlgError = ifnProcesaClienteSM ( 	lhSeqProceso
+                                             , 	sthMovtosClientes.szNumIdent[j]
+                                             , 	sthMovtosClientes.szCodTipIdent[j]
+                                             ,  szhCodMovimiento  /*XC-51*/ /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+                                             ,	ihDiasVenc
+                                             ,	dhMontoMinimoDeuda
+                                             ,  &ihCntClientes     /*XC-51*/ /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+                                             , 	szDescError );
+                                
+	   ifnTrazasLog(modulo,"ihCntClientes DESPUES : %d",LOG05,ihCntClientes);                                
+            if (ihFlgError < 1 ) /* Si no hay que continuar con el siguiente cliente */
+            {
+                iSqlAuxStatus = SQLNOTFOUND ; /* Lo forzamos a salir del While */
+                break; /* lo forzamos a salir del for con 0 o -1 */
+            }
+            else if ( ihFlgError == 1 ) /* continue , pero cambia estado antes */
+            {
+				/* se asume que entro aca, porque no tiene documentos actuales u ocurrio 	*/
+				/* un error no grave para el proceso, se continua con el siguiente cliente 	*/
+				/* pero antes se deshace cualquier operacion SQL DLL, hecha para el Rut		*/
+				/* se deja sin modificaciones para el proceso actual						*/			        
+				EXEC SQL ROLLBACK;
+			    if ( SQLCODE )
+			    {
+			        sprintf( szDescError, "Fallo ROLLBACK, ihFlgError = 1");
+			        ifnTrazasLog( modulo, "Fallo ROLLBACK ihFlgError = 1 [%s]", LOG00, SQLERRM );
+			        break; /* continue; Toma al Siguiente Cliente */
+			    }
+
+				sprintf( szhNumIdent, "%s\0", sthMovtosClientes.szNumIdent[j] ); 	/* jlr_16.03.01 */
+				ilong = strlen( szhNumIdent ) - 1;
+				for( rr = ilong; rr >= 0; rr-- ) if ( szhNumIdent[rr] != ' ' || szhNumIdent[rr] != '\0' ) break;
+				szhNumIdent[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+                EXEC SQL
+                UPDATE 	CO_DICOM
+                SET     COD_MOVIMIENTO  = :szhCodMovimiento,				/*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+		CNT_CLIENTES    = :ihCntClientes       /*20040706 XC-51  capc */        /*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+		WHERE   NUM_IDENT       = RTRIM(:szhNumIdent)                           /*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+                AND  	COD_TIPIDENT 	= :sthMovtosClientes.szCodTipIdent[j];
+                
+                if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+                {
+                    sprintf(szDescError,"Fallo UPDATE3 de CO_DICOM %s",SQLERRM);
+                    ifnTrazasLog(modulo,"Update3 CO_DICOM %s",LOG00,SQLERRM);
+                    ihFlgError = -1;/*Mail*/
+                    break; /* rompe el ciclo por error grave */
+                }
+    			else if (SQLCODE == SQLNOTFOUND )
+    			{
+                    ifnTrazasLog(modulo,"Update3 CO_DICOM Rut[%s] TipIdent[%s] : %s", LOG03,
+					szhNumIdent, sthMovtosClientes.szCodTipIdent[j], SQLERRM );
+					return 0;        
+                }
+            }
+            /* else if ( ihFlgError == 2 ) mismo que opcion 1, pero aca no se hizo nada con el cliente */    
+            EXEC SQL COMMIT;
+		    if ( SQLCODE )
+		    {
+		        EXEC SQL ROLLBACK;
+		        sprintf(szDescError,"Fallo COMMIT 2");
+		        ifnTrazasLog(modulo,"Segundo COMMIT %s",LOG00,SQLERRM);
+		        break; /* continue; Toma al Siguiente Cliente */
+		    }
+
+            ihFlgError = 0; /* setea termino normal siempre, aunque vaya por otro cliente */
+        } /* endfor */
+
+        lRowsProcessed = lTotalRows;	/* Resetea Contador, Total las filas recuperadas se han procesado */
+        if(iSqlAuxStatus == SQLNOTFOUND)
+        {
+            sprintf(szDescError,"Alcanzado el fin de datos");
+            ifnTrazasLog(modulo,"Alcanzado fin de datos [%ld]Procesados ",LOG05,lRowsProcessed );
+            break; /* se terminaron los clientes de este punto de Gestion */
+        }
+
+    } /* End While */
+    
+    EXEC SQL CLOSE curMOVTOS;    
+
+    ifnTrazasLog(modulo,"saliendo de %s",LOG05,modulo);
+
+    if (ihFlgError) /* !=0 ocurrio un error */
+    {
+        return ihFlgError;
+    }
+
+    return 0; 
+}
+
+/* ============================================================================= */
+int ifnProcesaClienteSM( long Secuencia, char *szNumIdent, char *szCodTipIdent, 
+                         char *szMovimiento, int iDiasVenc, double dDeudaMin, int *iCntClientes, char* szDescError ) /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+{
+    char modulo[]="ifnProcesaClienteSM";
+
+     int 	ihFlgActiva = 0, ihFlgError = 0, iRutStgo, ihCntClientes=0;  /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+    long 	lTotDocCartera = 0, lTotDocDicom = 0, lCntCartera = 0, lCntDicom = 0, CntAux = 0;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		long 	lhSeqProceso           = 0 ;
+		char 	szhNumIdent[iLENNUMIDENT]        = ""; 	EXEC SQL VAR szhNumIdent IS STRING(iLENNUMIDENT);
+		char 	szhCodTipIdent[3]      = ""; 	EXEC SQL VAR szhCodTipIdent IS STRING(3);
+		char 	szhCodMovimiento[6]    = ""; 	EXEC SQL VAR szhCodMovimiento IS STRING(6);
+		char 	szhCodEntidad[6]       = ""; 	EXEC SQL VAR szhCodEntidad IS STRING(6);
+		char 	szhCodEnvioOrig[2]     = ""; 	EXEC SQL VAR szhCodEnvioOrig IS STRING(2);
+		char 	szhFecMovtoOrig[15]    = ""; 	EXEC SQL VAR szhFecMovtoOrig IS STRING(15);
+		long	lhCodCuenta			   = 0 ;	
+		char 	szhProc[50]       = ""; 	EXEC SQL VAR szhProc IS STRING(50);
+		char 	szhUsuario[50]       = ""; 	EXEC SQL VAR szhUsuario IS STRING(50);
+		char 	szhQueryPL[1024]       = ""; 	EXEC SQL VAR szhQueryPL IS STRING(1024);
+     
+		
+		/* hosts array utilizados para los datos de la CO_CARTERA */
+		long 	lhCodCliente[ARRAY_DOCS];
+		long 	lhNumAbonado[ARRAY_DOCS];
+		long 	lhNumFolio[ARRAY_DOCS];
+		int 	ihCodTipDocum[ARRAY_DOCS];
+		long 	lhNumCuota[ARRAY_DOCS];
+		int 	ihSecCuota[ARRAY_DOCS];
+		char 	szhFecVencimie[ARRAY_DOCS][9];
+		char 	szhFecEfectividad[ARRAY_DOCS][9];
+		double  dhImporteDebe[ARRAY_DOCS];
+		double  dhImporteHaber[ARRAY_DOCS];
+		int 	bInsertarDicomDoc[ARRAY_DOCS];
+      	char	szhIndInforma[ARRAY_DOCS][2];
+      			
+		/* hosts array utilizados para los datos de la CO_DICOMDOC y CO_RDICOMDOC */
+		long 	lhCodClienteAux[ARRAY_AUX];
+		long 	lhNumAbonadoAux[ARRAY_AUX];
+		long 	lhNumFolioAux[ARRAY_AUX];
+		int 	ihCodTipDocumAux[ARRAY_AUX];
+		long 	lhNumCuotaAux[ARRAY_AUX];
+		int 	ihSecCuotaAux[ARRAY_AUX];
+		char 	szhFecVencimieAux[ARRAY_AUX][9];
+		double 	dhImporteDebeAux[ARRAY_AUX];
+		char 	szhFecAlta[ARRAY_AUX][9];
+		int 	bInsertarHistoria[ARRAY_AUX];	
+		char 	szhProcedencia[ARRAY_AUX][2];	
+      	char	szhIndInformaAux[ARRAY_AUX][2];
+      			
+		long 	lhTotalRegistros       = 0; 
+		double 	dhTotalMonto           = 0.0;
+		char 	szhNomArchivo[31]      = "" ; 	EXEC SQL VAR szhNomArchivo IS STRING(31);
+		char 	szhVarAux[9]           = "" ; 	EXEC SQL VAR szhVarAux IS STRING(9);
+		
+		int 	ihCastCont     	= 0;
+		int		ihDiasVenc     	= 0;                    
+		double	dhMontoMinimoDeuda = 0;
+		char	szRetorno[100]	= "";
+		
+		double 	dhMtoDeudAnt   = 0.0;
+		double 	dhSaldoVencido = 0.0;
+		double 	dhSaldoTotal   = 0.0;
+		int		ihCstgoContable =  0;
+
+    EXEC SQL END DECLARE SECTION;
+    
+    int 	ilong = 0, rr = 0, iCntDifer = 0, iSwError = 0;
+    long	lhCodClienteGes = 0;
+    char	szRutina[] = "P";
+    
+    lhSeqProceso 		= Secuencia;
+	ihDiasVenc 			= iDiasVenc;
+	dhMontoMinimoDeuda 	= dDeudaMin;
+	strcpy( szhCodEntidad, "DICOM" );
+	
+	memset ( &lhCodCliente     , 	0, sizeof( lhCodCliente      ) );
+	memset ( &lhNumAbonado     , 	0, sizeof( lhNumAbonado      ) );
+	memset ( &lhNumFolio       , 	0, sizeof( lhNumFolio        ) );	
+	memset ( &ihCodTipDocum    , 	0, sizeof( ihCodTipDocum     ) );
+	memset ( &lhNumCuota       , 	0, sizeof( lhNumCuota        ) );
+	memset ( &ihSecCuota       , 	0, sizeof( ihSecCuota        ) );
+	memset ( szhFecVencimie    ,  '\0', sizeof( szhFecVencimie    ) );
+	memset ( szhFecEfectividad ,  '\0', sizeof( szhFecEfectividad ) );
+	memset ( &dhImporteDebe    ,    0, sizeof( dhImporteDebe     ) );
+	memset ( &dhImporteHaber   ,    0, sizeof( dhImporteHaber    ) );
+	memset ( &bInsertarDicomDoc,    0, sizeof( bInsertarDicomDoc ) );
+
+	memset ( &lhCodClienteAux  , 	0, sizeof( lhCodClienteAux   ) ); 
+	memset ( &lhNumAbonadoAux  , 	0, sizeof( lhNumAbonadoAux   ) ); 
+	memset ( &lhNumFolioAux    , 	0, sizeof( lhNumFolioAux     ) ); 
+	memset ( &ihCodTipDocumAux , 	0, sizeof( ihCodTipDocumAux  ) ); 
+	memset ( &lhNumCuotaAux    , 	0, sizeof( lhNumCuotaAux     ) ); 
+	memset ( &ihSecCuotaAux    , 	0, sizeof( ihSecCuotaAux     ) ); 
+	memset ( szhFecVencimieAux ,  '\0', sizeof( szhFecVencimieAux ) );
+	memset ( &dhImporteDebeAux ,  '\0', sizeof( dhImporteDebeAux  ) );
+	memset ( szhFecAlta        ,    0, sizeof( szhFecAlta        ) );
+	memset ( &bInsertarHistoria,    0, sizeof( bInsertarHistoria ) );
+	memset ( szhProcedencia	   , '\0', sizeof( szhProcedencia ) );
+
+    /* Define el cliente de esta iteracion */        
+    strcpy ( szhNumIdent    , szNumIdent    );
+    strcpy ( szhCodTipIdent , szCodTipIdent ); 
+    
+    ilong = strlen(szhNumIdent) - 1;
+    for( rr = ilong; rr >= 0; rr = rr - 1 ) if (szhNumIdent[rr] != ' ') break ;
+    szhNumIdent[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+    ilong = strlen(szhCodTipIdent) - 1;
+    for( rr = ilong; rr >= 0; rr = rr - 1 ) if (szhCodTipIdent[rr] != ' ') break ;
+    szhCodTipIdent[rr + 1] = '\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+/*-(3.5)---------------------------------------------------------------------------------*/
+
+    ifnTrazasLog( modulo, "Procesando Num_Ident ===================> (%s)", LOG03, szhNumIdent );
+
+    EXEC SQL 
+    SELECT 	COD_ENVIO, 
+    		COD_MOVIMIENTO, 
+    		TO_CHAR(FEC_MOVIMIENTO,'DDMMYYYYHH24MISS'), 
+    		MTO_DEUDA,
+    		COD_CUENTA
+    INTO 	:szhCodEnvioOrig, 
+    		:szhCodMovimiento, 
+    		:szhFecMovtoOrig, 
+    		:dhMtoDeudAnt,
+    		:lhCodCuenta
+    FROM 	CO_DICOM
+    WHERE 	NUM_IDENT		= :szhNumIdent
+    AND  	COD_TIPIDENT 	= :szhCodTipIdent
+    FOR UPDATE;
+    
+    if ( SQLCODE )
+    {
+        sprintf(szDescError, "Fallo Select CodMovimiento de CO_DICOM" );
+        ifnTrazasLog( modulo, "Select CodMovimiento de CO_DICOM (rut:%s) %s", LOG00, szhNumIdent, SQLERRM );
+        return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+    
+		
+    strcpy( szMovimiento, szhCodMovimiento ); /* rbr ajuste */
+
+    /* mac 09-03-2004 Homologacion MA-201020030258  */
+    /*  Con esto no se tomaran en cuenta los Num_ident cuyos clientes tengan algun castigo contable */    
+    if ( strcmp( szhCodMovimiento, "M" ) == 0 || strcmp( szhCodMovimiento, "B" ) == 0 )
+    {
+	    EXEC SQL    	
+		SELECT COUNT(1)
+		  INTO :ihCastCont
+		  FROM GE_CLIENTES A
+		      ,CO_CARTERA B
+		WHERE A.NUM_IDENT = :szhNumIdent
+		  AND A.COD_TIPIDENT = :szhCodTipIdent 
+		  AND A.COD_CLIENTE = B.COD_CLIENTE
+		  AND B.COD_TIPDOCUM = :ihCstgoContable;
+		  
+	    if ( SQLCODE )
+	    {
+	        sprintf(szDescError, "Fallo Select CodMovimiento de GE_CLIENTES CO_CARTERA" );
+	        ifnTrazasLog( modulo, "Select CodMovimiento de GE_CLIENTES CO_CARTERA (rut:%s) %s", LOG00, szhNumIdent, SQLERRM );
+	        return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+	    }
+	    
+	    if ( ihCastCont > 0 )
+	    {
+	    	   strcpy( szMovimiento,"SM" );
+             return (1);	/* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+         }
+    }         
+/*-(4)---------------------------------------------------------------------------------*/
+
+	/* se rescatan los registros de la co_cartera */
+    EXEC SQL
+    DECLARE curCOCARTERA CURSOR FOR
+    SELECT  A.COD_CLIENTE,                           	       		             
+            1,                           	              
+            A.NUM_FOLIO,                             	              
+            A.COD_TIPDOCUM,                          	              
+            NVL(A.NUM_CUOTA,0),                      	              
+            NVL(A.SEC_CUOTA,0),                      	              
+            TO_CHAR(A.FEC_VENCIMIE,'YYYYMMDD'),      	              
+            TO_CHAR(TRUNC(A.FEC_EFECTIVIDAD),'YYYYMMDD'),   	              
+            SUM(A.IMPORTE_DEBE),                     	              
+            SUM(A.IMPORTE_HABER),                     	              
+            0, 
+            'N'
+    FROM 	CO_CARTERA A, GE_CLIENTES B, CO_DICOM C
+    WHERE 	C.NUM_IDENT 		= :szhNumIdent
+    AND   	C.COD_TIPIDENT 		= :szhCodTipIdent 
+	AND		C.COD_MOVIMIENTO   != 'B'
+    AND   	B.COD_TIPIDENT 		= :szhCodTipIdent 
+    AND 	B.NUM_IDENT 		= :szhNumIdent
+    AND   	A.COD_CLIENTE 		= B.COD_CLIENTE 
+	AND     A.IND_FACTURADO 	= 1
+	AND     A.FEC_VENCIMIE	    < TRUNC( SYSDATE ) - :ihDiasVenc  
+	AND	  	A.COD_TIPDOCUM IN (	SELECT	TO_NUMBER(COD_VALOR)
+								FROM	CO_CODIGOS
+								WHERE	NOM_TABLA 	= 'CO_DICOMDOC'
+								AND		NOM_COLUMNA = 'COD_TIPDOCUM' ) 
+	AND	  	A.NUM_FOLIO NOT IN (	SELECT	NUM_FOLIO
+									FROM	CO_CANCELADOS
+									WHERE	COD_CLIENTE = A.COD_CLIENTE
+									AND		NUM_FOLIO = A.NUM_FOLIO ) 
+    GROUP BY A.COD_CLIENTE, A.NUM_FOLIO, A.COD_TIPDOCUM,
+    		 A.NUM_CUOTA, A.SEC_CUOTA, A.FEC_VENCIMIE, TRUNC(A.FEC_EFECTIVIDAD)
+	HAVING	 SUM(A.IMPORTE_DEBE) >= :dhMontoMinimoDeuda AND SUM(A.IMPORTE_HABER) = 0;
+	    
+    ifnTrazasLog( modulo," DECLARE CO_CARTERA SQLCODE [%d]",LOG03,SQLCODE);
+    
+    if ( SQLCODE )
+    {
+        sprintf(szDescError,"Fallo la Declaracion del cursor de la COCARTERA");
+        ifnTrazasLog(modulo,"Declare curCOCARTERA %s",LOG00,SQLERRM);
+        return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+
+    EXEC SQL 
+    OPEN curCOCARTERA ;
+    ifnTrazasLog( modulo," OPEN CO_CARTERA SQLCODE [%d]",LOG03,SQLCODE);
+    if ( SQLCODE )
+    {
+        sprintf(szDescError,"Fallo la Apertura del cursor de la COCARTERA");
+        ifnTrazasLog( modulo, "Open curCOCARTERA %s", LOG00, SQLERRM );
+        return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+        
+    EXEC SQL
+    FETCH   curCOCARTERA
+    INTO    :lhCodCliente,           
+            :lhNumAbonado,           
+            :lhNumFolio,             
+            :ihCodTipDocum,          
+            :lhNumCuota,             
+            :ihSecCuota,             
+            :szhFecVencimie,         
+            :szhFecEfectividad,      
+            :dhImporteDebe,                                  
+            :dhImporteHaber,
+            :bInsertarDicomDoc,
+            :szhIndInforma;      
+
+    lTotDocCartera = SQLROWS;
+    ifnTrazasLog( modulo," FETCH CO_CARTERA SQLCODE [%d], lTotDocCartera [%d]",LOG03 , SQLCODE, lTotDocCartera);
+
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        sprintf(szDescError,"Fallo el Fetch del cursor de la COCARTERA");
+        ifnTrazasLog(modulo,"Fetch curCOCARTERA %s",LOG00,SQLERRM);
+        iSwError = 1; /* marca el error, necesitamos cerrar el cursor */
+    }
+
+    EXEC SQL
+    CLOSE 	curCOCARTERA;
+    if ( SQLCODE )
+    {
+        sprintf( szDescError, "Fallo el Cierre del cursor de la COCARTERA" );
+        ifnTrazasLog( modulo, "Close curCOCARTERA %s", LOG00, SQLERRM );
+        iSwError = 1;
+    }
+
+	if( iSwError == 1 )
+	    return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    
+	if( lTotDocCartera == 0 ) /* si el RUT no tiene documentos en la Cartera jlr_11.09.00 */
+	{
+    	if( strcmp( szhCodEnvioOrig, "X" ) == 0 ) /* Si es la primera vez que se envia, queda como estaba */
+		{
+			ifnTrazasLog( modulo, "szhNumIdent [%s], no tiene documentos en CO_CARTERA y tiene COD_ENVIO = 'X', se deja tal cual estaba", LOG03, szhNumIdent );
+		   	return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+		}
+		else /* ya se envio, se cambia movieminto a Baja  20040706 XC-51 capc */
+			strcpy(szhCodMovimiento,"B");
+	}
+
+	
+
+/*-(6)-----------------------------------------------------------------------------------*/
+
+    /*-(6.1)-----------------------------------------------------------------------------*/
+    /* Nota : se rescatan los registros de la co_dicomdoc */
+    EXEC SQL
+    DECLARE curCODICOMDOC CURSOR FOR
+    SELECT  COD_CLIENTE,                           
+            NUM_ABONADO,                           
+            NUM_FOLIO,                             
+            COD_TIPDOCUM,                          
+            NUM_CUOTAS,                            
+            NVL(SEC_CUOTA,0),                      
+			TO_CHAR(FEC_VENCIMIE,'yyyymmdd'),      
+            IMPORTE_DEBE,                          
+            TO_CHAR(FEC_ALTA,'yyyymmdd'),          
+            INDICE,
+            PROCEDENCIA,
+			IND_INFORMADO                                                  
+	FROM	(
+			    SELECT  COD_CLIENTE,                           
+			            NUM_ABONADO,                           
+			            NUM_FOLIO,                             
+			            COD_TIPDOCUM,                          
+			            NUM_CUOTAS,                            
+			            SEC_CUOTA,                      
+						FEC_VENCIMIE,      
+			            IMPORTE_DEBE,                          
+			            FEC_ALTA,          
+			            0 AS INDICE,
+			            'D' AS PROCEDENCIA,                     /* tabla de documentos */ 
+			            NVL( IND_INFORMADO, 'N' ) IND_INFORMADO               
+			    FROM 	CO_DICOMDOC
+			    WHERE 	NUM_IDENT 		= :szhNumIdent
+			    AND 	COD_TIPIDENT 	= :szhCodTipIdent       /* nos referimos a documentos del mismo rut */
+				UNION ALL
+				SELECT  COD_CLIENTE,                           
+			            NUM_ABONADO,                           
+			            NUM_FOLIO,                             
+			            COD_TIPDOCUM,                          
+			            NUM_CUOTAS,                            
+			            SEC_CUOTA,                      
+						FEC_VENCIMIE,      
+			            IMPORTE_DEBE,                          
+			            FEC_ALTA,          
+			            0 AS INDICE,
+			            'R' AS PROCEDENCIA,						/* tabla rechazo de documentos */                                     
+			            'N'
+			    FROM 	CO_RDICOMDOC
+			    WHERE 	NUM_IDENT 		= :szhNumIdent
+			    AND 	COD_TIPIDENT 	= :szhCodTipIdent        /* nos referimos a documentos del mismo rut */
+			    AND     COD_ESTADO      = 'I'
+			    ) B
+	ORDER BY B.COD_CLIENTE, B.NUM_ABONADO, B.NUM_FOLIO, B.COD_TIPDOCUM, B.NUM_CUOTAS, B.SEC_CUOTA;
+    
+    ifnTrazasLog( modulo," DECLARE CO_DICOMDOC SQLCODE [%d]",LOG03,SQLCODE);
+
+    if ( SQLCODE )
+    {       
+    	sprintf(szDescError,"Fallo la Declaracion del cursor de la CO_DICOMDOC");
+        ifnTrazasLog(modulo,"Declare curDICOMDOC %s", LOG00, SQLERRM );
+	   	return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+
+    EXEC SQL 
+    OPEN curCODICOMDOC;
+    ifnTrazasLog( modulo," OPEN CO_DICOMDOC SQLCODE [%d]",LOG03,SQLCODE);
+    if ( SQLCODE )
+    {                                     
+        sprintf(szDescError,"Fallo la Apertura del cursor de la CO_DICOMDOC");
+        ifnTrazasLog(modulo,"Open curCODICOMDOC %s",LOG00,SQLERRM);
+	   	return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+        
+    EXEC SQL
+    FETCH   curCODICOMDOC
+    INTO    :lhCodClienteAux,           
+            :lhNumAbonadoAux,           
+            :lhNumFolioAux,             
+            :ihCodTipDocumAux,          
+            :lhNumCuotaAux,             
+            :ihSecCuotaAux,             
+			:szhFecVencimieAux,         
+            :dhImporteDebeAux,          
+            :szhFecAlta,                
+            :bInsertarHistoria,
+            :szhProcedencia,
+			:szhIndInformaAux;
+            
+    lTotDocDicom = SQLROWS;                    
+    ifnTrazasLog( modulo," FETCH CO_DICOMDOC SQLCODE [%d], lTotDocDicom [%d]",LOG03 , SQLCODE, lTotDocDicom );
+    
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        sprintf(szDescError,"Fallo el Fetch del cursor de la CO_DICOMDOC");
+        ifnTrazasLog(modulo,"Fetch curCODICOMDOC %s", LOG00, SQLERRM );
+	   	return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+
+    EXEC SQL
+    CLOSE curCODICOMDOC;
+    if ( SQLCODE )
+    {
+        sprintf(szDescError,"Fallo el Cierre del cursor de la CO_DICOMDOC");
+        ifnTrazasLog( modulo, "Close curCODICOMDOC %s", LOG00, SQLERRM );
+	   	return (2); /* continue; Toma al Siguiente Cliente, no actualiza el actual */
+    }
+
+/*-(6.1)-----------------------------------------------------------------------------------*/    
+                                                                                               
+    EXEC SQL                                                                                   
+    UPDATE 	CO_DICOM                                                                           
+    SET 	COD_MOVIMIENTO 	= 'EP',                                                            
+			FEC_MOVIMIENTO 	= SYSDATE,                                                         
+			MTO_ENVIOANT 	= MTO_DEUDA                                                        
+    WHERE 	NUM_IDENT 		= :szhNumIdent                                                     
+    AND  	COD_TIPIDENT 	= :szhCodTipIdent;                                                 
+                                                                                               
+    if ( SQLCODE )                                                                             
+    {                                                                                          
+        sprintf( szDescError, "Fallo UPDATE de CO_DICOM" );                                    
+        ifnTrazasLog( modulo, "Update CO_DICOM %s", LOG00, SQLERRM );                          
+        return (2); /* continue; Toma al Siguiente Cliente */                                  
+    }                                                                                          
+                                                                                               
+/*-(6.2)-----------------------------------------------------------------------------*/
+    lCntDicom = 0;
+    lCntCartera  = 0;
+
+    while ( lCntDicom < lTotDocDicom && lCntCartera < lTotDocCartera )
+    {
+        if( lhCodClienteAux[lCntDicom] < lhCodCliente[lCntCartera] ) /* El cliente buscado es menor al de referencia */
+        { 
+            bInsertarHistoria[lCntDicom] = 1; /* no encontro el cliente en la cartera, el registro pasa a historia */
+            lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+        }
+        else if( lhCodClienteAux[lCntDicom] > lhCodCliente[lCntCartera] ) /* El cliente buscado es mayor que el de referencia*/
+        {
+            bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el cliente en la co_dicomdoc, el registro se inserta */
+            lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+        }
+        else /*if ( lhCodClienteAux[lAux2] == lhCodCliente[lAux] )*/
+        {
+            /* comparar el siguiente campo clave del registro */
+            if( lhNumAbonadoAux[lCntDicom] < lhNumAbonado[lCntCartera] )
+            {
+                bInsertarHistoria[lCntDicom]=1;  /* no encontro el abonado en la cartera, el registro pasa a historia */
+                lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+            }
+            else if ( lhNumAbonadoAux[lCntDicom] > lhNumAbonado[lCntCartera] )
+            {
+	            bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el abonado en la co_dicomdoc, el registro se inserta */
+                lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+            }
+            else /*( lhNumAbonadoAux[lAux2] == lhNumAbonado[lAux] )*/
+            {
+                /* comparar el siguiente campo clave del registro */
+                if ( lhNumFolioAux[lCntDicom] < lhNumFolio[lCntCartera] )
+                {
+                    bInsertarHistoria[lCntDicom]=1; /* no encontro el folio en la cartera, el registro pasa a historia */
+                    lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+                }
+                else if ( lhNumFolioAux[lCntDicom] > lhNumFolio[lCntCartera] )
+                {
+		            bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el folio en la co_dicomdoc, el registro se inserta */
+                    lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+                }
+                else /*( lhNumFolioAux[lAux2] == lhNumFolio[lAux] )*/
+                {
+                    /* comparar el siguiente campo clave del registro */
+                    if ( ihCodTipDocumAux[lCntDicom] < ihCodTipDocum[lCntCartera] )
+                    {
+                        bInsertarHistoria[lCntDicom]=1; /* no encontro el TipoDocumento en la cartera, el registro pasa a historia */
+                        lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+                    }
+                    else if ( ihCodTipDocumAux[lCntDicom] > ihCodTipDocum[lCntCartera] )
+                    {
+			            bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el TipoDocumento en la co_dicomdoc, el registro se inserta */
+		                lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+                    }
+                    else /*( ihCodTipDocumAux[lAux2] == ihCodTipDocum[lAux] )*/
+                    {
+                        /* comparar el siguiente campo clave del registro */
+                        if ( lhNumCuotaAux[lCntDicom] < lhNumCuota[lCntCartera] )
+                        {
+                            bInsertarHistoria[lCntDicom]=1; /* no encontro el NumCuota en la cartera, el registro pasa a historia */
+                            lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+                        }
+                        else if ( lhNumCuotaAux[lCntDicom] > lhNumCuota[lCntCartera] )
+                        {
+					        bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el NumCuota en la co_dicomdoc, el registro se inserta */
+			                lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+                        }
+                        else /*( lhNumCuotaAux[lAux2] == lhNumCuota[lAux] )*/
+                        {
+                            /* comparar el siguiente campo clave del registro */
+                            if ( ihSecCuotaAux[lCntDicom] < ihSecCuota[lCntCartera] )
+                            {
+                                bInsertarHistoria[lCntDicom]=1; /* no encontro el SecCuota en la cartera, el registro pasa a historia */
+                                lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+                            }
+                            else if ( ihSecCuotaAux[lCntDicom] > ihSecCuota[lCntCartera] )
+                            {
+					            bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el SecCuota en la co_dicomdoc, el registro se inserta */
+				                lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+                            }
+                            else /*( ihSecCuotaAux[lAux2] == ihSecCuota[lAux] )*/
+                            {
+                                /* comparar el siguiente campo clave del registro */
+                                if ( dhImporteDebeAux[lCntDicom] < dhImporteDebe[lCntCartera] )
+                                {
+                                    bInsertarHistoria[lCntDicom]=1; /* no encontro el Importe_Debe en la cartera, el registro pasa a historia */
+                                    lCntDicom++;  /* avanza en la tabla 2 (para buscar el sgte cliente) */
+                                }
+                                else if ( dhImporteDebeAux[lCntDicom] > dhImporteDebe[lCntCartera] )
+                                {
+						            bInsertarDicomDoc[lCntCartera] = 1; /* no encontro el Importe_Debe en la co_dicomdoc, el registro se inserta */
+					                lCntCartera++; /* avanza en la tabla 1 ( para comparar contra el sgte cliente de la referencia ) */
+                                }
+                                else /*( dhImporteDebeAux[lAux2] == dhImporteDebe[lAux] )*/
+                                {
+                                    /* todo el registro es exactamente igual */
+                                    bInsertarHistoria[lCntDicom] = 0; 	/* no lo inserta en la historia*/
+                                    lCntDicom++; 						/* verifica el siguiente de la co_dicomdoc*/
+                                    bInsertarDicomDoc[lCntCartera] = 0; /* no lo inserta en la co_dicomdoc */
+                                    lCntCartera++; 						/* verifica el siguiente de la cartera */
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } /* end while */
+    
+    if  ( lCntDicom < lTotDocDicom ) /* quedan documentos en la co_dicomdoc que no estan la co_cartera  */
+    {
+        for( CntAux = lCntDicom ; CntAux < lTotDocDicom ; CntAux++)
+        {
+            bInsertarHistoria[CntAux] = 1; /* inserta registros faltantes ( no comparados ) a la historia */
+        }
+    }
+                
+    if  ( lCntCartera < lTotDocCartera ) /* hay documentos en la co_cartera que no estan la co_dicomdoc */
+    {
+        for( CntAux = lCntCartera ; CntAux < lTotDocCartera ; CntAux++ )
+        {
+            bInsertarDicomDoc[CntAux] = 1; /* inserta registros faltantes ( no comparados ) a la co_dicomdoc */
+        }
+    }
+
+    /*-(6.3)-----------------------------------------------------------------------------*/
+
+	/* paso a historia ( CO_HDICOMDOC ), los registros que correspondan de la CO_DICOMDOC y los elimino de esta, van como BAJA a DICOM */
+    iSwError = 0;
+    for ( lCntDicom = 0; lCntDicom < lTotDocDicom; lCntDicom++ )
+    {
+        if ( bInsertarHistoria[lCntDicom] == 1 ) 
+        {
+            ifnTrazasLog( modulo, "Valores a Insertar CO_HDICOMDOC [%s][%s][%d][%d][%d][%d][%d][%d][%s][%s][%d][%.4f]", 
+            LOG03,
+            szhNumIdent,
+            szhCodTipIdent,
+            lhCodClienteAux[lCntDicom],
+            lhNumAbonadoAux[lCntDicom],
+            lhNumFolioAux[lCntDicom],
+            ihCodTipDocumAux[lCntDicom],
+            lhNumCuotaAux[lCntDicom],
+            ihSecCuotaAux[lCntDicom],
+            szhFecVencimieAux[lCntDicom],
+            szhFecAlta[lCntDicom],
+            lhSeqProceso,                                  
+            dhImporteDebeAux[lCntDicom] );
+
+        	/* se considera la CO_DICOMDOC solamente, si hay otros son rechazos */
+        	if( strcmp( szhProcedencia[lCntDicom], "D" ) == 0 )
+        	{
+				ifnTrazasLog( modulo, "Valores antes de transformer dhImporteDebeAux = [%.4f].", LOG06, dhImporteDebeAux[lCntDicom] );  
+				dhImporteDebeAux[lCntDicom] = fnCnvDouble( dhImporteDebeAux[lCntDicom], 0 );
+				ifnTrazasLog( modulo, "Valores despues de transformer dhImporteDebeAux = [%.4f].", LOG06, dhImporteDebeAux[lCntDicom] );
+	        
+	            EXEC SQL 
+	            INSERT INTO CO_HDICOMDOC
+	            (
+	                NUM_IDENT,            
+	                COD_TIPIDENT,
+	                COD_CLIENTE,          
+	                NUM_ABONADO,
+	                NUM_FOLIO,            
+	                COD_TIPDOCUM,
+	                NUM_CUOTAS,           
+	                SEC_CUOTA,
+					FEC_VENCIMIE,
+					FEC_ALTA,
+					FEC_BAJA,
+	                NUM_PROCESO,
+	                IMPORTE_DEBE,
+					IND_INFORMADO
+	            )
+	            VALUES
+	            (
+	                :szhNumIdent,
+	                :szhCodTipIdent,
+	                :lhCodClienteAux[lCntDicom],
+	                :lhNumAbonadoAux[lCntDicom],
+	                :lhNumFolioAux[lCntDicom],
+	                :ihCodTipDocumAux[lCntDicom],
+	                :lhNumCuotaAux[lCntDicom],
+	                :ihSecCuotaAux[lCntDicom],
+	                TO_DATE( :szhFecVencimieAux[lCntDicom], 'yyyymmdd'),
+	                TO_DATE( :szhFecAlta[lCntDicom], 'yyyymmdd'),
+	                SYSDATE,
+	                :lhSeqProceso,                                  
+	                :dhImporteDebeAux[lCntDicom],
+	                :szhIndInformaAux[lCntDicom]
+	            );
+	            if ( SQLCODE )
+	            {
+	                sprintf( szDescError, "Fallo la inserción en la CO_HDICOMDOC" );
+	                ifnTrazasLog( modulo, "Insert CO_HDICOMDOC %s", LOG00, SQLERRM );
+	                iSwError = -1;
+	                break; /* rompe el ciclo de insercion */
+	            }                 
+	            
+	            EXEC SQL 
+	            DELETE 	FROM CO_DICOMDOC
+	            WHERE  	NUM_IDENT 	 = :szhNumIdent
+	            AND    	COD_TIPIDENT = :szhCodTipIdent
+				AND    	COD_CLIENTE  = :lhCodClienteAux[lCntDicom]            
+				AND    	NUM_ABONADO  = :lhNumAbonadoAux[lCntDicom]   
+				AND    	NUM_FOLIO    = :lhNumFolioAux[lCntDicom]              
+	            AND    	COD_TIPDOCUM = :ihCodTipDocumAux[lCntDicom]
+	            AND    	NUM_CUOTAS   = :lhNumCuotaAux[lCntDicom]          
+	            AND    	SEC_CUOTA    = :ihSecCuotaAux[lCntDicom]   
+				AND     FEC_VENCIMIE = TO_DATE( :szhFecVencimieAux[lCntDicom], 'yyyymmdd');
+	
+	            if ( SQLCODE )
+	            {
+	                sprintf( szDescError, "Fallo DELETE FROM CO_DICOMDOC" );
+	                ifnTrazasLog( modulo, "DELETE FROM CO_DICOMDOC %s", LOG00, SQLERRM );
+	                iSwError = -1;
+	                break; /* rompe el ciclo de insercion */
+	            } 
+        		iCntDifer++;
+				
+				/* para actualizar la co_gestion */
+				if( lhCodClienteGes != lhCodClienteAux[lCntDicom] && lhCodClienteAux[lCntDicom] > 0 )
+				{
+					lhCodClienteGes = lhCodClienteAux[lCntDicom];
+					/* debemos actualizar la co_gestion */
+					if( !bfnActualizaCoGestionCliente( lhCodClienteGes, lhCodCuenta, szhNumIdent, szhCodTipIdent, 
+													   szhCodEntidad, szRutina, szMovimiento ) )
+					{
+		                iSwError = -1;
+		                break; /* rompe el ciclo de insercion */
+					}
+				}
+        	}
+        	else 	/* szhProcedencia = 'R', son rechazos, se marcan como baja en la CO_RDICOMDOC */
+        	{
+	            EXEC SQL 
+	            UPDATE 	CO_RDICOMDOC
+	            SET     COD_ESTADO   = 'B'
+	            WHERE  	NUM_IDENT 	 = :szhNumIdent
+	            AND    	COD_TIPIDENT = :szhCodTipIdent
+				AND    	COD_CLIENTE  = :lhCodClienteAux[lCntDicom]            
+				AND    	NUM_ABONADO  = :lhNumAbonadoAux[lCntDicom]   
+				AND    	NUM_FOLIO    = :lhNumFolioAux[lCntDicom]              
+	            AND    	COD_TIPDOCUM = :ihCodTipDocumAux[lCntDicom]
+	            AND    	NUM_CUOTAS   = :lhNumCuotaAux[lCntDicom]          
+	            AND    	SEC_CUOTA    = :ihSecCuotaAux[lCntDicom]   
+				AND     FEC_VENCIMIE = TO_DATE( :szhFecVencimieAux[lCntDicom], 'yyyymmdd');
+	
+	            if ( SQLCODE )
+	            {
+	                sprintf( szDescError, "Fallo UPDATE CO_RDICOMDOC" );
+	                ifnTrazasLog( modulo, "UPDATE CO_RDICOMDOC %s", LOG00, SQLERRM );
+	                iSwError = -1;
+	                break; /* rompe el ciclo de insercion */
+	            } 
+        	} /* if( strcmp( szhProcedencia, 'D' ) == 0 ) */                
+        } /* if ( bInsertarHistoria[lCntDicom] == 1 ) */	
+	} /* for ( lCntDicom = 0; lCntDicom < lTotDocDicom; lCntDicom++ ) */
+
+    if (iSwError < 0)	/* ocurrio error grave con el cliente */ 
+        return (1); 	/* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+        
+/*-(7)-----------------------------------------------------------------------------------*/
+   
+    if( strcmp( szhCodMovimiento,"B" ) != 0 ) /* Si Movimiento NO es BAJA */
+    {
+    	iSwError = 0;
+		lhCodClienteGes = 0;
+		
+		/* paso a la co_dicomdoc, los registros nuevos de la cartera, que se van a DICOM como ALTA */
+	    for ( lCntCartera = 0; lCntCartera < lTotDocCartera; lCntCartera++ )
+	    {
+	        if ( bInsertarDicomDoc[lCntCartera] == 1 ) 
+	        {
+				ifnTrazasLog( modulo, "Valores antes de transformer dhImporteDebe = [%.4f].", LOG06, dhImporteDebe[lCntCartera] );  
+				dhImporteDebe[lCntCartera] = fnCnvDouble( dhImporteDebe[lCntCartera], 0 );
+				ifnTrazasLog( modulo, "Valores despues de transformer dhImporteDebe = [%.4f].", LOG06, dhImporteDebe[lCntCartera] );
+
+	            EXEC SQL 
+	            INSERT INTO CO_DICOMDOC
+	            (
+	                NUM_IDENT,            
+	                COD_TIPIDENT,
+	                COD_CLIENTE,          
+	                NUM_ABONADO,
+	                NUM_FOLIO,            
+	                COD_TIPDOCUM,
+	                NUM_CUOTAS,           
+	                SEC_CUOTA,
+					FEC_VENCIMIE, 
+					FEC_EFECTIVIDAD,
+					IMPORTE_DEBE,
+					IMPORTE_HABER,
+	                FEC_ALTA,
+	                NUM_PROCESO,
+	                IND_INFORMADO
+	            )
+	            VALUES
+	            (
+	                :szhNumIdent,
+	                :szhCodTipIdent,
+	                :lhCodCliente[lCntCartera],
+	                :lhNumAbonado[lCntCartera],
+	                :lhNumFolio[lCntCartera],
+	                :ihCodTipDocum[lCntCartera],
+	                :lhNumCuota[lCntCartera],
+	                :ihSecCuota[lCntCartera],
+	                TO_DATE (:szhFecVencimie[lCntCartera], 'yyyymmdd'),
+	                TO_DATE (:szhFecEfectividad[lCntCartera], 'yyyymmdd'),
+	                :dhImporteDebe[lCntCartera],
+	                0,
+	                SYSDATE,
+	                :lhSeqProceso,
+	                :szhIndInforma[lCntCartera]
+	            );
+	
+	            if ( SQLCODE )
+	            {
+	                sprintf( szDescError, "Fallo el Insert CO_DICOMDOC" );
+	                ifnTrazasLog( modulo, "Insert CO_DICOMDOC %s", LOG00, SQLERRM );
+	                iSwError = -1;
+	                break; /* rompe el ciclo de insercion */
+	            }           
+	            iCntDifer++;      
+
+				/* para actualizar la co_gestion */
+				if( lhCodClienteGes != lhCodCliente[lCntCartera] && lhCodCliente[lCntCartera] > 0 )
+				{
+					lhCodClienteGes = lhCodCliente[lCntCartera];
+					/* debemos actualizar la co_gestion */
+					if( !bfnActualizaCoGestionCliente( lhCodClienteGes, lhCodCuenta, szhNumIdent, szhCodTipIdent, 
+													   szhCodEntidad, szRutina, szMovimiento ) )
+					{
+		                iSwError = -1;
+		                break; /* rompe el ciclo de insercion */
+					}
+				}
+			} /* if ( bInsertarDicomDoc[lCntCartera] == 1 ) */
+
+			dhSaldoTotal = dhSaldoTotal + dhImporteDebe[lCntCartera];
+	    } /* for ( lCntCartera = 0; lCntCartera < lTotDocCartera; lCntCartera++ ) */
+
+	    if (iSwError < 0) 	/* ocurrio un error */ 
+	        return (1); 	/* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+    
+/*-(8)-----------------------------------------------------------------------------------*/
+    
+        ihCstgoContable = CTGOCONTABLE;
+        ihCastCont    = 0;
+        
+        /* Verifica si el rut tiene algún castigo contable */
+        EXEC SQL
+        SELECT 	COUNT(*)
+        INTO 	:ihCastCont
+        FROM 	CO_DICOMDOC
+        WHERE 	NUM_IDENT 	 = :szhNumIdent
+        AND 	COD_TIPIDENT = :szhCodTipIdent
+        AND 	COD_TIPDOCUM = :ihCstgoContable; 	/* CastigoContable */
+        
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+        {
+            ifnTrazasLog( modulo, "Al Verificar Castigos Contables :%s", LOG00, SQLERRM );
+	        return (1); 	/* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+        }
+        else if( ihCastCont > 0 ) 	/* si tiene castigo contable */
+        {
+            if( !bfnBorraCastigosContables( szhNumIdent, szhCodTipIdent ) )
+            {
+                ifnTrazasLog( modulo, "Al Borrar Castigos Contables :%s", LOG00, SQLERRM );
+		        return (1);		/* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+            }
+        }
+	/* Verifica si quedaron documentos despues de borrar documentos castigados */
+	/****** 20040706 XC-51 capc******/
+/* CH-200408232102 Homologado por PGonzalez 23-11-2004  desde aqui */
+	EXEC SQL
+	SELECT  COUNT(unique cod_cliente)
+	INTO    :ihCntClientes
+	FROM    CO_DICOMDOC
+	WHERE   NUM_IDENT        = :szhNumIdent
+	AND     COD_TIPIDENT = :szhCodTipIdent;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+	    ifnTrazasLog( modulo, "Al Verificar Si quedan documentos :%s", LOG00, SQLERRM );
+	        return (1);     /* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+	}
+	else if( ihCntClientes == 0 )   /* si no quedan*/
+	{
+                strcpy(szhCodMovimiento,"B");
+                dhSaldoTotal = 0;
+                dhSaldoVencido = 0;
+	}       /****** 20040706 XC-51 capc******/		
+/* CH-200408232102 Homologado por PGonzalez 23-11-2004  hasta aqui */
+	
+        if( !bfnGetSaldoPorRut( szhNumIdent, szhCodTipIdent, &dhSaldoVencido ) )
+        {
+            ifnTrazasLog( modulo, "Al buscar Saldo del Rut : %s", LOG00, SQLERRM );
+	        return (1);		/* continue; Toma al Siguiente Cliente, pero actualizamos el actual en la llamada */
+        }
+    }
+	else /* es Baja jlr_13.03.01 */
+	{
+		dhSaldoTotal = 0;
+		dhSaldoVencido = 0;
+	}
+    
+    /* Antes de generar el archivo verificar que existan documentos que imprimir */
+	/*-(10)--------------------------------------------------------------------------*/
+    iSwError = 0;
+    lhTotalRegistros = 0 ; 
+    dhTotalMonto = 0.0 ;
+	/* Obtiene el nombre del PL/SQL a utilizar */    
+    EXEC SQL        
+	SELECT GE_FN_OBTIENE_RUTINA('CO',3,'TRUE','PL'), USER
+	INTO :szhProc, :szhUsuario
+	FROM DUAL;	
+	if( SQLCODE != SQLOK) 
+	{
+		sprintf(szDescError,"Fallo la funcion llena CO_DET_ARCHIVO");
+		ifnTrazasLog(modulo,"Fallo la funcion llena CO_DET_ARCHIVO : %s",LOG00,SQLERRM);
+		return (1); /* continue; Toma al Siguiente Cliente */
+	}
+	
+	sprintf(szhQueryPL,"BEGIN %s(%d,'%s','%s','%s','%s','%s','%s',%f,%f); END;\0",szhProc
+																		    ,lhSeqProceso
+																		    ,szgCodProceso
+			                                                                ,szhNumIdent
+			                                                                ,szhCodTipIdent
+			                                                                ,szgCodProceso
+			                                                                ,szhCodMovimiento
+			                                                                ,szhUsuario
+			                                                                ,dhMtoDeudAnt
+			                                                                ,dhSaldoVencido);
+    EXEC SQL EXECUTE IMMEDIATE :szhQueryPL;
+    	if( SQLCODE != SQLOK) 
+	{
+		sprintf(szDescError,"Fallo la funcion llena CO_DET_ARCHIVO");
+		ifnTrazasLog(modulo,"Fallo la funcion llena CO_DET_ARCHIVO : %s",LOG00,SQLERRM);
+		return (1); /* continue; Toma al Siguiente Cliente */
+	}
+	ifnTrazasLog(modulo,"Llame a PL CO_DET_ARCHIVO cliente: %s",LOG03,szhNumIdent);
+    /*-(11.5)----------------------------------------------------------------------------*/        
+    EXEC SQL COMMIT;
+    if ( SQLCODE )
+    {
+        EXEC SQL ROLLBACK;
+        sprintf(szDescError,"Fallo COMMIT 2");
+        ifnTrazasLog(modulo,"Segundo COMMIT %s",LOG00,SQLERRM);
+        return (1); /* continue; Toma al Siguiente Cliente */
+    }
+
+	strcpy( szMovimiento, szhCodMovimiento ); /* rbr ajuste */		/*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+	*iCntClientes = ihCntClientes;                                           /*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+
+	ifnTrazasLog(modulo,"iCntClientes : %d",LOG05,iCntClientes);            /*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+	ifnTrazasLog(modulo,"ihCntClientes : %d",LOG05,ihCntClientes);          /*CH-200408232102  Homologado por PGonzalez 23-11-2004 */
+	
+    /* valida si cola esta activa */
+    if (!bfnValidaColaActiva(szgCodProceso,&ihFlgActiva))
+    {
+        sprintf(szDescError,"Fallo Validacion de Cola Activa");
+        return (-1); /* Error Grave No Continua */
+    }
+    if (!ihFlgActiva)
+    {    
+        return (0);  /* No Continua ( termino "Normal" ) */  
+    }
+
+    return (2); /* Toma al Siguiente Cliente*/    
+}
+
+/**************************************************************************************/
+/* bfnBorraCastigosContables() */
+/**************************************************************************************/
+BOOL bfnBorraCastigosContables( char *szNumIdent, char *szCodTipIdent )
+{
+    char modulo[] = "bfnBorraCastigosContables";
+    
+    BOOL bError = FALSE;
+    EXEC SQL BEGIN DECLARE SECTION;
+        long 	lhCodCliente    = 0;
+        long 	lhNumAbonado    = 0;
+        long 	lhNumFolio      = 0;
+        char 	szhNumIdent[iLENNUMIDENT] = ""; 	EXEC SQL VAR szhNumIdent    IS STRING (iLENNUMIDENT);
+        char 	szhCodTipIdent[3] = ""; EXEC SQL VAR szhCodTipIdent IS STRING (3);
+        int		ihCstgoContab 	= 0;
+    EXEC SQL END DECLARE SECTION;
+    
+    /* Recoge los parametros de la funcion */
+    strcpy( szhNumIdent, szNumIdent );
+    strcpy( szhCodTipIdent, szCodTipIdent );
+
+	ihCstgoContab = CTGOCONTABLE;
+    
+    /* El Rut tiene al menos un castigo contable ( se valido antes de lanzar esta rutina ) */
+    EXEC SQL DECLARE curCastigos CURSOR FOR
+    SELECT 	COD_CLIENTE, NUM_ABONADO, NUM_FOLIO, NVL(IMPORTE_HABER,0)
+    FROM 	CO_DICOMDOC
+    WHERE 	NUM_IDENT 	 = :szhNumIdent
+    AND 	COD_TIPIDENT = :szhCodTipIdent
+    AND 	COD_TIPDOCUM = :ihCstgoContab;				/* Castigo Contable */
+    
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+        return FALSE;									/* Error al declarar el cursor */
+    else if( SQLCODE == SQLNOTFOUND ) 
+		return TRUE;    
+    
+    EXEC SQL OPEN curCastigos;
+    
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+        return FALSE;									/* Error al abrir el cursor */
+    else if( SQLCODE == SQLNOTFOUND ) 
+		return TRUE;    
+
+    for( ; ; )
+    {
+        EXEC SQL FETCH curCastigos 
+        INTO 	:lhCodCliente, 
+        		:lhNumAbonado, 
+        		:lhNumFolio;
+        		
+        if (SQLCODE == SQLNOTFOUND)
+        {
+            bError = FALSE;           		/* Fin de Datos del Cursor (Termino Normal) */
+            break;
+        }
+        else if( SQLCODE )
+        {
+            bError = TRUE;            		/* Error en el Fetch del Cursor (Termino Anormal) */
+            break;
+        }
+        
+        /* Aqui Procesa los Datos obtenidos con el Fetch */
+        EXEC SQL DELETE
+        FROM	CO_DICOMDOC
+        WHERE  	COD_CLIENTE = :lhCodCliente
+        AND    	NUM_ABONADO = :lhNumAbonado
+        AND     NUM_FOLIO 	= :lhNumFolio ; /* Borra el Castigo y el Documento Asociado */
+        
+        if( SQLCODE )
+        {
+            bError = TRUE;					/* Error en una operacion SQL (Termino Anormal) */
+            break;
+        }
+    } /* endfor */
+    
+    if ( bError )    
+        return FALSE;
+
+    EXEC SQL CLOSE curCastigos;
+    if (SQLCODE) 
+        return FALSE;         				/* Error al cerrar el cursor */
+    
+    return TRUE;
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

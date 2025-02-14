@@ -1,0 +1,1237 @@
+/*==========================================================================================================
+Nombre      : Co_Intmorciclo.pc
+Programa    : Detalle de Transacciones Facturadas en Pasocobros.
+Autor       : M.A.C.
+Creado      : 22-Abril-2005 (COL)
+==========================================================================================================*/
+
+#include <deftypes.h>
+/*#include <geora.h>
+#include <ORAcarga.h>
+#include <GenFA.h>*/
+#include <genco.h>
+#include <trazafact.h>
+#include <rutinasgen.h>
+#include <New_Interfact.h>
+#include <errores.h>
+#include "Co_Intmorciclo.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	int   ihDecimal         ;
+	char  szHoraIni        [11]; EXEC SQL VAR szHoraIni IS STRING(11);
+	char  szhCod_Portadora [6]; EXEC SQL VAR szhCod_Portadora IS STRING(6);
+	char  szhhhmiss  [11];
+	int   ihCiclo ;
+	char  szhCod_moneda [4];
+	char  szhFecEmision[11]; EXEC SQL VAR szhFecEmision IS STRING(11);
+
+EXEC SQL END DECLARE SECTION;
+int   iDiffSeg = 0;
+char  szHoraFin[9];
+char  szTmpProc[9];
+long  iTotalReg;  
+
+Lista_Pasoc pLista_Aux=NULL;
+Lista_Pasoc stListaAux=NULL;
+
+char szUsage[] =    "\n\tUso : \n\tCo_Intmorciclo  -u [Usuario]/[Password]"
+                    "\n\t\t\t-l [Nivel de log. Por default es 3]"
+                    "\n\t\t\t-c [Ciclo de Facturacion]"
+                    "\n\t\t\t-i [Rango inicial de clientes (OPTATIVO)]"
+                    "\n\t\t\t-f [Rango Final de clientes (OPTATIVO)]\n\n";
+
+int main( int argc, char* argv[] )
+{
+    char modulo[]="main";
+
+
+    memset (&stConfig,0,sizeof (CONFIG));
+    memset( szHoraIni, '\0', sizeof( szHoraIni ) );
+    strcpy(szhhhmiss,"HH24:MI:SS");
+    
+    fprintf(stdout,"\n\tCo_Intmorciclo. Version de compilacion: [%s] - [%s] Version => [%s]\n\n", __DATE__, __TIME__, szhVersion);
+    
+    if (argc < 3)
+    {
+		fprintf( stdout, "\n\tVersion => [%s].\n", szhVersion );
+        fprintf( stdout, "\n\tFaltan parametros.\n%s", szUsage );
+        fflush  (stdout);
+        exit(1);
+    }
+
+    /*- Validacion de parametros de entrada -*/
+    memset(&stConfig,0,sizeof(CONFIG));
+    if (ifnValidaParametros(argc,argv,&stConfig) != 0)
+    {
+        fprintf (stdout,"\n\tError >> Fallo en la Validacion de Parametros \n");
+        fflush  (stdout);
+
+    }
+    else
+    {
+        if (ifnConexionDB(stConfig) != 0)   
+        {
+        	fprintf (stdout,"\n\tError >> Fallo en la Conexion a la Base de datos\n");
+        	fflush  (stdout);
+		}
+		else
+		{
+        	
+        	if (ifnInicio(stConfig) != 0 )
+        	{
+        	    fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+        	    fflush  (stdout);
+        	    stConfig.iCodEstadoProc = iPROC_EST_ERR;
+        	}
+        	else
+        	{
+        	    if (ifnIntmorciclo() != 0)
+        	    {
+		   			if (!bfnOraRollBack ()) 
+					{
+						iDError (modulo,ERR000,vInsertarIncidencia, "RollBack",szfnORAerror());
+					}
+
+        	        fprintf (stdout,"\n\tError >> Fallo Funcion Principal \n");
+        	        fflush  (stdout);
+        	    	stConfig.iCodEstadoProc = iPROC_EST_ERR;
+        	    }
+
+        	}
+        	
+        	if (ifnFinTrazaFacturacion()!=0)
+        	{
+        	    fprintf (stdout,"\n\tError >> Fallo Funcion de Actualizacion de Traza \n");
+        	}        	
+        	
+        }
+        if( ifnExitIntmorciclo() != 0 )
+        {
+            fprintf (stdout,"\n\tError >> Fallo Funcion de estadistica \n");
+            fflush  (stdout);
+        }
+    }
+    return 0;
+}/* Fin main */
+
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], CONFIG *pstLC )
+{
+char modulo[]="ifnValidaParametros";
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+extern char  *optarg;
+extern int  optind, opterr, optopt;
+int    iOpt=0;
+char   opt[] = ":u:l:c:i:f:";
+
+char szUsuario[61] = "";
+char *pszTmp       = "";
+
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+int  Userflag=0;
+int  Logflag=0;
+
+/*-- Seteo de Valores Iniciales y por defecto -------------------------------------*/
+    opterr=0;
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF)
+    {
+          switch (iOpt)
+             {
+                 case 'u':
+                   if ( strlen (optarg) )
+                   {
+                        strcpy (szUsuario,optarg)  ;
+                        stConfig.bOptUsuario = TRUE;
+                   }
+                   break;
+                 case 'c':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptCodCicloFact= TRUE         ;
+                        stConfig.lCodCicloFact  = atol(optarg);
+                   }
+                   break;
+                 case 'l':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptNivelLog = TRUE;
+                        stConfig.iNivelLog    = atoi(optarg);
+                   }
+                   break;
+                 case 'i':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptClienteInicial = TRUE;
+                        stConfig.lClienteInicial    = atol(optarg);
+                   }
+                   break;
+                 case 'f':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptClienteFinal = TRUE;
+                        stConfig.lClienteFinal    = atol(optarg);
+                   }
+                   break;                   
+                   
+
+             }/* fin switch */
+    }/* fin While de Opciones */
+    if (!stConfig.bOptUsuario)
+    {
+         fprintf(stderr,"\n\tError Falta Usuario en Parametros de Entrada: \n%s\n", szUsage);
+         return (1);
+    }
+    else
+    {
+       if ( (pszTmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+       {
+             fprintf (stderr,"\n\tFormato Usuario Oracle Incorrecto:\n%s\n", szUsage);
+             return (1);
+       }
+       else
+       {
+          strncpy (stConfig.szUsuario ,szUsuario,pszTmp-szUsuario);
+          strcpy  (stConfig.szPassWord, pszTmp+1);
+       }
+    }
+
+    if( !stConfig.bOptCodCicloFact )
+    {
+           fprintf (stderr, "\n\tError.Falta parametros de Ciclo : %s\n",szUsage);
+           return (1);
+    }
+
+
+    if( !stConfig.bOptNivelLog )
+         stConfig.iNivelLog = iNIVEL_DEF;
+
+    stStatus.LogNivel = stConfig.iNivelLog;
+
+    if( (stConfig.bOptClienteInicial==TRUE && stConfig.bOptClienteFinal==FALSE) || 
+        (stConfig.bOptClienteInicial==FALSE && stConfig.bOptClienteFinal==TRUE)   )
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-i' o '-f' >>\n%s\n",szUsage);
+        return (1);
+    }
+
+    if(stConfig.lClienteInicial - stConfig.lClienteFinal > 0L)
+    {
+        fprintf (stderr,"(EE)\t<< Error : Cliente inicial debe ser menor a Cliente final >>\n%s\n",szUsage);
+        return (1);
+    }
+    
+    if( stConfig.bOptClienteInicial==TRUE && stConfig.bOptClienteFinal==TRUE)
+    {
+        lgCodClienteIni = stConfig.lClienteInicial;
+        lgCodClienteFin = stConfig.lClienteFinal;
+        igOpcionRango   = 1;
+    }
+    else
+    {
+        lgCodClienteIni = 0L;
+        lgCodClienteFin = 0L;
+        igOpcionRango   = 0;        
+    }
+
+    return 0;
+
+} /* ifnValidaParametros */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB( CONFIG pstLC)
+{
+char modulo[]="ifnConexionDB";
+
+   if( !bfnConnectORA( pstLC.szUsuario, pstLC.szPassWord ) )   {
+       fprintf (stderr,"\nNo hay conexion a ORACLE \n");
+       fflush  (stderr);
+       return -1;
+    }
+
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* Funcion : ifnInicio										                     */
+/* ============================================================================= */
+int ifnInicio (CONFIG pstConfig)
+{
+char modulo[]="ifnInicio";
+
+
+	/* XO-200610071205: Obtiene fecha de inicio de proceso */
+	if ( !bfnSelectSysDate(stConfig.szFechaIniProc) )
+	{
+	    vDTrazasLog( modulo,"En llamada a funcion bfnSelectSysDate()",LOG01);
+	    return -1;	
+	}
+	/* Valida Parametro del Ciclo de Facturacion */
+	if (ifnValidaCicloFact()!=0)
+	{ 
+	    vDTrazasLog( modulo,"En llamada a funcion ifnValidaCicloFact()",LOG01);
+	    return -1;
+	}
+	/* Obtiene codigo de moneda */
+	if (ifnObtieneMoneda()!=0)
+	{ 
+	    vDTrazasLog( modulo,"En llamada a funcion ifnObtieneMoneda()",LOG01);
+	    return -1;
+    }
+        
+	EXEC SQL EXECUTE
+		BEGIN
+			:szHoraIni := TO_CHAR(SYSDATE,:szhhhmiss);
+		END;
+	END-EXEC;
+
+	if (ifnPreparaArchivoLog()!=0)
+	{ 
+		vDTrazasLog( modulo,"En llamada a funcion ifnPreparaArchivoLog()",LOG01);
+		return -1;
+    }
+
+	vDTrazasLog( modulo,
+	"\n     **********************************************************************"
+	"\n     * %s      Calculo Interes de Mora              HORA : %s  *"
+	"\n     **********************************************************************\n", LOG03, szhVersion, szHoraIni );
+
+	return 0;
+}/* fin a ifnInicio */
+
+/* ============================================================================= */
+/* ifnValidaCicloFact(): Valida ciclo de facturacion y obtiene codigo de ciclo   */
+/* ============================================================================= */
+int ifnValidaCicloFact()
+{
+char modulo[]="ifnValidaCicloFact";
+EXEC SQL BEGIN DECLARE SECTION;
+	long  lhCicloFact ;
+EXEC SQL END DECLARE SECTION;
+
+	memset(szhFecEmision, '\0', sizeof(szhFecEmision));
+	lhCicloFact=stConfig.lCodCicloFact;
+
+	EXEC SQL
+	SELECT COD_CICLO,
+	       to_char(fec_emision,'dd-mm-yyyy')
+	INTO   :ihCiclo,
+	       :szhFecEmision
+	FROM   FA_CICLFACT
+	WHERE  COD_CICLFACT = :lhCicloFact;
+
+	if( SQLCODE!=SQLOK ) {
+		vDTrazasLog( modulo, "\tSELECT FA_CICLFACT - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	if (ihCiclo > 0) {
+		fprintf(stderr, "==> Codigo de Ciclo : [%d]\n", ihCiclo );
+		return 0;
+	}
+	else
+		return -1;
+
+}
+
+/* ============================================================================= */
+/* ifnObtieneMoneda(): Obtiene codigo de moneda segun tip_valor = 1              */
+/* ============================================================================= */
+int ifnObtieneMoneda()
+{
+char modulo[]="ifnObtieneMoneda";
+EXEC SQL BEGIN DECLARE SECTION;
+	int  ihTip_valor = 1;
+	char szhDes_valor [21]; EXEC SQL VAR szhDes_valor IS STRING(21);
+EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL
+	SELECT COD_MONEDA    , DES_TIPVALOR
+	INTO   :szhCod_moneda, :szhDes_valor
+	FROM   CO_TIPVALOR
+	WHERE  TIP_VALOR = :ihTip_valor;
+
+	if( SQLCODE!=SQLOK ) {
+		vDTrazasLog( modulo, "\tSELECT COD_MONEDA - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	fprintf(stderr, "==> Codigo de Moneda : [%s]  Descripcion : [%s]\n", szhCod_moneda,szhDes_valor);
+
+	return 0;
+}
+
+
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog()
+{
+    char modulo[]="ifnPreparaArchivoLog";
+    char szhPathLogSched[256];
+
+    strcpy(stConfig.szFileName,"Co_Intmorciclo");
+    sprintf(szhPathLogSched,"%s/Co_Intmorciclo/",getenv("XPFACTUR_LOG"));
+    sprintf(stConfig.szLogPathGene,"%s/%ld",szhPathLogSched,stConfig.lCodCicloFact);
+
+    if (ifnAbreArchivoLog()!=0)
+        return -1;
+
+    return 0;
+
+} /* end ifnPreparaArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* ============================================================================= */
+int ifnAbreArchivoLog()
+{
+    char modulo[]="ifnAbreArchivoLog";
+    char szArchivoLog[256]=""; /* log */
+    char szArchivoErr[256]=""; /* errores */
+    char szComando   [256]="";
+
+    memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log */
+    memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores */
+
+    sprintf(szComando,"mkdir -p %s",stConfig.szLogPathGene);
+    if (system (szComando)!=0)
+    {
+        fprintf (stderr,"Error al intentar crear directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+
+    szComando[0]='\0';
+    sprintf(szComando,"chmod +r %s",stConfig.szLogPathGene);
+    if (system (szComando)!=0)
+    {
+        fprintf (stderr,"Error al cambiar el permiso de directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+
+    sprintf(szArchivoLog,"%s/%s.log",stConfig.szLogPathGene,stConfig.szFileName);
+    sprintf(szArchivoErr,"%s/%s.err",stConfig.szLogPathGene,stConfig.szFileName);
+    if((stStatus.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL )
+    {
+        fprintf (stderr,"Error al crear archivo de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+
+    if((stStatus.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL )
+    {
+        fprintf (stderr,"Error al crear archivo de Errores\n");
+        fflush  (stderr);
+        return -1;
+    }
+    return 0;
+
+}/* end ifnAbreArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* Funcion : ifnExitIntmorciclo							                     */
+/* ============================================================================= */
+int ifnExitIntmorciclo (void)
+{
+char modulo[]="ifnExitIntmorciclo";
+
+	/* Datos Fin de Tiempo */
+	EXEC SQL EXECUTE
+		BEGIN
+			:szHoraFin := TO_CHAR(SYSDATE,:szhhhmiss);
+		END;
+	END-EXEC;
+
+	iDiffSeg = ifnRestaHoras(szHoraIni,szHoraFin,szTmpProc);
+
+   vDTrazasLog(modulo,"\n\t         HORA INICIO  : %s "
+                       "\n\t         HORA TERMINO : %s "
+                       "\n\t         TIEMPO TOTAL : %s  (%d segs)"
+                       "\n\t REGISTROS PROCESADOS : %d"
+                       "\n\t PROMEDIO  x  REGISTRO: %.5f segs "
+                       "\n\n\n",LOG03,szHoraIni,szHoraFin,szTmpProc,iDiffSeg,iTotalReg,(float)((float)iDiffSeg/(float)iTotalReg) );
+
+	if ( fclose(stStatus.LogFile) != 0 )    {
+	    fprintf (stderr,"Error al cerrar archivo de Log\n");
+	    fflush  (stderr);
+	}
+
+	if ( fclose(stStatus.ErrFile) != 0 )    {
+	    fprintf (stderr,"Error al cerrar archivo de Errores\n");
+	    fflush  (stderr);
+	}
+
+	return 0;
+}/* fin a ifnExitIntmorciclo */
+
+
+/* ============================================================================= */
+/* ============================================================================= */
+/* Inserta el elemento e en la lista ant */
+/* Devuelve -1 si no hay memoria suficiente para la inserción. */
+int ifnInsertaPasoc(Lista_Pasoc *ant)
+{
+	Lista_Pasoc p;
+	if ((p=(struct INTERMORO *) malloc(sizeof(struct INTERMORO))) == NULL)
+		return -1;
+	p->sig=*ant;
+	*ant=p;
+	return 0;
+}
+
+/* Destruye la lista totalmente, liberando toda la memoria. */
+/* Tras esto ES necesario Inicializar la lista para reusarla. */
+void vfnBorraListaPasoc(Lista_Pasoc *list)
+{
+	Lista_Pasoc L = NULL;
+	if ((*list) != NULL)
+	  L = (*list)->sig;
+
+	while (L != NULL){
+	   ifnBorraPasoc(&L);
+	}
+	free((*list)); /* Liberar la cabecera */
+	(*list)=NULL;
+}
+
+/* Borra el elemento en la posición pos de la lista ant. */
+int ifnBorraPasoc(Lista_Pasoc *ant)
+{
+	Lista_Pasoc aux ;
+	if ((*ant) == NULL)
+	   return -1; /* Lista Vacia */
+	else{
+		/* Borrar elemento apuntado por aux, teniendo un puntero al siguiente */
+		aux = (*ant);
+		(*ant)=aux->sig;
+		free(aux);
+		return 0;
+	} /* end if */
+}
+/* ============================================================================= */
+/* ============================================================================= */
+
+
+/* ============================================================================= */
+/* Carga el o los nombres de las operadoras					                     */
+/* ============================================================================= */
+int ifnCarga_Portadoras()
+{
+char modulo[]="ifnCarga_Portadoras";
+
+	vDTrazasLog( modulo, "\n\tEn funcion [%s]", LOG03,modulo );
+	memset( szhCod_Portadora, '\0', sizeof( szhCod_Portadora ) );
+
+	/*EXEC SQL
+	SELECT COD_OPERADORA_SCL
+	INTO   :szhCod_Portadora
+	FROM   GE_OPERADORA_SCL_LOCAL;*/
+
+	EXEC SQL
+	SELECT valor_texto
+	INTO   :szhCod_Portadora
+   FROM   ge_parametros_sistema_vw
+   WHERE  nom_parametro = 'COD_OPERADORA_LOCAL'
+   AND    cod_modulo    = 'GE';
+
+	if( SQLCODE!=SQLOK ) 	{
+		vDTrazasLog( modulo, "\tSELECT COD_OPERADORA_SCL - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	vDTrazasLog( modulo, "\tszhCod_Portadora  [%s]", LOG03, szhCod_Portadora);
+	return 0;
+}/* fin a ifnCarga_Portadoras */
+
+/* ============================================================================= */
+/* Genera listas enlazadas,                                                      */
+/* ============================================================================= */
+int ifnIntmorciclo()
+{
+    char modulo[]="ifnIntmorciclo";
+     int iContador = 0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long   lhCod_cliente     ;
+        long   lhNum_secuenci    ;
+        int    ihCod_tipdocum    ;
+        long   lhNum_folio       ;
+        int    ihSec_cuota       ;
+        double dhMonto_pagar     ;
+        char   szhPref_plaza [26]; EXEC SQL VAR szhPref_plaza IS STRING(26);
+        char   szhFec_Sydate [11]; EXEC SQL VAR szhFec_Sydate IS STRING(11);
+        char   szhNum_decimal  [12];
+        int    ihValor_cero    = 0 ;
+        int    ihValor_uno     = 1 ;
+        long   lhSecu_transac      ;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);
+    strcpy(szhNum_decimal,"num_decimal");
+
+    EXEC SQL EXECUTE
+        BEGIN
+            :ihDecimal := GE_PAC_GENERAL.PARAM_GENERAL( :szhNum_decimal );
+        END;
+    END-EXEC;
+
+    if( SQLCODE!=SQLOK )
+    {
+        vDTrazasLog( modulo, "\tGE_PAC_GENERAL.PARAM_GENERAL( 'num_decimal' ) - %s", LOG00,SQLERRM );
+        return -1;
+    }
+
+    if (ifnTrazaFacturacion()!=0)
+        return -1;
+
+    if (ifnCarga_Portadoras()!=0)
+        return -1;
+
+    if (ifnCargaListaQuery()!=0)
+        return -1;
+
+    if (iTotalReg > 0 )
+    {
+        stListaAux=pLista_Aux;
+
+        while (stListaAux!= NULL)
+        {
+            iContador++;
+            
+            lhCod_cliente =stListaAux->lCod_cliente ;
+            lhNum_secuenci=stListaAux->lNum_secuenci;
+            ihCod_tipdocum=stListaAux->iCod_tipdocum;
+            lhNum_folio   =stListaAux->lNum_folio   ;
+            ihSec_cuota   =stListaAux->iSec_cuota   ;
+            dhMonto_pagar =stListaAux->dMonto_pagar ;
+            strcpy(szhPref_plaza,stListaAux->szPref_plaza);
+            strcpy(szhFec_Sydate,stListaAux->szFec_Sydate);
+
+            EXEC SQL SELECT CO_SEQ_TRANSACINT.NEXTVAL INTO :lhSecu_transac FROM DUAL;
+
+            vDTrazasLog( modulo, "\tEjecuta Package [CO_INTERESMORA_PG.CO_CALCULO_PR]", LOG05);
+
+            EXEC SQL EXECUTE
+                BEGIN
+                    CO_INTERESMORA_PG.CO_CALCULO_PR(:lhSecu_transac, :lhCod_cliente, :lhNum_folio, :szhPref_plaza, :lhNum_secuenci, :ihCod_tipdocum, :dhMonto_pagar, :ihSec_cuota, :szhFec_Sydate);
+                END;
+            END-EXEC;
+
+            if( SQLCODE!=SQLOK )
+            {
+                vDTrazasLog( modulo, "\tEXECUTE CO_INTERESMORA_PG	 - %s", LOG00,SQLERRM );
+                return -1;
+            }
+
+            if (ifnGeneraCargos(lhSecu_transac)!=0) return -1;
+            
+   			if( iContador == 5000 )	
+   			{
+                vDTrazasLog( modulo, "\tEntro a hacer COMMIT", LOG07 );
+	   			iContador = 0;
+
+	   			if (!bfnOraCommit ()) 
+				{
+					iDError (modulo,ERR000,vInsertarIncidencia, "CommitWork 1",szfnORAerror());
+	                return -1;
+				}
+			}
+
+            stListaAux=stListaAux->sig;
+        }
+    }
+    else
+    {
+        vDTrazasLog( modulo, "\tNo existen Documentos Vencidos Impagos...Sorry man", LOG02);
+    }
+
+	if (!bfnOraCommit ()) 
+	{
+		iDError (modulo,ERR000,vInsertarIncidencia, "CommitWork 2",szfnORAerror());
+		return -1;
+	}
+
+    vDTrazasLog( modulo, "\tFin a funcion %s", LOG03, modulo );
+    vfnBorraListaPasoc( &pLista_Aux );
+
+    return 0;
+}/* Fin ifnIntmorciclo */
+
+
+/* ============================================================================= */
+/* Valida generacion de cargos                                                   */
+/* ============================================================================= */
+int ifnGeneraCargos(long lSecuencia)
+{
+	char modulo[]="ifnGeneraCargos";
+	int	 iError = 0;
+	BOOL bSalir = FALSE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		double dhImp_Cargo      ;
+		double dhImp_Deuda      ;
+		double dhFac_cobro      ;
+		int    ihDiasint        ;
+		int    ihConc_Mora      ;
+		long   lhSecuencia      ;
+		long   lhSecuCargo      ;
+
+		long   lhCod_cliente    ;
+		long   lhNum_secuenci   ;
+		int    ihCod_tipdocum   ;
+		long   lhNum_folio      ;
+		int    ihSec_cuota      ;
+		double dhMonto_pagar    ;
+		char   szhPref_plaza[26];
+		int    ihCod_vendedor   ;
+		int    ihCod_centremi   ;
+		int    ihNum_cuota      ;
+		char   szhLetra      [2];
+		long   lhCod_ciclfact   ;
+
+		int    ihNum_abonado = 0;
+		int    ihCod_producto= 5;
+		int    ihValor_cero  = 0;
+		char   szhModulo     [4];
+	EXEC SQL END DECLARE SECTION;
+
+	vDTrazasLog( modulo, "\tEn funcion %s", LOG05,modulo);
+	vDTrazasLog( modulo, "\tlhSecuencia [%ld]", LOG05,lSecuencia);
+	lhSecuencia=lSecuencia;
+	lhCod_ciclfact=stConfig.lCodCicloFact;
+	strcpy(szhModulo,"IMC");
+
+	EXEC SQL
+	DECLARE cur_cargos CURSOR FOR
+	SELECT NVL(IMP_CARGO,:ihValor_cero),
+		   NVL(MTO_INTERESES,:ihValor_cero),
+	       NVL(FAC_COBRO,:ihValor_cero),
+	       NVL(NUM_DIAS,:ihValor_cero) ,
+	       NVL(COD_CONCFACT,:ihValor_cero)
+	FROM   CO_TRANSACINT
+	WHERE  NUM_TRANSACCION = :lhSecuencia;
+
+	if( SQLCODE!=SQLOK )
+	{
+		vDTrazasLog( modulo, "\tDECLARE cur_cargos - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	EXEC SQL OPEN cur_cargos;
+	if( SQLCODE != SQLOK )
+	{
+		vDTrazasLog( modulo, "\tOPEN cur_cargos - %s", LOG00,SQLERRM );
+		return -1;
+	}
+
+	while ( !bSalir )
+	{
+		EXEC SQL
+		FETCH cur_cargos
+		INTO   :dhImp_Deuda  ,
+			   :dhImp_Cargo  ,
+		       :dhFac_cobro  ,
+		       :ihDiasint    ,
+		       :ihConc_Mora;
+
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			vDTrazasLog( modulo, "\tFETCH cur_cargos - %s", LOG00,SQLERRM );
+			iError = -1;
+			break;
+		}
+
+		if( SQLCODE == SQLNOTFOUND )
+		{
+			break;
+		}
+
+		if (dhImp_Cargo > 0 )
+		{
+			lhCod_cliente =stListaAux->lCod_cliente;
+			lhNum_secuenci=stListaAux->lNum_secuenci;
+			ihCod_tipdocum=stListaAux->iCod_tipdocum;
+			lhNum_folio   =stListaAux->lNum_folio ;
+			ihSec_cuota   =stListaAux->iSec_cuota ;
+			dhMonto_pagar =stListaAux->dMonto_pagar;
+			ihCod_vendedor=stListaAux->iCod_vendedor;
+			ihCod_centremi=stListaAux->iCod_centremi;
+			ihNum_cuota   =stListaAux->iNum_cuota;
+			strcpy(szhLetra , stListaAux->szLetra);
+			strcpy(szhPref_plaza , stListaAux->szPref_plaza);
+
+			EXEC SQL SELECT GE_SEQ_CARGOS.NEXTVAL INTO :lhSecuCargo FROM DUAL;
+			if( SQLCODE!=SQLOK )
+			{
+				vDTrazasLog( modulo, "\tSELECT GE_SEQ_CARGOS.NEXTVAL - %s", LOG00,SQLERRM );
+				iError = -1;
+				break;
+			}
+
+			vDTrazasLog( modulo, "\t Generando Cargos :", LOG03);
+			vDTrazasLog( modulo, "\t lhCod_cliente   [%ld]", LOG03,lhCod_cliente);
+			vDTrazasLog( modulo, "\t lhNum_folio     [%ld]", LOG03,lhNum_folio);
+			vDTrazasLog( modulo, "\t lhNum_secuenci  [%ld]", LOG07,lhNum_secuenci);
+			vDTrazasLog( modulo, "\t lhSecuCargo     [%ld]", LOG07,lhSecuCargo);
+			vDTrazasLog( modulo, "\t dhImp_Cargo     [%f]", LOG07,dhImp_Cargo);
+			vDTrazasLog( modulo, "\t dhFac_cobro     [%f]", LOG07,dhFac_cobro);
+			vDTrazasLog( modulo, "\t ihDiasint       [%d]", LOG07,ihDiasint);
+			vDTrazasLog( modulo, "\t ihConc_Mora     [%d]\n", LOG07,ihConc_Mora);
+
+			EXEC SQL EXECUTE
+				BEGIN
+					CO_GEN_CARGO(:lhCod_cliente, :ihNum_abonado, :ihConc_Mora , :dhImp_Cargo, :szhCod_moneda, :ihCod_producto, :lhSecuCargo, :lhCod_ciclfact);
+				END;
+			END-EXEC;
+			if( SQLCODE!=SQLOK )
+			{
+				vDTrazasLog( modulo, "\tEXECUTE CO_GEN_CARGO - %s", LOG00,SQLERRM );
+				iError = -1;
+				break;
+			}
+
+			EXEC SQL
+			INSERT INTO CO_INTERESAPLI (
+				NUM_SECUENCI  , COD_TIPDOCUM  , COD_VENDEDOR_AGENTE, LETRA ,
+				COD_CENTREMI  , NUM_SECUREL   , COD_TIPDOCREL, COD_AGENTEREL,
+				LETRA_REL     , COD_CENTRREL  , NUM_CARGO    , NUM_FOLIO,
+				PREF_PLAZA    , SEC_CUOTA     , NUM_CUOTA    , IMP_DEUDA,
+				IMP_CARGO     , FACTOR_COBRO  , NUM_DIAS     , COD_CLIENTE,
+				COD_CICLFACT  , IND_FACTURADO , FEC_CALCULO  , COD_MODULO
+			)
+			VALUES (
+				:lhNum_secuenci,:ihCod_tipdocum, :ihCod_vendedor, :szhLetra,
+				:ihCod_centremi,:lhNum_secuenci, :ihCod_tipdocum, :ihCod_vendedor,
+				:szhLetra      ,:ihCod_centremi, :lhSecuCargo   , :lhNum_folio   ,
+				:szhPref_plaza ,:ihSec_cuota   , :ihNum_cuota   ,
+				GE_PAC_GENERAL.REDONDEA(:dhImp_Deuda, :ihDecimal, :ihValor_cero),
+				GE_PAC_GENERAL.REDONDEA(:dhImp_Cargo, :ihDecimal, :ihValor_cero),
+				:dhFac_cobro   , :ihDiasint     , :lhCod_cliente ,
+				:lhCod_ciclfact, NULL , SYSDATE , :szhModulo
+			);
+
+			if( SQLCODE!=SQLOK )
+			{
+				vDTrazasLog( modulo, "\tINSERT INTO CO_INTERESAPLI - %s", LOG00,SQLERRM );
+				iError = -1;
+				break;
+			}
+
+		} /* if (dhImp_Cargo > 0 ) */
+	} /* while ( bSalir ) */
+
+	EXEC SQL
+	CLOSE cur_cargos;
+	if( SQLCODE != SQLOK )
+	{
+		vDTrazasLog( modulo, "\tCLOSE Cur_DoctosMora - %s", LOG00, SQLERRM );
+		iError = -1;
+	}
+
+	return iError;
+}
+
+/* ============================================================================= */
+/* Genera listas enlazadas,                                                      */
+/* ============================================================================= */
+int ifnCargaListaQuery()
+{
+    char modulo[]="ifnCargaListaQuery";
+    int  iError = 0;  
+    long lRowsCiclo     = 0L;
+    long lTotalRows     = 0L;
+    long lRowsProcesadas= 0L;
+    int  iSalir=FALSE;
+    long j=0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long   lhCod_cliente   [MAX_ARRAY];
+        long   lhNum_secuenci  [MAX_ARRAY];
+        int    ihCod_tipdocum  [MAX_ARRAY];
+        long   lhNum_folio     [MAX_ARRAY];
+        int    ihSec_cuota     [MAX_ARRAY];
+        double dhMonto_pagar   [MAX_ARRAY];
+        char   szhPref_plaza   [MAX_ARRAY][26]; EXEC SQL VAR szhPref_plaza IS STRING(26);
+        char   szhFec_Sydate   [MAX_ARRAY][11]; EXEC SQL VAR szhFec_Sydate IS STRING(11);
+        int    ihCod_vendedor  [MAX_ARRAY];
+        int    ihCod_centremi  [MAX_ARRAY];
+        int    ihNum_cuota     [MAX_ARRAY];
+        char   shzLetra        [MAX_ARRAY][2];
+
+        int    ihValor_cero    = 0 ;
+        int    ihValor_uno     = 1 ;
+        int    ihValor_dos     = 2 ;
+        int    ihValor_seis    = 6 ;
+        char   szhCO_INTERESAPLI [15];
+        char   szhTIPDOCUM     [13];
+        char   szhDDMMYYYY     [11];
+        long   lhCod_ciclfact;
+        long   lhCodClienteIni;
+        long   lhCodClienteFin;
+        int    ihOpcionRango;
+        long   lhMaxRangoCliente;
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodClienteIni = lgCodClienteIni;
+    lhCodClienteFin = lgCodClienteFin;
+    ihOpcionRango   = igOpcionRango ;
+    lhMaxRangoCliente = 99999999;
+
+
+    vDTrazasLog( modulo, "\n\tEn funcion %s", LOG03,modulo);
+    strcpy(szhCO_INTERESAPLI,"CO_INTERESAPLI");
+    strcpy(szhTIPDOCUM,"COD_TIPDOCUM");
+    strcpy(szhDDMMYYYY,"DD-MM-YYYY");
+
+    lhCod_ciclfact=stConfig.lCodCicloFact;
+
+    vDTrazasLog( modulo, "\n\t\t Tabla (Interesapli)   [%s] ", LOG03,szhCO_INTERESAPLI);
+    vDTrazasLog( modulo, "\t\t Tipo de Documento [%s] ", LOG03,szhTIPDOCUM);
+    vDTrazasLog( modulo, "\t\t Ciclo de Fact.    [%d] ", LOG03,ihCiclo);
+    vDTrazasLog( modulo, "\t\t Opcion Rango      [%d] ", LOG03,ihOpcionRango);
+    vDTrazasLog( modulo, "\t\t Cliente Inicial   [%ld]", LOG03,lhCodClienteIni);
+    vDTrazasLog( modulo, "\t\t Cliente Final     [%ld]", LOG03,lhCodClienteFin);
+    vDTrazasLog( modulo, "\t\t szhFecEmision     [%s]", LOG03,szhFecEmision);
+
+    /************************************************************************/
+    /* Toma el Universo de documentos vencidos impagos                      */
+    /* Tu que estas trabajando en este proceso, pierde toda esperanza...... */
+    /************************************************************************/
+
+    EXEC SQL DECLARE Cur_DoctosMora CURSOR FOR
+    SELECT /*+ RULE */
+           A.COD_CLIENTE, A.NUM_SECUENCI, A.COD_TIPDOCUM,
+           A.NUM_FOLIO  , NVL( A.SEC_CUOTA, 0 )   , A.PREF_PLAZA  ,
+           NVL(SUM(A.IMPORTE_DEBE - A.IMPORTE_HABER),:ihValor_cero),
+           TO_CHAR(SYSDATE,:szhDDMMYYYY),  A.COD_VENDEDOR_AGENTE,
+           A.COD_CENTREMI , NVL( A.NUM_CUOTA, 0 ), A.LETRA
+    FROM  CO_CARTERA A, GE_CLIENTES B
+    WHERE A.COD_CLIENTE = B.COD_CLIENTE
+      AND A.COD_TIPDOCUM NOT IN (SELECT TO_NUMBER(COD_VALOR)
+                                 FROM CO_CODIGOS
+                                 WHERE NOM_TABLA   = :szhCO_INTERESAPLI
+                                   AND NOM_COLUMNA = :szhTIPDOCUM )
+      AND A.COD_CONCEPTO NOT IN (:ihValor_dos,:ihValor_seis)
+      /* AND A.FEC_VENCIMIE < (SYSDATE - :ihValor_uno)  Requerimiento de Soporte 159515 */
+      AND A.FEC_VENCIMIE < TO_DATE(:szhFecEmision,'dd-mm-yyyy')
+      AND A.IND_FACTURADO = :ihValor_uno
+      AND B.COD_CICLO   = :ihCiclo
+      AND EXISTS (SELECT COD_CLIENTE FROM GA_INFACCEL WHERE COD_CLIENTE = B.COD_CLIENTE AND COD_CICLFACT = :lhCod_ciclfact )
+      AND NOT EXISTS (SELECT COD_CLIENTE FROM CO_INMUNIDAD WHERE COD_CLIENTE = B.COD_CLIENTE AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA)
+      AND NOT EXISTS (SELECT COD_CLIENTE FROM CO_CLIESINTER WHERE COD_CLIENTE = B.COD_CLIENTE AND SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA)
+      AND B.COD_CLIENTE BETWEEN DECODE( :ihOpcionRango, :ihValor_uno, :lhCodClienteIni, :ihValor_uno ) AND DECODE( :ihOpcionRango, :ihValor_uno, :lhCodClienteFin, :lhMaxRangoCliente )
+    GROUP BY A.COD_CLIENTE, A.NUM_SECUENCI, A.COD_TIPDOCUM, A.NUM_FOLIO, A.SEC_CUOTA,
+             A.PREF_PLAZA, A.COD_VENDEDOR_AGENTE, A.COD_CENTREMI , A.NUM_CUOTA, A.LETRA;
+
+    if( SQLCODE != SQLOK )
+    {
+        vDTrazasLog( modulo, "\tDECLARE Cur_DoctosMora - %s", LOG00,SQLERRM );
+        return -1;
+    }
+    
+    EXEC SQL OPEN Cur_DoctosMora;
+
+    if( SQLCODE != SQLOK )
+    {
+        vDTrazasLog( modulo, "\tOPEN Cur_DoctosMora - %s", LOG00,SQLERRM );
+        return -1;
+    }
+
+
+    iSalir=FALSE;
+    while(!iSalir)
+    {
+    	
+        EXEC SQL
+        FETCH Cur_DoctosMora
+        INTO :lhCod_cliente ,
+             :lhNum_secuenci,
+             :ihCod_tipdocum,
+             :lhNum_folio   ,
+             :ihSec_cuota   ,
+             :szhPref_plaza ,
+             :dhMonto_pagar ,
+             :szhFec_Sydate ,
+             :ihCod_vendedor,
+             :ihCod_centremi,
+             :ihNum_cuota   ,
+             :shzLetra      ;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+        {
+            vDTrazasLog( modulo, "\tFETCH Cur_DoctosMora - %s", LOG00,SQLERRM );
+            iError = -1;
+            break;
+        }
+
+        if( SQLCODE == SQLNOTFOUND )
+        {
+            iSalir = TRUE;
+        }
+
+        lTotalRows = SQLROWS;
+        lRowsCiclo = ( lTotalRows - lRowsProcesadas );
+        vDTrazasLog( modulo, "\tlTotalRows[%ld]", LOG03,lTotalRows);
+        vDTrazasLog( modulo, "\tlRowsCiclo[%ld]", LOG03,lRowsCiclo);
+
+        /* traspasamos los datos desde el host array a la lista de trabajo */
+        for( j = 0; j < lRowsCiclo; j++ )
+        {
+            /* Insertamos un nodo para el codigo de cliente */
+            if (ifnInsertaPasoc(&pLista_Aux)!=0)
+            {
+                vDTrazasLog( modulo, "\tError al Insertar Nodo en pLista_Aux.", LOG00);
+                iError = -1;
+            }
+
+            /* Asigna valor del arreglo al campo de la lista */
+            pLista_Aux->lCod_cliente =lhCod_cliente [j];
+            pLista_Aux->lNum_secuenci=lhNum_secuenci[j];
+            pLista_Aux->iCod_tipdocum=ihCod_tipdocum[j];
+            pLista_Aux->lNum_folio   =lhNum_folio   [j];
+            pLista_Aux->iSec_cuota   =ihSec_cuota   [j];
+            pLista_Aux->dMonto_pagar =dhMonto_pagar [j];
+            pLista_Aux->iCod_vendedor=ihCod_vendedor[j];
+            pLista_Aux->iCod_centremi=ihCod_centremi[j];
+            pLista_Aux->iNum_cuota   = ihNum_cuota  [j];
+            strcpy(pLista_Aux->szPref_plaza, szhPref_plaza [j]);
+            /*strcpy(pLista_Aux->szFec_Sydate, szhFec_Sydate[j]); Requerimiento de Soporte 159515 */
+            strcpy(pLista_Aux->szFec_Sydate, szhFecEmision );
+            strcpy(pLista_Aux->szLetra , shzLetra[j]);
+
+            vDTrazasLog( modulo, "\n\t[%08ld] ",LOG05, j+1);
+            vDTrazasLog( modulo, "\tlCod_cliente  ======>  [%ld]",LOG05, pLista_Aux->lCod_cliente);
+            vDTrazasLog( modulo, "\tlNum_secuenci ======>  [%ld]",LOG05, pLista_Aux->lNum_secuenci);
+            vDTrazasLog( modulo, "\tiCod_tipdocum ======>  [%d]", LOG06, pLista_Aux->iCod_tipdocum);
+            vDTrazasLog( modulo, "\tlNum_folio    ======>  [%ld]",LOG05, pLista_Aux->lNum_folio);
+            vDTrazasLog( modulo, "\tiSec_cuota    ======>  [%d]", LOG07, pLista_Aux->iSec_cuota);
+            vDTrazasLog( modulo, "\tdMonto_pagar  ======>  [%f]", LOG06, pLista_Aux->dMonto_pagar);
+            vDTrazasLog( modulo, "\tszPref_plaza  ======>  [%s]", LOG07, pLista_Aux->szPref_plaza);
+            vDTrazasLog( modulo, "\tszFec_Sydate  ======>  [%s]", LOG07, pLista_Aux->szFec_Sydate);
+            iTotalReg++;
+        }
+
+        lRowsProcesadas = lRowsProcesadas + lRowsCiclo; 
+        if( iSalir )
+            vDTrazasLog( modulo, "\tAlcanzando Fin de Datos Cur_DoctosMora.\n", LOG03);
+
+    } /* fin while cursor Cur_DoctosMora */
+
+    EXEC SQL
+    CLOSE Cur_DoctosMora;
+    if( SQLCODE != SQLOK )
+    {
+        vDTrazasLog( modulo, "\tCLOSE Cur_DoctosMora - %s", LOG00, SQLERRM );
+        iError = -1;
+    }
+
+    return iError;
+        
+} /* end ifnCargaListaQuery */
+
+/* ============================================================================= */
+/* Valida traza de facturacion con procesos precedentes y posteriores            */
+/* ============================================================================= */
+int ifnTrazaFacturacion()
+{
+    char modulo[]="ifnTrazaFacturacion";
+    char szHostId[21] ="";
+    long lCodClienteIni = 0L;
+    long lCodClienteFin = 0L;
+
+    
+    vDTrazasLog( modulo,"\n\t(ifnTrazaFacturacion) Rango de clientes obtenido desde linea de comando:"
+                        "\n\tlgCodClienteIni    :[%ld]"
+                        "\n\tlgCodClienteFin    :[%ld]"
+                        "\n\tigOpcionRango      :[%d]"
+                        ,LOG05
+                        ,lgCodClienteIni
+                        ,lgCodClienteFin
+                        ,igOpcionRango);
+    
+    if ((ifnGetHostId(szHostId))!=0)
+    {
+        if (!bfnValidaTrazaProc(stConfig.lCodCicloFact, iPROC_INTERMORO, iIND_FACT_ENPROCESO))
+            return -1;
+
+        if (!bfnOraCommit ())
+        {
+            iDError (modulo,ERR000,vInsertarIncidencia, "CommitWork",szfnORAerror());
+            return -1;
+        }
+
+        bfnSelectTrazaProc ( stConfig.lCodCicloFact, iPROC_INTERMORO, &stTrazaProc);
+        bPrintTrazaProc(stTrazaProc);
+
+        return 0;
+    }
+    else
+    {
+        if (!bfnValidaTrazaProcHost(stConfig.lCodCicloFact, iPROC_INTERMORO, iIND_FACT_ENPROCESO,szHostId))
+            return -1;
+
+        if (!bfnOraCommit ())
+        {
+            iDError (modulo,ERR000,vInsertarIncidencia, "CommitWork",szfnORAerror());
+            return -1;
+        }
+
+        bfnSelectTrazaProcHost ( stConfig.lCodCicloFact, iPROC_INTERMORO, &stTrazaProc,szHostId);
+        bPrintTrazaProc(stTrazaProc);
+
+        if (iGetRangosHost (szHostId,(int)stConfig.lCodCicloFact,&lCodClienteIni,&lCodClienteFin))
+        {
+            vDTrazasLog( modulo, "\tImposible encontrar rango de Clientes para Ciclo [%ld] y Host [%s]"
+                               , LOG03
+                               , stConfig.lCodCicloFact
+                               , szHostId);
+            return -1;
+        }
+        lgCodClienteIni = lCodClienteIni;
+        lgCodClienteFin = lCodClienteFin;
+        igOpcionRango = 1;
+
+        return 0;
+    }
+}
+
+/* ============================================================================= */
+/* Actualiza la traza de facturacion                                             */
+/* ============================================================================= */
+int ifnFinTrazaFacturacion()
+{
+    char modulo[]="ifnFinTrazaFacturacion";
+    char szFecha [15];
+    
+	if ( !bfnSelectSysDate(szFecha) )
+	     return -1;
+    
+    if(stConfig.iCodEstadoProc == iPROC_EST_ERR)
+    {
+		stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+		strcpy(stTrazaProc.szGlsProceso,"Proceso de Interes de Mora terminado con error.");    	
+    }
+    else
+    {
+		stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+		strcpy(stTrazaProc.szGlsProceso,"Proceso de Interes de Mora OK.");
+	}
+	
+	strcpy(stTrazaProc.szFecInicio, stConfig.szFechaIniProc);
+	strcpy(stTrazaProc.szFecTermino,szFecha);
+
+	bPrintTrazaProc(stTrazaProc);
+	if(!bfnWrapperUpdateTrazaProc(stTrazaProc))
+	     return -1;
+
+	if (!bfnOraCommit ())
+	{
+	     iDError (modulo,ERR000,vInsertarIncidencia, "CommitWork",szfnORAerror());
+	     return -1;
+	}
+
+	return 0;
+
+}
+/* ============================================================================= */
+/* Copia un substr de un char a otro                                             */
+/* ============================================================================= */
+void Strcpysub(char *str1, int Largo, char *str2)
+{
+   int i;
+   str2[0]='\0';
+   for(i=0;i<=Largo-1;str2[i]=str1[i],i++);
+   str2[i]='\0';
+}
+
+/* ============================================================================= */
+/* Lleva una Hora dada a un valor equivalente en segundos                        */
+/* ============================================================================= */
+int HoraToSegs(char *HoraFmto)
+{
+  char *Hora,HH[3],MI[3],SS[3];
+  int iHH,iMI,iSS;
+  Hora=HoraFmto;
+  Strcpysub(Hora,2,HH); Hora=Hora+3; /*HH:*/ iHH=atoi(HH); if (iHH<00||iHH>23) return -1;
+  Strcpysub(Hora,2,MI); Hora=Hora+3; /*MI:*/ iMI=atoi(MI); if (iMI<00||iMI>59) return -1;
+  Strcpysub(Hora,2,SS);              /*SS */ iSS=atoi(SS); if (iSS<00||iSS>59) return -1;
+  return (iHH*3600+iMI*60+iSS);
+}
+
+/* ============================================================================= */
+/* Resta dos string en fmto hora y retorna la diferencia en fmto hora y segundos */
+/* ============================================================================= */
+int ifnRestaHoras( char *h1, char *h2, char *hh)
+{
+  int ih1,ih2,ih;
+  div_t hmsH,hmsMS;
+  if ((ih1=HoraToSegs(h1))<0) return -1;
+  if ((ih2=HoraToSegs(h2))<0) return -1;
+  ih=(ih2>=ih1)?(ih2-ih1):(((24*3600)-ih1)+ih2); /* restando horas en segundos , considerando cambio de dia */
+  hmsH=div(ih,3600);
+  hmsMS=div(hmsH.rem,60);
+  sprintf(hh,"%02d:%02d:%02d\0",hmsH.quot,hmsMS.quot,hmsMS.rem);
+  return ih;
+}
+
+
+/*
+ * Funcion      : bfnWrapperUpdateTrazaProc
+ * Descripcion  : Funcion "wrapper" que actualiza datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperUpdateTrazaProc (TRAZAPROC pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnUpdateTrazaProc (pstTraza))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnUpdateTrazaProcHost (pstTraza, szHostId))
+            return (FALSE);
+    }
+
+    return (TRUE);
+
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

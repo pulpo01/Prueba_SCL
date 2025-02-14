@@ -1,0 +1,21 @@
+CREATE OR REPLACE PROCEDURE        P_BAJA_ABONADORENT(
+  VP_ABONADO IN NUMBER ,
+  VP_FECSYS IN DATE )
+IS
+--
+-- Procedimiento de Actualizacion de las tablas de abonados de productos
+-- al realizarse una aceptacion de ventas.
+--
+   V_PROCED VARCHAR2(25) := NULL;
+BEGIN
+   V_PROCED := 'P_BAJA_ABONADORENT';
+   UPDATE GA_ABORENT
+      SET FEC_BAJACEN = VP_FECSYS,
+   COD_SITUACION = 'PFB'
+    WHERE NUM_ABONADO = VP_ABONADO;
+EXCEPTION
+   WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR (-20220,V_PROCED||' '||SQLERRM);
+END;
+/
+SHOW ERRORS

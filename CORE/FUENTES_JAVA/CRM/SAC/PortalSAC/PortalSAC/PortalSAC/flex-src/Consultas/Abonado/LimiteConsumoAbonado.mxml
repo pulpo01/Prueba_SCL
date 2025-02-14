@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="870" height="412" initialize="init();" xmlns:ns1="Cliente.*" alpha="1.0" backgroundAlpha="1.0">
+
+
+	<mx:Script>
+	<![CDATA[
+		import mx.formatters.NumberBase;
+		import mx.formatters.NumberFormatter;
+		import mx.formatters.Formatter;
+		import generated.webservices.orquestador.GetDetalleAbonadoResultEvent;
+		import generated.webservices.orquestador.GetDetalleClienteResultEvent;
+		import mx.messaging.channels.StreamingAMFChannel;
+		import mx.states.SetProperty;
+	
+		import mx.core.Application;
+		import mx.controls.Alert;
+		import mx.rpc.events.FaultEvent;
+		import mx.collections.ArrayCollection;
+		import mx.utils.ArrayUtil;
+		import mx.managers.PopUpManager;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import flash.display.DisplayObject;
+		import mx.events.MenuEvent;
+		
+		import generated.webservices.orquestador.*;
+		
+		import mx.events.ModuleEvent;
+		import mx.events.CloseEvent;
+	    import mx.modules.ModuleManager;
+	   	import mx.modules.IModuleInfo;
+	
+		import user.libreria.componentes.scrollableMenu.controls.ScrollableArrowMenu;
+		import user.libreria.componentes.scrollableMenu.controls.ScrollableMenu;
+		import mx.core.ScrollPolicy;
+		import user.libreria.clases.UtilDataGrid;
+		import user.libreria.clases.StringUtil;
+			
+		public var searchingPopUpView:Class = BarraDeProgreso2;
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject;
+		public var wsORQ:WSSEGPortal = new WSSEGPortal();
+		public var pagosConsumoAbonado:Class = PagosConsumoAbonado;
+		
+		// Para la impresion en pdf
+		public var anchoColsGrid:Array = new Array();
+		
+		[Bindable]
+		public var dsGrid:Array = new Array();
+		
+	
+		[Embed(source="/recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class; 		
+
+		[Bindable]
+	    public var arrowScrollPolicy:String = ScrollPolicy.AUTO;
+	            
+	    [Bindable]
+	    public var vertScrollPolicy:String = ScrollPolicy.OFF;
+
+		[Bindable]
+	 	public var menu:XMLList =
+	    <>
+	    	<menuitem label="Consultas" data="top">
+		        <menuitem label="Pagos" data="PAGOS"/>
+			</menuitem>
+	
+		</>
+	
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Version : 1.0
+		// ------------------------------------------------------------------------------------------		
+	
+		private function menuConsultaPopup(event:MenuEvent):void	{
+			
+			popUpParent = Application.application.document;
+	 
+		    var opcion:String = event.item.@data;
+		    var mensajeError:String = null; 
+		    switch (opcion)	{
+		    	case "PAGOS":
+		    		this.popUpWindow = PopUpManager.createPopUp(popUpParent, pagosConsumoAbonado, true);
+		    		PopUpManager.centerPopUp(popUpWindow);
+		    } // switch
+		    
+		    if (mensajeError != null)
+				Alert.show( mensajeError, 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							null,
+							iconWarning,
+							mx.controls.Alert.OK );	    	
+			
+		} // menuConsultaPopup
+			
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Version : 1.0
+		// ------------------------------------------------------------------------------------------		
+	
+	    private function addMenu(posX:int, posY:int):void {
+	        
+	        var menu:ScrollableArrowMenu = ScrollableArrowMenu.createMenu(null, menu, false);
+	        menu.labelField="@label";
+	       
+	        menu.verticalScrollPolicy = vertScrollPolicy;
+	        menu.arrowScrollPolicy = arrowScrollPolicy;
+	        menu.addEventListener(MenuEvent.ITEM_CLICK, menuConsultaPopup);
+	        menu.maxHeight = 150;
+	        menu.show(posX, posY);
+	        
+	    } // addMenu
+
+		// --------------------------------------------------------------------------------
+		
+		private function getError(event:FaultEvent):void    {
+			        
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {
+				/*
+				var mensaje:String = new String();
+				mensaje = event.fault.faultString + "\n" + event.fault.faultDetail;
+		     	Alert.show(mensaje, "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	  		}
+		} // getError
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getData(event:LimiteConsumoXClienteAbonadoResultEvent):void	{
+		
+			PopUpManager.removePopUp(popUpWindow);
+			
+			if (event.result.arrayLimitesConsumo != null)	{
+				txtAbonado.text  = "(" + Application.application.abonadoDTO.numAbonado + ") " + Application.application.abonadoDTO.nomUsuario;
+				dsGrid = event.result.arrayLimitesConsumo;
+				anchoColsGrid = UtilDataGrid.anchosColumnas(gridCtaCte);
+			} // if
+			else
+				Alert.show( event.result.desError, 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							null,
+							iconWarning,
+							mx.controls.Alert.OK );
+			
+		} // getData  
+					
+		// --------------------------------------------------------------------------------	
+	
+		private function executeWS():void	{
+	
+		    popUpParent = Application.application.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+
+			var numAbonado:Number = Application.application.abonadoDTO.numAbonado;
+			var codCliente:Number = parseInt(Application.application.codClienteDetalle);
+			var nomUsuario:String = Application.application.usuario.username;
+			var codEvento:String = Application.application.codEvento; 
+			
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+						
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addlimiteConsumoXClienteAbonadoEventListener(getData);
+			wsORQ.limiteConsumoXClienteAbonado(codCliente,numAbonado, nomUsuario, codEvento);
+	
+		} // executeWS
+
+		// --------------------------------------------------------------------------------			
+	  	
+	  	private function init():void {
+			executeWS();
+		} // init
+	
+		// --------------------------------------------------------------------------------
+		
+		private function cerrar():void {
+			PopUpManager.removePopUp(this);
+		} // cerrar
+		
+		// --------------------------------------------------------------------------------	
+		]]>
+	</mx:Script>
+	
+	<mx:Panel width="855" height="388.15" layout="absolute" title="&gt;&gt; Límite de Consumo" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="-3">
+	
+		<mx:Button x="733" y="306" label="Cerrar" width="92" height="31" fontSize="10" click="cerrar()">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/libIcons/16x16/close.png')</mx:icon>
+		</mx:Button>
+	
+		<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="130" horizontalAlign="center" verticalAlign="middle" backgroundColor="#FFFFFF" height="33" x="688.3" y="10" paddingRight="10" horizontalGap="10">
+		</mx:HBox>
+		
+		<mx:Image x="701" y="13" source="recursosInterfaz/imagenes/iconos/excel.gif" id="imgCopy" toolTip="Transformar a Excel" click="UtilDataGrid.copyDatagridToClipboard(gridCtaCte, 'LimiteConsumoAbonado')"/>
+		<mx:Image source="recursosInterfaz/imagenes/iconos/tools.gif"  click="addMenu(810,160)" x="776" y="12" toolTip="Consultas"/>
+	
+		<mx:Label text="Abonado" styleName="TituloCampo" x="14.5" y="18"/>
+		<mx:TextInput x="85.5" y="16" width="571.8" fontSize="10" editable="false" id="txtAbonado" height="22"/>
+	
+		<mx:AdvancedDataGrid resizableColumns="false" dataProvider="{ac}" id="gridCtaCte" width="815" fontSize="10" textAlign="left" height="240"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" x="10" y="58" selectionMode="multipleRows">
+			<mx:columns>
+				<mx:AdvancedDataGridColumn headerText="Código" dataField="codLimCons" paddingLeft="5" textAlign="center" />			
+				<mx:AdvancedDataGridColumn headerText="Descripción" dataField="descripcion" paddingRight="5" width="250" textAlign="left"/>
+				<mx:AdvancedDataGridColumn headerText="Cód.Umbral Min." dataField="codUmbralMin" paddingLeft="5" width="130" textAlign="center"/>
+				<mx:AdvancedDataGridColumn headerText="Umbral" dataField="desUmbral" paddingLeft="5" textAlign="left"/>
+				<mx:AdvancedDataGridColumn headerText="Consumo Acumulado" dataField="acuConsumo" paddingLeft="5" textAlign="right" width="220"/>
+			</mx:columns>
+		</mx:AdvancedDataGrid>
+
+	</mx:Panel>
+
+	<mx:ArrayCollection id="ac" source="{ArrayUtil.toArray(dsGrid)}" />	
+</mx:Module>

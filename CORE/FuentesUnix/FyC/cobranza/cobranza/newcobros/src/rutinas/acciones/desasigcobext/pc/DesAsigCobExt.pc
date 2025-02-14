@@ -1,0 +1,535 @@
+/* ==================================================================================================
+    Tipo        :  ACCION (REVERSA)
+    Nombre      :  DesAsigCobExt.pc ("DACEX"->szfnDesAsigCobExt)
+    Descripcion :  DES - ASIGna una entidad de COBranza EXTerna del cliente dado
+    Recibe      :  by Val -> Cod Cliente 
+    Devuelve    :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+                   "OK"   -> La accion se ejecuto correctamente
+    Autor       :  Roy Barrera Richards
+    Fecha       :  10 - Agosto - 2000 
+Modificacion    :  12-11-2004
+		Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo					
+================================================================================================== */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "DesAsigCobExt.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* funcion de des - asignacion de entidad de cobranza externa                    */
+/* ============================================================================= */
+char *szfnDesAsigCobExt(FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhEntGestCob[21];
+	long lhCodCliente = 0;
+	long lhCodClienteAux = 0;
+	char szhNumIdent[iLENNUMIDENT];
+	char szhCodTipIdent[3];
+	long lhNumProceso = 0;
+	int ihCntClientes = 0;       
+	long lhCodCuenta = 0; 
+	char szhCodEntidad[6];
+	char szhCodMovimiento[6];
+	char szhCodEnvio[2];
+	char szhRowid[19];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char modulo[] = "szfnDesAsigCobExt";
+char szRutina[] = "D", szMovimiento[] = "B";
+char szCodMovimientoNuevo[6];
+int iResp = 0;
+struct sqlca sqlca;
+FILE *pfLog=*ptArchLog;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+	
+	memset( szhEntGestCob, '\0', sizeof( szhEntGestCob ) );
+	memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+	memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+	memset( szCodMovimientoNuevo, '\0', sizeof( szCodMovimientoNuevo ) );
+	memset( szhCodEntidad, '\0', sizeof( szhCodEntidad ) );
+	memset( szhCodMovimiento, '\0', sizeof( szhCodMovimiento ) );
+	memset( szhCodEnvio, '\0', sizeof( szhCodEnvio ) );
+	memset( szhRowid, '\0', sizeof( szhRowid ) );
+
+    lhCodCliente = lCliente;
+
+   /* obtenemos la entidad a la cual va dirigida la Cobranza Externa */
+	if (ifnRecuperaGedParametro(&pfLog, "ENTIDAD_GESTION_COB", szMODULOCOBRANZA, szhEntGestCob, CXX )!=0) 
+      return "ERENC";
+
+   if( !strcmp( szhEntGestCob, "ERROR" ) )
+    	return "ERENC";
+
+	/* Obtiene el Rut del Cliente -*/
+   iResp = ifnGetRutCliente(&pfLog, lCliente, szhNumIdent, szhCodTipIdent, CXX );
+   if( iResp == 0 ) 
+        return "NORUT";		/* No encontro el rut */
+   else if( iResp < 0 )
+        return "PND";		/* error oracle */
+
+	if( !strcmp( szhEntGestCob, szENTIDADCLIENTE ) ) /* si la cobranza va dirigida al cliente */
+	{
+		/* Obtener datos de Co_Cobexterna */  
+      sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL
+		SELECT NUM_PROCESO,
+			   COD_ENVIO,
+			   ROWIDTOCHAR( ROWID )
+		  INTO :lhNumProceso,
+			   :szhCodEnvio,
+			   :szhRowid
+		  FROM CO_COBEXTERNA
+		 WHERE COD_CLIENTE = :lhCodCliente
+		   AND COD_MOVIMIENTO NOT IN ( 'B', 'R' )
+		   AND COD_ENVIO NOT IN ( 'B', 'R', 'I', 'G', 'V', 'E', 'N' ); /* Baja:Reasignado:Ingresado:Generado:Visado */
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] DATOS CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			return "SECOB";
+		}
+
+		if( sqlca.sqlcode != SQLNOTFOUND ) /* si esta en cobranza externa */
+		{
+			if( lhNumProceso == 0 && !strcmp( szhCodEnvio, "X" ) ) /* nunca se ha informado, ni procesado en BD */
+			{
+				/* borra de cobranza externa cliente y no clientes si hubiera */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				DELETE FROM CO_COBEXTERNA
+				 WHERE COD_CLIENTE = :lhCodCliente
+				   AND COD_MOVIMIENTO NOT IN ( 'B', 'R' )
+				   AND COD_ENVIO NOT IN ( 'B', 'R', 'I', 'G', 'V', 'E', 'N' ); /* Baja:Reasignado:Ingresado:Generado:Visado */
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] DELETE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+					return "DECOB";
+				}
+			}
+			if( strcmp( szhCodEnvio, "X" ) ) /* se proceso */
+			{
+				/* se da de baja de cobranza normal */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				UPDATE CO_COBEXTERNA
+				   SET COD_MOVIMIENTO = 'B',
+					   FEC_MOVIMIENTO = SYSDATE
+				 WHERE ROWID = CHARTOROWID( :szhRowid );
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] UPDATE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+					return "UPCOB";
+				}
+
+				/* si esta en proceso de no clientes, se marca el registro para borrado */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				UPDATE CO_COBEXTERNA
+				   SET COD_ENVIO = 'N',
+					   FEC_MOVIMIENTO = SYSDATE 
+				 WHERE COD_CLIENTE = :lhCodCliente
+				   AND COD_MOVIMIENTO = 'SM' 
+				   AND COD_ENVIO IN ( 'I', 'G', 'V' ); /* Ingresado:Generado:Visado */
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] UPDATE NO CLIENTE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+					return "UPCON";
+				}
+
+				sprintf( szCodMovimientoNuevo, "B\0" );
+			}
+
+			if( !strcmp( szCodMovimientoNuevo, "B" ) && !gbExclusionTotal ) /* si es baja y no sale de moroso, debemos reasignar ejecutivo */
+			{
+				if( !bfnReasignaAgenteCobranza( &pfLog,lhCodCliente, szhNumIdent, szhCodTipIdent, szhEntGestCob, 0, CXX ) )
+					return "ERACC";
+			}
+
+			strcpy( szhCodEntidad, "X" );
+			if( !bfnActualizaCoGestionClienteAcc(&pfLog, lhCodCliente, lhCodCuenta, szhNumIdent, szhCodTipIdent, szhCodEntidad, szRutina, szMovimiento, CXX ) )
+				return "UPGES";
+		}
+	}
+    else /* la gestión de cobranza esta dirigida a la cuenta */
+    {
+	    /* Obtener datos de Co_Cobexterna */  
+		sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL
+		SELECT COD_MOVIMIENTO, 
+			   COD_ENVIO,
+			   COD_ENTIDAD,
+			   NUM_PROCESO,
+			   CNT_CLIENTES,
+			   COD_CUENTA,
+			   ROWIDTOCHAR( ROWID )
+		  INTO :szhCodMovimiento, 
+		  	   :szhCodEnvio,
+			   :szhCodEntidad,
+			   :lhNumProceso, 
+			   :ihCntClientes,
+			   :lhCodCuenta,
+			   :szhRowid
+		  FROM CO_COBEXTERNA
+		 WHERE NUM_IDENT = :szhNumIdent
+		   AND COD_TIPIDENT = :szhCodTipIdent
+		   AND COD_MOVIMIENTO NOT IN ( 'B', 'R' )
+		   AND COD_ENVIO NOT IN ( 'B', 'R', 'I', 'G', 'V', 'E', 'N' ); /* Baja:Reasignado:Ingresado:Generado:Visado */
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] SELECT CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			return "SECOB";
+		}
+
+		if( sqlca.sqlcode == SQLNOTFOUND )
+			return "OK";
+
+		/* validamos consistencia del campo cod_movimiento */
+		if( !strcmp( szhCodMovimiento, "EP" ) )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Registro se encuentra en ESTADO 'EP'.", LOG05, lhCodCliente );  
+			return "IDCOB";
+		}
+
+	    /* Verificar el num_proceso y el cnt_clientes */  
+	    if( lhNumProceso == 0 && !strcmp( szhCodEnvio, "X" ) ) /* no se ha informado, ni procesado */
+	    {
+	        if( ihCntClientes == 1 ) /* si tiene solo un cliente */ 
+			{
+				/* borramos de Cobranza Externa */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				DELETE FROM CO_COBEXTERNA
+				 WHERE ROWID = CHARTOROWID( :szhRowid );
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			    {
+			        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] DELETE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			        return "DECOB";
+			    }
+
+				sprintf( szCodMovimientoNuevo, "B\0" );
+			}
+	        if( ihCntClientes > 1 ) /* nunca se a procesado y tiene mas de un cliente */ 
+	        {
+				/* para clientes en cobranza externa */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL 
+				UPDATE CO_COBEXTERNA
+				   SET CNT_CLIENTES = :ihCntClientes - 1,
+				       FEC_MOVIMIENTO = SYSDATE 
+				 WHERE ROWID = CHARTOROWID( :szhRowid );
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			    {
+			        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] UPDATE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+			        return "UPCOB";
+			    }
+			}
+		} 
+		else if( strcmp( szhCodEnvio, "X" ) ) /* fue procesado en BD, no importa si fue informado */
+		{
+	        if( ihCntClientes == 1 )
+			{
+				/* para clientes en cobranza externa normal */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL 
+				UPDATE CO_COBEXTERNA
+				   SET COD_MOVIMIENTO = 'B',
+				       FEC_MOVIMIENTO = SYSDATE 
+				 WHERE ROWID = CHARTOROWID( :szhRowid );
+
+    			if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			    {
+			        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] UPDATE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			        return "UPCOB";
+			    }
+
+				sprintf( szCodMovimientoNuevo, "B\0" );
+	        }
+	        else if( ihCntClientes > 1)
+	        {
+				/* para clientes en cobranza externa normal */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL 
+				UPDATE CO_COBEXTERNA
+				   SET CNT_CLIENTES = :ihCntClientes - 1,
+				       COD_MOVIMIENTO = 'M',
+				       FEC_MOVIMIENTO = SYSDATE  
+				 WHERE ROWID = CHARTOROWID( :szhRowid );
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			    {
+			        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] UPDATE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			        return "UPCOB";
+			    }
+	        }
+	    } /* if( lhNumProceso == 0 ) */
+
+		if( !strcmp( szCodMovimientoNuevo, "B" ) ) /* si es baja */
+		{
+			if( !gbExclusionTotal ) /* si no sale de morosos, reasignamos agente */
+			{
+				if( !bfnReasignaAgenteCobranza( &pfLog,lhCodCliente, szhNumIdent, szhCodTipIdent, szhEntGestCob, 0, CXX ) )
+					return "ERACC";
+			}		
+			else	/* si es baja y quedan otros morosos de la cuenta debemos tambien reasignar agente */
+			{
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				SELECT COD_CLIENTE
+				  INTO :lhCodClienteAux
+				  FROM CO_MOROSOS
+				 WHERE NUM_IDENT = :szhNumIdent
+				   AND COD_TIPIDENT = :szhCodTipIdent
+				   AND COD_CLIENTE != :lhCodCliente
+				   AND ROWNUM < 2;
+
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			    {
+			        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] BUSCANDO OTRO CLIENTE DE LA CUENTA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			        return "ERSEL";
+			    }
+
+				if( sqlca.sqlcode != SQLNOTFOUND ) /* encontramos otro cliente, reasignamos para este cliente */
+				{
+			        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Asignamos ACCION de Asignacion de Ejecutivo al Cliente => [%ld].", LOG06, lhCodCliente, lhCodClienteAux );  
+
+					if( !bfnReasignaAgenteCobranza( &pfLog,lhCodClienteAux, szhNumIdent, szhCodTipIdent, szhEntGestCob, lhCodCliente, CXX ) )
+						return "ERACC";
+				}
+			} /* if( !gbExclusionTotal ) */
+
+			/* si es baja, siempre anulamos registros en No Clientes */
+			sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+			EXEC SQL
+			UPDATE CO_COBEXTERNA
+			   SET COD_ENVIO = 'N',
+			       FEC_MOVIMIENTO = SYSDATE
+			 WHERE NUM_IDENT = :szhNumIdent
+			   AND COD_TIPIDENT = :szhCodTipIdent
+			   AND COD_MOVIMIENTO = 'SM'
+			   AND COD_ENVIO IN ( 'I', 'G', 'V' ); /* Ingresado:Generado:Visado */
+			   
+			if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		    {
+		        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] ANULA NO CLIENTE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		        return "UPCON";
+		    }
+		}
+		else
+		{
+			/* debemos dejar consistente el campo cnt_clientes, para No Clientes */
+			sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+			EXEC SQL 
+			UPDATE CO_COBEXTERNA
+			   SET CNT_CLIENTES = :ihCntClientes - 1,
+			       FEC_MOVIMIENTO = SYSDATE 
+			 WHERE NUM_IDENT = :szhNumIdent
+			   AND COD_TIPIDENT = :szhCodTipIdent
+			   AND COD_MOVIMIENTO = 'SM' 
+			   AND COD_ENVIO IN ( 'I', 'G', 'V' ); /*Ingresado|Generado|Visado */
+
+			if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		    {
+		        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] ACTUALIZA NO CLIENTE CO_COBEXTERNA => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		        return "UPCON";
+		    }
+		}
+		
+		strcpy( szhCodEntidad, "X" );
+		if( !bfnActualizaCoGestionClienteAcc(&pfLog, lhCodCliente, lhCodCuenta, szhNumIdent, szhCodTipIdent, szhCodEntidad, szRutina, szMovimiento, CXX ) )
+			return "UPGES";
+			
+    } /* if( !strcmp( szhEntGestCob, szENTIDADCLIENTE ) ) */
+
+	return "OK";
+} /* char  *szfnDesAsigCobExt ( long lCliente ) */
+
+
+/****************************************************************************************************/
+BOOL bfnReasignaAgenteCobranza(FILE **ptArchLog, long lCodCliente, char *szpNumIdent, char *szpCodTipIdent, char *szpEntGestCob, long lClienteExcluir , sql_context ctxCont) 
+/*
+	Definicion		:	Genera una accion de asignación de ejecutivo
+	Parametros		:	lCodCliente		Numero de Cliente
+*/	
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long lhCodCliente;
+	char szhEntGestCob[2];
+	char szhEntidadCliente[2];
+	char szhNumIdent[iLENNUMIDENT];
+	char szhCodTipIdent[3];
+	long lhClienteExcluir = 0;
+	int  ihexisteaccion   = 0;
+	char szhNOASIGNADO  [12];
+	char szhREASIGNA    [19];
+	char szhModulo       [3];
+	char szhPND          [4];
+	int  ihValor_cero= 0;
+	int  ihValor_uno = 1;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;    
+char modulo[] = "bfnReasignaAgenteCobranza";
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+ 	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo : [%s].", LOG05, modulo );
+
+	lhCodCliente = lCodCliente;
+	lhClienteExcluir = lClienteExcluir;
+	strcpy(szhNOASIGNADO,"NO ASIGNADO");
+	strcpy(szhREASIGNA,"REASIGNA_EJECUTIVO");
+	strcpy(szhModulo,"CO");
+	strcpy(szhPND,"PND");
+
+	memset( szhEntGestCob, '\0', sizeof( szhEntGestCob ) );
+	memset( szhEntidadCliente, '\0', sizeof( szhEntidadCliente ) );
+	memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+	memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+	
+	strcpy( szhEntGestCob, szpEntGestCob );
+	strcpy( szhEntidadCliente, szENTIDADCLIENTE );
+	strcpy( szhNumIdent, szpNumIdent );
+	strcpy( szhCodTipIdent, szpCodTipIdent );
+
+	ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], DesAsignando Agentes en CO_MOROSOS.", LOG06, lhCodCliente );
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	UPDATE CO_MOROSOS  SET 
+	       COD_AGENTE   = :szhNOASIGNADO
+	WHERE  NUM_IDENT    = DECODE( :szhEntGestCob, :szhEntidadCliente, NUM_IDENT, :szhNumIdent )
+	AND    COD_TIPIDENT = DECODE( :szhEntGestCob, :szhEntidadCliente, COD_TIPIDENT, :szhCodTipIdent )
+	AND    COD_CLIENTE  = DECODE( :szhEntGestCob, :szhEntidadCliente, :lhCodCliente, COD_CLIENTE );
+			   			
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		if( !strcmp( szhEntGestCob, szENTIDADCLIENTE ) )
+			ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], Error en UPDATE CO_MOROSOS => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		else
+			ifnTrazaHilos( modulo,&pfLog, "Identidad => [%s], Error en UPDATE CO_MOROSOS => [%s].", LOG00, szhNumIdent, sqlca.sqlerrm.sqlerrmc );
+			
+		return FALSE;
+	}
+	else if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		if( !strcmp( szhEntGestCob, szENTIDADCLIENTE ) )
+			ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], No existe en CO_MOROSOS => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		else
+			ifnTrazaHilos( modulo,&pfLog, "Identidad => [%s], No existe en CO_MOROSOS => [%s].", LOG00, szhNumIdent, sqlca.sqlerrm.sqlerrmc );
+	}
+	else
+	{
+		ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], Insertamos ACCION de Asignacion de Ejecutivo .", LOG06, lhCodCliente );
+		/* Homol. a PR-0521 GAC */
+		sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL
+		SELECT COUNT(:ihValor_uno)
+		INTO  :ihexisteaccion
+		FROM  GED_PARAMETROS
+      WHERE COD_MODULO = :szhModulo
+      AND   COD_PRODUCTO = :ihValor_uno
+      AND   NOM_PARAMETRO= :szhREASIGNA;		  
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND ) {			
+			ifnTrazaHilos( modulo,&pfLog, "No existe acción en tabla GED_PARAMETROS parametro => [REASIGNA_EJECUTIVO].", LOG00 );
+			return FALSE;
+		}
+		
+		if (ihexisteaccion !=0)  /* Homol. a PR-0521 GAC */
+		{ /*inicio ihexisteaccion PR-521*/
+
+			sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+			EXEC SQL 
+			INSERT INTO CO_ACCIONES (
+                COD_CLIENTE,
+                NUM_SECUENCIA,
+                COD_RUTINA,
+                COD_ESTADO,
+                FEC_ESTADO,
+                FEC_EJECPROG,
+                NOM_USUARIO,
+                CNT_ABOCELU,
+                CNT_ABOBEEP,
+                NUM_IDENT,
+                COD_TIPIDENT,
+                DEU_VENCIDA,
+                DEU_NOVENC,
+                COD_GESTION    )
+         SELECT M.COD_CLIENTE,  
+					 CO_SEQ_ACCION.NEXTVAL,
+					 G.VAL_PARAMETRO,   
+					 :szhPND,   
+					 SYSDATE,   
+					 SYSDATE, 
+					 USER,  
+					 :ihValor_cero,  
+					 :ihValor_cero,  
+					 M.NUM_IDENT,    
+					 M.COD_TIPIDENT, 
+					 M.DEU_VENCIDA,  
+					 M.DEU_NOVENC,   
+					 NULL   
+         FROM   CO_MOROSOS M, GED_PARAMETROS G
+         WHERE  M.NUM_IDENT    = DECODE( :szhEntGestCob, :szhEntidadCliente, M.NUM_IDENT, :szhNumIdent )
+         AND    M.COD_TIPIDENT = DECODE( :szhEntGestCob, :szhEntidadCliente, M.COD_TIPIDENT, :szhCodTipIdent )
+         AND    M.COD_CLIENTE  = DECODE( :szhEntGestCob, :szhEntidadCliente, :lhCodCliente, M.COD_CLIENTE )
+         AND    M.COD_CLIENTE != :lhClienteExcluir
+         AND    G.COD_MODULO   = :szhModulo
+         AND    G.COD_PRODUCTO = :ihValor_uno	
+         AND    G.NOM_PARAMETRO= :szhREASIGNA;
+         	
+			if( sqlca.sqlcode != SQLOK ) {
+				if( !strcmp( szhEntGestCob, szENTIDADCLIENTE ) )
+					ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], Error INSERT CO_ACCIONES => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+				else
+					ifnTrazaHilos( modulo,&pfLog, "Identidad => [%s], Error INSERT CO_ACCIONES => [%s].", LOG00, szhNumIdent, sqlca.sqlerrm.sqlerrmc );
+				
+				return FALSE;
+			}
+      }
+      else
+      {
+			ifnTrazaHilos( modulo,&pfLog, "No existe acción en tabla GED_PARAMETROS parametro => [REASIGNA_EJECUTIVO].", LOG05 );
+			return TRUE;
+      }/*fin ihexisteaccion PR-0521*/
+	}
+	return TRUE;
+} /* BOOL bfnReasignaAgenteCobranza */
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

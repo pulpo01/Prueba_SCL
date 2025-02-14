@@ -1,0 +1,263 @@
+/* ============================================================================= */
+/*
+    Tipo       	 :  ACCION
+    Nombre     	 :  CartasCob.pc ("MENSJ"->szfnMensCorta)
+    Descripcion	 :  Genera archivos la Direccion  y el Monto de la deuda vencida
+               	    del cliente dado.
+    Recibe     	 :  by Val -> Cod Cliente 
+    Devuelve   	 :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+               	    "NOMSJ"-> No hay mensajes definidos y/o generados
+               	    "OK"   -> La accion se ejecuto correctamente
+    Autor 	     :  Modesto Aranda Contreras
+    fecha      	 :  08 - Mayo - 2002 
+
+Modificacion 	:  (Capc ) 22 - Octubre - 2004
+		Se agrega parametro de Tipo de Direccion, para query que obtiene la dirección del Cliente.    
+		CH-200408232102 Homologado por PGonzalez 23-11-2004
+				
+Modificacion    :  12-11-2004
+		   Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+    
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "CartaCob.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* Envia mensajes cortos a abonados del cliente  */
+/* ============================================================================= */
+char *szfnCartaCob(FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+char   modulo[] = "szfnCartaCob";
+int	 iError = 0, ii=0, iMsgGenerados = 0, rr, ik, ilarDir, iresta=0, ilargo=0, iexiste=0;
+char	 szhFecAux[9]="", szComando[256]="", szPathCart[256]="";
+char   szEncabeza[501]="", szArchivoCart[256]="";
+static char 	szAux[9];
+double dMtoAux = 0.0 ;
+FILE   *fp;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente			= 0  ;
+	char	szhCodParam[15]		= "" ;EXEC SQL VAR szhCodParam IS STRING (15);
+	char	szhDirClie[250]		= "" ;EXEC SQL VAR szhDirClie IS STRING (250);
+	char	szhNomClie[91]			= "" ;EXEC SQL VAR szhNomClie IS STRING (91);
+	char	szhNomCampo[51]		= "" ;EXEC SQL VAR szhNomCampo IS STRING (51);
+	char	szhCadena [1024]		=""  ; EXEC SQL VAR szhCadena IS STRING (1024);
+	int	ihCodProducto			= 0;
+	long	lhNumAbonado			= 0;
+	long	lhNumSecuencia			= 0;
+	long	lhNumDias				= 0;	
+	double	dMtoSaldo 			= 0.0; 
+	
+	/* Vbles Bind */
+	char  szhEPR     [4];
+	char  szhCARTA   [6];
+	char  szhCARTERA [11];
+	char  szhTIPDOCUM[13];
+	int   ihValor_uno = 1;
+	int   ihValor_tres= 3;
+	int   ihTipDirecc = 0; /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+		
+	memset(szArchivoCart,'\0',sizeof(szArchivoCart));
+	memset(szPathCart,'\0',sizeof(szPathCart));
+
+	lhCodCliente = lCliente;
+	strcpy(szhEPR     ,"EPR");
+	strcpy(szhCARTA   ,"CARTA");
+	strcpy(szhCARTERA ,"CO_CARTERA");
+	strcpy(szhTIPDOCUM,"COD_TIPDOCUM");
+	
+	
+	/*-Determina el nombre del archivo que corresponde al Pto. de gestion-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT	M.COD_PARAM,
+			M.NUM_SECUENCIA
+	INTO	:szhCodParam,
+			:lhNumSecuencia
+	FROM	CO_PARAM_ACCIONES M, CO_ACCIONES C 
+	WHERE	C.COD_CLIENTE   = :lhCodCliente
+	AND     C.COD_ESTADO    = :szhEPR				/* la accion debe estar en proceso */
+	AND     C.COD_RUTINA    = :szhCARTA		/* accion de Carta de Cobranza */
+	AND     C.NUM_SECUENCIA = M.NUM_SECUENCIA
+	AND     M.COD_PARAM  IS NOT NULL;
+	
+	if( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar CO_PARAM_ACCIONES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";   
+	}
+
+	ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Secuencia encontrada => [%ld] ", LOG03, lhCodCliente, lhNumSecuencia );
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),0), NVL(TRUNC(SYSDATE)-TRUNC(MIN(FEC_VENCIMIE)),0)
+	INTO  :dMtoSaldo,
+		    :lhNumDias
+	FROM  CO_CARTERA
+	WHERE COD_CLIENTE = :lhCodCliente 
+	AND   IND_FACTURADO = :ihValor_uno
+	AND   FEC_VENCIMIE < TRUNC(SYSDATE)
+	AND   COD_TIPDOCUM NOT IN (SELECT TO_NUMBER(COD_VALOR)
+		FROM	 CO_CODIGOS
+		WHERE NOM_TABLA = :szhCARTERA
+		AND	 NOM_COLUMNA = :szhTIPDOCUM);
+
+	if( sqlca.sqlcode != SQLOK )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "SELECT FROM CO_CARTERA(1) (Cliente:%ld) : %s ",LOG02,lhCodCliente,sqlca.sqlerrm.sqlerrmc);
+        return "ERCTA";
+    }
+
+    if( !dMtoSaldo )
+    {
+        ifnTrazaHilos( modulo,&pfLog, " El Cliente[%ld] No registra saldo en CO_CARTERA",LOG02,lhCodCliente);  
+        return "NOSAL";
+    }
+
+
+	ifnTrazaHilos( modulo,&pfLog, "\t\tCliente:[%ld]-Saldo(despues)[%f]",LOG05,lCliente,dMtoSaldo);
+	
+	/*PR-200410210627 ***** Se agrega parametro de tipo de dirección   ***** capc 22-10-2004*/
+	/*-Obtiene Tipo de Dirección del Cliente-*/
+	/* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT VAL_PARAMETRO  
+	INTO :ihTipDirecc
+	FROM GED_PARAMETROS
+	WHERE COD_MODULO = 'CO'
+	AND NOM_PARAMETRO = 'TIPDIREC_CARTA_COBRO';
+	
+	if( SQLCODE != SQLOK  )
+	{
+	        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al Obtener Tipo direccion del cliente %s ", LOG02, lhCodCliente, SQLERRM );  
+	        return "NODIR";
+	}
+	
+	/*-Obtiene direccion Cliente para grabar en archivo-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT NVL(DIR.DES_DIREC1,' ')||';'||NVL(DIR.DES_DIREC2,' ')||';'||NVL(COM.DES_COMUNA,' ')
+		   ||';'||NVL(PROV.COD_PROVINCIA,' ')||';'||NVL(DIR.ZIP,' ')||';'
+	  INTO :szhDirClie  	   
+	  FROM GA_DIRECCLI DIREC ,GE_COMUNAS COM ,GE_DIRECCIONES DIR ,GE_PROVINCIAS PROV 
+	 WHERE DIREC.COD_CLIENTE= :lhCodCliente
+	   /*AND DIREC.COD_TIPDIRECCION= :ihValor_tres */
+	   AND DIREC.COD_TIPDIRECCION= :ihTipDirecc /*Se agrega parametro del campo Tipo Dirección PR-200410210627 capc  22-10-2004*/ /* CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+	   AND DIREC.COD_DIRECCION= DIR.COD_DIRECCION 
+	   AND DIR.COD_COMUNA=COM.COD_COMUNA 
+	   AND DIR.COD_PROVINCIA=PROV.COD_PROVINCIA
+	   AND DIR.COD_REGION = PROV.COD_REGION;
+
+	if( sqlca.sqlcode != SQLOK  )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al Obtener direccion del cliente %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NODIR";
+	}
+	
+	/*-Obtiene nombre del cliente-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT	RTRIM(NOM_CLIENTE)||' '||NVL(RTRIM(NOM_APECLIEN1),' ')||' '||NVL(RTRIM(NOM_APECLIEN2),' ')
+	INTO	:szhNomClie
+	FROM   GE_CLIENTES 
+	WHERE COD_CLIENTE = :lhCodCliente;
+	
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar tabla GE_CLIENTES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NODAT";   
+	}
+	
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{   
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) no esta en tabla GE_CLIENTES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NOCLI";   
+	}
+	
+	/*-Si no existe, crea el direcctorio del dia -*/
+	
+	if (ifnSysDateYYYYMMDD(szAux, CXX)!=0) return "PND";
+	/*strcpy (szAux,(char *)szSysDate("YYYYMMDD"));  obtiene fecha actual */
+	sprintf( szPathCart, "%s/CartaCob/%s\0", getenv("XPC_DAT"),szAux );
+	
+	sprintf( szComando, "mkdir -p %s\0", szPathCart );
+	if (system (szComando)!=0)  /* no pudo crear el directorio */
+	{
+		fprintf (stderr,"Error al intentar crear directorio de CartaCob\n");
+		fflush  (stderr);
+		return "PND";
+	}
+	sprintf( szArchivoCart,"%s/CartaCob_%s.csv",szPathCart, szhCodParam );
+	/* Se debe verificar si el archivo existe de lo contrario insertar los encabezados */
+  	memset(szComando,'\0',sizeof(szComando));
+   sprintf( szComando, "test -s %s\0", szArchivoCart );
+	iexiste=WEXITSTATUS(system(szComando));
+	
+	if((fp = fopen(szArchivoCart,"a")) == (FILE*)NULL )
+	{ 
+		fprintf (stderr,"Error al crear archivo de Cartas de Cobranza\n");
+		fflush  (stderr);
+		return "PND";    
+	}
+	
+	ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) valor variable iexiste: %d", LOG03, lhCodCliente, iexiste);  
+	/* Si archivo no existe insertar los encabezados */
+  	if (iexiste)
+	{  
+	 fprintf(fp,"COD_CLIENTE;NOMBRE DEL CLIENTE;DIRECCION1;DIRECCION2;PUEBLO;PAIS;ZONA POSTAL;BALANCE;DIAS DE MOROSIDAD\n");		      
+	}	
+	fprintf( fp, "%d;%s%;%s%.*f;%ld\n", lCliente, szhNomClie, szhDirClie, pstParamGener.iNumDecimal, dMtoSaldo,lhNumDias);
+	fclose(fp);
+	
+	/* se debe borrar el registro de la CO_PARAM_ACCIONES */
+	if( !bfnBorrarCoParamAcc(&pfLog, lhNumSecuencia, CXX ) )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error en bfnBorrarCoParamAcc.", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NOELI";   
+	}	
+		
+	return "OK";
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

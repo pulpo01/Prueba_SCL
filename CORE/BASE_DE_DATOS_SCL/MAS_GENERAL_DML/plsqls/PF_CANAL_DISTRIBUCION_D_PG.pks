@@ -1,0 +1,12 @@
+CREATE OR REPLACE PACKAGE PF_CANAL_DISTRIBUCION_D_PG
+IS
+
+ FUNCTION PF_ELIMINAR_FN
+               (
+                EV_valor GE_VALORES_dominios_td.valor%TYPE
+               )
+ RETURN NUMBER;
+
+END PF_CANAL_DISTRIBUCION_D_PG;
+/
+SHOW ERRORS

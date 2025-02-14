@@ -1,0 +1,34 @@
+CREATE OR REPLACE FUNCTION AL_FN_CONVERSION RETURN NUMBER is
+
+ v_cantidad   number:=0;
+ v_cambio     number(10,5):=0;
+
+ BEGIN
+
+        SELECT VAL_PARAMETRO
+        INTO v_cantidad
+        FROM GED_PARAMETROS
+        WHERE NOM_PARAMETRO = 'CTDA_DOLAR' AND COD_MODULO = 'AL';
+
+
+        SELECT CAMBIO
+        INTO v_cambio
+        FROM GE_CONVERSION
+        WHERE FEC_DESDE =
+              (SELECT  MAX(FEC_DESDE)
+			   FROM GE_CONVERSION
+			   WHERE  COD_MONEDA = (SELECT LTRIM(TO_CHAR(TO_NUMBER(VAL_PARAMETRO),'000'))
+	   		   		  			    FROM GED_PARAMETROS
+									WHERE NOM_PARAMETRO = 'COD_MONEDA' AND COD_MODULO = 'AL'));
+
+ RETURN v_cantidad * v_cambio;
+
+ EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+           RAISE_APPLICATION_ERROR(-20200, 'Error ' || 'Falta Parametro en GED_PARAMETROS');
+    WHEN OTHERS THEN
+           RAISE_APPLICATION_ERROR(-20100, 'Error ' || to_char(SQLCODE) || ': ' || SQLERRM);
+
+ end;
+/
+SHOW ERRORS

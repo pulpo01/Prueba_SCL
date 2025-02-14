@@ -1,0 +1,669 @@
+#ifndef NO_INDENT
+#ident "@(#)$RCSfile: memoryCob.pc,v $ $Revision: 1.18 $ $Date: 2008/06/19 19:15:54 $"
+#endif
+
+#include "memoryCob.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+using namespace std;
+
+int memoryCob::Rtrims(char *szVar)
+{
+int  iLenVar = 0;
+int  i       = 0;
+
+   iLenVar = strlen(szVar);
+   for (i=iLenVar-1;i>-1;i--) {
+       if (szVar[i]==' ') {
+           szVar[i]='\0';
+       } else break;
+   }
+   return (0);
+}
+
+bool memoryCob::chargeConCreFA()
+{
+try
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    int _iconcrefa;
+    int ihValor_uno;
+    EXEC SQL END DECLARE SECTION;
+
+    ihValor_uno = 1;
+    EXEC SQL
+    SELECT A.COD_CONCEPTO
+    INTO  :_iconcrefa
+    FROM  CO_CONCEPTOS A, CO_TIPCONCEP B
+    WHERE A.COD_TIPCONCE = B.COD_TIPCONCE
+    AND   B.IND_ABONO = :ihValor_uno;
+    if( sqlca.sqlcode != 0 )
+    {
+        cout << "Error al obtener el concepto abono" << endl;
+        return false;
+    }
+    concrefa = _iconcrefa;
+    return true;
+}
+catch (...)
+{
+    cout << "ERROR DESCONOCIDO" << endl;
+    return 0;
+}
+}
+
+int memoryCob::getConCreFA()
+{
+try
+{
+    return concrefa;
+}
+catch (...)
+{
+    cout << "ERROR DESCONOCIDO" << endl;
+    return 0;
+}
+}
+
+bool memoryCob::chargeModVenta()
+{
+try
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    int     iIndPagado;
+    int     iCodCauPago;
+    char    szDesCauPago[41];EXEC SQL var szDesCauPago is string(41);
+    int     iCodModVenta;
+EXEC SQL END DECLARE SECTION;
+
+    int contador=0;
+
+    EXEC SQL DECLARE cursor_mod_venta CURSOR FOR
+    SELECT  V.COD_MODVENTA,NVL(V.IND_PAGADO,0), V.COD_CAUPAGO, DES_CAUPAGO
+      FROM  GE_MODVENTA V, CO_CAUSASPAGO P
+     WHERE  V.COD_CAUPAGO = P.COD_CAUPAGO;	  
+    EXEC SQL OPEN cursor_mod_venta;
+
+    if( sqlca.sqlcode != 0 )
+    {
+        cout << "ERROR AL CREAR CURSOR MODALIDAD DE VENTA" << endl;
+        return false;
+    }
+
+    while(1)
+    {
+        iIndPagado=0;
+        iCodCauPago=0;
+        CLEAR(szDesCauPago);
+        iCodModVenta=0;
+
+        modVenta _mymodventa;
+
+        EXEC SQL FETCH cursor_mod_venta INTO :iCodModVenta, :iIndPagado, :iCodCauPago, :szDesCauPago;
+
+        if (sqlca.sqlcode == SQLNOTFOUND)
+            break;
+
+        if( sqlca.sqlcode != 0 )
+        {
+             cout << "ERROR AL CARGAR EN MEMORIA MODALIDAD DE VENTA" << endl;
+            return false;
+        }
+
+        _mymodventa.limpia();
+        _mymodventa.iIndPagado = iIndPagado;
+        _mymodventa.iCodCauPago = iCodCauPago;
+        strcpy(_mymodventa.szDesCauPago,szDesCauPago);
+
+        _map_mod_venta[iCodModVenta]= _mymodventa;
+
+        contador++;
+    }
+
+    EXEC SQL CLOSE cursor_mod_venta; 
+
+    if( sqlca.sqlcode != 0 )
+    {
+        cout << "ERROR AL LIBERAR CURSOR MODALIDAD DE VENTA" << endl;
+        return false;
+    }
+    return true;
+}
+catch (...)
+{
+    cout << "ERROR DESCONOCIDO" << endl;
+    return 0;
+}
+}
+
+int memoryCob::selectModVenta(int cod_mod_venta,modVenta &_mod_Venta)
+{
+try
+{
+    _mod_Venta.limpia();
+    RECORD_TABLE_MOD_VENTA::iterator itr;
+
+    if((itr = _map_mod_venta.find(cod_mod_venta)) == _map_mod_venta.end())
+    {
+        //cout << "NO SE ENCONTRO CODIGO MOD VENTA [" << cod_mod_venta << "]" << endl;
+        return -1;
+    }
+
+    _mod_Venta = itr->second;
+    return 1;
+}
+catch (...)
+{
+    cout << "ERROR DESCONOCIDO" << endl;
+    return 0;
+}
+}
+
+bool memoryCob::chargeFaTipMovientoCounter()
+{
+try
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    int counterDocus;
+    int cod_tip_docum;
+EXEC SQL END DECLARE SECTION;
+
+    int contador=0;
+
+    EXEC SQL DECLARE cur_fatimov_count CURSOR FOR
+    SELECT COD_TIPDOCUM,COUNT(1)
+      FROM FA_TIPMOVIMIEN
+     WHERE COD_TIPMOVIMIEN = 1
+     GROUP BY COD_TIPDOCUM;
+    EXEC SQL OPEN cur_fatimov_count;
+
+    if( sqlca.sqlcode != 0 )
+    {
+        cout << "ERROR AL CREAR CURSOR FA TIP MOVIENTOS COUNTER" << endl;
+        return false;
+    }
+
+    while(1)
+    {
+        counterDocus=0;
+        cod_tip_docum=0;
+        EXEC SQL FETCH cur_fatimov_count INTO :cod_tip_docum, :counterDocus;
+
+        if (sqlca.sqlcode == SQLNOTFOUND)
+            break;
+
+        if( sqlca.sqlcode != 0 )
+        {
+            cout << "ERROR AL CARGAR EN MEMORIA FA_TIPMOVIENTOS" << endl;
+            return false;
+        }
+
+        _map_fatipmov[cod_tip_docum]= counterDocus;
+
+        contador++;
+    }
+
+    cout << "CANTIDAD DE REGISTROS EN FA_TIPMOVIENTOS RESCATADOS :" << contador << endl;
+
+    EXEC SQL CLOSE cur_fatimov_count; 
+
+    if( sqlca.sqlcode != 0 )
+    {
+        cout << "ERROR AL LIBERAR CURSOR FA_TIPMOVIENTOS" << endl;
+        return false;
+    }
+
+    return true;
+
+}
+catch (...)
+{
+    return 0;
+}
+}
+
+int memoryCob::selectFaTipMoviemientoCounter(int cod_tip_docum)
+{
+try
+{
+    RECORD_TABLE_COUNTER_FATIPMOV::iterator itr;
+
+    if((itr = _map_fatipmov.find(cod_tip_docum)) == _map_fatipmov.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO EN FA_TIPMOVIEMTOS COUNTER [" << cod_tip_docum << "]" << endl;
+        return 0;
+    }
+
+    return itr->second;
+}
+catch (...)
+{
+    return 0;
+}
+}
+
+bool memoryCob::chargeGedParametros()
+{
+try
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    char cod_modulo[3];
+    char nom_parametro[21];
+    char val_parametros[21];
+EXEC SQL END DECLARE SECTION;
+
+    int contador=0;
+
+    EXEC SQL DECLARE cur_ged_parametros CURSOR FOR
+    SELECT COD_MODULO,NOM_PARAMETRO,VAL_PARAMETRO FROM GED_PARAMETROS ;
+    EXEC SQL OPEN cur_ged_parametros;
+
+    if( sqlca.sqlcode != 0 )
+	{
+		cout << "ERROR AL CREAR CURSOR GED_PARAMETROS" << endl;
+		return false;
+	}
+
+    while(1)
+    {
+        CLEAR(cod_modulo);
+        CLEAR(nom_parametro);
+        CLEAR(val_parametros);
+
+        llave_ged_parametros _myllavegedparam;
+        ged_parametros _mygedparam;
+
+        EXEC SQL FETCH cur_ged_parametros INTO :cod_modulo, :nom_parametro , :val_parametros;
+
+        _myllavegedparam.limpia();
+        _mygedparam.limpia();
+
+       Rtrims(cod_modulo);
+       Rtrims(nom_parametro);
+       Rtrims(val_parametros);
+
+        /*strcpy(_myllavegedparam.cod_modulo,cod_modulo);*/
+        /*strcpy(_myllavegedparam.nom_parametro,nom_parametro);*/
+        _myllavegedparam.cod_modulo = (string)cod_modulo;
+        _myllavegedparam.nom_parametro = (string)nom_parametro;
+
+        strcpy(_mygedparam.val_parametros,val_parametros);
+        /*string val_param = (string)val_parametros;*/
+
+        if (sqlca.sqlcode == SQLNOTFOUND)
+            break;
+      
+	    if( sqlca.sqlcode != 0 )
+	    { 
+		     cout << "ERROR AL CARGAR EN MEMORIA GED_PARAMETROS" << endl;
+		     return false;
+	    }
+        /*_map_ged_parametros[_myllavegedparam] =  _mygedparam;*/
+
+        _map_ged_parametros.insert(RECORD_TABLE_GED_PARAMETROS::value_type(_myllavegedparam, _mygedparam));
+
+
+        contador++;
+    }
+
+    cout << "CANTIDAD DE REGISTROS EN GED_PARAMETROS :" << contador << endl;
+
+    EXEC SQL CLOSE cur_ged_parametros; 
+
+    if( sqlca.sqlcode != 0 )
+	{
+		cout << "ERROR AL LIBERAR CURSOR GED_PARAMETROS" << endl;
+		return false;
+	}
+    return true;
+}
+catch (...)
+{
+    return 0;
+}
+}
+
+
+int memoryCob::settinParameters()
+{
+try
+{
+    llave_ged_parametros _myllavegedparam;
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="NUM_DECIMAL";
+    _myllavegedparam.cod_modulo="GE";
+
+    RECORD_TABLE_GED_PARAMETROS::iterator itr;
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO NUM_DECIMAL PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    decimales = atoi(itr->second.val_parametros);
+
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="SEP_MILES_MONTOS";
+    _myllavegedparam.cod_modulo="GE";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO SEP_MILES_MONTOS PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    CLEAR(sep_miles_montos);
+    strcpy(sep_miles_montos,itr->second.val_parametros);
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="SEP_DECIMALES_MONTOS";
+    _myllavegedparam.cod_modulo="GE";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO SEP_DECIMALES_MONTOS PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    CLEAR(sep_decimales_montos);
+    strcpy(sep_decimales_montos,itr->second.val_parametros);
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="SEP_DECIMALES_ORACLE";
+    _myllavegedparam.cod_modulo="GE";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO SEP_DECIMALES_ORACLE PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    CLEAR(sep_decimales_oracle);
+    strcpy(sep_decimales_oracle,itr->second.val_parametros);
+
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="NUM_DECIMAL_FACT";
+    _myllavegedparam.cod_modulo="GE";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO NUM_DECIMAL_FACT PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    num_decimal_fact=atoi(itr->second.val_parametros);
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="TIPO FOLIACION";
+    _myllavegedparam.cod_modulo="FA";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO TIPO FOLIACION PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    cod_tipo_foliacion=atoi(itr->second.val_parametros);
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="3";
+    _myllavegedparam.cod_modulo="FA";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO COD_PAR_TRAFICO 3 PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    cod_par_trafico=atoi(itr->second.val_parametros);    
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="IND_ZONAIMPOCIC";
+    _myllavegedparam.cod_modulo="FA";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO IND_ZONAIMPOCIC PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    ind_zonaimpocic=atoi(itr->second.val_parametros);  
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="4";
+    _myllavegedparam.cod_modulo="FA";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO MONTO MIN AJUSTE 4 PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    mto_min_ajuste=atoi(itr->second.val_parametros);  
+    
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="5";
+    _myllavegedparam.cod_modulo="FA";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO ZONA_IMPO_DEFECTO 4 PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    zona_imp_defecto=atoi(itr->second.val_parametros);  
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro="DOCUMENTOS_CERO";
+    _myllavegedparam.cod_modulo="FA";
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO DOCUMENTOS_CERO PARA MODULO GE [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return 0;
+    }
+    CLEAR(documento_cero);
+    strcpy(documento_cero,itr->second.val_parametros);
+
+    return 1;
+}
+catch (...)
+{
+    return 0;
+}
+}
+
+int memoryCob::getDecimal()
+{
+try
+{
+    return decimales;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+char * memoryCob::get_sep_miles_montos()
+{
+try
+{
+    return sep_miles_montos;
+}
+catch (...)
+{
+    return (char *)"";
+}
+}
+
+char * memoryCob::get_sep_decimales_montos()
+{
+try
+{
+    return sep_decimales_montos;
+}
+catch (...)
+{
+    return (char *)"";
+}
+}
+
+char * memoryCob::get_sep_decimales_oracle()
+{
+try
+{
+    return sep_decimales_oracle;
+}
+catch (...)
+{
+    return (char *)"";
+}
+}
+
+int memoryCob::get_num_decimal_fact()
+{
+try
+{
+    return num_decimal_fact;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+
+int memoryCob::get_cod_tipo_foliacion()
+{
+try
+{
+    return cod_tipo_foliacion;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+
+int memoryCob::get_cod_par_trafico()
+{
+try
+{
+    return cod_par_trafico;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+int memoryCob::get_ind_zonaimpocic()
+{
+try
+{
+    return ind_zonaimpocic;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+int memoryCob::get_mto_min_ajuste()
+{
+try
+{
+    return mto_min_ajuste;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+int memoryCob::get_zona_imp_defecto()
+{
+try
+{
+    return zona_imp_defecto;
+}
+catch (...)
+{
+    return -1;
+}
+}
+
+char * memoryCob::get_documento_cero()
+{
+try
+{
+    return documento_cero;
+}
+catch (...)
+{
+    return (char *)"";
+}
+}
+
+
+char * memoryCob::GedCharParamFromGedParametros(char * cod_modulo,char * nom_parametro)
+{
+try
+{
+    char val_param[21];
+    CLEAR(val_param);
+    llave_ged_parametros _myllavegedparam;
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro=(string)nom_parametro;
+    _myllavegedparam.cod_modulo=(string)cod_modulo;
+
+    RECORD_TABLE_GED_PARAMETROS::iterator itr;
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO COD_MODULO    [" << _myllavegedparam.cod_modulo << "]" << endl;
+        cout << "NO SE ENCONTRO REGISTRO NOM PARAMETRO [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return (char *)"";
+    }
+
+    /*strcpy(val_param,itr->second.val_parametros);*/
+
+    /*return val_param;*/
+	return itr->second.val_parametros;
+}
+catch (...)
+{
+    return (char *)"";
+}
+}
+
+
+int memoryCob::GedNumberParamFromGedParametros(char * cod_modulo,char * nom_parametro)
+{
+try
+{
+    int val_param;
+    val_param=0;
+
+    llave_ged_parametros _myllavegedparam;
+
+    _myllavegedparam.limpia();
+    _myllavegedparam.nom_parametro=(string)nom_parametro;
+    _myllavegedparam.cod_modulo=(string)cod_modulo;
+
+    RECORD_TABLE_GED_PARAMETROS::iterator itr;
+
+    if((itr = _map_ged_parametros.find(_myllavegedparam)) == _map_ged_parametros.end())
+    {
+        cout << "NO SE ENCONTRO REGISTRO COD_MODULO    [" << _myllavegedparam.cod_modulo << "]" << endl;
+        cout << "NO SE ENCONTRO REGISTRO NOM PARAMETRO [" << _myllavegedparam.nom_parametro << "]" << endl;
+        return -1;
+    }
+
+    val_param=atoi(itr->second.val_parametros);
+
+    return val_param;
+}
+catch (...)
+{
+    return -1;
+}
+}
+

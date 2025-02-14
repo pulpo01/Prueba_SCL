@@ -1,0 +1,18 @@
+CREATE OR REPLACE PACKAGE BODY GA_CTASEGURA_PG IS
+PROCEDURE GA_BORRA_TMP_PR (pNombreTabla in VARCHAR2) IS
+--Declaraciones
+v_sentencia		  VARCHAR2(50);
+--
+
+--
+BEGIN
+
+   v_sentencia := 'TRUNCATE TABLE '|| pNombreTabla;
+
+   EXECUTE IMMEDIATE v_sentencia;
+
+
+END GA_BORRA_TMP_PR;
+END GA_CTASEGURA_PG;
+/
+SHOW ERRORS

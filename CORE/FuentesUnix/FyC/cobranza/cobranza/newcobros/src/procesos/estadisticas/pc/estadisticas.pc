@@ -1,0 +1,847 @@
+/* ============================================================================= */
+/*
+    Tipo        :  COLA DE PROCESO
+
+    Nombre      :  estadisticas.pc
+
+    Descripcion :  Ejecuta el vaciado de datos desde las tablas co_morosos
+    			   y co_hmorosos para analisis de estado de pago de morosidades.	
+
+    Recibe      :  Usuario/Password. ( por defecto asume los de la cuenta )
+                   Nivel de Log ( por defecto asume 3 : Log Normal ) 
+                   
+                   
+    Devuelve    :  Valor entero para indicar el status de termino.
+                   Interactua con la Base de Datos y el archivo de Log para registrar
+                   como se desarrolla su ejecucion.
+    
+    Autor       :  Manuel Garcia G.
+    Fecha       :  Febrero 2000.
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+#include "estadisticas.h"
+
+#define iLOGNIVEL_DEF     3       /* Define el nivel de Log por Defecto */
+
+LINEACOMANDO  stLineaComando;     /* Datos con los que se invoco al proceso */
+char szgCodProceso[6]="";
+char szArchivoLog[256]="";        /* log */
+
+long lAuxSeqGlobal=0;             /* variable de ambito global ( Auxiliar Secuencia ) */
+
+EXEC SQL INCLUDE sqlca;
+
+int main(int argc,char *argv[])
+{
+   	char modulo[]="main";
+    int iResult = 0;
+   
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhCodEstado[2]; EXEC SQL VAR szhCodEstado IS STRING (2);
+    EXEC SQL END DECLARE SECTION;
+    
+    fprintf(stdout, "\n%s ESTADISTICAS pid(%ld)\n", szGetTime(1),getpid());
+    fflush (stdout);
+
+    /*- Validacion de parametros de entrada -*/
+    memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+
+    if ( ifnValidaParametros( argc, argv, &stLineaComando ) != 0 ) {    
+        fprintf (stdout,"\n\tError >> Fallo la Validacion de Parametros \n");
+        fflush  (stdout);
+        iResult = -1; /* Fallo validacion */
+    }
+    else {    
+        /*- Conexion a la Base de Datos -*/
+        if ( ifnConexionDB ( &stLineaComando ) != 0 ) {   
+            fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+            fflush  (stdout);
+            iResult = -2; /* Fallo conexion */
+        }
+        else {
+            /*- Prepara Archivo de Log -*/ 
+            if ( ifnPreparaArchivoLog() != 0 ) {
+                fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+                fflush  (stdout);
+                iResult = -3;  /* Fallo Log */
+            }
+            else
+            {
+                /*- Ejecuta el proceso propiamente tal -*/
+                if ( ifnEjecutaCola() != 0 ) {
+                    fprintf (stdout,"\n\tError >> Fallo el proceso ifnEjecutaCola\n");
+                    fflush  (stdout);
+                    iResult = -4; /* Fallo Proceso */
+                }
+                else { /* estadisticas salio con 0 ( supuestamente cola de vuelta en wait ) */
+                    EXEC SQL 
+                    SELECT COD_ESTADO 
+                    INTO :szhCodEstado
+                    FROM CO_COLASPROC 
+                    WHERE COD_PROCESO='ESTAD';
+                    
+                    if (SQLCODE)
+                    {
+                        fprintf (stdout,"\n\tError >> Fallo el proceso ( Validacion Cola Wait ) \n");
+                        fflush  (stdout);
+                        ifnMailAlert("ESTADISTICAS","TODOS","FALLO LA VALIDACION FINAL DE LA COLA.");
+                        iResult = -5; /* Fallo Proceso */
+                    }
+                    else
+                    {
+                        if ( strcmp(szhCodEstado,"W")!=0 )
+                        {
+                            /* LA COLA ESTA EN UN ESTADO DISTINTO DE WAIT */
+                            /* SEÑALAR ESTO COMO ERROR E INTENTAR FORZARLA A WAIT */
+                            ifnTrazasLog(modulo,"Regresando la Cola a Espera (%s)",LOG02,szhCodEstado);
+                            EXEC SQL 
+                            UPDATE CO_COLASPROC
+                            SET COD_ESTADO = 'W'
+                            WHERE COD_PROCESO = 'ESTAD' ;
+                            if (SQLCODE)
+                            {
+                                fprintf (stdout,"\n\tError >> Fallo el proceso ( Update Cola Wait ) %s\n",SQLERRM );
+                                fflush  (stdout);
+                                ifnMailAlert("ESTADISTICAS","TODOS","FALLO AL ACTUALIZAR LA COLA A 'WAIT'.");
+                                iResult = -6; /* Fallo Proceso */
+                            }                            
+                            EXEC SQL COMMIT;
+                            if (SQLCODE)
+                            {
+                                fprintf (stdout,"\n\tError >> Fallo el proceso ( Commit Cola Wait ) %s\n", SQLERRM );
+                                fflush  (stdout);
+                                ifnMailAlert("ESTADISTICAS","TODOS","FALLO EL COMMIT DE LA COLA 'WAIT'.");
+                                iResult = -7; /* Fallo Proceso */
+                            }                            
+                            ifnTrazasLog(modulo,"OK. Cola forzada a espera",LOG02);
+                        }
+                    }
+                }
+
+                vfnCierraArchivoLog();
+            }
+        }
+    }
+
+    return iResult;
+   
+} /* end main */    
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    char modulo[]="ifnValidaParametros";
+
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+    extern char  *optarg;
+    extern  int  optind, opterr, optopt;
+            int  iOpt=0;
+           char  opt[] = ":u:l:n:";
+/*-- Variables locales -----------------------------------------------------------*/  
+           char  *psztmp = "";
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+            int  Userflag=0;
+            int  Logflag=0;
+
+/*-- Seteo de Valores Iniciles y por defecto -------------------------------------*/
+    opterr=0;
+    stStatus.iLogNivel = iLOGNIVEL_DEF ;
+    memset(szgCodProceso,0,sizeof(szgCodProceso));
+    strcpy(szgCodProceso,"ESTAD"); /*valor por defecto es "ESTAD" por ESTADisticas */
+    
+/*-- En caso de Invocacion sin Parametros ----------------------------------------*/
+    if(argc == 1)
+    	return 0; /*ok asume valores por defecto */
+    
+
+/*-- Analisis de los argumentos recibidos ----------------------------------------*/
+    while ((iOpt = getopt(argc, argv, opt)) != EOF) {
+        
+        fprintf (stderr,"\n\tParametro >> %s '/' \n", optarg);
+        fflush  (stderr);
+
+        switch (iOpt) {
+
+            case 'u':  /*-- Usuario/Password --*/
+            
+                 if(!Userflag) {
+                    strcpy(pstLC->szUsuarioOra, optarg);                      
+                    Userflag=1;
+                    if ((psztmp=(char *)strchr(pstLC->szUsuarioOra,'/'))==(char *)NULL) {
+                        fprintf (stderr,"\n\tError >> Usuario no valido. Requiere '/' \n");
+                        fflush  (stderr);
+                        return -1;
+                    }
+                    else {
+                        strncpy (pstLC->szOraAccount,pstLC->szUsuarioOra,psztmp-pstLC->szUsuarioOra);
+                        strcpy  (pstLC->szOraPasswd, psztmp+1);
+                    }
+                }
+                else {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+
+            case 'l': /*-- Nivel de Log --*/
+            
+                if(!Logflag) {
+                    stStatus.iLogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=1;
+                }
+                else {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+            
+            case 'n': /*-- Nombre de la Cola (codigo del proceso) --*/
+            
+                strcpy(szgCodProceso,optarg);
+                break;
+            
+            case '?':
+            
+                fprintf (stderr,"\n\tError >> opcion '-%c' es desconocida\n",optopt);
+                fflush  (stderr);
+                return -1;
+
+            case ':':
+            
+                fprintf (stderr,"\n\tError >> falta argumento para opcion '-%c'\n",optopt);
+                fflush  (stderr);
+                return -1;
+        
+        } /* switch (iOpt) */
+    } /* while ((iOpt = getopt(argc, argv, opt)) != EOF) */
+    
+    pstLC->iLogLevel=stStatus.iLogNivel;
+       return 0;
+
+} /* bfnValidaParamatros */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB(LINEACOMANDO *pstLC)
+{
+    char modulo[]="ifnConexionDB";
+    
+    fprintf (stderr,"\nUsuario : [%s] , Password : [%s] \n", pstLC->szOraAccount,pstLC->szOraPasswd );
+    fflush  (stderr);
+    
+    if ( bfnOraConnect(pstLC->szOraAccount,pstLC->szOraPasswd) == FALSE  ) {
+        fprintf (stderr,"\nNo hay conexion a ORACLE \n");
+        fflush  (stderr);
+        return -1;
+    }
+    
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog()
+{
+    char modulo[]="ifnPreparaArchivoLog";
+
+    /* char *szAux; */
+    int sts=0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+    EXEC SQL END DECLARE SECTION;
+ 
+    sprintf(stStatus.szFileName,"%s",szgCodProceso);
+
+	sprintf(szhPathLogSched,"%s/CO_SCHEDULER",getenv("XPC_LOG"));
+    
+    sprintf(stStatus.szLogPathGene,"%s",szhPathLogSched);
+    
+    
+    sts = ifnAbreArchivoLog(1); 
+    
+    return sts;
+    
+} /* end ifnPreparaArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* if iCreaDir != 0 : crear directorio antes que el archivo                      */
+/* ============================================================================= */
+int ifnAbreArchivoLog(int iCrearDir)
+{
+    char modulo[]="ifnAbreArchivoLog";
+    char szArchivoErr[256]=""; /* errores */
+    char szArchivoEst[256]=""; /* estadisticas */
+    char szComando[256]="";
+    static char szAux[9];
+    
+    memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log */         
+    memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores */     
+    memset(szArchivoEst,0,sizeof(szArchivoEst)); /* estadisticas */
+
+    strcpy (szAux,(char *)szSysDate("YYYYMMDD"));
+    sprintf(szComando,"mkdir -p %s/%s",stStatus.szLogPathGene,szAux);
+    
+    if (system (szComando)!=0) {
+        fprintf (stderr,"Error al intentar crear directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+    
+    sprintf(szArchivoLog,"%s/%s/%s.log",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    sprintf(szArchivoErr,"%s/%s/%s.err",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    sprintf(szArchivoEst,"%s/%s/%s.est",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    
+    if((stStatus.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL ) {    
+        fprintf (stderr,"Error al crear archivo de Log\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    if((stStatus.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL ) {
+        fprintf (stderr,"Error al crear archivo de Errores\n");
+        fflush  (stderr);
+        return -1;    
+    }
+
+    if((stStatus.EstFile = fopen(szArchivoEst,"a")) == (FILE*)NULL ) {    
+        fprintf (stderr,"Error al crear archivo de Estadisticas\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    ifnTrazasLog(modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n", INFALL
+                       ,szSysDate("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+    return 0;
+    
+}/* end ifnAbreArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs  */
+/* ============================================================================= */
+void vfnCierraArchivoLog(void)
+{
+    char modulo[]="vfnCierraArchivoLog";
+    
+    ifnTrazasLog(modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n", INFALL
+                       ,szSysDate("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+    if ( fclose(stStatus.LogFile) != 0 ) {    
+        fprintf (stderr,"Error al cerrar archivo de Log\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.ErrFile) != 0 ) {    
+        fprintf (stderr,"Error al cerrar archivo de Errores\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.EstFile) != 0 ) {    
+        fprintf (stderr,"Error al cerrar archivo de Estadisticas\n");
+        fflush  (stderr);
+    }
+        
+    return;    
+} /* end vfnCierraArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnEjecutaCola() : Ejecuta la cola de acciones                               */
+/* ============================================================================= */
+int ifnEjecutaCola(void)
+{
+    char modulo[]="ifnEjecutaCola";
+    
+    char szError[1024]="";
+    
+    ifnTrazasLog(modulo,"Corriendo la cola lanzada ",LOG05);
+    ifnTrazasLog(modulo,"ESTADISTICAS VERSION [%s]\n",LOG03, szVERSION);
+    
+    if (!bfnCambiaEstadoCola(szgCodProceso,"L","R")) { /*'Launched->Running'*/
+        if (!bfnOraRollBack()) ifnTrazasLog(modulo,"En Rollback 'L->R' : %s",LOG00,SQLERRM);
+        return -1;
+    }
+    else {    
+        if (!bfnOraCommit()) {    
+            ifnTrazasLog(modulo,"En Commit 'L->R' : %s",LOG00,SQLERRM);
+            if (!bfnOraRollBack()) ifnTrazasLog(modulo,"En Rollback : %s", LOG00,SQLERRM);
+            return -1;    
+        }
+    }
+    
+   	/* Carga de datos de uso general */
+	if( !bfnObtieneDatosGenerales() )
+	{
+	    ifnTrazasLog( modulo, "Error al realizar carga de bfnObtieneDatosGenerales().", LOG03 );
+	    return -1;
+	}
+
+    if ( ifnGeneraEstadisticas(szError) < 0) 
+    	ifnMailAlert("ESTADISTICAS","TODOS","%s",szError);
+
+    ifnTrazasLog(modulo,"Volviendo la cola a espera ",LOG05);
+
+    if (!bfnCambiaEstadoCola(szgCodProceso,"R","W")) {/*'Running->Wait'*/
+        if (!bfnOraRollBack()) ifnTrazasLog(modulo,"En Rollback 'R->W' : %s",LOG00,SQLERRM);
+        return -1;
+    }
+    else {    
+        if (!bfnOraCommit())  {    
+            ifnTrazasLog(modulo,"En Commit 'R->W' : %s",LOG00,SQLERRM);
+            if (!bfnOraRollBack()) ifnTrazasLog(modulo,"En Rollback : %s", LOG00,SQLERRM);
+            return -1;    
+        }
+    }
+    
+    ifnTrazasLog(modulo,"saliendo de %s ( Cola Wait )",LOG02,szgCodProceso);
+
+    return 0;    
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnGeneraEstadisticas() : Ejecuta las acciones que correspondan              */
+/* ============================================================================= */
+int ifnGeneraEstadisticas(char* szDescrError)
+{
+    char modulo[]="ifnGeneraEstadisticas";
+
+	int  iSqlAuxStatus;
+	long lRowsProcessed=0;
+	char szError[1024]="";
+	
+	char szIniProc[9],szFinProc[9],szTmpProc[9];
+	int iDifSegs=0,ihFlgError=0;
+	
+	ifnTrazasLog(modulo,"entrando en %s",LOG05,modulo);
+	
+    sprintf(szIniProc,"%s",szSysDate("HH24:MI:SS"));
+
+	/*- Procesa la tabla de cabecera co_analisis, para obtener datos para analisis   -*/
+	/*- los cuales son insertados en la tabla co_det_analisis                        -*/ 
+    if ( ifnAnalisisMorosos(szError) < 0) {
+    	sprintf( szDescrError, "%s", szError );
+        return -1; /*Mail*/
+    }
+
+    /*- Procesa datos de la tabla co_morosos para estadisticas y los inserta en la   -*/
+    /*- tabla co_estmorosos 														 -*/
+	if ( ifnEstadisticaMorosos(szError) < 0) { 
+    	sprintf( szDescrError, "%s", szError );
+        return -1; /*Mail*/
+    }
+
+    sprintf(szFinProc,"%s",szSysDate("HH24:MI:SS"));
+    
+    /* Informacion Estadistica */
+    if ( (iDifSegs = ifnRestaHoras(szIniProc,szFinProc,szTmpProc)) >= 0 ) {
+          ifnTrazasLog(modulo,"\n\t RESUMEN DEL PROCESO     "
+                              "\n\t       HORA INICIO  : %s "
+                              "\n\t       HORA TERMINO : %s "
+                              "\n\t       TIEMPO TOTAL : %s  (%d segs)"
+                              "\n",EST00
+                              ,szIniProc, szFinProc, szTmpProc, iDifSegs);
+                            
+    }
+
+    ifnTrazasLog(modulo,"saliendo de %s",LOG05,modulo);
+
+    return 0; 
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnAnalisisMorosos() : Genera estadisticas para analisis en la               */ 
+/*                         co_det_analisis                                       */
+/* ============================================================================= */
+int ifnAnalisisMorosos(char* szDescError)
+{
+    char modulo[]="ifnAnalisisMorosos";
+
+	int  	iSqlAuxStatus, ihFlgError = 0;
+	long 	lRowsProcessed = 0;
+	
+	    
+    EXEC SQL BEGIN DECLARE SECTION;
+    	td_Analis		 	td_Analisis;			/* para guardar la entrada de datos para el analisis */
+    	td_DetAnalis 		td_DetAnalisis;			/* para guardar la salida de datos del analisis */
+    EXEC SQL END DECLARE SECTION;
+ 
+     ifnTrazasLog(modulo,"entrando en %s",LOG05,modulo);
+
+     /* se recuperan todos los grupos vigentes desde la tabla co_analisis */
+    
+    EXEC SQL DECLARE curANALISIS CURSOR FOR
+       	SELECT 	sec_analisis,
+    			to_char( sysdate-1, 'dd/mm/yyyy' )
+    			FROM	co_analisis
+    	WHERE   ind_estado = 'V';
+    		 
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+        sprintf(szDescError,"Fallo la declaracion del cursor de analisis %s",SQLERRM);
+        ifnTrazasLog(modulo,"Declare curANALISIS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+    else if (SQLCODE == SQLNOTFOUND ) {
+        ifnTrazasLog(modulo,"Termino Normal(Anticipado) NO HAY DATOS PARA ANALISIS",LOG03);
+        return 0;    
+    }
+
+    EXEC SQL OPEN curANALISIS ;
+    
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) {
+        sprintf(szDescError,"Fallo la apertura del cursor de analisis %s",SQLERRM);
+        ifnTrazasLog(modulo,"Open curANALISIS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+    else if (SQLCODE == SQLNOTFOUND ) {
+        ifnTrazasLog(modulo,"Termino Normal(Anticipado) NO HAY DATOS PARA ANALISIS",LOG03);
+        return 0;    
+    }
+    
+    ihFlgError = 0;
+        
+    while (1) {
+        
+        EXEC SQL FETCH curANALISIS
+        INTO :td_Analisis;  
+        
+        iSqlAuxStatus = SQLCODE;
+            
+        if ( iSqlAuxStatus != SQLOK && iSqlAuxStatus != SQLNOTFOUND ) {
+            sprintf(szDescError,"Fallo el fetch del cursor de analisis");
+            ifnTrazasLog(modulo,"Fetch curANALISIS [%d] %s",LOG00, iSqlAuxStatus, SQLERRM);
+            return -1; /*Mail*/
+        } 
+        else if ( iSqlAuxStatus == SQLNOTFOUND ) {
+            sprintf(szDescError,"Alcanzado el fin de datos");
+            ifnTrazasLog(modulo,"Alcanzado fin de datos [%ld] Grupos procesados ",LOG05,lRowsProcessed );
+            break; /* se terminaron los grupos vigentes para analisis */
+        }
+        
+        ifnTrazasLog(modulo,"\tValores Detalle \n       "
+    						"\t\t Fec_Actual : [%s] \n  ",LOG05,td_Analisis.fecha_analisis);
+
+		EXEC SQL DECLARE curDETANALISIS CURSOR FOR
+				SELECT  0, 								/* sec_analisis */
+						' ',  							/* fec_analisis */
+						cod_categoria,
+						sum(morosos_num_ident),
+						sum(morosos_cod_cliente),
+						sum(morosos_cnt_abocelu),
+						sum(morosos_cnt_abobeep),
+						sum(morosos_deu_vencida),
+						sum(hmorosos_num_ident), 
+						sum(hmorosos_cod_cliente),
+						sum(hmorosos_cnt_abocelu),
+						sum(hmorosos_cnt_abobeep),
+						sum(hmorosos_deu_vencida)
+				FROM  ( SELECT  0,
+								' ',
+								m.cod_categoria,
+								count( unique m.num_ident) as morosos_num_ident,
+								count(m.cod_cliente) as morosos_cod_cliente,
+								sum(m.cnt_abocelu) as morosos_cnt_abocelu,
+								sum(m.cnt_abobeep) as morosos_cnt_abobeep,
+								sum(m.deu_vencida) as morosos_deu_vencida,
+								0 as hmorosos_num_ident,
+								0 as hmorosos_cod_cliente,
+								0 as hmorosos_cnt_abocelu,
+								0 as hmorosos_cnt_abobeep,
+								0 as hmorosos_deu_vencida
+						FROM ( SELECT  0,
+										' ',
+										cod_categoria,
+										num_ident,
+										cod_cliente,
+										cnt_abocelu,
+										cnt_abobeep,
+										deu_vencida
+								FROM 	co_morosos
+								WHERE   sec_analisis = :td_Analisis.sec_analisis
+								UNION
+								SELECT  0,
+										' ',
+										cod_categoria,
+										num_ident,
+										cod_cliente,
+										cnt_abocelu,
+										cnt_abobeep,
+										deu_vencida
+								FROM 	co_hmorosos
+								WHERE   sec_analisis = :td_Analisis.sec_analisis
+								AND     fec_historico >= trunc(sysdate)
+							 ) m
+						GROUP BY m.cod_categoria
+						UNION
+						SELECT  0,
+								' ',
+								hm.cod_categoria,
+								0 as morosos_num_ident,
+								0 as morosos_cod_cliente,
+								0 as morosos_cnt_abocelu,
+								0 as morosos_cnt_abobeep,
+								0 as morosos_deu_vencida,
+								count( unique hm.num_ident) as hmorosos_num_ident,
+								count(hm.cod_cliente) as hmorosos_cod_cliente,
+								sum(hm.cnt_abocelu) as hmorosos_cnt_abocelu,
+								sum(hm.cnt_abobeep) as hmorosos_cnt_abobeep,
+								sum(hm.deu_vencida) as hmorosos_deu_vencida
+						FROM 	co_hmorosos hm
+						WHERE   hm.sec_analisis = :td_Analisis.sec_analisis
+						AND     trunc(hm.fec_historico) = to_date(:td_Analisis.fecha_analisis,'dd/mm/yyyy')
+						GROUP BY hm.cod_categoria
+						)
+				GROUP BY cod_categoria;
+				
+	    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+	        sprintf(szDescError,"Fallo DECLARE del cursor detalle analisis, Sec Analisis = [%ld] \n %s"
+	                           , td_Analisis.sec_analisis, SQLERRM);
+	        ifnTrazasLog(modulo,"Declare curDETANALISIS %s",LOG00,SQLERRM);
+	        return -1; /*Mail*/
+	    }
+	
+	    EXEC SQL OPEN curDETANALISIS ;
+	    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) {
+	        sprintf(szDescError,"Fallo OPEN del cursor detalle analisis, Sec Analisis = [%ld] \n %s"
+	                           , td_Analisis.sec_analisis, SQLERRM);
+	        ifnTrazasLog(modulo,"Open curDETANALISIS %s",LOG00,SQLERRM);
+	        return -1; /*Mail*/
+	    }
+
+	    while (1) {
+	        
+	        EXEC SQL FETCH curDETANALISIS
+	        INTO :td_DetAnalisis;  
+	        
+	        iSqlAuxStatus = SQLCODE;
+	            
+	        if ( iSqlAuxStatus != SQLOK && iSqlAuxStatus != SQLNOTFOUND ) {
+	        	sprintf(szDescError,"Fallo FETCH del cursor detalle analisis, Sec Analisis = [%ld] \n %s"
+	            	               , td_Analisis.sec_analisis, SQLERRM);
+	            ifnTrazasLog(modulo,"Fetch curDETANALISIS [%d] %s",LOG00, iSqlAuxStatus, SQLERRM);
+	            return -1; /*Mail*/
+	        } 
+	        else if ( iSqlAuxStatus == SQLNOTFOUND ) {
+	            sprintf(szDescError,"Alcanzado el fin de datos detalle analisis para Sec Analisis = [%ld] \n", td_Analisis.sec_analisis);
+	            break; /* se terminaron las categorias para la secuencia */
+	        }
+	
+			td_DetAnalisis.sec_analisis = td_Analisis.sec_analisis;
+			strcpy ( td_DetAnalisis.fec_actual, td_Analisis.fecha_analisis );
+	
+            ifnTrazasLog(modulo,"\tValores Detalle a Insertar\n      "
+    							"\t\t Sec_Analisis        : [%d] \n "    
+    							"\t\t Fec_Actual          : [%s] \n  "
+    							"\t\t Cod_Categoria       : [%s] \n  "
+    							"\t\t Cnt_Rut_Saldo       : [%d] \n "   
+    							"\t\t Cnt_Cliente_Saldo   : [%d] \n "  
+    							"\t\t Cnt_Abocelu_Saldo   : [%d] \n " 
+    							"\t\t Cnt_Abobeep_Saldo   : [%d] \n "
+           						"\t\t Deu_Vencida_Saldo   : [%.4f] \n "
+    							"\t\t Cnt_Rut_Recup       : [%d] \n "   
+    							"\t\t Cnt_Cliente_Recup   : [%d] \n "  
+    							"\t\t Cnt_Abocelu_Recup   : [%d] \n " 
+    							"\t\t Cnt_Abobeep_Recup   : [%d] \n "
+           						"\t\t Deu_Vencida_Recup   : [%.4f] \n\n "
+            					,LOG05, 
+            					td_DetAnalisis.sec_analisis,
+								td_DetAnalisis.fec_actual,
+								td_DetAnalisis.cod_categoria,
+								td_DetAnalisis.cnt_rut_saldo,
+								td_DetAnalisis.cnt_cliente_saldo,
+								td_DetAnalisis.cnt_abocelu_saldo,
+								td_DetAnalisis.cnt_abobeep_saldo,
+								td_DetAnalisis.deu_vencida_saldo,
+								td_DetAnalisis.cnt_rut_recup,
+								td_DetAnalisis.cnt_cliente_recup,
+								td_DetAnalisis.cnt_abocelu_recup,
+								td_DetAnalisis.cnt_abobeep_recup,
+								td_DetAnalisis.deu_vencida_recup );
+
+			ifnTrazasLog( modulo, "Valores antes de transformer deu_vencida_saldo = [%.4f], deu_vencida_recup = [%.4f].", LOG05, td_DetAnalisis.deu_vencida_saldo, td_DetAnalisis.deu_vencida_recup );  
+			td_DetAnalisis.deu_vencida_saldo = fnCnvDouble( td_DetAnalisis.deu_vencida_saldo, 0 );
+			td_DetAnalisis.deu_vencida_recup = fnCnvDouble( td_DetAnalisis.deu_vencida_recup, 0 );
+			ifnTrazasLog( modulo, "Valores despues de transformer deu_vencida_saldo = [%.4f], deu_vencida_recup = [%.4f].", LOG05, td_DetAnalisis.deu_vencida_saldo, td_DetAnalisis.deu_vencida_recup );
+
+			EXEC SQL INSERT INTO co_det_analisis 
+							(	fec_analisis,
+								fec_actual,
+								cod_categoria,
+								cnt_num_ident_saldo,	/* mgg 20030113 */
+								cnt_cliente_saldo,
+								cnt_abocelu_saldo,
+								cnt_abobeep_saldo,
+								deu_vencida_saldo,
+								cnt_num_ident_recup,	/* mgg 20030113 */
+								cnt_cliente_recup,
+								cnt_abocelu_recup,
+								cnt_abobeep_recup,
+								deu_vencida_recup,
+								sec_analisis
+							)
+					 VALUES (  	to_date (:td_DetAnalisis.fec_actual, 'dd/mm/yyyy' ), 
+								to_date (:td_DetAnalisis.fec_actual, 'dd/mm/yyyy' ),
+								:td_DetAnalisis.cod_categoria,
+								:td_DetAnalisis.cnt_rut_saldo,
+								:td_DetAnalisis.cnt_cliente_saldo,
+								:td_DetAnalisis.cnt_abocelu_saldo,
+								:td_DetAnalisis.cnt_abobeep_saldo,
+								:td_DetAnalisis.deu_vencida_saldo,
+								:td_DetAnalisis.cnt_rut_recup,
+								:td_DetAnalisis.cnt_cliente_recup,
+								:td_DetAnalisis.cnt_abocelu_recup,
+								:td_DetAnalisis.cnt_abobeep_recup,
+								:td_DetAnalisis.deu_vencida_recup,
+								:td_DetAnalisis.sec_analisis
+							);
+							
+		    if ( SQLCODE != SQLOK ) {
+	        	sprintf(szDescError,"Fallo INSERT co_det_analisis, Sec Analisis = [%ld] \n %s"
+	            	               , td_Analisis.sec_analisis, SQLERRM);
+		        ifnTrazasLog(modulo,"INSERT co_det_analisis %s",LOG00,SQLERRM);
+		        return -1; /*Mail*/
+		    }
+	     
+	 	} /* End While creacion detalle analisis*/
+    
+	    EXEC SQL CLOSE curDETANALISIS;    
+	    
+	    if ( SQLCODE ) {
+	        sprintf(szDescError,"Fallo el cierre del cursor detalle analisis");
+	        ifnTrazasLog(modulo,"Close curDETANALISIS %s",LOG00,SQLERRM);
+	        return -1; /*Mail*/
+	    }
+
+ 		lRowsProcessed++;
+ 		        
+ 	} /* End While */
+
+    EXEC SQL CLOSE curANALISIS;    
+    
+    if ( SQLCODE ) {
+        sprintf(szDescError,"Fallo el cierre del cursor de analisis");
+        ifnTrazasLog(modulo,"Close curANALISIS %s",LOG00,SQLERRM);
+        ihFlgError = 1;/*NoMail*/
+    }
+
+    ifnTrazasLog(modulo,"saliendo de %s",LOG05,modulo);
+
+    if (ihFlgError) /* !=0 ocurrio un error */
+        return ihFlgError;
+
+    return 0; 
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnEstadisticaMorosos() :  Genera estadisticas para morosos                  */ 
+/*                             llena tabla co_estmorosos                         */
+/* ============================================================================= */
+int ifnEstadisticaMorosos(char* szDescError)
+{
+    char modulo[] = "ifnEstadisticaMorosos";
+
+    ifnTrazasLog ( modulo,"Entrando en %s", LOG05, modulo );
+
+	EXEC SQL INSERT INTO co_estmorosos (fec_analisis,
+					        			cod_categoria,
+					        			cod_gestion,
+					        			cnt_num_ident,	/* mgg 20030113 */
+					        			cnt_cliente,
+					        			cnt_abocelu,
+					        			cnt_abobeep,
+					        			deu_vencida,
+					        			deu_inicial,
+					        			deu_novenc
+        							   ) 	 
+										SELECT  m.fec_analisis,
+												m.cod_categoria,
+												m.cod_gestion,
+												count(distinct m.cnt_num_ident),	/* mgg 20030113 */
+												count(m.cnt_cliente),
+												sum(m.cnt_abocelu),
+												sum(m.cnt_abobeep),
+												sum(m.deu_vencida),
+												sum(m.deu_inicial),
+												sum(m.deu_novenc)
+										FROM (  SELECT  trunc(sysdate - 1) as fec_analisis,
+														cod_categoria,
+														cod_gestion,
+														num_ident as cnt_num_ident,	/* mgg 20030113 */
+														cod_cliente as cnt_cliente,
+														NVL(cnt_abocelu,0) as cnt_abocelu,  /* GAC  15.09.03 Homol. HB-0007 */
+														NVL(cnt_abobeep,0) as cnt_abobeep,  /* GAC  15.09.03 Homol. HB-0007 */
+														NVL(deu_vencida,0) as deu_vencida,  /* GAC  15.09.03 Homol. HB-0007 */
+														deu_inicial as deu_inicial,
+														NVL(deu_novenc,0) as deu_novenc     /* GAC  15.09.03 Homol. HB-0007 */
+												FROM  	co_morosos
+												UNION
+												SELECT  trunc(sysdate - 1) as fec_analisis,
+														cod_categoria,
+														cod_gestion,
+														num_ident as cnt_num_ident,	/* mgg 20030113 */
+														cod_cliente as cnt_cliente,
+														NVL(cnt_abocelu,0) as cnt_abocelu,  /* GAC  15.09.03 Homol. HB-0007 */
+														NVL(cnt_abobeep,0) as cnt_abobeep,  /* GAC  15.09.03 Homol. HB-0007 */
+														NVL(deu_vencida,0) as deu_vencida,  /* GAC  15.09.03 Homol. HB-0007 */
+														deu_inicial as deu_inicial,
+														NVL(deu_novenc,0) as deu_novenc     /* GAC  15.09.03 Homol. HB-0007 */
+												FROM  	co_hmorosos
+												WHERE   fec_historico >= trunc(sysdate)
+											 ) m
+										GROUP BY m.cod_categoria, m.cod_gestion, m.fec_analisis;       		 
+
+    if ( SQLCODE != SQLOK ) {
+        sprintf(szDescError,"Fallo la creacion de Registros para Estadistica de Morosos %s",SQLERRM);
+        ifnTrazasLog(modulo,"INSERT INTO CO_ESTMOROSOS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+    
+    ifnTrazasLog(modulo,"saliendo de %s",LOG05,modulo);
+
+    return 0; 
+}
+/* ============================================================================= */
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

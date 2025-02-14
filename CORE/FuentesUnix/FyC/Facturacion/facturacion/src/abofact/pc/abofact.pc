@@ -1,0 +1,2047 @@
+/* ********************************************************************** */
+/* *  Fichero : abofactC.c                                              * */
+/* *  Proceso de "Abonados"                                             * */
+/* *  Autor : Carlos Arias Leivas                                       * */
+/* ********************************************************************** */
+/* *  Modificado : 25 de Marzo de 1999                                  * */
+/* *               Este proceso se paso a Facturacion el dia 25.03.99   * */
+/* *               para ajustar los procesos de facturacion,se cambio   * */
+/* *               al makefile, y los programas fuentes eliminado las   * */
+/* *               librerias, objetos y funciones relacionadas al modulo* */
+/* *               de abonados, en su reemplazo se agregaron funciones  * */
+/* *               Facturacion.                                         * */
+/* *                                                                    * */
+/* * 07/Jun/1999   Paso de unix/src/abofact a facturacion/src/abofact   * */
+/* *               (rbr) tarea 1                                        * */
+/* *                                                                    * */
+/* * 28/Jun/1999   Reorganizacion de Rutinas para Agregar funcionalidad * */
+/* *               de replicar Interfaz con Actuacion 2 y 3.            * */
+/* * 31/Ago/1999   Agregar funcionalidad de cambios de ciclo en la      * */
+/* *               Tabla GE_CLIENTES                                    * */
+/* * 20/Dic/1999   Quitar mensaje de registros no replicables por baja  * */
+/* *               en archivos de log y de inconsistencias              * */
+/* * 26/Abr/2000   Modificar Actualizacion de bloqueo                   * */
+/* *               si bloqeo > 1 ==> replico bloqueo = 1                * */
+/* *               si no         ==> replicao valor bloqueo             * */
+/* *               en archivos de log y de inconsistencias              * */
+/* ********************************************************************** */
+
+
+#define _ABOFACT_C_
+
+#include "abofact.h"
+
+char szUsage[]=
+   "\nUso:   abofact -u Usuario/Password    "
+   "\n               -c  Ciclo Facturacion  "
+   "\n\tOPCIONES:                           "
+   "\n\t           -l [LogNivel]            ";
+
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+
+EXEC SQL INCLUDE sqlca;
+
+/****************************************************************************/
+/*                  Definicion de Funciones Prototipos                      */
+/****************************************************************************/
+
+static BOOL bfnReplicaCiclos(long)                  ;
+static BOOL bfnCopiaFilasCel (long,long,char*,char*);
+static BOOL bfnCopiaFilasBeep(long,long,char*,char*);
+static int  ifnOpenInterfaz(int,long,long)          ;
+static int  ifnFetchInterfaz(int,GAINTERFACT *,long);
+static BOOL bfnCloseInterfaz(int )                  ;
+static BOOL SetUpdate(int, GAINTERFACT * , char *)  ;
+static BOOL bNumPeriodosBaja(int,GAINTERFACT*,int*) ;
+static BOOL bfnInsertInterfaz(int, GAINTERFACT *)   ;
+static void vValSTB(GAINTERFACT * )                 ;
+static BOOL bfnCambCicloCliente(long)               ;
+static void vValCargoPro (GAINTERFACT * )           ;
+static void vPrintInconsistencia()                  ;
+
+
+/*****************************************************************************/
+/* main :  modulo principal                                                  */
+/*****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+    /****  ANTIGUO   ****/
+    int  iCont = 0      ;
+    long lhCiclParam    ;
+
+    
+    /****  NUEVO   ****/
+    extern      char *optarg                ;
+    char        opt[]="u:c:l:"              ;
+    int         iOpt =0                     ;
+    char        szUsuario [63] = ""         ;
+    char        *psztmp      = ""           ;
+    char        szaux     [10]              ;
+    char        *szDirLogs                  ;
+    char        szComando[1024] = ""        ;
+    BOOL        bOptUsuario = FALSE         ;
+
+    memset(&stEstadisCelu   ,0,sizeof(GAINFACESTADIS));
+    memset(&stEstadisBeep   ,0,sizeof(GAINFACESTADIS));
+    memset(&stLineaComando  ,0,sizeof(LINEACOMANDO));
+
+    while ( (iOpt = getopt(argc,argv,opt)) != EOF)
+    {
+         switch(iOpt)
+         {   case 'u':
+                 if (strlen (optarg))
+                 {
+                    strcpy(szUsuario, optarg);
+                    bOptUsuario = TRUE;
+                    fprintf (stdout," -u %s ", szUsuario);
+                 }
+                 break;
+             case 'c':
+                 if (strlen (optarg))
+                 {
+                    strcpy(szaux,optarg);
+                    stLineaComando.lCodCiclFact = atol(szaux);
+                    fprintf (stdout,"-c %ld ", stLineaComando.lCodCiclFact);
+                 }
+                 break;
+             case 'l':
+                 if (strlen (optarg))
+                 {
+                    stStatus.LogNivel =
+                    (atoi (optarg) > 0)? atoi (optarg):iLOGNIVEL_DEF ;
+                    fprintf (stdout,"-l %d ", stStatus.LogNivel)     ;
+                 }
+                 break;
+         }
+    }
+
+
+    if (stLineaComando.lCodCiclFact == 0)
+    {
+        fprintf (stderr, "\n\t# Faltan Parametros de Entrada:\n%s\n", szUsage);
+        return 1;
+    }
+
+    if (!bOptUsuario)
+    {
+        fprintf (stderr, "\n\t# Faltan Parametros de Entrada:\n%s\n", szUsage);
+        return  (2);
+    }
+    else
+    {
+       if ( (psztmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+       {
+             fprintf (stderr,"\n\tUsuario Oracle no Valido\n%s\n",szUsage);
+             return (3);
+       }
+       else
+       {
+             strncpy (stLineaComando.szUser,szUsuario,psztmp-szUsuario);
+             strcpy  (stLineaComando.szPass, psztmp+1)                 ;
+       }
+    }
+
+    if (stStatus.LogNivel <= 0)
+       stStatus.LogNivel = iLOGNIVEL_DEF     ;
+    stLineaComando.iNivLog = stStatus.LogNivel;
+    
+    if(!bfnConnectORA(stLineaComando.szUser,stLineaComando.szPass))
+    {
+        fprintf(stderr, "\n\tUsuario/Passwd Invalido\n\t\t"
+                        "'abofact  <usuario> <passwd> '\n");
+        return (3);
+    }
+    else
+    {
+        printf( "\n\t-------------------------------------------------------"
+                "\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx "
+                "\n\t-------------------------------------------------------",
+                stLineaComando.szUser);
+    }
+
+    if (!bGetDatosGener (&stDatosGener, szSysDate))
+         return FALSE;
+    /*******************************************************************************/
+    /* **               Obtiene el path del directorio Log                      ** */
+    /*******************************************************************************/
+    szDirLogs=(char *)malloc(1024);
+    if ((szDirLogs = szGetEnv("XPFACTUR_LOG")) == (char *)NULL)
+        return(FALSE);
+    /*******************************************************************************/
+    /* **  Crea Directorio de Log para el Ciclo a Procesar                      ** */
+    /*******************************************************************************/
+    sprintf(stLineaComando.szDirLogs,"%s/abofact/%ld/",szDirLogs,stLineaComando.lCodCiclFact);
+    sprintf(szComando, "/usr/bin/mkdir  -p %s",stLineaComando.szDirLogs );
+    if (system(szComando))
+    {     
+        printf( "\n\t*** Fallo mkdir de Directorio Logs : %s \n", szComando);
+        return(FALSE);
+    }
+    /*******************************************************************************/
+    /* **  Abre Archivo de Errores                                              ** */
+    /*******************************************************************************/
+    sprintf(stStatus.ErrName, "%sAboFact_%ld_%s.err",
+            stLineaComando.szDirLogs, stLineaComando.lCodCiclFact, szSysDate);
+
+    if( (stStatus.ErrFile = fopen(stStatus.ErrName,"wb")) == (FILE*)NULL )
+    {
+        fprintf( stderr, "\n ### Error: No puede abrirse el fichero "
+                         "de error %s\n", stStatus.ErrName);
+        return (4);
+    }
+    /*******************************************************************************/
+    /* **  Abre Archivo de Log                                                  ** */
+    /*******************************************************************************/
+    sprintf(stStatus.LogName, "%sAboFact_%ld_%s.log",
+            stLineaComando.szDirLogs, stLineaComando.lCodCiclFact, szSysDate);
+
+    if ((stStatus.LogFile = fopen(stStatus.LogName,"wb")) == (FILE*)NULL)
+    {
+        fprintf( stderr, "\n ### Error: No puede abrirse el fichero "
+                         "de log %s\n", stStatus.LogName);
+        fclose(stStatus.ErrFile);
+        return (5);
+    }
+    /*******************************************************************************/
+    /* **               Obtiene el path del directorio Dat                      ** */
+    /*******************************************************************************/
+    szDirLogs=(char *)malloc(1024);
+    if ((szDirLogs = szGetEnv("XPFACTUR_DAT")) == (char *)NULL)
+        return(FALSE);
+    /*******************************************************************************/
+    /* **  Crea Directorio de Dat para el Ciclo a Procesar                      ** */
+    /*******************************************************************************/
+    sprintf(stLineaComando.szDirLogs,"%s/abofact/%ld/",szDirLogs,stLineaComando.lCodCiclFact);
+    sprintf(szComando, "/usr/bin/mkdir  -p %s",stLineaComando.szDirLogs );
+    if (system(szComando))
+    {     
+        printf( "\n\t*** Fallo mkdir de Directorio Logs : %s \n", szComando);
+        return(FALSE);
+    }
+    /*******************************************************************************/
+    /* **  Abre Archivo de Data                                                 ** */
+    /*******************************************************************************/
+    sprintf(stLineaComando.InconsName, "%sAboFact_%ld_%s.dat",
+            stLineaComando.szDirLogs, stLineaComando.lCodCiclFact, szSysDate);
+
+    if( (stLineaComando.InconsFile=fopen(stLineaComando.InconsName,"wb")) == (FILE*)NULL )
+    {
+        fprintf( stderr, "\n ### Error: No puede abrirse el fichero "
+                         "de inconsistencias %s\n", stLineaComando.InconsName);
+        return (4);
+    }
+
+    /*************************************************************************/
+    
+    vDTrazasError(szExeAboFact, "\n\n\t*************************************"
+                                 "\n\n\t****     Errores de ABOFACT        **"
+                                 "\n\n\t*************************************",
+                                  LOG03);
+
+    vDTrazasLog(szExeAboFact, "\n\n\t***************************************"
+                                 "\n\n\t****        Log   ABOFACT          **"
+                                 "\n\n\t*************************************",
+                                  LOG03);
+
+    vDTrazasLog(szExeAboFact,
+                            "\n\t\tParametro de Salida abofactC.c ***"
+                            "\n\t\t=> Usuario      [%s]"
+                            "\n\t\t=> Password     [************]"
+                            "\n\t\t=> Cod.CiclFact [%ld]"
+                            "\n\t\t=> Niv.Log      [%d]",
+                            LOG05,
+                            stLineaComando.szUser,
+                            stLineaComando.lCodCiclFact,
+                            stLineaComando.iNivLog);
+
+    if(!bfnReplicaCiclos(stLineaComando.lCodCiclFact))  
+       bfnOraRollBackRelease();
+    else 
+    {
+        if (!bfnOraCommit())
+        {
+           vDTrazasError(szExeAboFact, "\n\n\tError en Commit de Estadisticas (bfnOraCargaHistDocu)", LOG01);
+           return FALSE;
+        }
+    }
+
+    vDTrazasLog (szExeAboFact,  "\n************************************"
+                                "**************************************"
+                                "\n\tEstadisticas del Proceso        \n"
+                                "\n\t\t => Interfaz Celular                     "
+                                "\n\t\t\t ==> Abonados Correctos            [%ld]"
+                                "\n\t\t\t ==> Abonados Con Errores          [%ld]"
+                                "\n\t\t\t ==> Total Abonados Procesados     [%ld]"
+                                "\n\n\t\t\t\t ==> Cambios de Ciclo      [%ld]"
+                                "\n\t\t\t\t ==> Bajas No Replicadas   [%ld]"
+                                "\n************************************"
+                                "**************************************"
+                                "\n\t\t => Interfaz Beeper                      "
+                                "\n\t\t\t ==> Abonados Correctos            [%ld]"
+                                "\n\t\t\t ==> Abonados Con Errores          [%ld]"
+                                "\n\t\t\t ==> Total Abonados Procesados     [%ld]"
+                                "\n\n\t\t\t\t ==> Cambios de Ciclo      [%ld]"
+                                "\n\t\t\t\t ==> Bajas No Replicadas   [%ld]"
+                                "\n************************************"
+                                "**************************************"
+                                ,LOG03
+                                ,stEstadisCelu.lCorrectos
+                                ,stEstadisCelu.lIncorrectos
+                                ,stEstadisCelu.lTotales
+                                ,stEstadisCelu.lTotCambCiclo            
+                                ,stEstadisCelu.lTotBajas
+                                ,stEstadisBeep.lCorrectos
+                                ,stEstadisBeep.lIncorrectos
+                                ,stEstadisBeep.lTotales
+                                ,stEstadisBeep.lTotCambCiclo
+                                ,stEstadisBeep.lTotBajas);
+
+
+    if(!bfnDisconnectORA(0))
+    {
+     /*No estaba conectado*/
+    }
+    else
+        vDTrazasLog(szExeAboFact,
+                "\n\t-------------------------------------------------------"
+                "\n\tDesconectado de ORACLE "
+                "\n\t-------------------------------------------------------\n",
+                LOG03, stLineaComando.szUser);
+
+        vDTrazasError(szExeAboFact,
+                "\n\t-------------------------------------------------------"
+                "\n\tDesconectado de ORACLE "
+                "\n\t-------------------------------------------------------\n",
+                LOG03, stLineaComando.szUser);
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+    fclose(stLineaComando.InconsFile);
+            
+}
+
+
+
+/*****************************************************************************/
+/* bfnReplicaCiclos :                                                        */
+/*****************************************************************************/
+
+static BOOL bfnReplicaCiclos(long lCiclParam)
+{
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+
+    long lhCiclParam                ;
+    long lhCodCiclo                 ;
+    long lhCodCiclFact              ;
+    long lhCodCiclFactFin           ;
+
+    char szFecActual[15]            ;   EXEC SQL VAR szFecActual IS STRING(15);
+    char szhFecDesdeLlam[15]        ;   EXEC SQL VAR szFecActual IS STRING(15);
+
+    EXEC SQL END DECLARE SECTION    ;
+
+    vDTrazasLog(szExeAboFact,"\n\t***  Parametro de Entrada bfnReplicaCiclos  ***"
+                             "\n\t\t=> Cod_CiclFact     [%ld]",
+                             LOG03,lCiclParam );
+    
+    lhCiclParam = lCiclParam;
+
+    if (lhCiclParam == 0) 
+    {
+        vDTrazasError(szExeAboFact, "\n\n\t  Error en COD_CICLFACT = [%ld]", LOG01,lhCiclParam);
+        vDTrazasLog  (szExeAboFact, "\n\n\t  Error en COD_CICLFACT = [%ld]", LOG01,lhCiclParam);
+        return (FALSE);
+    }
+    else
+    {
+        lhCodCiclFact    = lhCiclParam ;    
+        lhCodCiclo       = 0           ;
+        lhCodCiclFactFin = 0           ;
+        
+        /*  Se paso como parametro el Ciclo                                   */
+        /**********************************************************************/
+        EXEC SQL SELECT COD_CICLO,
+                        TO_CHAR(SYSDATE,'YYYYMMDDHH24MISS') 
+                 INTO   :lhCodCiclo , 
+                        :szFecActual
+                 FROM FA_CICLFACT WHERE COD_CICLFACT = :lhCiclParam;
+
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t**  No Existen Datos en COD_CICLFACT **"
+                                        "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lhCiclParam);
+            vDTrazasLog  (szExeAboFact, "\n\n\t**  No Existen Datos en COD_CICLFACT **"
+                                        "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lhCiclParam);
+            return (FALSE);
+        }
+        if(SQLCODE != SQLOK)
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t**  Error en Select sobre FA_CILCFACT (Cod_CiclFact) **",LOG01,lhCiclParam);
+            vDTrazasLog  (szExeAboFact, "\n\n\t**  Error en Select sobre FA_CILCFACT (Cod_CiclFact) **",LOG01,lhCiclParam);
+            return (FALSE);
+        }
+
+        /*   Selecciona Cod_CiclFact Siguiente para el ciclo a Procesar                                    */
+        /**********************************************************************/
+        EXEC SQL SELECT COD_CICLFACT ,
+                        TO_CHAR(FEC_DESDELLAM,'YYYYMMDDHH24MISS')
+                 INTO   :lhCodCiclFactFin,
+                        :szhFecDesdeLlam
+                 FROM   FA_CICLFACT
+                 WHERE  to_date(:szFecActual,'YYYYMMDDHH24MISS') BETWEEN FEC_DESDELLAM AND FEC_HASTALLAM
+                 AND    COD_CICLO=:lhCodCiclo;
+
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t** No Existen Datos en FA_CICLFACT Para Proximo Ciclo **"
+                                        "\n\t\t=> Codigo de Ciclo       [%ld]"
+                                        "\n\t\t=> Fecha Actual          [%s]"
+                                        ,LOG01,lhCodCiclo,szFecActual);
+            vDTrazasLog  (szExeAboFact, "\n\n\t** No Existen Datos en FA_CICLFACT Para Proximo Ciclo **"
+                                        "\n\t\t=> Codigo de Ciclo       [%ld]"
+                                        "\n\t\t=> Fecha Actual          [%s]"
+                                        ,LOG01,lhCodCiclo,szFecActual);
+            return (FALSE);
+        }
+        if(SQLCODE != SQLOK)
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t**  Error en Select sobre FA_CILCFACT (Cod_Ciclo) **",LOG01);
+            vDTrazasLog  (szExeAboFact, "\n\n\t**  Error en Select sobre FA_CILCFACT (Cod_Ciclo) **",LOG01);
+            return (FALSE);
+        }
+            
+        /*   Selecciona Cod_CiclFact Para Ciclo STB (SuperTelefono)                                        */
+        /*********************************************************************/
+        EXEC SQL SELECT     COD_CICLO
+                 INTO       :lhCodCicloSTM
+                 FROM       GA_CTC_DEFVENTA
+                 WHERE      IND_TIPVENTA = 'S';
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t** No Existen Datos en GA_CTC_DEFVENTA Para Ciclo STB**"
+                                        "\n\t\t=> Codigo de Ciclo       [%ld]"
+                                        "\n\t\t=> Fecha Actual          [%s]"
+                                        "\t\t\t=>Error  :  %s"
+                                        ,LOG01,lhCodCiclo,szFecActual,SQLERRM);
+            vDTrazasLog  (szExeAboFact, "\n\n\t** No Existen Datos en GA_CTC_DEFVENTA Para Ciclo STB**"
+                                        "\n\t\t=> Codigo de Ciclo       [%ld]"
+                                        "\n\t\t=> Fecha Actual          [%s]"
+                                        "\t\t\t=>Error  :  %s"
+                                        ,LOG01,lhCodCiclo,szFecActual,SQLERRM);
+            return (FALSE);
+        }
+
+        if(SQLCODE != SQLOK)
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t**  Error en Select sobre GA_CTC_DEFVENTA **",LOG01);
+            vDTrazasLog  (szExeAboFact, "\n\n\t**  Error en Select sobre GA_CTC_DEFVENTA **",LOG01);
+            return (FALSE);
+        }
+            
+        /*******************************************************************/
+        /********    Replica Registros de la tabla GA_INFACCEL     *********/
+        /*******************************************************************/
+        vDTrazasLog(szExeAboFact,"\n#######################################"
+                                 "############################################"
+                                 "\n###########################################"
+                                 "########################################"
+                                "\n\n\t**  Entrada a bfnCopiaFilasCel **"
+                                 "\n\t\t=> Cod_CiclFact        [%ld]"
+                                 "\n\t\t=> Cod_CiclFactFin     [%ld]"
+                                 "\n\t\t=> Fecha Actual        [%s]"
+                                 "\n\t\t=> Ciclo STB           [%ld]"
+                                 "\n\t******************************************"
+                                 "**************************************",
+                                 LOG03, lhCodCiclFact, lhCodCiclFactFin, szFecActual, lhCodCicloSTM);
+        
+        if (!bfnCopiaFilasCel   (lhCodCiclFact, lhCodCiclFactFin, szFecActual, szhFecDesdeLlam ))
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t**  Error Al Copiar Filas de GA_INFACCEL **",LOG01);
+            vDTrazasLog(szExeAboFact, "\n\n\t**  Error Al Copiar Filas de GA_INFACCEL **",LOG01);
+            return (FALSE);
+        }
+        
+        /**********************************************************************/
+        /**********   Replica Registros de la tabla GA_INFACBEEP    ***********/
+        /**********************************************************************/
+        vDTrazasLog(szExeAboFact,"\n#######################################"
+                                 "############################################"
+                                 "\n###########################################"
+                                 "########################################"
+                                 "\n\n\t**  Entrada a bfnCopiaFilasBeep **"
+                                 "\n\t\t=> Cod_CiclFact        [%ld]"
+                                 "\n\t\t=> Cod_CiclFactFin     [%ld]"
+                                 "\n\t\t=> Fecha Actual        [%s] "
+                                 "\n\t\t=> Ciclo STB           [%ld] "
+                                 "\n\t******************************************"
+                                 "**************************************",
+                                 LOG03,lhCodCiclFact,lhCodCiclFactFin,szFecActual,lhCodCicloSTM);
+                                 
+        if (!bfnCopiaFilasBeep  (lhCodCiclFact, lhCodCiclFactFin, szFecActual, szhFecDesdeLlam))
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t**  Error Al Copiar Filas de GA_INFACBEEP **",LOG01);
+            vDTrazasLog  (szExeAboFact, "\n\n\t**  Error Al Copiar Filas de GA_INFACBEEP **",LOG01);
+            return (FALSE);
+        }
+   }
+   return (TRUE);
+}/***********************   Final bfnReplicaCiclos **************************/
+
+
+
+/****************************************************************************/
+/*   Funcion :  bfnCopiaFilasCel                                            */
+/*   BOOL   bfnCopiaFilasCel ( Cod_CiclFact , Cod_CiclFactAux ,             */
+/*                             szFecActual,    szhFecDesdeLlam )            */
+/*                                                                          */
+/****************************************************************************/
+static BOOL bfnCopiaFilasCel(  long lhCodCiclFact, long lhCodCiclFactFin, 
+                        char* szFecActual,  char* sFecDesdeLlam  )
+{
+    int         iSqlCodeInt                 = SQLOK     ;
+    long        lhCod_CodCliente_Anterior   = 0l        ;    
+    long        lhCodCiclFactFinAux         = 0l        ;
+    BOOL        bOptErrorInsert             = FALSE     ;
+
+    GAINTERFACT stGaInfaccel                            ;
+
+    iSqlCodeInt = ifnOpenInterfaz(stDatosGener.iProdCelular, lhCodCiclFact, lhCodCiclFactFin);
+
+    while ( iSqlCodeInt == SQLOK )
+    {
+        memset ( &stGaInfaccel, 0 , sizeof ( GAINTERFACT ) );
+
+        iSqlCodeInt = ifnFetchInterfaz(stDatosGener.iProdCelular,&stGaInfaccel,lhCodCiclFactFin); 
+
+        if (iSqlCodeInt == SQLOK)
+        {
+            /************************************************************************/
+            /*  Controla COMMIT por Cliente.                                        */
+            /*  No grava abonados del cliente si este no esta Consistente           */
+            /************************************************************************/
+            if( lhCod_CodCliente_Anterior != stGaInfaccel.lCodCliente &&  
+                lhCod_CodCliente_Anterior > 0 ) 
+            {
+                if (!bfnCambCicloCliente(lhCod_CodCliente_Anterior))
+                {
+                    vDTrazasLog  (szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+                    vDTrazasError(szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+                    return (FALSE);
+                }                                
+                if(!fnOraCommit())
+                {
+                    vDTrazasLog  (szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACCEL",LOG01, SQLERRM);
+                    vDTrazasError(szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACCEL",LOG01, SQLERRM);
+                    return (FALSE);
+                }
+            }
+            lhCod_CodCliente_Anterior   = stGaInfaccel.lCodCliente;
+            stEstadisCelu.lTotales++    ;
+            bOptErrorInsert     = FALSE ;
+            if(!SetUpdate(  stDatosGener.iProdCelular, &stGaInfaccel, szFecActual))
+            {
+                stEstadisCelu.lIncorrectos++    ;
+                bOptErrorInsert=TRUE            ;
+                vDTrazasLog  (szExeAboFact, "\n\t**** Error en SetUpdate  ****"
+                                            "\n\t Abonado Procesado Con Errores          "
+                                            "\n\t\t==> Cliente                      [%ld]"
+                                            "\n\t\t==> Abonado                      [%ld]"
+                                            "\n\t\t==> Codigo Ciclo Facturacion     [%ld]"
+                                            "\n\t****************************************"
+                                            "********************************************",
+                                            LOG03,stGaInfaccel.lCodCliente,stGaInfaccel.lNumAbonado,
+                                            stGaInfaccel.lCodCiclFactNew   );
+
+                vDTrazasError(szExeAboFact, "\n\n\t**    Error en SetUpdate    **"
+                                            "\n\t\t==> Cliente              [%ld]"
+                                            "\n\t\t==> Abonado              [%ld]"
+                                            "\n\t\t==> Producto             [%d ]"
+                                            "\n\t\t==> Fecha Actual         [%s ]"
+                                            "\n\t\t==> Ind. Arriendo        [%ld]"
+                                            "\n\t\t==> Ind. Cuotas          [%ld]"
+                                            "\n\t\t==> Ind. Cargos          [%ld]"
+                                            "\n\t\t==> Codigo Ciclo Fact.   [%ld]"
+                                            "\n\t\t==> Codigo de Ciclo      [%ld]", LOG01,
+                                            stGaInfaccel.lCodCliente      ,stGaInfaccel.lNumAbonado      ,
+                                            stDatosGener.iProdCelular     ,szFecActual                    ,
+                                            stGaInfaccel.lIndArriendo     ,stGaInfaccel.lIndCuotas       ,
+                                            stGaInfaccel.lIndCargos       ,stGaInfaccel.lCodCiclFactNew ,
+                                            stGaInfaccel.iCodCiclo  );
+            }
+            if((bOptErrorInsert == FALSE) && (stGaInfaccel.bOptExiste == FALSE))
+            {
+             
+                vValSTB(&stGaInfaccel);
+                
+                vValCargoPro(&stGaInfaccel);
+                
+                /**************************************************************/
+                /* Si Cambio de Ciclo Cambia la Fecha Desde en la GA_INFACCEL */
+                /**************************************************************/
+                stGaInfaccel.lIndAlta = 0;
+                if ( stGaInfaccel.iIndCambio && stGaInfaccel.lIndActuac == iINDACTUAC_NORMAL  )
+                {
+                /*  strcpy(stGaInfaccel.szFecAlta,sFecDesdeLlam);  Fechas de Alta y Baja en Intarcel    */
+                /*  stGaInfaccel.lIndAlta = 1;                                                          */
+                }
+                if (!bfnInsertInterfaz(stDatosGener.iProdCelular,&stGaInfaccel))
+                    return (FALSE);
+                
+            }
+            if(bOptErrorInsert == FALSE)
+            {
+                stEstadisCelu.lCorrectos++;
+                vDTrazasLog(szExeAboFact,   "\n\t Abonado Procesado Correctamente        "
+                                            "\n\t\t==> Cliente                      [%ld]"
+                                            "\n\t\t==> Abonado                      [%ld]"
+                                            "\n\t\t==> Codigo Ciclo Facturacion     [%ld]"
+                                            "\n\t\t==> Indicador de Actuacion       [%d]"
+                                            "\n\t****************************************"
+                                            "****************************************"
+                                            ,LOG03 ,stGaInfaccel.lCodCliente
+                                            ,stGaInfaccel.lNumAbonado
+                                            ,stGaInfaccel.lCodCiclFactNew
+                                            ,stGaInfaccel.lIndActuac);
+            }
+        }
+    }
+    if (!bfnCambCicloCliente(lhCod_CodCliente_Anterior))
+    {
+        vDTrazasLog  (szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+        vDTrazasError(szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+        return (FALSE);
+    }
+    if(!fnOraCommit())
+    {
+        vDTrazasLog  (szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACCEL",LOG01, SQLERRM);
+        vDTrazasError(szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACCEL",LOG01, SQLERRM);
+        return (FALSE);
+    }
+
+    if (!bfnCloseInterfaz(stDatosGener.iProdCelular))
+        return (FALSE);
+        
+    vDTrazasLog(szExeAboFact, "\n\t**  SALIENDO DE bfnCopiaFilasCel ",LOG03);
+    
+    return TRUE;
+}/***********************   Final bfnCopiaFilasCel    ***********************/
+
+
+/****************************************************************************/
+/*   Funcion :  bfnCopiaFilasBeep                                           */
+/*   BOOL   bfnCopiaFilasBeep ( Cod_CiclFact , Cod_CiclFactAux              */
+/*                              ,szFecActual, szhFecDesdeLlam )             */
+/*                                                                          */
+/****************************************************************************/
+
+static BOOL bfnCopiaFilasBeep(long lhCodCiclFact, long lhCodCiclFactFin, char* szFecActual, char* sFecDesdeLlam)
+{
+    int         iSqlCodeInt                 = SQLOK     ;
+    long        lhCod_CodCliente_Anterior   = 0l        ;    
+    long        lhCodCiclFactFinAux         = 0l        ;
+    BOOL        bOptErrorInsert             = FALSE     ;
+
+    GAINTERFACT stGaInfacbeep                            ;
+
+    iSqlCodeInt = ifnOpenInterfaz(stDatosGener.iProdBeeper, lhCodCiclFact, lhCodCiclFactFin);
+
+    while ( iSqlCodeInt == SQLOK )
+    {
+        memset ( &stGaInfacbeep, 0 , sizeof ( GAINTERFACT ) );
+
+        iSqlCodeInt = ifnFetchInterfaz(stDatosGener.iProdBeeper,&stGaInfacbeep,lhCodCiclFactFin); 
+
+        if (iSqlCodeInt == SQLOK)
+        {
+            /************************************************************************/
+            /*  Controla COMMIT por Cliente.                                        */
+            /*  No grava abonados del cliente si este no esta Consistente           */
+            /************************************************************************/
+            if( lhCod_CodCliente_Anterior != stGaInfacbeep.lCodCliente && 
+                lhCod_CodCliente_Anterior > 0 ) 
+            {
+                if (!bfnCambCicloCliente(lhCod_CodCliente_Anterior))
+                {
+                    vDTrazasLog  (szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+                    vDTrazasError(szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+                    return (FALSE);
+                }                                
+
+                if(!fnOraCommit())
+                {
+                    vDTrazasLog  (szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACBEEP",LOG01, SQLERRM);
+                    vDTrazasError(szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACBEEP",LOG01, SQLERRM);
+                    return (FALSE);
+                }
+            }
+            lhCod_CodCliente_Anterior   = stGaInfacbeep.lCodCliente;
+            stEstadisBeep.lTotales++    ;
+            bOptErrorInsert     = FALSE ;
+            if(!SetUpdate(  stDatosGener.iProdBeeper, &stGaInfacbeep, szFecActual))
+            {
+                stEstadisBeep.lIncorrectos++    ;
+                bOptErrorInsert=TRUE            ;
+                vDTrazasLog  (szExeAboFact, "\n\t**** Error en SetUpdate  ****"
+                                            "\n\t Abonado Procesado Con Errores          "
+                                            "\n\t\t==> Cliente                      [%ld]"
+                                            "\n\t\t==> Abonado                      [%ld]"
+                                            "\n\t\t==> Codigo Ciclo Facturacion     [%ld]"
+                                            "\n\t****************************************"
+                                            "********************************************",
+                                            LOG03,stGaInfacbeep.lCodCliente,stGaInfacbeep.lNumAbonado,
+                                            stGaInfacbeep.lCodCiclFactNew   );
+
+                vDTrazasError(szExeAboFact, "\n\n\t**    Error en SetUpdate    **"
+                                            "\n\t\t==> Cliente              [%ld]"
+                                            "\n\t\t==> Abonado              [%ld]"
+                                            "\n\t\t==> Producto             [%d ]"
+                                            "\n\t\t==> Fecha Actual         [%s ]"
+                                            "\n\t\t==> Ind. Arriendo        [%ld]"
+                                            "\n\t\t==> Ind. Cuotas          [%ld]"
+                                            "\n\t\t==> Ind. Cargos          [%ld]"
+                                            "\n\t\t==> Codigo Ciclo Fact.   [%ld]"
+                                            "\n\t\t==> Codigo de Ciclo      [%ld]", LOG01,
+                                            stGaInfacbeep.lCodCliente      ,stGaInfacbeep.lNumAbonado      ,
+                                            stDatosGener.iProdBeeper       ,szFecActual                     ,
+                                            stGaInfacbeep.lIndArriendo     ,stGaInfacbeep.lIndCuotas       ,
+                                            stGaInfacbeep.lIndCargos       ,stGaInfacbeep.lCodCiclFactNew ,
+                                            stGaInfacbeep.iCodCiclo  );
+            }
+            if((bOptErrorInsert == FALSE) && (stGaInfacbeep.bOptExiste == FALSE))
+            {
+             
+                vValSTB(&stGaInfacbeep);
+                
+                vValCargoPro(&stGaInfacbeep);
+                
+                /**************************************************************/
+                /* Si Cambio de Ciclo Cambia la Fecha Desde en la GA_INFACBEEP*/
+                /**************************************************************/
+                stGaInfacbeep.lIndAlta = 0;
+                if ( stGaInfacbeep.iIndCambio && stGaInfacbeep.lIndActuac == iINDACTUAC_NORMAL  )
+                {
+                /*    strcpy(stGaInfacbeep.szFecAlta,sFecDesdeLlam);    */
+                /*    stGaInfacbeep.lIndAlta = 1;                       */
+                }
+                if (!bfnInsertInterfaz(stDatosGener.iProdBeeper,&stGaInfacbeep))
+                    return (FALSE);
+                
+            }
+            if(bOptErrorInsert == FALSE)
+            {
+                stEstadisBeep.lCorrectos++;
+                vDTrazasLog(szExeAboFact,   "\n\t Abonado Procesado Correctamente        "
+                                            "\n\t\t==> Cliente                      [%ld]"
+                                            "\n\t\t==> Abonado                      [%ld]"
+                                            "\n\t\t==> Codigo Ciclo Facturacion     [%ld]"
+                                            "\n\t\t==> Indicador de Actuacion       [%d]"
+                                            "\n\t****************************************"
+                                            "****************************************"
+                                            ,LOG03, stGaInfacbeep.lCodCliente
+                                            ,stGaInfacbeep.lNumAbonado
+                                            ,stGaInfacbeep.lCodCiclFactNew
+                                            ,stGaInfacbeep.lIndActuac);
+            }
+        }
+    }
+    if (!bfnCambCicloCliente(lhCod_CodCliente_Anterior))
+    {
+        vDTrazasLog  (szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+        vDTrazasError(szExeAboFact, "Error En Cambio de Ciclo en Ge_Clientes",LOG01, SQLERRM);
+        return (FALSE);
+    }                                
+    if(!fnOraCommit())
+    {
+        vDTrazasLog  (szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACBEEP",LOG01, SQLERRM);
+        vDTrazasError(szExeAboFact, "ERROR AL HACER EL COMMIT EN GA_INFACBEEP",LOG01, SQLERRM);
+        return (FALSE);
+    }
+
+    if (!bfnCloseInterfaz(stDatosGener.iProdBeeper))
+        return (FALSE);
+        
+    vDTrazasLog(szExeAboFact, "\n\t**  SALIENDO DE bfnCopiaFilasBeep ",LOG03);
+    return TRUE;
+}/***********************   Final bfnCopiaFilasBeep  ************************/
+
+
+
+
+/****************************************************************************/
+/*                         funcion : ifnOpenInterfaz                        */
+/****************************************************************************/
+
+static int ifnOpenInterfaz(int iProducto, long lCiclFactActual,long lCiclFactNuevo)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhCodCiclFact      = lCiclFactActual       ;
+        long lhCodCiclFactFin   = lCiclFactNuevo        ;
+        long lhCodCliete        = 0                     ;
+        long lhNumAbonado       = 0                     ;
+        int  iActuaNormal       = iINDACTUAC_NORMAL     ;
+        int  iActuaBaja         = iINDACTUAC_BAJA       ;
+        int  iActuacTraspaso    = iINDACTUAC_TRASPASO   ;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog ( szExeAboFact,"\n\t** Open Interfaz %s (ifnOpenInterfaz) **"
+                            ,LOG05,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP"));
+
+
+    if (iProducto == stDatosGener.iProdCelular )
+    {
+        EXEC SQL DECLARE cGaInFacCel CURSOR FOR
+            SELECT  A.COD_CLIENTE,
+                    A.NUM_ABONADO,
+                    A.COD_CICLFACT,
+                    TO_CHAR(A.FEC_ALTA,'YYYYMMDDHH24MISS'), 
+                    TO_CHAR(A.FEC_BAJA,'YYYYMMDDHH24MISS'),
+                    A.NUM_CELULAR,
+                    A.IND_ACTUAC,
+                    TO_CHAR(A.FEC_FINCONTRA,'YYYYMMDDHH24MISS'), 
+                    A.IND_ALTA,
+                    A.IND_DETALLE, 
+                    A.IND_FACTUR,
+                    A.IND_CUOTAS,
+                    A.IND_ARRIENDO,
+                    A.IND_CARGOS,
+                    A.IND_PENALIZA,
+                    A.IND_SUPERTEL,
+                    A.NUM_TELEFIJA,
+                    A.COD_SUPERTEL,
+                    A.IND_CARGOPRO,
+                    A.IND_CUENCONTROLADA,
+                    A.IND_BLOQUEO
+            FROM    GA_INFACCEL  A
+            WHERE   A.COD_CLIENTE >  :lhCodCliete
+            AND     A.NUM_ABONADO >= :lhNumAbonado
+            AND     A.COD_CICLFACT = :lhCodCiclFact
+            AND     A.IND_ACTUAC  IN (  :iActuaNormal   ,
+                                        :iActuaBaja     ,
+                                        :iActuacTraspaso)
+            AND     A.NUM_ABONADO NOT IN  ( SELECT  B.NUM_ABONADO
+                                            FROM    GA_INFACCEL B
+                                            WHERE   A.COD_CLIENTE  = B.COD_CLIENTE
+                                            AND     A.NUM_ABONADO  = B.NUM_ABONADO 
+                                            AND     B.COD_CICLFACT = :lhCodCiclFactFin )
+             ORDER BY A.COD_CLIENTE,A.NUM_ABONADO;
+        
+        EXEC SQL OPEN cGaInFacCel;
+    }
+    
+    if (iProducto == stDatosGener.iProdBeeper )
+    {
+        EXEC SQL DECLARE cGaInFacBeep CURSOR FOR
+            SELECT A.COD_CLIENTE,
+                   A.NUM_ABONADO,
+                   A.COD_CICLFACT,
+                   TO_CHAR(A.FEC_ALTA,'YYYYMMDDHH24MISS'), 
+                   TO_CHAR(A.FEC_BAJA,'YYYYMMDDHH24MISS'),
+                   A.NUM_BEEPER,
+                   A.IND_ACTUAC,
+                   TO_CHAR(A.FEC_FINCONTRA,'YYYYMMDDHH24MISS'), 
+                   A.IND_ALTA,
+                   A.IND_DETALLE, 
+                   A.IND_FACTUR,
+                   A.IND_CUOTAS,
+                   A.IND_ARRIENDO,
+                   A.IND_CARGOS, 
+                   A.IND_PENALIZA,
+                   A.IND_CARGOPRO,                            /*   Debe ser Uno 1      */
+                   A.IND_CUENCONTROLADA,                      /*   Debe ser Cero 0     */
+                   A.IND_BLOQUEO                     
+            FROM   GA_INFACBEEP A
+            WHERE  A.COD_CLIENTE >  :lhCodCliete
+            AND    A.NUM_ABONADO >= :lhNumAbonado
+            AND    A.COD_CICLFACT = :lhCodCiclFact
+            AND    A.IND_ACTUAC  IN (   :iActuaNormal   ,
+                                        :iActuaBaja     ,
+                                        :iActuacTraspaso)
+            AND    A.COD_CLIENTE NOT IN  (  SELECT  B.COD_CLIENTE
+                                            FROM    GA_INFACBEEP B
+                                            WHERE   A.COD_CLIENTE  = B.COD_CLIENTE
+                                            AND     A.NUM_ABONADO  = B.NUM_ABONADO
+                                            AND     B.COD_CICLFACT = :lhCodCiclFactFin )
+            ORDER BY A.COD_CLIENTE,A.NUM_ABONADO;
+
+        EXEC SQL OPEN cGaInFacBEEP;
+    }
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeAboFact, "\n\n\t** No Existen Datos en %s **"
+                                    "\n\t\t=> Codigo de Ciclo       [%ld]"
+                                    ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP")
+                                    ,lhCodCiclFact);
+        vDTrazasError(szExeAboFact, "\n\n\t** No Existen Datos en %s **"
+                                    "\n\t\t=> Codigo de Ciclo       [%ld]"
+                                    ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP")
+                                    ,lhCodCiclFact);
+        return (SQLCODE);
+    }
+    
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(szExeAboFact, "\n\n\t**  Error en Select sobre %s Cod_CiclFact [%ld] "
+                                    "\n\t\t=> Error [%s] **"
+                                    ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP")
+                                    ,lhCodCiclFact,SQLERRM);
+        vDTrazasLog  (szExeAboFact, "\n\n\t**  Error en Select sobre %s Cod_CiclFact [%ld] "
+                                    "\n\t\t=> Error [%s] **"
+                                    ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP")
+                                    ,lhCodCiclFact,SQLERRM);
+        return (SQLCODE);
+    }
+    return (SQLCODE);
+}/***********************   Final ifnOpenInterfaz    ************************/
+
+
+
+
+/****************************************************************************/
+/*                         funcion : ifnFetchInterfaz                       */
+/****************************************************************************/
+
+static int ifnFetchInterfaz(int iProducto ,GAINTERFACT *pstGInterfaz,long lCodCicloFactNue)
+{
+
+    EXEC SQL BEGIN DECLARE SECTION;
+
+        long lhCOD_CLIENTE          ;
+        long lhNUM_ABONADO          ;
+        long lhCOD_CICLFACT         ;
+        char szhFEC_ALTA[15]        ;   EXEC SQL VAR szhFEC_ALTA IS STRING(15);
+        char szhFEC_BAJA[15]        ;   EXEC SQL VAR szhFEC_BAJA IS STRING(15);
+        long lhNUM_CELULAR          ;
+        long lhNUM_BEEPER           ;
+        long lhIND_ACTUAC           ;
+        char szhFEC_FINCONTRA[15]   ;   EXEC SQL VAR szhFEC_FINCONTRA IS STRING(15);
+        long lhIND_ALTA             ;
+        long lhIND_DETALLE          ;
+        long lhIND_FACTUR           ;
+        long lhIND_CUOTAS           ;
+        long lhIND_ARRIENDO         ;
+        long lhIND_CARGOS           ;
+        long lhIND_PENALIZA         ;
+        long lhIND_SUPERTEL         ;
+        char szhNUM_TELEFIJA[16]    ;   EXEC SQL VAR szhNUM_TELEFIJA IS STRING(16); short i_hNumTeleFija;
+        long lhCOD_SUPERTEL         ;                                               short i_hCodSuperTel;
+        long lhIND_CARGOPRO         ;                                               short i_hIndCargoPro;
+        long lhIND_CUENCONTROLADA   ;                                               short i_hIndCuenControlada;
+        long lhIND_BLOQUEO          ;                                               short i_hIndBloqueo;
+
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog ( szExeAboFact,"\n\t** Fetch Documento %s (ifnFetchDocumentos) **"
+                            ,LOG05,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP"));
+
+
+    if (iProducto == stDatosGener.iProdCelular )
+    {
+        EXEC SQL FETCH cGaInFacCel INTO
+            :lhCOD_CLIENTE                                  , 
+            :lhNUM_ABONADO                                  , 
+            :lhCOD_CICLFACT                                 , 
+            :szhFEC_ALTA                                    ,
+            :szhFEC_BAJA                                    , 
+            :lhNUM_CELULAR                                  , 
+            :lhIND_ACTUAC                                   , 
+            :szhFEC_FINCONTRA                               ,
+            :lhIND_ALTA                                     , 
+            :lhIND_DETALLE                                  , 
+            :lhIND_FACTUR                                   , 
+            :lhIND_CUOTAS                                   ,
+            :lhIND_ARRIENDO                                 , 
+            :lhIND_CARGOS                                   , 
+            :lhIND_PENALIZA                                 , 
+            :lhIND_SUPERTEL                                 ,
+            :szhNUM_TELEFIJA        :i_hNumTeleFija         ,
+            :lhCOD_SUPERTEL         :i_hCodSuperTel         ,
+            :lhIND_CARGOPRO         :i_hIndCargoPro         ,
+            :lhIND_CUENCONTROLADA   :i_hIndCuenControlada   ,
+            :lhIND_BLOQUEO          :i_hIndBloqueo          ;
+    }
+
+    if (iProducto == stDatosGener.iProdBeeper)
+    {
+        EXEC SQL FETCH cGaInFacBeep INTO
+            :lhCOD_CLIENTE, 
+            :lhNUM_ABONADO, 
+            :lhCOD_CICLFACT, 
+            :szhFEC_ALTA,
+            :szhFEC_BAJA, 
+            :lhNUM_BEEPER, 
+            :lhIND_ACTUAC, 
+            :szhFEC_FINCONTRA,
+            :lhIND_ALTA, 
+            :lhIND_DETALLE, 
+            :lhIND_FACTUR, 
+            :lhIND_CUOTAS,
+            :lhIND_ARRIENDO, 
+            :lhIND_CARGOS, 
+            :lhIND_PENALIZA, 
+            :lhIND_CARGOPRO         :i_hIndCargoPro         ,
+            :lhIND_CUENCONTROLADA   :i_hIndCuenControlada   ,
+            :lhIND_BLOQUEO          :i_hIndBloqueo          ;
+    }
+    
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(szExeAboFact  ,"\n\t** Error en Fecth de Cursor de %s : %s"
+                                    ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP"),SQLERRM);
+        vDTrazasLog  (szExeAboFact  ,"\n\t** Error en Fecth de Cursor de %s : %s"
+                                    ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP"),SQLERRM);
+    }
+    
+    if( SQLCODE == SQLOK )
+    { 
+        pstGInterfaz->lCodCliente        = lhCOD_CLIENTE     ;
+        pstGInterfaz->lNumAbonado        = lhNUM_ABONADO     ;
+        pstGInterfaz->iCodProducto       = iProducto         ;
+        pstGInterfaz->lCodCiclFact       = lhCOD_CICLFACT    ;
+        pstGInterfaz->lCodCiclFactNew    = lCodCicloFactNue  ;
+        pstGInterfaz->lNumTerminal       = (iProducto == stDatosGener.iProdCelular ? lhNUM_CELULAR : lhNUM_BEEPER);
+        pstGInterfaz->lIndActuac         = lhIND_ACTUAC      ;
+        pstGInterfaz->lIndAlta           = lhIND_ALTA        ;
+        pstGInterfaz->lIndDetalle        = lhIND_DETALLE     ;
+        pstGInterfaz->lIndFactur         = lhIND_FACTUR      ;
+        pstGInterfaz->lIndCuotas         = lhIND_CUOTAS      ;
+        pstGInterfaz->lIndArriendo       = lhIND_ARRIENDO    ;
+        pstGInterfaz->lIndCargos         = lhIND_CARGOS      ;
+        pstGInterfaz->lIndPenaliza       = 0                 ;  /*  lhIND_PENALIZA    */
+
+        strcpy(pstGInterfaz->szFecAlta,szhFEC_ALTA)          ;
+
+        strcpy(pstGInterfaz->szFecBaja,szhFEC_BAJA)          ;
+        strcpy(pstGInterfaz->szFecFinContra,szhFEC_FINCONTRA);
+
+        if (iProducto == stDatosGener.iProdCelular )
+        {
+            pstGInterfaz->lIndSupertel       = lhIND_SUPERTEL                                           ;
+            strcpy(pstGInterfaz->szNumTeleFija,(i_hNumTeleFija == ORA_NULL ? "" : szhNUM_TELEFIJA))    ;
+            pstGInterfaz->lCodSupertel       = (i_hCodSuperTel == ORA_NULL ? 0 : lhCOD_SUPERTEL )       ;
+        }
+        pstGInterfaz->lIndCargoPro       = (i_hIndCargoPro == ORA_NULL ? 0 : lhIND_CARGOPRO )           ;
+        pstGInterfaz->lIndCuenControlada = (i_hIndCuenControlada == ORA_NULL ? 0 : lhIND_CUENCONTROLADA);
+        pstGInterfaz->lIndBloqueo        = (i_hIndBloqueo == ORA_NULL ? 0 : lhIND_BLOQUEO )             ;
+    }
+    vDTrazasLog ( szExeAboFact,"\t\t** Codigo de Retorno SQLCODE [%d] **",LOG05,SQLCODE);    
+    return (SQLCODE);
+}/***********************  Final ifnFetchInterfaz    ************************/
+
+
+/****************************************************************************/
+/*                         funcion : bfnCloseInterfaz                       */
+/****************************************************************************/
+
+static BOOL bfnCloseInterfaz(int iProducto)
+{
+    vDTrazasLog  (szExeAboFact,"\n\t** Close de Interfaz %s (bfnCloseInterfaz)**"
+                            ,LOG03,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP"));
+
+    if (iProducto == stDatosGener.iProdCelular )
+        EXEC SQL CLOSE cGaInFacCel  ;
+        
+    if (iProducto == stDatosGener.iProdBeeper)
+        EXEC SQL CLOSE cGaInFacBeep ;
+
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (szExeAboFact,"\n\t** Error en Close de Interfaz %s (bfnCloseInterfaz) :%d  %s **"
+                                ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP")
+                                ,SQLCODE,SQLERRM);
+        vDTrazasError(szExeAboFact,"\n\t** Error en Close de Interfaz %s (bfnCloseInterfaz) :%d  %s **"
+                                ,LOG01,(iProducto == stDatosGener.iProdCelular ? "GA_INFACCEL":"GA_INFACBEEP")
+                                ,SQLCODE,SQLERRM);
+        return (FALSE);         
+    }
+    return (TRUE);
+}/***********************  Final bfnCloseInterfaz    *************************/
+
+
+
+/*****************************************************************************/
+/*****************************************************************************/
+/*   Funcion :  SetUpdate                                                    */
+/*   BOOL   SetUpdate ( Cliente, Abonado, Prodcuto , Arriendo, Cuotas,       */
+/*                      Cargos, Producto, Cod_Ciclfact, Cod_Ciclo)           */
+/*                                                                           */
+/*                                                                           */
+/*****************************************************************************/
+/*****************************************************************************/
+
+static BOOL SetUpdate(int iProducto ,GAINTERFACT *stpGInter , char *szhFecHoy)
+{
+    BOOL    bFinCursor  = FALSE ;
+    int     iNumDias    = 0     ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+
+        long  lhCodCicloNue         ;
+        short i_hCodCicloNue        ;
+        long  lhCodCicloActual      ;
+        long  lhCiclFactProx        ;
+        long  lhIndCambio       = 0 ;
+        long  lhIndPagada           ;
+        long  lhNumCargo            ;
+        char  szhFecDesde[18]       ;   EXEC SQL VAR szhFecDesde IS STRING(18);
+        char  szhFecHasta[18]       ;   EXEC SQL VAR szhFecHasta IS STRING(18);
+        long  lhCodClienteAux;
+
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog(szExeAboFact,   "\n\n\t** Parametros de Entrada a SetUpdate  ** "
+                                "\n\t\t==> Cliente              [%ld]"
+                                "\n\t\t==> Abonado              [%ld]"
+                                "\n\t\t==> Producto             [%d]"
+                                "\n\t\t==> Fecha Actual         [%s]"
+                                "\n\t\t==> Ind. Arriendo        [%ld]"
+                                "\n\t\t==> Ind. Cuotas          [%ld]"
+                                "\n\t\t==> Ind. Cargos          [%ld]"
+                                "\n\t\t==> Codigo Ciclo Fact.   [%ld]"
+                                "\n\t\t==> Codigo de Ciclo      [%ld]",
+                                LOG05,
+                                stpGInter->lCodCliente   ,stpGInter->lNumAbonado       ,
+                                iProducto               ,szhFecHoy                   ,
+                                stpGInter->lIndArriendo  ,stpGInter->lIndCuotas        ,
+                                stpGInter->lIndCargos    ,stpGInter->lCodCiclFactNew  ,
+                                stpGInter->iCodCiclo );
+    
+    stpGInter->iIndCambio       = 0;
+    
+    /***************************************************************/
+    /* Comprobamos si el abonado se ha cambiado de ciclo.          */
+    /***************************************************************/
+
+    i_hCodCicloNue = 0;
+
+    EXEC SQL SELECT COD_CICLO,
+                    COD_CICLONUE,   
+                    IND_CAMBIO
+             INTO   :lhCodCicloActual, 
+                    :lhCodCicloNue  :i_hCodCicloNue, 
+                    :lhIndCambio    
+             FROM   FA_CICLOCLI
+             WHERE  COD_CLIENTE  = :stpGInter->lCodCliente
+             AND    COD_PRODUCTO = :iProducto
+             AND    NUM_ABONADO  = :stpGInter->lNumAbonado
+        FOR UPDATE;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(szExeAboFact, "\n\n\t  Error Al Recuperar Registro de FA_CICLOCLI "
+                                    "\n\t\t==>  Cliente     [%ld]"
+                                    "\n\t\t==>  Abonado     [%ld]"
+                                    "\n\t\t==>  Producto    [%d ]"
+                                    ,LOG01,stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+        vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Recuperar Registro de FA_CICLOCLI "
+                                    "\n\t\t==>  Cliente     [%ld]"
+                                    "\n\t\t==>  Abonado     [%ld]"
+                                    "\n\t\t==>  Producto    [%d ]"
+                                    ,LOG01,stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+        vPrintInconsistencia(stpGInter,INCONS031);
+        return (FALSE);
+     }
+
+     stpGInter->iCodCiclo   =   lhCodCicloActual    ;            /* Setea el Codigo del Ciclo Antiguo   */
+     stpGInter->iCodCicloNew=   lhCodCicloActual    ;
+
+    /***************************************************************/
+    /*   Cambio de Ciclo en FA_CICLOCLI ,  Cambia de Cod_CiclFact  */
+    /***************************************************************/
+    if ((lhIndCambio > 0)  && (lhCodCicloNue != lhCodCicloActual))
+    {
+        /* Valida el Valor del Campo Cod_Ciclo            */
+        /**************************************************/
+        if (i_hCodCicloNue == ORA_NULL )
+        {
+            vDTrazasError(szExeAboFact, "\n\n\t  Error en Cod_CicloNue (Null) de FA_CICLOCLI con IND_CAMBIO == 1 "
+                                        "\n\t\t==>  Cliente     [%ld]"
+                                        "\n\t\t==>  Abonado     [%ld]"
+                                        "\n\t\t==>  Producto    [%d ]"
+                                        , LOG01,stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+            vDTrazasLog  (szExeAboFact, "\n\n\t  Error en Cod_CicloNue (Null) de FA_CICLOCLI con IND_CAMBIO == 1 "
+                                        "\n\t\t==>  Cliente     [%ld]"
+                                        "\n\t\t==>  Abonado     [%ld]"
+                                        "\n\t\t==>  Producto    [%d ]"
+                                        , LOG01,stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+            return (FALSE);
+        }
+
+        /* Busca el nuevo Cod_CiclFact para Cod_CicloNue. */
+        /**************************************************/
+
+        EXEC SQL    SELECT  COD_CICLFACT
+                    INTO    :lhCiclFactProx
+                    FROM    FA_CICLFACT
+                    WHERE   COD_CICLO = :lhCodCicloNue
+                    AND     to_date(:szhFecHoy,'YYYYMMDDHH24MISS') 
+                       BETWEEN FEC_DESDELLAM 
+                       AND     FEC_HASTALLAM ; 
+
+        if(SQLCODE != SQLOK)
+        {    
+            vDTrazasError(szExeAboFact, "\n\n\t  Error Al Recuperar Nuevo Cod_CiclFact de FA_CICLFACT "
+                                        "\n\t\t==>  Cliente         [%ld]"
+                                        "\n\t\t==>  Abonado         [%ld]"
+                                        "\n\t\t==>  Producto        [%d]"
+                                        "\n\t\t==>  Ciclo           [%ld]"
+                                        "\n\t\t==>  Fecha Actual    [%s]"
+                                        ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto
+                                        ,lhCodCicloNue, szhFecHoy);
+            vDTrazasLog   (szExeAboFact, "\n\n\t  Error Al Recuperar Nuevo Cod_CiclFact de FA_CICLFACT "
+                                        "\n\t\t==>  Cliente         [%ld]"
+                                        "\n\t\t==>  Abonado         [%ld]"
+                                        "\n\t\t==>  Producto        [%d]"
+                                        "\n\t\t==>  Ciclo           [%ld]"
+                                        "\n\t\t==>  Fecha Actual    [%s]"
+                                        ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto
+                                        ,lhCodCicloNue, szhFecHoy);
+            return (FALSE);
+        }
+
+        stpGInter->iCodCicloNew     =   lhCodCicloNue   ;   /*  Setea el Codigo del Ciclo Nuevo */
+        stpGInter->lCodCiclFactNew  =   lhCiclFactProx  ;
+        stpGInter->iIndCambio       = 1                 ;
+        
+        if (iProducto ==  stDatosGener.iProdCelular)
+            stEstadisCelu.lTotCambCiclo++;
+        else
+            stEstadisBeep.lTotCambCiclo++;
+        
+        vDTrazasLog(szExeAboFact,   "\n\n\t***  Cambio de Ciclo - Nuevo Cod_CiclFact "
+                                    "\n\t\t==>  Cliente     [%ld]"
+                                    "\n\t\t==>  Abonado     [%ld]"
+                                    "\n\t\t==>  Producto    [%ld ]"
+                                    "\n\t\t==>  Ciclo Nuevo [%ld ]"
+                                    ,LOG03, stpGInter->lCodCliente, stpGInter->lNumAbonado
+                                    ,iProducto, stpGInter->lCodCiclFactNew);
+        if (lhIndCambio == 1)
+        {
+            EXEC SQL   
+                 UPDATE FA_CICLOCLI
+                 SET     IND_CAMBIO   = 2
+                 WHERE   COD_CLIENTE = :stpGInter->lCodCliente
+                 AND     COD_PRODUCTO= :iProducto            
+                 AND     NUM_ABONADO = :stpGInter->lNumAbonado;
+            if(SQLCODE != SQLOK)
+            {
+                vDTrazasLog  (szExeAboFact, "\n\n\t** Error en UPDATE Sobre FA_CICLOCLI (IND_CAMBIO = 2) ** "
+                                            "\n\t\t==>  Cliente     [%ld]"
+                                            "\n\t\t==>  Abonado     [%ld]"
+                                            "\n\t\t==>  Producto    [%ld ]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+                vDTrazasError(szExeAboFact, "\n\n\t** Error en UPDATE Sobre FA_CICLOCLI (IND_CAMBIO = 2) %s ** ",
+                                            LOG01,SQLERRM);
+                return (FALSE);
+            }
+            vDTrazasLog  (szExeAboFact, "\n\t** Actualiza FA_CICLOCLI  ==> IND_CAMBIO = 2 <== ",LOG03);
+        }
+
+        if (iProducto ==  stDatosGener.iProdCelular)
+        {
+            EXEC SQL   
+            SELECT  COD_CLIENTE
+            INTO    :lhCodClienteAux
+            FROM    GA_INFACCEL
+            WHERE   COD_CLIENTE  = :stpGInter->lCodCliente 
+            AND     NUM_ABONADO  = :stpGInter->lNumAbonado
+            AND     COD_CICLFACT = :lhCiclFactProx;
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasLog(szExeAboFact, "\n\n\t  Error Al Validar Duplicidad en GA_INFACCEL"
+                                            "\n\t\t==>  Cliente     [%ld]"
+                                            "\n\t\t==>  Abonado     [%ld]"
+                                            "\n\t\t==>  Producto    [%d ]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+                vDTrazasError(szExeAboFact, "\n\n\t  Error Al Validar Duplicidad en GA_INFACCEL"
+                                            "\n\t\t==>  Cliente     [%ld]"
+                                            "\n\t\t==>  Abonado     [%ld]"
+                                            "\n\t\t==>  Producto    [%d ]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+                return (FALSE);
+            }
+            if (SQLCODE == SQLOK)
+            {
+                stpGInter->bOptExiste  =   TRUE    ;
+                vDTrazasLog(szExeAboFact,   "\n\n\t***  Cambio de Ciclo Ya Fue Procesado"
+                                    "\n\t\t==>  Cliente     [%ld]"
+                                    "\n\t\t==>  Abonado     [%ld]"
+                                    "\n\t\t==>  Producto    [%ld ]"
+                                    "\n\t\t==>  Ciclo Nuevo [%ld ]"
+                                    , LOG03, stpGInter->lCodCliente, stpGInter->lNumAbonado, 
+                                    iProducto,lhCiclFactProx);
+
+                 vPrintInconsistencia(stpGInter,INCONS032);
+            }
+        }
+
+        if (iProducto ==  stDatosGener.iProdBeeper)
+        {
+            EXEC SQL   
+            SELECT  COD_CLIENTE
+            INTO    :lhCodClienteAux
+            FROM    GA_INFACBEEP
+            WHERE   COD_CLIENTE  = :stpGInter->lCodCliente
+            AND     NUM_ABONADO  = :stpGInter->lNumAbonado
+            AND     COD_CICLFACT = :lhCiclFactProx;
+
+            if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+            {
+                vDTrazasLog(szExeAboFact, "\n\n\t  Error Al Validar Duplicidad en GA_INFACBEEP"
+                                            "\n\t\t==>  Cliente     [%ld]"
+                                            "\n\t\t==>  Abonado     [%ld]"
+                                            "\n\t\t==>  Producto    [%d ]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+                vDTrazasError(szExeAboFact, "\n\n\t  Error Al Validar Duplicidad en GA_INFACBEEP"
+                                            "\n\t\t==>  Cliente     [%ld]"
+                                            "\n\t\t==>  Abonado     [%ld]"
+                                            "\n\t\t==>  Producto    [%d ]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado,iProducto);
+                return (FALSE);
+            }
+            if (SQLCODE == SQLOK)
+            {
+                stpGInter->bOptExiste  =   TRUE    ;
+                vDTrazasLog(szExeAboFact,   "\n\n\t***  Cambio de Ciclo Ya Fue Procesado"
+                                    "\n\t\t==>  Cliente     [%ld]"
+                                    "\n\t\t==>  Abonado     [%ld]"
+                                    "\n\t\t==>  Producto    [%ld ]"
+                                    "\n\t\t==>  Ciclo Nuevo [%ld ]"
+                                    ,LOG03, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                    ,iProducto,lhCiclFactProx);
+
+                 vPrintInconsistencia(stpGInter,INCONS032);
+            }
+        }
+    }
+
+    if(stpGInter->lIndActuac != iINDACTUAC_NORMAL )
+    {
+/*
+        if (!bRestaFechas (szhFecHoy, stpGInter->szFecBaja, &iNumDias))
+            return (FALSE);
+*/        
+        if (!bNumPeriodosBaja( iProducto, stpGInter, &iNumDias))
+            return (FALSE);
+        
+        /*  InumDias Corresponde a la Cantidad de Registros en Baja o Traspaso Replicados */
+        
+        if ( iNumDias > stDatosGener.iNumDiasBaja )
+        {
+            vDTrazasLog(szExeAboFact,   "\n\n\t***  Indicador de Actuacion No Replicable ***"
+                                        "\n\t\t==>  Cliente             [%ld]"
+                                        "\n\t\t==>  Abonado             [%ld]"
+                                        "\n\t\t==>  Producto            [%ld]"
+                                        "\n\t\t==>  Ind. Actuacion      [%d]"
+                                        "\n\t\t==>  Fecha Baja          [%s]"
+                                        "\n\t\t==>  Fecha Actual        [%s]"
+                                        "\n\t\t==>  Numero de Periodos  [%d]"
+                                        "\n\t\t==>  Periodos Maximos    [%d]"
+                                        ,LOG05, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                        ,iProducto,stpGInter->lIndActuac
+                                        ,stpGInter->szFecBaja,szhFecHoy,
+                                        iNumDias,stDatosGener.iNumDiasBaja);
+        /*******************************************************
+            vPrintInconsistencia(stpGInter,INCONS033);
+        ********************************************************/
+            stpGInter->bOptExiste = TRUE;             
+            if (iProducto ==  stDatosGener.iProdCelular)
+                stEstadisCelu.lTotBajas++;
+            else
+                stEstadisBeep.lTotBajas++;
+        }
+    }
+
+
+    /*************************************************************************/
+    /* **               Verifica Si Tiene Cargos en GE_CARGOS             ** */
+    /* **  Comprobamos si el cliente abonado/producto Tiene Cargos        ** */
+    /* **  Pendientes de Facturar.                                        ** */
+    /*************************************************************************/
+
+    stpGInter->lIndCargos   = 0     ;
+    bFinCursor              = FALSE ;
+
+    EXEC SQL DECLARE cGeCargos CURSOR FOR
+        SELECT  NUM_CARGO
+        FROM    GE_CARGOS
+        WHERE   COD_CLIENTE  = :stpGInter->lCodCliente
+        AND     NUM_FACTURA  = 0;
+
+    EXEC SQL OPEN cGeCargos;
+    if (SQLCODE)
+    {    
+        vDTrazasError(szExeAboFact, "\n\n\t  Error Al Abrir Cursor sobre GE_CARGOS \n %s" , LOG01, SQLERRM);
+        vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Abrir Cursor sobre GE_CARGOS"
+                                    "\n\t\t==>  Cliente         [%ld]"
+                                    "\n\t\t==>  Abonado         [%ld]"
+                                    "\n\t\t==>  Producto        [%d]"
+                                    "\n\t\t==>  Fecha Actual    [%s]"
+                                    "\n\t\t==>  Error           [%s]"
+                                    ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                    ,iProducto, szhFecHoy, SQLERRM);
+        return (FALSE);
+    }
+    do
+    {
+        EXEC SQL FETCH cGeCargos
+                  INTO :lhNumCargo;
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            bFinCursor = TRUE;
+        }
+        else
+        {
+            if(SQLCODE != SQLOK)
+            {
+                vDTrazasError(szExeAboFact, "\n\n\t  Error Fetch sobre GE_CARGOS \n %s" , LOG01, SQLERRM);
+                vDTrazasLog  (szExeAboFact, "\n\n\t  Error Fetch sobre GE_CARGOS"
+                                            "\n\t\t==>  Cliente         [%ld]"
+                                            "\n\t\t==>  Abonado         [%ld]"
+                                            "\n\t\t==>  Producto        [%d]"
+                                            "\n\t\t==>  Fecha Actual    [%s]"
+                                            "\n\t\t==>  Error           [%s]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                            ,iProducto, szhFecHoy, SQLERRM);
+                return (FALSE);
+            }
+            if (lhNumCargo)
+            {
+               stpGInter->lIndCargos    = 1     ;
+               bFinCursor               = TRUE  ;
+            }
+        }
+    }while(!bFinCursor);
+
+    EXEC SQL CLOSE cGeCargos;
+    if(SQLCODE)
+    {
+         vDTrazasError(szExeAboFact, "\n\n\t  Error Al Cerrar Cursor sobre GE_CARGOS \n %s" , LOG01, SQLERRM);
+         vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Cerrar Cursor sobre GE_CARGOS"
+                                     "\n\t\t==>  Cliente         [%ld]"
+                                     "\n\t\t==>  Abonado         [%ld]"
+                                     "\n\t\t==>  Producto        [%d]"
+                                     "\n\t\t==>  Fecha Actual    [%s]"
+                                     "\n\t\t==>  Error           [%s]"
+                                     ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                     ,iProducto, szhFecHoy, SQLERRM);
+         return (FALSE);
+    }
+
+    /*************************************************************************/
+    /* ** Verifica Si Tiene Cuotas en FA_CABCUOTAS                        ** */ 
+    /* **  Comprobamos si el cliente abonado/producto ha cancelado todas sus cuotas.          ** */
+    /*************************************************************************/
+    
+    stpGInter->lIndCuotas   = 0     ;
+    bFinCursor              = FALSE ;
+
+    EXEC SQL DECLARE cFaCabCuotas CURSOR FOR
+        SELECT  IND_PAGADA
+        FROM    FA_CABCUOTAS
+        WHERE   COD_CLIENTE  = :stpGInter->lCodCliente
+        AND     COD_PRODUCTO = :iProducto
+        AND     NUM_ABONADO  = :stpGInter->lNumAbonado;
+
+    EXEC SQL OPEN cFaCabCuotas;
+    if (SQLCODE)
+    {    
+        vDTrazasError(szExeAboFact, "\n\n\t  Error Al Abrir Cursor sobre FA_CABCUOTAS \n %s" , LOG01, SQLERRM);
+        vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Abrir Cursor sobre FA_CABCUOTAS"
+                                    "\n\t\t==>  Cliente         [%ld]"
+                                    "\n\t\t==>  Abonado         [%ld]"
+                                    "\n\t\t==>  Producto        [%d]"
+                                    "\n\t\t==>  Fecha Actual    [%s]"
+                                    "\n\t\t==>  Error           [%s]"
+                                    ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                    ,iProducto, szhFecHoy, SQLERRM);
+        return (FALSE);
+    }
+    do
+    {
+        EXEC SQL FETCH cFaCabCuotas
+                  INTO :lhIndPagada;
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            bFinCursor = TRUE;
+        }
+        else
+        {
+            if(SQLCODE != SQLOK)
+            {
+                vDTrazasError(szExeAboFact, "\n\n\t  Error Fetch sobre FA_CABCUOTAS \n %s" , LOG01, SQLERRM);
+                vDTrazasLog  (szExeAboFact, "\n\n\t  Error Fetch sobre FA_CABCUOTAS"
+                                            "\n\t\t==>  Cliente         [%ld]"
+                                            "\n\t\t==>  Abonado         [%ld]"
+                                            "\n\t\t==>  Producto        [%d]"
+                                            "\n\t\t==>  Fecha Actual    [%s]"
+                                            "\n\t\t==>  Error           [%s]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                            ,iProducto, szhFecHoy, SQLERRM);
+                return (FALSE);
+            }
+            if (lhIndPagada != 0)
+            {
+               stpGInter->lIndCuotas    = 1     ;
+               bFinCursor               = TRUE  ;
+            }
+        }
+    }while(!bFinCursor);
+
+    EXEC SQL CLOSE cFaCabCuotas;
+    if(SQLCODE)
+    {
+         vDTrazasError(szExeAboFact, "\n\n\t  Error Al Cerrar Cursor sobre FA_CABCUOTAS \n %s" , LOG01, SQLERRM);
+         vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Cerrar Cursor sobre FA_CABCUOTAS"
+                                     "\n\t\t==>  Cliente         [%ld]"
+                                     "\n\t\t==>  Abonado         [%ld]"
+                                     "\n\t\t==>  Producto        [%d]"
+                                     "\n\t\t==>  Fecha Actual    [%s]"
+                                     "\n\t\t==>  Error           [%s]"
+                                     ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                     ,iProducto, szhFecHoy, SQLERRM);
+         return (FALSE);
+    }
+
+/******************************************************************************/
+/* **    Verifica Si Tiene Arriendos Vigentes en FA_ARRIENDO               ** */
+/* **   Comprobamos si el cliente abonado/producto tiene periodos de arriendo vigentes.    ** */
+/******************************************************************************/
+
+    stpGInter->lIndArriendo = 0     ;
+    bFinCursor              = FALSE ;
+
+    EXEC SQL DECLARE cFaArriendo CURSOR FOR
+        SELECT TO_CHAR(FEC_DESDE,'YYYYMMDD HH24:MI:SS'),
+               TO_CHAR(FEC_HASTA,'YYYYMMDD HH24:MI:SS')
+          FROM FA_ARRIENDO
+         WHERE COD_CLIENTE  = :stpGInter->lCodCliente
+           AND COD_PRODUCTO = :iProducto
+           AND NUM_ABONADO  = :stpGInter->lNumAbonado;
+
+    EXEC SQL OPEN cFaArriendo;
+    if(SQLCODE)
+    {
+        vDTrazasError(szExeAboFact, "\n\n\t  Error Al Abrir Cursor sobre FA_ARRIENDO \n %s" , LOG01, SQLERRM);
+        vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Abrir Cursor sobre FA_ARRIENDO"
+                                    "\n\t\t==>  Cliente         [%ld]"
+                                    "\n\t\t==>  Abonado         [%ld]"
+                                    "\n\t\t==>  Producto        [%d]"
+                                    "\n\t\t==>  Fecha Actual    [%s]"
+                                    "\n\t\t==>  Error           [%s]"
+                                    ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                    ,iProducto, szhFecHoy, SQLERRM);
+        return (FALSE);
+    }
+    do
+    {
+        EXEC SQL FETCH cFaArriendo
+                  INTO :szhFecDesde, :szhFecHasta;
+
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            bFinCursor = TRUE;
+        }
+        else
+        {
+            if(SQLCODE != SQLOK)
+            {
+                vDTrazasError(szExeAboFact, "\n\n\t  Error Fetch sobre FA_ARRIENDO \n %s" , LOG01, SQLERRM);
+                vDTrazasLog  (szExeAboFact, "\n\n\t  Error Fetch sobre FA_ARRIENDO"
+                                            "\n\t\t==>  Cliente         [%ld]"
+                                            "\n\t\t==>  Abonado         [%ld]"
+                                            "\n\t\t==>  Producto        [%d]"
+                                            "\n\t\t==>  Fecha Actual    [%s]"
+                                            "\n\t\t==>  Error           [%s]"
+                                            ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                            ,iProducto, szhFecHoy, SQLERRM);
+                return (FALSE);
+            }
+            if ((strcmp(szhFecDesde, szhFecHoy) < 1 ) && (strcmp(szhFecHasta, szhFecHoy) > -1))
+            {
+                stpGInter->lIndArriendo = 1     ;
+                bFinCursor              = TRUE  ;
+            }
+        }
+    }while(!bFinCursor);
+
+    EXEC SQL CLOSE cFaArriendo;
+    if(SQLCODE)
+    {
+         vDTrazasError(szExeAboFact, "\n\n\t  Error Al Cerrar Cursor sobre FA_ARRIENDO \n %s" , LOG01, SQLERRM);
+         vDTrazasLog  (szExeAboFact, "\n\n\t  Error Al Cerrar Cursor sobre FA_ARRIENDO"
+                                     "\n\t\t==>  Cliente         [%ld]"
+                                     "\n\t\t==>  Abonado         [%ld]"
+                                     "\n\t\t==>  Producto        [%d]"
+                                     "\n\t\t==>  Fecha Actual    [%s]"
+                                     "\n\t\t==>  Error           [%s]"
+                                     ,LOG01, stpGInter->lCodCliente,stpGInter->lNumAbonado
+                                     ,iProducto, szhFecHoy, SQLERRM);
+         return (FALSE);
+    }
+
+/*****************************************************************************/
+/* Salida de SetUpdate con Indicadores y Ciclos a Replicar el GA_INFACCEL    */
+/*****************************************************************************/
+    vDTrazasLog (szExeAboFact, "\n\n\t** Parametros de la Salida de SetUpdate  ** "
+                               "\n\t\t==> Cliente              [%ld]"
+                               "\n\t\t==> Abonado              [%ld]"
+                               "\n\t\t==> Producto             [%d]"
+                               "\n\t\t==> Fecha Actual         [%s]"
+                               "\n\t\t==> Ind. Arriendo        [%ld]"
+                               "\n\t\t==> Ind. Cuotas          [%ld]"
+                               "\n\t\t==> Ind. Cargos          [%ld]"
+                               "\n\t\t==> Codigo Ciclo Fact.   [%ld]"
+                               "\n\t\t==> Codigo de Ciclo      [%ld]"
+                               "\n\t\t==> SQLCODE              [%d]"
+                               ,LOG05,
+                               stpGInter->lCodCliente, stpGInter->lNumAbonado, iProducto, szhFecHoy,
+                               stpGInter->lIndArriendo,stpGInter->lIndCuotas, stpGInter->lIndCargos,
+                               stpGInter->lCodCiclFactNew,stpGInter->iCodCicloNew,
+                               SQLCODE);
+    return TRUE;
+}/******************************* Fin SetUpdate *****************************/
+
+
+
+/****************************************************************************/
+/*                         funcion : bNumPeriodosBaja                       */
+/****************************************************************************/
+static BOOL bNumPeriodosBaja(int iProducto, GAINTERFACT *stpInter, int *iNumPeriodos)
+{                       
+    char    stGlosa[30];
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        EXEC SQL VAR stpInter->szFecAlta      IS STRING (15);
+        EXEC SQL VAR stpInter->szFecBaja      IS STRING (15);
+        int  ihNumPer = -1;
+    EXEC SQL END DECLARE SECTION    ;                                                               
+                                                               
+    vDTrazasLog (szExeAboFact, "\n\n\t** Parametros de Entrada bNumPeriodosBaja **"
+                               "\n\t\t==> Cliente              [%ld]"
+                               "\n\t\t==> Abonado              [%ld]"
+                               "\n\t\t==> Producto             [%d]"
+                               "\n\t\t==> Fecha de Alta        [%s]"
+                               "\n\t\t==> Fecha de Baja        [%s]"
+                               ,LOG03
+                               ,stpInter->lCodCliente
+                               ,stpInter->lNumAbonado               
+                               ,iProducto
+                               ,stpInter->szFecAlta
+                               ,stpInter->szFecBaja);
+
+    if (iProducto == stDatosGener.iProdCelular )
+    {
+        EXEC SQL 
+        SELECT  COUNT(COD_CICLFACT)
+        INTO    :ihNumPer
+        FROM    GA_INFACCEL
+        WHERE   COD_CLIENTE =   :stpInter->lCodCliente   
+        AND     NUM_ABONADO =   :stpInter->lNumAbonado
+        AND     IND_ACTUAC  =   :stpInter->lIndActuac
+        AND     FEC_BAJA    >   TO_DATE(:stpInter->szFecAlta , 'YYYYMMDDHH24MISS');
+    }
+
+    if (iProducto == stDatosGener.iProdBeeper )
+    {
+        EXEC SQL 
+        SELECT  COUNT(COD_CICLFACT)
+        INTO    :ihNumPer
+        FROM    GA_INFACBEEP
+        WHERE   COD_CLIENTE =   :stpInter->lCodCliente   
+        AND     NUM_ABONADO =   :stpInter->lNumAbonado
+        AND     IND_ACTUAC  =   :stpInter->lIndActuac
+        AND     FEC_BAJA    >   TO_DATE(:stpInter->szFecAlta , 'YYYYMMDDHH24MISS');
+    }
+
+    if(SQLCODE != SQLOK)
+    {
+        if (iProducto == stDatosGener.iProdCelular )
+            strcpy(stGlosa,"GA_INFACCEL\0");
+        if (iProducto == stDatosGener.iProdBeeper  )
+            strcpy(stGlosa,"GA_INFACBEEP\0");        
+            
+        vDTrazasLog  (szExeAboFact, "\n\n\t** Error en Select de Bajas Sobre %s ** ", LOG01,stGlosa);
+        vDTrazasError(szExeAboFact, "\n\n\t** Error en Select de Bajas Sobre %s ** "
+                                    "\n\t\t==> Cliente              [%ld]"
+                                    "\n\t\t==> Abonado              [%ld]"
+                                    "\n\t\t==> Fecha de Alta        [%s]"
+                                    "\n\t\t==> Fecha de Baja        [%s]"
+                                    "\n\t\t==> Error : %s"
+                                    ,LOG01
+                                    ,stpInter->lCodCliente
+                                    ,stpInter->lNumAbonado
+                                    ,stpInter->szFecAlta
+                                    ,stpInter->szFecBaja,SQLERRM);
+        return (FALSE);
+    }                                                                              
+
+    vDTrazasLog (szExeAboFact, "\t\t==> Numero de Periodos   [%d]",LOG03,ihNumPer);
+    *iNumPeriodos = ihNumPer;
+    return (TRUE);                                    
+}
+
+
+
+
+/****************************************************************************/
+/*                         funcion : bfnInsertInterfaz                      */
+/****************************************************************************/
+
+static BOOL bfnInsertInterfaz(int iProducto, GAINTERFACT *pstGInsert)
+{
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        EXEC SQL VAR pstGInsert->szFecAlta      IS STRING (15);
+        EXEC SQL VAR pstGInsert->szFecBaja      IS STRING (15);
+        EXEC SQL VAR pstGInsert->szFecFinContra IS STRING (15);
+        EXEC SQL VAR pstGInsert->szNumTeleFija  IS STRING (16);
+        EXEC SQL VAR pstGInsert->szFecActual    IS STRING (15);
+    
+        short i_szNumTeleFija       = (strlen(pstGInsert->szNumTeleFija)== 0 ? ORA_NULL : 0 );
+        short i_slCodSupertel       = (pstGInsert->lCodSupertel         == 0 ? ORA_NULL : 0 );
+        short i_slIndCargoPro       = 0;
+        short i_slIndCuenControlada = 0;
+        short i_slIndBloqueo        = 0;
+    EXEC SQL END DECLARE SECTION    ;              
+    char    stGlosa[30];
+
+    /****************************************************************/
+    /*  Valida si esta bloqueado de facturacion y lo actualiza como */
+    /*  bloqueado                                                   */
+    /****************************************************************/
+    pstGInsert->lIndBloqueo = (pstGInsert->lIndBloqueo > 1?1:pstGInsert->lIndBloqueo);
+    /****************************************************************/
+    /* Inserta Registro Cuado No Hay Error Y No Existe Registro     */
+    /****************************************************************/
+    
+    if (iProducto == stDatosGener.iProdCelular )
+    {
+        EXEC SQL INSERT
+            INTO GA_INFACCEL (  COD_CLIENTE                     ,
+                                NUM_ABONADO                     ,
+                                COD_CICLFACT                    ,
+                                FEC_ALTA                        ,
+                                FEC_BAJA                        ,
+                                NUM_CELULAR                     ,
+                                IND_ACTUAC                      ,
+                                FEC_FINCONTRA                   ,
+                                IND_ALTA                        ,
+                                IND_DETALLE                     ,
+                                IND_FACTUR                      ,
+                                IND_CUOTAS                      ,
+                                IND_ARRIENDO                    ,
+                                IND_CARGOS                      ,
+                                IND_PENALIZA                    ,
+                                IND_SUPERTEL                    ,
+                                NUM_TELEFIJA                    ,
+                                COD_SUPERTEL                    ,
+                                IND_CARGOPRO                    ,
+                                IND_CUENCONTROLADA              ,
+                                IND_BLOQUEO                     )
+                    VALUES  (   :pstGInsert->lCodCliente        ,
+                                :pstGInsert->lNumAbonado        ,
+                                :pstGInsert->lCodCiclFactNew    ,
+                                TO_DATE(:pstGInsert->szFecAlta  ,   'YYYYMMDDHH24MISS'),
+                                TO_DATE(:pstGInsert->szFecBaja  ,   'YYYYMMDDHH24MISS'),
+                                :pstGInsert->lNumTerminal       ,
+                                :pstGInsert->lIndActuac         ,
+                                TO_DATE(:pstGInsert->szFecFinContra,'YYYYMMDDHH24MISS'),
+                                :pstGInsert->lIndAlta           ,
+                                :pstGInsert->lIndDetalle        ,
+                                :pstGInsert->lIndFactur         ,
+                                :pstGInsert->lIndCuotas         ,
+                                :pstGInsert->lIndArriendo       ,
+                                :pstGInsert->lIndCargos         ,
+                                :pstGInsert->lIndPenaliza       ,
+                                :pstGInsert->lIndSupertel       ,
+                                :pstGInsert->szNumTeleFija      :i_szNumTeleFija        ,
+                                :pstGInsert->lCodSupertel       :i_slCodSupertel        ,
+                                :pstGInsert->lIndCargoPro       :i_slIndCargoPro        ,
+                                :pstGInsert->lIndCuenControlada :i_slIndCuenControlada  , 
+                                :pstGInsert->lIndBloqueo        :i_slIndBloqueo         );
+    }
+    
+    if (iProducto == stDatosGener.iProdBeeper )
+    {
+        EXEC SQL INSERT
+            INTO GA_INFACBEEP(  COD_CLIENTE                     ,
+                                NUM_ABONADO                     ,
+                                COD_CICLFACT                    ,
+                                FEC_ALTA                        ,
+                                FEC_BAJA                        ,
+                                NUM_BEEPER                      ,
+                                IND_ACTUAC                      ,
+                                FEC_FINCONTRA                   ,
+                                IND_ALTA                        ,
+                                IND_DETALLE                     ,
+                                IND_FACTUR                      ,
+                                IND_CUOTAS                      ,
+                                IND_ARRIENDO                    ,
+                                IND_CARGOS                      ,
+                                IND_PENALIZA                    ,
+/*                              IND_SUPERTEL                    ,
+                                NUM_TELEFIJA                    ,
+                                COD_SUPERTEL                    ,
+*/                              IND_CARGOPRO                    ,
+                                IND_CUENCONTROLADA              ,
+                                IND_BLOQUEO                     )
+                    VALUES  (   :pstGInsert->lCodCliente        ,
+                                :pstGInsert->lNumAbonado        ,
+                                :pstGInsert->lCodCiclFactNew    ,
+                                TO_DATE(:pstGInsert->szFecAlta  ,   'YYYYMMDDHH24MISS'),
+                                TO_DATE(:pstGInsert->szFecBaja  ,   'YYYYMMDDHH24MISS'),
+                                :pstGInsert->lNumTerminal       ,
+                                :pstGInsert->lIndActuac         ,
+                                TO_DATE(:pstGInsert->szFecFinContra,'YYYYMMDDHH24MISS'),
+                                :pstGInsert->lIndAlta           ,
+                                :pstGInsert->lIndDetalle        ,
+                                :pstGInsert->lIndFactur         ,
+                                :pstGInsert->lIndCuotas         ,
+                                :pstGInsert->lIndArriendo       ,
+                                :pstGInsert->lIndCargos         ,
+                                :pstGInsert->lIndPenaliza       ,
+/*                              :pstGInsert->lIndSupertel       ,
+                                :pstGInsert->szNumTeleFija      :i_szNumTeleFija        ,
+                                :pstGInsert->lCodSupertel       :i_slCodSupertel        ,
+*/                              :pstGInsert->lIndCargoPro       :i_slIndCargoPro        ,
+                                :pstGInsert->lIndCuenControlada :i_slIndCuenControlada  , 
+                                :pstGInsert->lIndBloqueo        :i_slIndBloqueo         );
+    }
+                                                                                        
+    if(SQLCODE != SQLOK)
+    {
+        if (iProducto == stDatosGener.iProdCelular )
+            strcpy(stGlosa,"GA_INFACCEL\0");
+        if (iProducto == stDatosGener.iProdBeeper  )
+            strcpy(stGlosa,"GA_INFACBEEP\0");        
+            
+        vDTrazasLog  (szExeAboFact, "\n\n\t** Error en Insert Sobre %s ** ", LOG01,stGlosa);
+        vDTrazasError(szExeAboFact, "\n\n\t** Error en Insert Sobre %s ** "
+                                    "\n\t\t==>COD_CLIENTE   : [%d]"
+                                    "\n\t\t==>NUM_ABONADO   : [%d]"
+                                    "\n\t\t==>COD_CICLFACT  : [%d]"
+                                    "\n\t\t==>FEC_ALTA      : [%s]"
+                                    "\n\t\t==>FEC_BAJA      : [%s]"
+                                    "\n\t\t==>NUM_CELULAR   : [%d]"
+                                    "\n\t\t==>IND_ACTUAC    : [%d]"
+                                    "\n\t\t==>FEC_FINCONTRA : [%s]"
+                                    "\n\t\t==>IND_ALTA      : [%d]"
+                                    "\n\t\t==>IND_DETALLE   : [%d]"
+                                    "\n\t\t==>IND_FACTUR    : [%d]"
+                                    "\n\t\t==>IND_CUOTAS    : [%d]"
+                                    "\n\t\t==>IND_ARRIENDO  : [%d]"
+                                    "\n\t\t==>IND_CARGOS    : [%d]"
+                                    "\n\t\t==>IND_PENALIZA  : [%d]"
+                                    "\n\t\t==>IND_SUPERTEL  : [%d]"
+                                    "\n\t\t==>NUM_TELEFIJA  : [%s]"
+                                    "\n\t\t==>COD_OPERADOR  : [%d]"
+                                    "\n\t\t==>IND_CARGOPRO  : [%d]"
+                                    "\n\t\t==>IND_CUENCONT  : [%d]"
+                                    "\n\t\t==>IND_BLOQUEO   : [%d]"
+                                    "\n\t\t==>ERROR :%d %s", LOG01, stGlosa,
+                                    pstGInsert->lCodCliente         ,    
+                                    pstGInsert->lNumAbonado         ,    
+                                    pstGInsert->lCodCiclFactNew     ,    
+                                    pstGInsert->szFecAlta           ,
+                                    pstGInsert->szFecBaja           ,
+                                    pstGInsert->lNumTerminal        ,    
+                                    pstGInsert->lIndActuac          ,    
+                                    pstGInsert->szFecFinContra      ,
+                                    pstGInsert->lIndAlta            ,    
+                                    pstGInsert->lIndDetalle         ,    
+                                    pstGInsert->lIndFactur          ,    
+                                    pstGInsert->lIndCuotas          ,    
+                                    pstGInsert->lIndArriendo        ,    
+                                    pstGInsert->lIndCargos          ,    
+                                    pstGInsert->lIndPenaliza        ,    
+                                    pstGInsert->lIndSupertel        ,    
+                                    pstGInsert->szNumTeleFija       ,
+                                    pstGInsert->lCodSupertel        ,
+                                    pstGInsert->lIndCargoPro        ,
+                                    pstGInsert->lIndCuenControlada  ,
+                                    pstGInsert->lIndBloqueo         ,
+                                    SQLCODE, SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/************************** Final bfnInsertInterfaz  ************************/
+
+
+
+
+/********************************************************************************/
+/* vValSTB : Valida Datos de Supertelefono                                      */
+/********************************************************************************/
+
+static void vValSTB(GAINTERFACT * pstGInterfaz)
+{
+    /*************************************************************/
+    /*                     Validacion de STB                     */
+    /*************************************************************/
+
+    vDTrazasLog  (szExeAboFact, "\n\t\t** Valida STB  **          "
+                                "\n\t\t==> Codigo de Ciclo        [%d]    "
+                                "\n\t\t==> Ind. Supertel          [%ld]   "
+                                "\n\t\t==> Cod. Supertel          [%ld]   "
+                                "\n\t\t==> Num. Telefija          [%s]    ",LOG05,
+                                pstGInterfaz->iCodCicloNew,
+                                pstGInterfaz->lIndSupertel,
+                                pstGInterfaz->lCodSupertel,
+                                pstGInterfaz->szNumTeleFija);
+
+    if(pstGInterfaz->iCodCicloNew == lhCodCicloSTM)             /*  El Ciclo es STB                     */
+    {
+        if (pstGInterfaz->lIndSupertel == 1)                    /*  El Abonado es STB                   */
+        {
+            if(strlen(pstGInterfaz->szNumTeleFija)==0)          /*  No Tiene Telefono de Red Fija        */
+                vPrintInconsistencia(pstGInterfaz,INCONS001);
+
+            if(pstGInterfaz->lCodSupertel == 0)                 /*  No Tiene Operador de Red Fija       */
+                vPrintInconsistencia(pstGInterfaz,INCONS002);
+
+        }                                                       /*  El Ciclo es STB                     */
+        else                                                    /*  El Abonado No es STB                */
+        {
+            if(strlen(pstGInterfaz->szNumTeleFija) > 0)         /*  Tiene Telefono de Red Fija          */
+                vPrintInconsistencia(pstGInterfaz,INCONS003);
+
+            if(pstGInterfaz->lCodSupertel != 0)                 /*  Tiene Operador de Red Fija          */
+                vPrintInconsistencia(pstGInterfaz,INCONS004);
+        }
+    }
+    else                                                        /*  El Ciclo No es STB                  */
+    {
+        if (pstGInterfaz->lIndSupertel == 1)                    /*  El Abonado es STB                   */
+        {
+            vPrintInconsistencia(pstGInterfaz,INCONS005);
+            
+            if(strlen(pstGInterfaz->szNumTeleFija) > 0)         /*  Tiene Telefono de Red Fija           */
+                vPrintInconsistencia(pstGInterfaz,INCONS006);
+
+            if(pstGInterfaz->lCodSupertel != 0)                 /*  Tiene Operador de Red Fija          */
+                vPrintInconsistencia(pstGInterfaz,INCONS007);
+
+            pstGInterfaz->lIndSupertel = 0           ;
+            strcpy(pstGInterfaz->szNumTeleFija,"\0") ;
+            pstGInterfaz->lCodSupertel = 0           ;
+        }                                                       /*  El Ciclo No es STB                  */
+        else                                                    /*  El Abonado No es STB                */
+        {
+            if(strlen(pstGInterfaz->szNumTeleFija) > 0)         /*  Tiene Telefono de Red Fija          */
+                vPrintInconsistencia(pstGInterfaz,INCONS008);
+    
+            if(pstGInterfaz->lCodSupertel != 0)                 /*  Tiene Operador de Red Fija          */
+                vPrintInconsistencia(pstGInterfaz,INCONS009);
+
+        }
+    }
+    return;
+}
+
+
+/************************************************************************************/
+/*   Funcion bfnCambCicloClientes(long lCodCliente)                                 */
+/*  Actualiza el codigo de ciclo del cliente si tiene valor distinto de nulo en     */
+/*  el campo Cod_CicloNue, dejandolo en nulo despues del Update                     */
+/************************************************************************************/
+static BOOL bfnCambCicloCliente(long lCodCliente)
+{                       
+                                                               
+    vDTrazasLog (szExeAboFact, "\n\n\t** Parametros de Entrada bfnCambCicloCliente **"
+                               "\n\t\t==> Cliente              [%ld]" ,LOG03,lCodCliente);
+
+    EXEC SQL 
+        UPDATE  GE_CLIENTES
+        SET     COD_CICLO    = COD_CICLONUE,
+                COD_CICLONUE = NULL
+        WHERE   COD_CLIENTE  = :lCodCliente
+        AND     COD_CICLONUE IS NOT NULL;
+
+    if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeAboFact, "\n\t** Error en Update de Ciclo en GE_CLIENTES ** "
+                                    "\n\t\t\t=>  Cliente    [%ld] "
+                                    "\n\t\t\t=>  Errror     [%d] [%s]"
+                                    ,LOG01,lCodCliente,SQLCODE,SQLERRM);
+        vDTrazasError(szExeAboFact, "\n\t** Error en Update de Ciclo en GE_CLIENTES ** "
+                                    "\n\t\t\t=>  Cliente    [%ld] "
+                                    "\n\t\t\t=>  Errror     [%d] [%s]"
+                                    ,LOG01,lCodCliente,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+    if (SQLCODE == SQLOK)
+        vDTrazasLog (szExeAboFact,  "\n\n\t** Ciclo Actualizado ==> Cliente   [%ld] **" ,LOG03,lCodCliente);
+
+    return (TRUE);                                    
+}
+
+
+
+
+/********************************************************************************/
+/* vValCargoPro : Valida Datos Ind_CargoPro e Ind_CuenControlada                */
+/********************************************************************************/
+
+static void vValCargoPro (GAINTERFACT * pstGInterfaz)
+{
+
+    /**************************************************************/
+    /*     Validacion de CUENTACONTROLADA - CARGOPROD             */
+    /**************************************************************/
+    if(pstGInterfaz->lIndCargoPro == 0 && pstGInterfaz->lIndCuenControlada == 0 )
+        vPrintInconsistencia(pstGInterfaz,INCONS021);
+
+    if(pstGInterfaz->lIndCargoPro == 1 && pstGInterfaz->lIndCuenControlada == 1 )
+        vPrintInconsistencia(pstGInterfaz,INCONS022);
+
+    return;
+}
+
+
+/********************************************************************************/
+/* vPrintInconsistencia : Escribe la Incosistencia en Archivo AboFact_Inconsis% */
+/********************************************************************************/
+
+static void vPrintInconsistencia (GAINTERFACT *stpGI, char *szGlosa)
+{
+    fprintf(    stLineaComando.InconsFile,"%10ld %10ld %5d %10ld %10ld %-60s\n",
+                stpGI->lCodCliente,
+                stpGI->lNumAbonado,
+                stpGI->iCodProducto,
+                stpGI->lCodCiclFact,
+                stpGI->lCodCiclFactNew,
+                szGlosa);
+    fflush(stLineaComando.InconsFile);
+    return;
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

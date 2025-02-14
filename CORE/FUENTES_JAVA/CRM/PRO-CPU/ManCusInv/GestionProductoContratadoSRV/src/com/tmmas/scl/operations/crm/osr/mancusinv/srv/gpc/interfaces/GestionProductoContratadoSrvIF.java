@@ -1,0 +1,29 @@
+package com.tmmas.scl.operations.crm.osr.mancusinv.srv.gpc.interfaces;
+
+import com.tmmas.scl.framework.customerDomain.customerABE.dataTransferObject.RetornoDTO;
+import com.tmmas.scl.framework.customerDomain.customerOrderABE.dataTransferObject.OrdenServicioDTO;
+import com.tmmas.scl.framework.productDomain.productABE.dataTransferObject.CantidadProductoContratadoDTO;
+import com.tmmas.scl.framework.productDomain.productABE.dataTransferObject.PaqueteContratadoDTO;
+import com.tmmas.scl.framework.productDomain.productABE.dataTransferObject.ProductoContratadoDTO;
+import com.tmmas.scl.framework.productDomain.productABE.dataTransferObject.ProductoContratadoListDTO;
+import com.tmmas.scl.framework.productDomain.productSpecificationABE.dataTransferObject.AbonoLimiteConsumoListDTO;
+import com.tmmas.scl.framework.productDomain.productSpecificationABE.dataTransferObject.LimiteConsumoPlanAdicionalListDTO;
+import com.tmmas.scl.framework.serviceDomain.serviceABE.businessObject.dataTransferObject.NumeroDTO;
+import com.tmmas.scl.framework.serviceDomain.serviceABE.businessObject.dataTransferObject.NumeroListDTO;
+import com.tmmas.scl.operations.crm.osr.mancusinv.common.exception.ManCusInvException;
+
+public interface GestionProductoContratadoSrvIF {
+	public ProductoContratadoListDTO obtenerProductoContratado(OrdenServicioDTO ordenServicio) throws ManCusInvException ;
+	public PaqueteContratadoDTO obtenerProductoContratadoPorPaquete(PaqueteContratadoDTO paqueteContratado) throws ManCusInvException ;
+	public NumeroDTO obtieneModificacionesProducto(ProductoContratadoDTO productoContratado) throws ManCusInvException;
+	public RetornoDTO crearListaNumeros(NumeroListDTO numeros) throws ManCusInvException;
+	public RetornoDTO eliminarListaNumeros(NumeroListDTO numeros) throws ManCusInvException;
+	public ProductoContratadoListDTO obtenerDetalleProductoContratado(ProductoContratadoListDTO listaProductos) throws ManCusInvException;
+	public NumeroListDTO obtenerListaNumeros(ProductoContratadoDTO productoContratado) throws ManCusInvException;
+	public CantidadProductoContratadoDTO obtieneCantidadProductosContratados(CantidadProductoContratadoDTO producto) throws ManCusInvException;
+	public RetornoDTO informarLC(LimiteConsumoPlanAdicionalListDTO LimConsLista) throws ManCusInvException;
+	public RetornoDTO actualizarLC(ProductoContratadoListDTO prodList) throws ManCusInvException;
+	public RetornoDTO cambiarLC(ProductoContratadoListDTO prodList) throws ManCusInvException;
+	public RetornoDTO informarAbonoLimiteConsumo(AbonoLimiteConsumoListDTO listaAbonoLimiteConsumo) throws ManCusInvException;
+	
+}

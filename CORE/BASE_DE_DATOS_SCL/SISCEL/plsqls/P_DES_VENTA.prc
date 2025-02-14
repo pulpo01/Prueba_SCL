@@ -1,0 +1,208 @@
+CREATE OR REPLACE PROCEDURE P_DES_VENTA
+ (V_VENTA                 IN  GA_ABOCEL.NUM_VENTA%TYPE,
+  VP_ERROR                OUT VARCHAR2)IS
+
+
+VP_PRODUCTO               NUMBER(1);
+V_HOLDING                         GA_ABOCEL.COD_HOLDING%TYPE;
+V_EMPRESA                         GA_ABOCEL.COD_EMPRESA%TYPE;
+V_ABONADO                         GA_ABOCEL.NUM_ABONADO%TYPE;
+V_CLIENTE                         GA_ABOCEL.COD_CLIENTE%TYPE;
+V_SUPERTEL                        GA_ABOCEL.IND_SUPERTEL%TYPE;
+V_CICLO                           GA_ABOCEL.COD_CICLO%TYPE;
+V_CELULAR                         GA_ABOCEL.NUM_CELULAR%TYPE;
+V_USO                             GA_ABOCEL.COD_USO%TYPE;
+V_TELEFIJA                        GA_ABOCEL.NUM_TELEFIJA%TYPE;
+V_FEC_ALTA                        GA_ABOCEL.FEC_ALTA%TYPE;
+VP_VENTA                          GA_ABOCEL.NUM_VENTA%TYPE;
+
+
+V_PREPAGO                         GED_CODIGOS.COD_VALOR%TYPE;
+V_HIBRIDO                         GED_CODIGOS.COD_VALOR%TYPE;
+V_PLANTARIF                       GA_ABOCEL.COD_PLANTARIF%TYPE;
+V_TIPLAN                          TA_PLANTARIF.COD_TIPLAN%TYPE;
+
+CURSOR C1 IS
+   SELECT NUM_ABONADO, NUM_VENTA
+   FROM   GA_ABOCEL
+   WHERE  NUM_VENTA=V_VENTA;
+ERROR_PROCESO EXCEPTION;
+BEGIN
+   OPEN C1;
+   VP_PRODUCTO:=1;
+
+
+   SELECT val_parametro INTO V_PREPAGO
+     FROM ged_parametros
+    WHERE nom_parametro = 'TIP_PLAN_PREPAGO'
+      AND cod_modulo    = 'GA'
+          AND cod_producto  = 1;
+
+   SELECT val_parametro INTO V_HIBRIDO
+     FROM ged_parametros
+    WHERE nom_parametro = 'TIP_PLAN_HIBRIDO'
+      AND cod_modulo    = 'GA'
+          AND cod_producto  = 1;
+
+
+   LOOP
+   BEGIN
+     FETCH C1 INTO V_ABONADO,VP_VENTA;
+     EXIT WHEN C1%NOTFOUND;
+     P_RECINF_ABONADO (VP_PRODUCTO,V_ABONADO,V_HOLDING,V_EMPRESA,VP_VENTA,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+         VP_ERROR := '0';
+         RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_EQUIPABONOSER (VP_PRODUCTO,V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_EQUIPABOSER (VP_PRODUCTO,V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_DIASABO (V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_NUMESPABO (V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_SERVSUPLABO (V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_SEGURABO (V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     IF V_HOLDING IS NOT NULL THEN
+       P_UPDTE_HOLDING (VP_PRODUCTO,V_HOLDING,VP_ERROR);
+     END IF;
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     IF V_EMPRESA IS NOT NULL THEN
+        P_UPDTE_EMPRESA (VP_PRODUCTO,V_EMPRESA,VP_ERROR);
+     END IF;
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_UPDTE_MOVIMIENTO (VP_PRODUCTO,V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_CARGOS (V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     -- Seleccionando cliente desde abonados
+     IF VP_PRODUCTO=1 THEN
+        SELECT COD_CLIENTE, IND_SUPERTEL, COD_CICLO, NUM_CELULAR, COD_USO, NUM_TELEFIJA, TO_CHAR(FEC_ALTA,'DD-MON-YY')
+        INTO   V_CLIENTE,   V_SUPERTEL,   V_CICLO,   V_CELULAR,   V_USO,   V_TELEFIJA,   V_FEC_ALTA
+        FROM   GA_ABOCEL
+        WHERE  NUM_ABONADO=V_ABONADO;
+     ELSIF VP_PRODUCTO=2 THEN
+        SELECT COD_CLIENTE
+        INTO   V_CLIENTE
+        FROM   GA_ABOBEEP
+        WHERE  NUM_ABONADO=V_ABONADO;
+     END IF;
+     IF V_CLIENTE > 0 THEN
+        P_UPD_HISTDOCU(V_CLIENTE,VP_VENTA,VP_ERROR);
+        IF VP_ERROR <> '0' THEN
+           VP_ERROR:='0';
+           RAISE ERROR_PROCESO;
+        END IF;
+     END IF;
+     IF V_SUPERTEL=1 and V_CICLO=10 THEN
+        P_DEL_CTCMOVIM(V_TELEFIJA,VP_ERROR);
+        IF VP_ERROR <> '0' THEN
+           VP_ERROR:='0';
+           RAISE ERROR_PROCESO;
+        END IF;
+     END IF;
+
+
+         SELECT COD_TIPLAN INTO V_TIPLAN
+           FROM TA_PLANTARIF
+          WHERE COD_PLANTARIF = V_PLANTARIF;
+
+
+
+     IF (V_TIPLAN = V_HIBRIDO) OR (V_TIPLAN = V_PREPAGO) THEN
+         P_DEL_MOVCONTR(V_CELULAR,V_ABONADO,V_FEC_ALTA,VP_ERROR);
+         IF VP_ERROR <> '0' THEN
+            VP_ERROR:='0';
+            RAISE ERROR_PROCESO;
+         END IF;
+     END IF;
+
+     IF (V_USO=17)THEN
+        P_DEL_MOVIBOX(V_CLIENTE,V_ABONADO,VP_ERROR);
+        IF VP_ERROR <> '0' THEN
+           VP_ERROR:='0';
+           RAISE ERROR_PROCESO;
+        END IF;
+     END IF;
+
+         P_DEL_LIMITECLIABO (V_ABONADO, VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+            VP_ERROR := '0';
+            RAISE ERROR_PROCESO;
+     END IF;
+
+     P_DEL_ABONADOS (VP_PRODUCTO,V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+            VP_ERROR := '0';
+            RAISE ERROR_PROCESO;
+     END IF;
+
+     P_DEL_PETIGUIAS (V_ABONADO,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     P_DEL_VENTAS (V_VENTA,VP_ERROR);
+     IF VP_ERROR <> '0' THEN
+        VP_ERROR := '0';
+        RAISE ERROR_PROCESO;
+     END IF;
+     COMMIT;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        ROLLBACK;
+        VP_ERROR:='4';
+      WHEN ERROR_PROCESO THEN
+        ROLLBACK;
+        VP_ERROR:='4';
+      WHEN OTHERS THEN
+        ROLLBACK;
+        VP_ERROR:='4';
+    END;
+    END LOOP;
+ EXCEPTION
+   WHEN NO_DATA_FOUND THEN
+        ROLLBACK;
+        VP_ERROR:='4';
+   WHEN ERROR_PROCESO THEN
+        ROLLBACK;
+        VP_ERROR:='4';
+   WHEN OTHERS THEN
+        ROLLBACK;
+        VP_ERROR:='4';
+END;
+/
+SHOW ERRORS

@@ -1,0 +1,1181 @@
+/*---------------------------------------------------------------------------------*/
+/*EJECUCION DE PROCESOS BATCH													   */
+/*---------------------------------------------------------------------------------*/
+/*PROGRAMA           : exe_batch.cpp											   */
+/*OBJETIVO           : Ejecutar programas Batch									   */
+/*AUTOR              : Claudio Conejero											   */
+/*---------------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------------*/
+/*DECLARACION DE BIBLIOTECA														   */
+/*---------------------------------------------------------------------------------*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <sqlcpr.h>
+#include <scheduler.h>
+#include <libgen.h> 
+#include <string.h> 
+/*#include <unistd.h>*/
+/*#include <sqlda.h>*/
+
+
+
+/*************************************
+ Declaracion de Constantes
+*************************************/
+#define  LOOP			  1
+#define  FACTOR_MINUTO	  0.000694444
+#define  FACTOR_SEGUNDO	  0.000011574
+#define  true             1
+#define  false            0
+#define  SqlNotFound      1403
+#define  SqlNull          1405
+#define  SqlORADUP        1
+#define  SqlOk            0
+#define  SQLORA_NULL      -1
+#define  SQLMANYROWS      2112
+#define  and              &&
+#define  or               ||
+#define  NE               !=
+#define  blanco           32
+/*---------------------------------------------------------------------------------*/
+
+void carga_procesos_en_profile(void);
+void ejecuta_procesos_batch(void);
+void termina_procesos_detenidos(void);
+void EjecutarShell(char *);
+int exe_batch(void);
+int fnflee_sch_profile(void);
+void fnMarca_Inicio_Programa(void);
+void fnBorra_sch_profile(void);
+void Recupera_Servicios(void);
+void fnMsgError(char *, int , int);
+/*************************************/
+/*  Declaracion de Variables Host    */
+/*************************************/
+EXEC SQL include sqlca;
+exec oracle option (MAXOPENCURSORS=60); 
+
+/*---------------------------------------------------------------------------------*/
+/*DECLARACION DE VARIABLES GLOBALES												   */
+/*---------------------------------------------------------------------------------*/
+int diferencia, c, retorno, k, okfn;
+char *flg_pend, *comando, *grupo_tmp;
+char codlog[11];
+char finpaso[100];
+char fincom[100];
+char comsys[100];
+char szMsg[30];
+char NomPrgMail[31];               
+char PathMail[150];                
+char NomPrgCond[31];               
+char PathCond[150];                
+char path_colas[150];
+char prg_colas[11];
+char path_log[150];					
+/*---------------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------------*/
+/*DECLARACION DE VARIABLES														   */
+/*---------------------------------------------------------------------------------*/
+ EXEC SQL BEGIN DECLARE SECTION;
+ char szhUsername[30];				EXEC SQL var szhUsername is string(30);
+ char szhPassword[30]; 				EXEC SQL var szhPassword is string(30);
+ char szhConexionBase[30];			EXEC SQL var szhConexionBase is string(30);
+ /*Inicializacin de Variables.													   */
+ char nom_proc_start[30];           EXEC SQL var nom_proc_start is string(30);
+ long int interv;					/* Intervalo de Ejecucin del Proceso BATCH.	*/
+ char mfec_paso[20];				EXEC SQL var mfec_paso is string(20);
+ char mhor_ini[6];                  EXEC SQL var mhor_ini is string(6);
+ char FechaActual[30];              EXEC SQL var FechaActual is string(30);
+ char nombre_dia[10];
+ double minutos;
+ double tot_minutos;
+ double tot_segundos;
+ char cod_int[10];					EXEC SQL var cod_int is string(10);
+ long int sec;						/* Secuencia de SCH_CODIGOS del proceso y subproceso.*/
+ char fejec[10];					EXEC SQL var fejec is string(10);
+ char fn_nom_arch[20];				EXEC SQL var fn_nom_arch is string(20);
+ char fn_path[50];					EXEC SQL var fn_path is string(50);
+ char *sqlcmd;
+ long int pcuenta;
+ EXEC SQL END DECLARE SECTION;
+
+/*---------------------------------------------------------------------------------*/
+/* Parametros del monitor                                                          */
+/*---------------------------------------------------------------------------------*/
+char szhsch_proceso[11];              EXEC SQL var szhsch_proceso    is string(11);
+char szhsch_subproceso[11];           EXEC SQL var szhsch_subproceso is string(11);
+char szhmodulo[6];                    EXEC SQL var szhmodulo         is string(6);
+char szhsch_estado[11];               EXEC SQL var szhsch_estado     is string(11);
+long lhpid;
+int  ihcod_estado;
+char szhfec_ini[15];                  EXEC SQL var szhfec_ini        is string(15);
+short ihdc1;
+
+/************************************************************/
+/* Funcion    :trim                                         */
+/* Objetivo   :                                             */
+/************************************************************/
+void trim(char *szpalabra,int iini, int ilargo,char *szvuelta)
+{
+    int ii,icr;
+    szpalabra += iini - 1;
+    for (ii=iini;ii<=(iini + ilargo -1);ii++)
+    {
+        if (*szpalabra NE blanco)
+           {
+           *szvuelta = *szpalabra;
+           szvuelta++;
+           }
+        szpalabra++;
+    }
+   *szvuelta = 0;
+}
+
+/************************************************************/
+/* Funcion    :fncommand2                                   */
+/* Objetivo   :ejecutar comando unix y devolver el resultado*/
+/************************************************************/
+char* fncommand2(cmd)
+char *cmd;
+{
+    FILE *pf;
+    char *p_aux;
+    char *final;
+    int bufferSize;
+    int counter;
+    char tmpBuffer[520];
+ 
+    pf = popen(cmd, "r");
+    bufferSize = 520;
+ 
+    if (pf == NULL)
+    {
+        return NULL;
+    }
+ 
+    counter = 0;
+    memset(tmpBuffer, 0x00, bufferSize);
+    final = NULL;
+    p_aux = NULL;
+ 
+    while (fgets(tmpBuffer,512,pf))
+    {
+        p_aux = final;
+        final = NULL;
+        counter++;
+ 
+        final = (char*) malloc((bufferSize*counter));
+        memset(final, 0x00, (bufferSize*counter));
+ 
+        if(counter == 1) strcat(final, "\n");
+ 
+        if(p_aux != NULL)
+        {
+            sprintf(final, "%s%s", p_aux, tmpBuffer);
+            free(p_aux);
+            p_aux = NULL;
+        }
+        else
+        {
+            strcat(final, tmpBuffer);
+        }
+        memset(tmpBuffer, 0x00, bufferSize);
+    }
+ 
+    pclose(pf);
+    return final;
+}
+/************************************************************/
+/* Funcion    : mid                                         */
+/* Objetivo   :                                             */
+/************************************************************/
+void mid(char *szpalabra, int iini, int ilargo, char *szvuelta)
+{
+    int ii,icr;
+    icr = true;
+    if (ilargo < 0)
+       {
+       ilargo *= -1;
+       icr = false;
+       }
+    szpalabra += iini - 1;
+    for (ii=iini;ii<=(iini + ilargo -1);ii++)
+    {
+        *szvuelta = *szpalabra;
+        szvuelta++;szpalabra++;
+    }
+
+  if (icr)
+   *szvuelta = 0;
+}
+/*---------------------------------------------------------------------------------*/
+/* Revisa si el dia de la semana se encvuentra habilitado en el vector dia_semana  */
+/*---------------------------------------------------------------------------------*/
+int revisa_dia(char nombre_dia[10], char dia_sem[7])
+{
+	int ndia=1,dia_ini;
+	char ejecuta[1];
+	trim(nombre_dia,1,strlen(nombre_dia),nombre_dia);
+	if ((strcmp(nombre_dia,"LUNES") == 0) || (strcmp(nombre_dia,"MONDAY") == 0)) 
+		ndia = 1;
+	else
+    if ((strcmp(nombre_dia,"MARTES") == 0) || (strcmp(nombre_dia,"TUESDAY") == 0)) 
+		ndia = 2;
+	else
+    if ((strcmp(nombre_dia,"MI–RCOLES") == 0) || (strcmp(nombre_dia,"WEDNESDAY") == 0)) 
+		ndia = 3; 
+	else
+    if ((strcmp(nombre_dia,"JUEVES")== 0) || (strcmp(nombre_dia,"THURSDAY") == 0)) 
+		ndia = 4;
+	else
+    if ((strcmp(nombre_dia,"VIERNES") == 0) || (strcmp(nombre_dia,"FRIDAY") == 0)) 
+		ndia = 5;
+	else
+    if ((strcmp(nombre_dia,"S¬BADO") == 0) || (strcmp(nombre_dia,"SATURDAY") == 0)) 
+		ndia = 6;
+	else
+    if ((strcmp(nombre_dia,"DOMINGO") == 0) || (strcmp(nombre_dia,"SUNDAY") == 0)) 
+		ndia = 7;
+
+	dia_ini = ndia;
+	mid(dia_sem,ndia,1,ejecuta);
+	if (strcmp(ejecuta,"S") == 0)
+	{
+		return(1);
+	}
+	else
+	{
+		minutos=0;
+		do
+		{
+			minutos += 1 * 60 * 24 * FACTOR_MINUTO;
+			if (ndia == 7)
+				ndia = 1; 
+			else 
+				ndia ++;
+
+			mid(dia_sem,ndia,1,ejecuta);
+		}
+		while (strcmp(ejecuta,"S") != 0);
+		return(0);
+	}
+}
+
+void revisa_hora_ejecucion(char *mcod_proc, char *mcod_subpro,char *mhor_fini, char *mhor_fter)
+{
+
+	int hh_e;
+	int hh_i;
+	char paso[2];
+
+	EXEC SQL
+	SELECT TO_CHAR(fec_ini,'HH24MI'), TO_CHAR(fec_ini,'dd/mm/yyyy HH24MI')
+	INTO   :mhor_ini, :mfec_paso
+	FROM	sch_profile
+	WHERE  cod_proc		= :mcod_proc   and
+	       cod_subpro	= :mcod_subpro;
+	
+	fnMsgError(szMsg, sqlca.sqlcode, false); /*ETS 19/04/2004*/
+	mid(mhor_ini,1,2,paso);
+	hh_i = atoi(paso) * 60;
+
+	mid(mhor_ini,3,2,paso);
+	hh_i += atoi(paso);
+
+	if (strcmp(mhor_fini,"N") != 0)
+	{
+		if (atoi(mhor_ini) < atoi(mhor_fini)) 
+		{
+			mid(mhor_fini,1,2,paso);
+			hh_e = atoi(paso) * 60;
+			mid(mhor_fini,3,2,paso);
+			hh_e += atoi(paso);
+
+			interv = hh_e - hh_i;
+			minutos = interv * FACTOR_MINUTO;
+
+			sqlca.sqlcode = 0;
+			EXEC SQL
+			UPDATE sch_profile
+			SET fec_ini = fec_ini + :minutos
+			WHERE  cod_proc = :mcod_proc   AND
+				cod_subpro  = :mcod_subpro;
+			fnMsgError(szMsg, sqlca.sqlcode, false);
+			EXEC SQL commit;
+
+		}
+		else
+		{
+			if (atoi(mhor_ini) > atoi(mhor_fter))
+			{
+				mid(mhor_fter,1,2,paso);
+				hh_e = atoi(paso) * 60;
+				mid(mhor_fter,3,2,paso);
+				hh_e += atoi(paso);
+
+				interv = (hh_i - hh_e) + 2 ;
+				minutos = interv * FACTOR_MINUTO;
+
+				sqlca.sqlcode = 0;
+				EXEC SQL
+				UPDATE sch_profile
+				SET fec_ini	= fec_ini - :minutos
+				WHERE  cod_proc	= :mcod_proc   AND
+					 cod_subpro	= :mcod_subpro;
+				fnMsgError(szMsg, sqlca.sqlcode, false);
+				EXEC SQL commit;
+			}	
+		}
+	}
+}
+
+
+
+/*---------------------------------------------------------------------------------*/
+/*Demonio de Ejecucin de Procesos Batch										   */
+/*---------------------------------------------------------------------------------*/
+
+int exe_batch()
+{
+ int swprocese;
+ /*Inicializacin de Variables													   */
+ sqlca.sqlcode = 0;
+ /* Asignacion de Memoria */
+ sqlcmd	= (char *) malloc(sizeof(char) * 2000);
+ if (sqlca.sqlcode != 0 && sqlca.sqlcode != 100) {
+     /*EXEC SQL rollback;*/
+     printf("!!! ERROR SQL CODE:(%d)\n", sqlca.sqlcode);
+ 	 fflush(stdout);
+     return (1);
+    }
+ EXEC SQL commit;
+
+ signal(SIGUSR1,senal_pausa);
+ signal(SIGUSR2,senal_terminar);
+ signal(SIGCONT,senal_continue);
+
+ while (!SENAL_STOP)
+ {
+	Recupera_Servicios();
+   /*---------------------------------------------------------------------------------*/
+   /*Prepara la informacin de los procesos batch que se ejecutarﬂn en forma posterior*/
+   /*---------------------------------------------------------------------------------*/
+	carga_procesos_en_profile();
+   /*---------------------------------------------------------------------------------*/
+   /*Prepara la informacin de los procesos batch que se ejecutarﬂn en forma posterior*/
+   /*---------------------------------------------------------------------------------*/
+	ejecuta_procesos_batch();
+   /*---------------------------------------------------------------------------------*/
+   /*Detecta los procesos terminados, ejecuta los procesos con restriccin y          */
+   /*reinicializa el proceso para su prxima ejecucin.                               */
+   /*---------------------------------------------------------------------------------*/
+   termina_procesos_detenidos();
+   ejecuta_accion();
+   sleep(1);
+ }
+ fnBorra_sch_profile();
+ return(0);
+}
+
+/*---------------------------------------------------------------------------------*/
+/*Prepara la informacin de los procesos batch que se ejecutarﬂn en forma posterior*/
+/*---------------------------------------------------------------------------------*/
+void carga_procesos_en_profile()
+{
+ /*--------------------------------------------------------------------*/
+ /* Recuperacin de informacin de Procesos y Sub-procesos a ejecutar. */
+ /*--------------------------------------------------------------------*/
+ /*Determinar procesos batch a ejecutar e insertarlos en la tabla SCH_PROFILE.			   */
+
+ EXEC SQL execute 
+   BEGIN
+       PRO_INS_SCH_PROFILE();
+   END;
+ END-EXEC;
+
+ if (sqlca.sqlcode != 0) {
+	 EXEC SQL rollback;
+	 printf("!!! ERROR al insertar procesos en la tabla ejecutar. (%d)\n", sqlca.sqlcode);
+	 fflush(stdout);
+	 return;
+    }
+ EXEC SQL commit;
+
+ return;
+}
+/*---------------------------------------------------------------------------------*/
+/*Prepara la informacin de los procesos batch que se ejecutarﬂn en forma posterior*/
+/*---------------------------------------------------------------------------------*/
+void ejecuta_procesos_batch()
+{
+/*---------------------------------------------------------------------------------*/
+	EXEC SQL BEGIN DECLARE SECTION;
+	char cod_central_start[10];		EXEC SQL var cod_central_start is string(10);
+	char cod_proc_start[10];		EXEC SQL var cod_proc_start is string(10);
+	char cod_subpro_start[10];		EXEC SQL var cod_subpro_start is string(10);
+	char log_gener_start[150];	    EXEC SQL var log_gener_start is string(150);
+	char nom_log[20];				EXEC SQL var nom_log is string(20);
+	char nom_scr[30];				EXEC SQL var nom_scr is string(30);
+	char path_scr[150];				EXEC SQL var path_scr is string(150);
+	char nombase[20];				EXEC SQL var nombase is string(20);
+	char nomuser[20];				EXEC SQL var nomuser is string(20);
+	char nompass[20];				EXEC SQL var nompass is string(20);
+	char Flg_1[2];					EXEC SQL var Flg_1 is string(2);
+	char Esp_Argv[500];				EXEC SQL var Esp_Argv is string(500); 
+	EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------------*/
+	
+	/*------------------------------*/
+	/* Ejecucin de Procesos Batch. */
+	/*------------------------------*/
+	int ex;
+	char proc_bloq[21];
+	char proc_ant[21];
+	char shell_name[20];
+	FILE *cmd;
+	/*Inicializamos Variables													   */
+	ex = 1;
+	memset(proc_ant, 0x00, sizeof(proc_ant));
+	/*Determinar los procesos a ejecutar de la tabla SCH_PROFILE.				   */
+	sqlca.sqlcode = 0;
+	EXEC SQL declare CurProcBatch cursor for
+		select a.cod_proc, a.cod_subpro, a.nom_proc, b.nom_script,	d.nom_ejecu, 
+		       b.nom_log, d.flg_forma_ejec, e.nom_base, e.nom_user, e.nom_pass, a.cod_central, 
+		       DECODE(d.log_gener,NULL,'N',d.log_gener), d.flg_1  
+		from sch_profile        a,
+		       sch_detalle_proc	b,
+		       sch_proceso	d,
+		       acc_aplicacion   e
+		where a.cod_proc	  = b.cod_proc			
+		and   a.cod_subpro	  = b.cod_subpro		
+		and   d.cod_proc          = b.cod_proc			
+		and   d.flg_batch	  = 'B'				
+		and   a.cod_estado	  = 'EMPT'				
+		and   d.cod_apli          = e.cod_apli         
+		and   a.fec_ini	         <= SYSDATE            
+		and   b.fec_term          > SYSDATE				
+		and   d.fec_term          > SYSDATE				
+		and   a.cod_proc not in (select cod_proc from sch_profile where cod_estado <> 'EMPT') 
+		 order by a.cod_proc, a.correl;
+		 
+	EXEC SQL open CurProcBatch;
+	if (sqlca.sqlcode != SqlNotFound)
+	{
+	EXEC SQL fetch CurProcBatch into :cod_proc_start, :cod_subpro_start, :nom_proc_start, :nom_scr, :path_scr, 
+		:nom_log, :fejec, :nombase, :nomuser, :nompass, :cod_central_start, :log_gener_start, :Flg_1;
+	 fnMsgError(szMsg, sqlca.sqlcode, false);
+	}
+	/* Para cada SubProceso a ejecutar... */
+	while (sqlca.sqlcode != SqlNotFound)
+	{		 
+		trim(cod_proc_start, 1, strlen(cod_proc_start), cod_proc_start);
+		trim(cod_subpro_start, 1, strlen(cod_subpro_start), cod_subpro_start);
+		trim(nom_scr, 1, strlen(nom_scr), nom_scr);
+		trim(path_scr, 1, strlen(path_scr), path_scr);
+		trim(nom_log, 1, strlen(nom_log), nom_log);
+		trim(fejec, 1, strlen(fejec), fejec);
+		
+                trim(nombase, 1, strlen(nombase), nombase);
+		trim(nomuser, 1, strlen(nomuser), nomuser);
+		trim(nompass, 1, strlen(nompass), nompass);
+		trim(cod_central_start, 1, strlen(cod_central_start), cod_central_start);
+		trim(log_gener_start,1,strlen(log_gener_start),log_gener_start);
+		
+                trim(Flg_1, 1, strlen(Flg_1), Flg_1);
+
+		if (strncmp(Flg_1, "N", 1) == 0)
+		{
+			strcpy(nombase, " ");
+		}		
+		
+		if (strcmp(proc_ant, cod_proc_start) != 0) 
+		{
+			strcpy(proc_ant, cod_proc_start);
+			trim(proc_ant,1,strlen(proc_ant),proc_ant);
+			if (ex==0)
+			{
+				fprintf(cmd,"rm sh_batch_%d.sh \n",sec); 
+				fclose(cmd);      /* cerramos el archivo para poder ejecutarlo */
+				strcpy(codlog,proc_ant); 
+				EjecutarShell(shell_name); /* Ejecuta Shell con todos los SubProcesos, del proceso actual. */
+
+				/*Incrementamos el Secuencial actual desde SCH_CODIGOS	*/
+				EXEC SQL 
+					update sch_codigos
+					set	gls_param = to_char(to_number(gls_param) + 1)
+					where cod_tipo  = 'CORRELATIV' and
+						  cod_param = 'NUMJOB';
+				fnMsgError(szMsg, sqlca.sqlcode, false);
+				EXEC SQL commit;
+				ex = 1;
+			}
+			/***** Busca Funcion Condicional **********/
+			memset(proc_bloq, 0x00, sizeof(proc_bloq));
+			sqlca.sqlcode = 0;
+			EXEC SQL 
+				select nom_arch, path  
+				  into :fn_nom_arch, :fn_path
+				  from sch_archivos   
+				 where cod_arch	= :cod_proc_start and fec_term > SYSDATE;
+				if (sqlca.sqlcode != SqlNotFound)
+			{
+				sprintf(comsys, "%s/%s %s u%s/%s \n", fn_path, fn_nom_arch, cod_proc_start, nomuser, nompass);
+				printf("comsys [%s]\n",comsys);
+				if (system(comsys)) 
+				{
+					 strcpy(proc_bloq,cod_proc_start);
+					 trim(proc_bloq,1,strlen(proc_bloq),proc_bloq);
+  					 EXEC SQL fetch CurProcBatch into :cod_proc_start, :cod_subpro_start, :nom_proc_start, :nom_scr, :path_scr, 
+						:nom_log, :fejec, :nombase, :nomuser, :nompass, :cod_central_start, :log_gener_start, :Flg_1;
+					 continue;
+				}
+			}
+			 /******** Recuperamos el Secuencial actual desde SCH_CODIGOS	*/
+			sqlca.sqlcode = 0;
+			EXEC SQL 
+			select to_number(gls_param)
+			  into :sec
+			  from sch_codigos
+			where cod_tipo  = 'CORRELATIV' and
+				  cod_param = 'NUMJOB';
+			/******** Preparamos el nombre de siguiente shell a ejecutar			 */
+			memset(shell_name, 0x00, sizeof(shell_name));
+			sprintf(shell_name, "sh_batch_%d.sh", sec);
+			/******** Abrimos el archivo para escribir... */
+			cmd = fopen(shell_name, "w");
+			if (cmd == NULL)
+			{
+				 printf("Error al abrir el archivo : <%s>\n", shell_name);
+				 fflush(stdout);
+				 return;
+			}
+			ex = 0;
+		}
+		if (strcmp(cod_proc_start,proc_bloq)==0)
+		{
+			EXEC SQL fetch CurProcBatch into :cod_proc_start, :cod_subpro_start, :nom_proc_start, :nom_scr, :path_scr, 
+				:nom_log, :fejec, :nombase, :nomuser, :nompass, :cod_central_start, :log_gener_start, :Flg_1;
+			continue;
+		}
+		/*Si la ejecucin de este proceso es înica, lo desactivamos... */
+		if (strncmp(fejec, "U", 1) == 0)
+		{
+			EXEC SQL
+				update sch_proceso
+				set flg_ejecucion		= 'I',
+					user_bloq           = 'SCHEDULER',
+					fec_bloq            = sysdate
+				where  cod_proc			= :cod_proc_start;
+			fnMsgError(szMsg, sqlca.sqlcode, false);
+			EXEC SQL commit;
+		}
+		/*Busca la fecha actual */
+	    SCHfecha_sistema(FechaActual,1);
+		/* Actualizamos la profile con el encolamiento */
+		EXEC SQL
+			update sch_profile
+			   set cod_estado	= 'ENCOL',
+			       num_jobs		= :sec,
+			       fec_ultejec  = to_date(:FechaActual,'yyyymmddhh24miss')
+			where cod_proc		= :cod_proc_start and
+				  cod_subpro	= :cod_subpro_start;
+		fnMsgError(szMsg, sqlca.sqlcode, false);
+		EXEC SQL commit;
+		/*--------------------------------------------------------------------------------*/
+		/* Actualizar el HPROFILE con el proceso que queda encolado                       */
+		/*--------------------------------------------------------------------------------*/
+		 EXEC SQL execute 
+		   BEGIN
+			   PRO_INS_SCH_HPROFILE (:cod_proc_start, :cod_subpro_start, '1', :sec, :FechaActual, 
+									'PLAY', 'SCHEDULER', NULL, '9');
+		   END;
+		 END-EXEC;
+		fnMsgError(szMsg, sqlca.sqlcode, false);
+
+		EXEC SQL commit;
+		/*Busca parametros especiales */
+		sqlca.sqlcode = 0;
+		strcpy(Esp_Argv,"");
+		memset(Esp_Argv, 0x00, sizeof(Esp_Argv));
+		EXEC SQL 
+			select gls_argv
+			  into :Esp_Argv 
+			  from sch_paramesp
+			 where cod_proc   = :cod_proc_start
+			   and cod_subpro = :cod_subpro_start;
+		/* Armar Shell a ejecutar	*/
+		fprintf(cmd, "%s/%s %s %s %d %s %s\n", PathCond, NomPrgCond, cod_proc_start, cod_subpro_start, sec, szhUsername, szhPassword);
+		fprintf(cmd," if [ $? =  0 ]\n");
+		fprintf(cmd," then\n");
+		/*Path/Nombre ArgEsp Proceso SubProceso Secuencia Usuario Password > PathLog/Log.Secuencia */
+		fprintf(cmd, "  %s/%s %s %s %s %d %s %s %s > %s%s.%d 2>&1\n", path_scr, nom_scr, Esp_Argv, cod_proc_start, cod_subpro_start, sec, nomuser, nompass, nombase, path_log, nom_log, sec); 
+		fprintf(cmd,"   if [ ! $? =  0 ]\n");
+		fprintf(cmd,"   then\n");
+		fprintf(cmd,"      %s/%s %s %s N %s %s %s %s 1\n", PathMail, NomPrgMail, cod_proc_start, cod_subpro_start, cod_central_start, FechaActual, szhUsername, szhPassword );
+		if (strcmp(log_gener_start,"N") != 0) fprintf(cmd,"   cat %s%s.%d >> %s.%d\n",path_log, nom_log, sec, log_gener_start,sec);
+		fprintf(cmd,"      exit 1\n");
+		fprintf(cmd,"   else\n");
+		fprintf(cmd,"      %s/%s %s %s N %s %s %s %s 0\n", PathMail, NomPrgMail, cod_proc_start, cod_subpro_start, cod_central_start, FechaActual, szhUsername, szhPassword );
+		fprintf(cmd,"   fi;\n\n");
+		if (strcmp(log_gener_start,"N") != 0) fprintf(cmd,"   cat %s%s.%d >> %s.%d\n",path_log, nom_log, sec, log_gener_start,sec);
+		fprintf(cmd," fi;\n\n");
+		/* Buscamos el siguiente registro */
+		EXEC SQL fetch CurProcBatch into :cod_proc_start, :cod_subpro_start, :nom_proc_start, :nom_scr, :path_scr, 
+			:nom_log, :fejec, :nombase, :nomuser, :nompass, :cod_central_start, :log_gener_start, :Flg_1;
+	 } /* Fin del While del cursor CurProcBatch */
+	 EXEC SQL close CurProcBatch;
+	 if (ex == 0)
+	 {
+		 fprintf(cmd,"rm sh_batch_%d.sh \n",sec); 
+		 fclose(cmd);
+		 strcpy(codlog,cod_proc_start);
+
+		 EjecutarShell(shell_name); /* Ejecutar Shell con todos los SubProcesos */
+		 /* Incrementamos el Secuencial actual desde SCH_CODIGOS		*/
+		EXEC SQL 
+			update sch_codigos
+			   set	gls_param = to_char(to_number(gls_param) + 1)
+			where cod_tipo  = 'CORRELATIV' and
+				  cod_param = 'NUMJOB';
+		fnMsgError(szMsg, sqlca.sqlcode, false);
+		 EXEC SQL commit;
+		 /*Recuperamos el Secuencial actual desde SCH_CODIGOS	*/
+		 EXEC SQL
+			select to_number(gls_param)
+			  into :sec
+			  from sch_codigos
+			where cod_tipo  = 'CORRELATIV' and
+				  cod_param = 'NUMJOB';
+	}
+	return;
+}
+
+
+/*================================================================*/
+/* Funcion   : VerRestriccion                                     */
+/* Objetivo  : Busca procesos con mﬂs prioridad corriendo.		  */
+/*================================================================*/
+int VerRestriccion(char *Tcod_proc, char *Tcod_subpro, long Tnum_job)
+{
+	long pcuenta;
+	pcuenta = 0;
+	sqlca.sqlcode = 0;
+	EXEC SQL 
+		SELECT count(e.cod_proc)
+		INTO   :pcuenta
+		FROM   sch_condicion d,
+			   sch_profile	 e
+		WHERE	d.cod_proc		= :Tcod_proc		AND
+				d.cod_subpro	= :Tcod_subpro		AND
+				e.num_jobs	= :Tnum_job			AND
+				e.cod_proc	= d.cod_procrest	AND
+				e.cod_subpro	= d.cod_sprocres	AND
+		        d.flg_restric	= 'R'				AND
+		        d.flg_condact	= 'A'				AND 
+		       (e.cod_estado	= 'PLAY'			OR
+		        e.cod_estado	= 'ENCOL'); 
+	fnMsgError("Consulta restriccion", sqlca.sqlcode, 0);
+	if (pcuenta) return(1);
+
+	pcuenta = 0;
+	sqlca.sqlcode = 0;
+	EXEC SQL 
+		SELECT count(e.cod_proc)
+		INTO   :pcuenta
+		FROM   sch_condicion d,
+			   sch_profile	 e
+		WHERE	d.cod_procrest	= :Tcod_proc	AND
+			d.cod_sprocres	= :Tcod_subpro	AND
+			e.cod_proc	= d.cod_proc	AND
+			e.cod_subpro	= d.cod_subpro	AND
+		        d.flg_restric	= 'I'				AND
+		        d.flg_condact	= 'A'				AND 
+		       (e.cod_estado	= 'PLAY'			OR
+		        e.cod_estado	= 'ENCOL'); 
+	fnMsgError("Consulta imperativo", sqlca.sqlcode, 0);
+	if (pcuenta) return(1);
+
+	return(0);
+}
+
+/*---------------------------------------------------------------------------------*/
+/*Detecta los procesos terminados, ejecuta los procesos con restriccin y		   */
+/*reinicializa el proceso para su prxima ejecucin.							   */
+/*---------------------------------------------------------------------------------*/
+void termina_procesos_detenidos()
+{
+/*---------------------------------------------------------------------------------*/
+	EXEC SQL BEGIN DECLARE SECTION;
+	long int num_job, nro_pid;
+	long int num_job_act;
+	char cod_proc_end[10];			EXEC SQL var cod_proc_end is string(10);
+	char cod_subpro_end[10];		EXEC SQL var cod_subpro_end is string(10);
+	char nom_proc_end[30];          EXEC SQL var nom_proc_end is string(30);
+	char cod_proc_act[10];			EXEC SQL var cod_proc_act is string(10);
+	char cod_subpro_act[10];		EXEC SQL var cod_subpro_act is string(10);
+	char cod_central_act[5];        EXEC SQL var cod_central_act is string(5);
+	char tip_ejecucion_act[10];     EXEC SQL var tip_ejecucion_act is string(10);
+	char f_ejec[15];				EXEC SQL var f_ejec is string(15);
+	char dia_semana[10];			EXEC SQL var dia_semana is string(10);
+	char hor_fini[6];               EXEC SQL var hor_fini is string(6);
+	char hor_fter[6];               EXEC SQL var hor_fter is string(6);
+	char esta_inactivo[10];			EXEC SQL var esta_inactivo is string(10);
+	EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------------*/
+
+  int puede_ejecutar,ejecuto_rest;
+  char comando_colas[100];
+
+ /*-----------------------------------------------*/
+ /* Deteccin de Târmino de ejecucin de Proceso. */
+ /*-----------------------------------------------*/
+ /*Buscar los procesos Terminados.				  */
+ sqlca.sqlcode = 0;
+ EXEC SQL declare CurProcSTP cursor for 
+ select a.cod_proc, a.cod_subpro, a.nom_proc, 
+		TO_CHAR(b.fec_ejec_ini,'yyyymmddhh24miss'), 
+		DECODE(b.interval,NULL,0,b.interval),
+		DECODE(b.cod_interv,NULL,' ',b.cod_interv),
+		DECODE(b.dia_semana,NULL,' ',b.dia_semana),
+		DECODE(a.num_jobs,NULL,0,a.num_jobs),
+		DECODE(b.hor_fini,NULL,'N',TO_CHAR(b.hor_fini,'HH24MI')), 
+		DECODE(b.hor_fter,NULL,'N',TO_CHAR(b.hor_fter,'HH24MI')) 
+ from	sch_profile a,	sch_proceso b
+ where  a.flg_batch     = 'B'		 
+ and	b.cod_proc	= a.cod_proc 
+ and	a.cod_estado	= 'STOP';
+ 
+ EXEC SQL open CurProcSTP;
+ fnMsgError(szMsg, sqlca.sqlcode, false);
+ EXEC SQL fetch CurProcSTP into :cod_proc_end, :cod_subpro_end, :nom_proc_end, :f_ejec, :interv, :cod_int, :dia_semana, :num_job, :hor_fini, :hor_fter;
+ fnMsgError(szMsg, sqlca.sqlcode, false);
+ /*Para cada Proceso detenido...										   */
+while (sqlca.sqlcode != SqlNotFound)
+{
+	trim(cod_proc_end, 1, strlen(cod_proc_end), cod_proc_end);
+	trim(cod_subpro_end, 1, strlen(cod_subpro_end), cod_subpro_end);
+	trim(f_ejec, 1, strlen(f_ejec), f_ejec);
+	trim(cod_int, 1, strlen(cod_int), cod_int);
+	/*--------------------------------------------------------------------------------*/
+	/*                           Envia la se±al a la tarea                            */
+	/*--------------------------------------------------------------------------------*/
+		EXEC SQL SELECT b.nro_pid
+			INTO :nro_pid
+			FROM sch_detalle_proc a, sch_jobs b
+			WHERE a.cod_proc    = :cod_proc_end   AND
+				  a.cod_subpro  = :cod_subpro_end AND
+				  a.ind_colas   <> 'N'            AND	
+				  b.fec_iniexec IN (SELECT MAX(fec_iniexec) 
+									     FROM sch_jobs
+										 WHERE cod_proc    = :cod_proc_end   AND
+											   cod_subpro  = :cod_subpro_end AND
+											   num_jobs    = :num_job);
+		fnMsgError(szMsg, sqlca.sqlcode, 0);
+		if (nro_pid > 0 && sqlca.sqlcode != SqlNotFound)
+		{
+			sigsend (P_PID,nro_pid,SIGUSR2);
+			printf("Envi senal a PID batch [%ld] \n", nro_pid);
+		}
+
+	/*--------------------------------------------------------------------------------*/
+	/*                     Actualizar el HPROFILE del Proceso                         */
+	/*--------------------------------------------------------------------------------*/
+	 EXEC SQL execute 
+	   BEGIN
+		   PRO_INS_SCH_HPROFILE (:cod_proc_end, :cod_subpro_end, '1', :num_job, 
+			to_char(sysdate, 'YYYYMMDDHH24MISS'), 'STOP',  'SCHEDULER', NULL, '9');
+	   END;
+	 END-EXEC;
+	/*Commit de la transaccin */
+	fnMsgError(szMsg, sqlca.sqlcode, false);
+	EXEC SQL commit;        
+	fnMsgError(szMsg, sqlca.sqlcode, false);
+	/*--------------------------------------------------------*/
+	/* Recuperar y Ejecutar los subprogramas con restriccin. */
+	/*--------------------------------------------------------*/
+	trim(cod_proc_end,1,strlen(cod_proc_end),cod_proc_end);
+	trim(cod_subpro_end,1,strlen(cod_subpro_end),cod_subpro_end);
+	sqlca.sqlcode = 0;
+	EXEC SQL declare CurProcPlay cursor for
+		select e.cod_proc,		e.cod_subpro,  e.num_jobs, e.cod_central, e.tip_ejecucion
+			from   sch_condicion   d,
+				   sch_profile		e
+			where	d.cod_proc	    = :cod_proc_end		and
+					d.cod_subpro    = :cod_subpro_end	and
+					e.cod_proc		= d.cod_procrest    and
+					e.cod_subpro	= d.cod_sprocres	and
+					e.cod_estado	= 'PAUSX'			and
+					d.flg_condact	= 'A';
+	EXEC SQL open CurProcPlay;
+	fnMsgError(szMsg, sqlca.sqlcode, false);
+	EXEC SQL fetch CurProcPlay into :cod_proc_act, :cod_subpro_act, :num_job_act, :cod_central_act, :tip_ejecucion_act;
+	fnMsgError(szMsg, sqlca.sqlcode, false);
+	/*Para cada SubProceso a ejecutar...										   */
+	ejecuto_rest = 0;
+	while (sqlca.sqlcode != SqlNotFound)
+	{
+		trim(cod_proc_act,1,strlen(cod_proc_act),cod_proc_act);
+		trim(cod_subpro_act,1,strlen(cod_subpro_act),cod_subpro_act);
+		trim(cod_central_act,1,strlen(cod_central_act),cod_central_act);
+
+		if ( !(VerRestriccion(cod_proc_act, cod_subpro_act, num_job_act)) ) 
+		{
+			EXEC SQL
+			update sch_profile
+			   set    cod_estado		   = 'PLAY'
+			   where	cod_proc    = :cod_proc_act   and
+						cod_subpro  = :cod_subpro_act and
+						cod_central = :cod_central_act;
+			   fnMsgError(szMsg, sqlca.sqlcode, false);
+			/*--------------------------------------------------------------------------------*/
+			/* Actualizar el HPROFILE del Proceso recien terminado, para su prxima ejecucin. */
+			/*--------------------------------------------------------------------------------*/
+			 EXEC SQL execute 
+			   BEGIN
+				  PRO_INS_SCH_HPROFILE (:cod_proc_act, :cod_subpro_act, :cod_central_act, :num_job_act, 
+										to_char(sysdate, 'YYYYMMDDHH24MISS'), 'PLAY', :nom_proc_start, 
+										'Condiciones de ejecucion', :tip_ejecucion_act);
+			   END;
+			 END-EXEC;
+			fnMsgError(szMsg, sqlca.sqlcode, false);
+			/*Commit de la transaccin	*/
+			EXEC SQL commit;        
+			fnMsgError(szMsg, sqlca.sqlcode, false);
+			fnMsgError(szMsg, sqlca.sqlcode, false);
+			ejecuto_rest = 1;
+		}
+		EXEC SQL fetch CurProcPlay into :cod_proc_act, :cod_subpro_act, :num_job_act, :cod_central_act, :tip_ejecucion_act;
+	} /* Fin del while del cursor CurProcPlay */
+	EXEC SQL close CurProcPlay;
+
+	if (ejecuto_rest)
+	{
+		sprintf(comando_colas,"%s/%s PLAY %s %s ",path_colas,prg_colas,szhUsername, szhPassword);
+		system(comando_colas);
+	}
+	
+	sqlca.sqlcode = 0;	 
+	EXEC SQL
+	select flg_ejecucion
+			into   :esta_inactivo
+			from	sch_proceso
+			where   cod_proc = :cod_proc_end;
+	trim(esta_inactivo, 1, strlen(esta_inactivo), esta_inactivo);
+	if (strncmp(esta_inactivo, "I", 1) != 0)
+	{
+		tot_minutos = 0;
+		tot_segundos = 0;
+		/* 1 X cantidad_segundos */
+		if (strcmp(cod_int, "SEG") == 0)
+			tot_segundos = 1 * interv * FACTOR_SEGUNDO;
+		else
+		{
+			/* 60 segundos X cantidad_minutos */
+			if (strcmp(cod_int, "MIN") == 0)
+				tot_segundos = 1 * 60 * interv * FACTOR_SEGUNDO;
+			else
+			{
+				/* 60 segundos X 60 minutos X cantidad_horas */
+				if (strcmp(cod_int, "HOR") == 0)
+					tot_segundos = 1 * 60 * 60 * interv * FACTOR_SEGUNDO;
+				else
+				{
+					/* 60 segundos X 60 minutos X 24 horas X cantidad_dias */
+					if (strcmp(cod_int, "DIA") == 0)
+						tot_segundos = 1 * 60 * 60 * 24 * interv * FACTOR_SEGUNDO;
+					else
+					{
+						/* 60 segundos X 60 minutos X 24 horas X 7 dias_semana X cantidad_dias */
+						if (strcmp(cod_int, "SEM") == 0)
+							tot_segundos = 1 * 60 * 60 * 24 * 7 * interv * FACTOR_SEGUNDO;
+						else
+						{
+							/* 60 segundos X 60 minutos X 24 horas X 30 dias(prom_mesual) X cantidad_dias */
+							if (strcmp(cod_int, "MES") == 0)
+								tot_segundos = 1 * 60 * 60 * 24 * 30 * interv * FACTOR_SEGUNDO;
+						}
+					}
+				}
+			}
+		}
+		EXEC SQL
+		UPDATE sch_profile
+			SET fec_ini				= fec_ini + :tot_segundos,
+				cod_estado			= 'EMPT'
+			WHERE   cod_proc		= :cod_proc_end AND
+					cod_subpro		= :cod_subpro_end;
+		/*Commit de la transaccin	*/
+		fnMsgError(szMsg, sqlca.sqlcode, false);
+		EXEC SQL commit;
+
+		/*--------------------------------------------------------------------------------*/
+		/* Revisa si puede ejecutarse en el dça										   */
+		/*--------------------------------------------------------------------------------*/
+		revisa_hora_ejecucion(cod_proc_end,cod_subpro_end,hor_fini,hor_fter);
+		sqlca.sqlcode = 0;
+		EXEC SQL
+		SELECT upper(to_char(fec_ini,'day')), TO_CHAR(fec_ini,'HH24MI'), TO_CHAR(fec_ini,'dd/mm/yyyy HH24MI')
+			INTO   :nombre_dia, :mhor_ini, :mfec_paso
+			FROM	sch_profile
+			WHERE   cod_proc	= :cod_proc_end   and
+					cod_subpro	= :cod_subpro_end;
+		fnMsgError(szMsg, sqlca.sqlcode, false); /*ETS 19/04/2004*/
+		if (!(revisa_dia(nombre_dia, dia_semana)))
+		{
+			EXEC SQL
+			UPDATE sch_profile
+				SET fec_ini			= fec_ini + :minutos,
+					cod_estado		= 'EMPT'
+				WHERE   cod_proc	= :cod_proc_end AND
+						cod_subpro	= :cod_subpro_end;
+			/*Commit de la transaccin	*/
+			fnMsgError(szMsg, sqlca.sqlcode, false);
+			EXEC SQL commit;         
+		}
+	}
+	/* Buscamos el siguiente registro */
+	EXEC SQL fetch CurProcSTP into :cod_proc_end, :cod_subpro_end, :nom_proc_end, :f_ejec, :interv, :cod_int, :dia_semana, :num_job, :hor_fini, :hor_fter;
+	fnMsgError(szMsg, sqlca.sqlcode, false);
+} /* Fin del While del cursor CurProcSTP */
+ EXEC SQL close CurProcSTP;
+/*--------------------------------------------------------
+   Eliminar los procesos bloqueados de la SCH_PROFILE.    
+  --------------------------------------------------------*/
+ EXEC SQL
+ delete sch_profile
+ where  flg_batch  = 'B'				and
+		cod_estado = 'STOP'             and
+		cod_proc in (select cod_proc from sch_proceso where flg_ejecucion = 'I');
+/*Commit de la transaccin	*/
+ fnMsgError(szMsg, sqlca.sqlcode, false); 
+ EXEC SQL commit;        
+ return;
+}
+
+void EjecutarShell(char *cmd_shell)
+{
+ char comm[100];
+ printf(" %s \n", cmd_shell);
+ memset(comm, 0x00, sizeof(comm));
+ sprintf(comm, "ksh %s &", cmd_shell);
+ system(comm); 
+}
+
+/*---------------------------------------------------------------------------------*/
+/*PROGRAMA PRINCIPAL (MAIN)														   */
+/*---------------------------------------------------------------------------------*/
+void main(int argc,char **argv)
+{
+char szcod_proceso[11];
+char szcod_subproceso[11];
+char szcod_central[6];
+char szcomandops[1000];
+char* szResultado = NULL;
+
+	switch (argc)
+	{
+    case 12: strcpy(szcod_central,argv[3]);
+             strcpy(szhmodulo,szcod_central);
+             strcpy(szcod_proceso,argv[4]);
+             strcpy(szcod_subproceso,argv[5]);
+             strcpy(szhfec_ini,argv[6]);
+             trim(szhfec_ini,1,strlen(szhfec_ini),szhfec_ini);
+             trim(szhmodulo,1,strlen(szhmodulo),szhmodulo);
+             strcpy(szhsch_proceso,szcod_proceso);
+             strcpy(szhsch_subproceso,szcod_subproceso);
+             strcpy(szhUsername,argv[9]);
+             strcpy(szhPassword,argv[10]);
+	     strcpy(szhConexionBase,argv[11]);
+             break;
+    	     default:printf("   PROGRAMA                   : exe_batch \n");
+	             printf("   VERSION                    : 1.2 \n");
+	             printf("   FECHA VERSION              : 10-02-2009 \n");
+	             printf( " Numero de parametros erroneo .\n"); 
+       	    fflush(stdout);
+	exit(1);
+	}
+	SCHfecha_sistema(FechaActual,0);
+	printf("+-------------------------------------------------------------------------------------+\n");
+	printf("|                         SERVICIO DE AGENDA DE EJECUCIONES BATCH                     |\n");
+	printf("+-------------------------------------------------------------------------------------+\n");
+	printf("   ADMINISTRACION DE PROCESOS                                 %s \n",FechaActual);
+	printf("   Instancia de Base de Datos : %s \n",szhConexionBase);
+	printf("   Usuario                    : %s \n",szhUsername);
+	printf("   VERSION                    : 1.2 \n");
+	printf("   FECHA VERSION              : 10-02-2009 \n");
+	printf("+-------------------------------------------------------------------------------------+\n");
+
+/* 76568 REAM validacion de la existencia del proceso en unix */
+	sprintf(szcomandops,"ps -fea|egrep 'schedul'|grep '%s '|grep -v 'grep %s'|wc -l",basename(argv[0]),basename(argv[0]));
+	szResultado = fncommand2(szcomandops);
+	 
+	if (atoi(szResultado) > 1) 
+	{
+		printf("+-------------------------------------------------------------------------------------+\n");
+                printf("Atencion: \n");
+                printf("Se detecta que el proceso ya se encuentra en ejecucion UNIX y que no \n");
+                printf("se encuentra registrado en la Base de datos.                          \n");
+                printf("Favor detener dicha ejecucion. Y volver a lanzar el proceso.         \n");
+		printf("+-------------------------------------------------------------------------------------+\n");
+		exit(1);
+	}
+/* 76568 FIN CAMBIO*/
+
+	EXEC SQL WHENEVER SQLERROR GOTO ERROR;
+	EXEC SQL connect :szhUsername identified by :szhPassword;
+	printf("Conexion Base de Datos, Sqlcode=(%d).\n", sqlca.sqlcode);
+
+	/* Marca del inicio en la profile */
+	fnMarca_Inicio_Programa();
+
+	exe_batch();
+
+	SCHfecha_sistema(FechaActual,0);
+	printf("+-------------------------------------------------------------------------------------+\n");
+	printf("|  Fin de la Ejecucion                                        %23s|\n",FechaActual);
+	printf("+-------------------------------------------------------------------------------------+\n");
+	exit(0);
+
+	ERROR :
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL ROLLBACK WORK RELEASE;
+	printf("Main Error, Sqlcode=(%d).\n", sqlca.sqlcode);
+	exit(1);
+} /* Fin Principal */
+
+/************************************************************/
+/* Funcion   : fnMsgError                                   */
+/* Objetivo  : manejador de errores sql                     */
+/************************************************************/ 
+void fnMsgError(char *szMsg, int iErrNum, int bRollCom)
+{
+ if (iErrNum NE SqlNull) {
+ if ((iErrNum NE SqlOk) and (iErrNum NE SqlNotFound))
+  {
+       printf("ERROR SQL : %d EN %s \n", iErrNum, szMsg);
+	   fflush(stdout);
+       if (bRollCom) 
+         EXEC SQL rollback work; 
+	   exit(1);
+  }
+ }
+}
+
+/************************************************************/
+/* Funcion    : fnMarca_Inicio_Programa                     */
+/* Objetivo   : Marcar el PID del Proceso                   */
+/************************************************************/
+void fnMarca_Inicio_Programa(void)
+{
+   lhpid=getpid();
+   EXEC SQL update sch_profile
+               set num_jobs    = :lhpid,
+                   cod_estado  = 'PLAY'
+             Where cod_proc    = :szhsch_proceso
+               and cod_subpro  = :szhsch_subproceso
+               and cod_central = :szhmodulo
+             ;
+
+   fnMsgError("Update Sch_profile.",sqlca.sqlcode,true);
+
+   EXEC SQL update sch_hprofile
+               set num_jobs		= :lhpid
+             Where cod_proc     = :szhsch_proceso
+               and cod_subpro   = :szhsch_subproceso
+               and cod_central	= :szhmodulo
+               and fecha        = :szhfec_ini
+             ;
+
+   fnMsgError("Update Sch_hprofile.",sqlca.sqlcode,true);
+   EXEC SQL commit;
+}
+
+/************************************************************/
+/* Funcion    : fnBorra_sch_profile                         */
+/* Objetivo   : Actualiza la tabla de Procesos Activos      */
+/************************************************************/
+void fnBorra_sch_profile(void)
+{
+   EXEC SQL delete from sch_profile
+             Where cod_proc    = :szhsch_proceso
+               and cod_subpro  = :szhsch_subproceso
+               and cod_central = :szhmodulo
+             ;
+
+   fnMsgError("Delete Sch_profile.",sqlca.sqlcode,true);
+   EXEC SQL commit;
+}
+
+/*************************************************************/
+/* Funcion    : Recupera_Servicios                           */
+/* Objetivo   : Recupera los nombres y ubicacion de servicios*/
+/*************************************************************/
+void Recupera_Servicios()
+{
+/*---------------------------------------------------------------------------------*/
+	EXEC SQL BEGIN DECLARE SECTION;
+	char cod_arch[6];            EXEC SQL var cod_arch is string(6);
+	char nom_arch[16];           EXEC SQL var nom_arch is string(16);
+	char path[151];              EXEC SQL var path     is string(151);
+	EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------------*/
+
+	EXEC SQL declare CurServicios cursor for
+	    select Cod_arch, Nom_arch, Path 
+	    from	sch_archivos 
+	    where	cod_tipo = '5';
+        EXEC SQL open CurServicios;
+	    EXEC SQL fetch CurServicios into :cod_arch, :nom_arch, :path;
+        fnMsgError(szMsg, sqlca.sqlcode, false);
+    
+	while (sqlca.sqlcode != SqlNotFound)
+	{
+		trim(path, 1, strlen(path), path);
+		if (strcmp(cod_arch,"SHLOG") == 0 )
+		{
+			strcpy(path_log,path);
+		}
+		else if (strcmp(cod_arch,"SHMAI") == 0 )
+		{
+			strcpy(NomPrgMail,nom_arch);
+			strcpy(PathMail,path);
+		}
+		else if (strcmp(cod_arch,"SHCON") == 0 )
+		{
+			strcpy(NomPrgCond,nom_arch);
+			strcpy(PathCond,path);
+		}
+		else if (strcmp(cod_arch,"SHMSG") == 0 )
+		{
+			strcpy(prg_colas,nom_arch);
+			strcpy(path_colas,path);
+		}
+		EXEC SQL fetch CurServicios into :cod_arch, :nom_arch, :path;
+		fnMsgError(szMsg, sqlca.sqlcode, false);
+	}
+}
+
+/******************************************************************************************/
+/** Informacin de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisin                                            : */
+/**  %PR% */
+/** Autor de la Revisin                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisin ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creacin de la Revisin                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

@@ -1,0 +1,33 @@
+CREATE OR REPLACE PROCEDURE PV_ACTUALIZA_ABONADO_PP_PR(
+  VP_ABONADO IN NUMBER ,  
+  VP_USUADORA IN VARCHAR2,
+  VP_PLANNEW IN VARCHAR2)
+IS
+--
+-- Procedimiento de Actualizacion del Abonado en la Ga_aboamist
+-- ademas envia el mensaje correspondiente
+--
+   V_PROCED     VARCHAR2(25) := NULL;
+   V_COD_OS     NUMBER(5) := 10033;
+   V_COD_ERROR  NUMBER(9);
+   V_MEN_ERROR  VARCHAR2(200);
+
+BEGIN
+
+     V_PROCED := 'GA_ABOAMIST';
+
+     UPDATE GA_ABOAMIST
+            SET COD_PLANTARIF = VP_PLANNEW,
+                        NOM_USUARORA =  VP_USUADORA,
+                                FEC_ULTMOD =   SYSDATE
+          WHERE NUM_ABONADO = VP_ABONADO;
+
+        PV_PR_MENSAJES(VP_ABONADO,0,V_COD_OS,VP_USUADORA,'','','',V_COD_ERROR,V_MEN_ERROR);
+--                  Pv_Pr_Mensajes(VP_ABONADO,0,V_COD_OS,VP_USUADORA,V_COD_ERROR,V_MEN_ERROR);
+
+EXCEPTION
+   WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR (-20210,V_PROCED||' '||SQLERRM);
+END;
+/
+SHOW ERRORS

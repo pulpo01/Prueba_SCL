@@ -1,0 +1,1951 @@
+/*=============================================================================
+   Nombre     : universo.pc
+   Programa   : Generacion del Universo PAC
+   Autor      : G.A.C
+   Modificado : 02 - Febrero - 2004
+   Version    : Cuzco
+   Se define
+   Proceso Externo -> TMM - MPR
+   Proceso Interno -> TMC
+  ==============================================================================
+   Modificado : 10-Mayo-2005  (Proyecto Ecuador ECU-05002-E10) G.A.C.
+  ==============================================================================*/
+
+#include <pasoc.h>
+#include "universo.h" 
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de	biblioteca para	manejo de interaccion con Oracle.	         */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con	Oracle.		         */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    char   szSysdate          [20]; EXEC SQL VAR szSysdate 		  IS STRING(20);
+    char   szHora             [11]; EXEC SQL VAR szHora 		  IS STRING(11);
+    char   szFechayyyymmdd     [9]; EXEC SQL VAR szFechayyyymmdd  IS STRING(9);
+    char   szyyyymmddhhmm     [13]; EXEC SQL VAR szyyyymmddhhmm   IS STRING(13);
+    char   szh1001             [5]; EXEC SQL VAR szh1001 		  IS STRING(5);
+    char   szh9999             [5]; EXEC SQL VAR szh9999 		  IS STRING(5);
+    char   szhPacTarjeta       [3]; EXEC SQL VAR szhPacTarjeta 	  IS STRING(3);
+    char   szhParamTMC         [5]; EXEC SQL VAR szhParamTMC 	  IS STRING(5);
+    char   szhLargo_RegTMC1    [5]; EXEC SQL VAR szhLargo_RegTMC1 IS STRING(5);
+    char   szhLargo_RegTMC2    [5]; EXEC SQL VAR szhLargo_RegTMC2 IS STRING(5);
+	char   szBanco_Param      [16];
+	char   szhOperadora        [6]; EXEC SQL VAR szhOperadora   IS STRING(6) ;
+EXEC SQL END DECLARE SECTION;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de estructuras globales 								         */
+/*---------------------------------------------------------------------------*/
+UNIV_PAC stUniverso;
+DATUNI   stDatUni;
+int   iUnaVez = 0;
+BOOL  bArgumenton = FALSE;
+/*===========================================================================*/
+/* Rutina Principal													         */
+/*===========================================================================*/
+int main (int argc, char* argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.													     */
+/*---------------------------------------------------------------------------*/
+	int iResultado;
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura	de linea de comando y de status del programa */
+/*---------------------------------------------------------------------------*/
+    memset (&stUniverso,0,sizeof (UNIV_PAC));
+    memset (&stStatus  ,0,sizeof (STATUS  ));
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos	ingresados como	parametros externos.			     */
+/*---------------------------------------------------------------------------*/
+	iResultado = ifnManejaArgumentos(argc, argv);
+    if (iResultado != 0) exit(1);
+/*---------------------------------------------------------------------------*/
+/* Conexion a Oracle													     */
+/*---------------------------------------------------------------------------*/
+    if (!bfnConnectORA (stUniverso.szUsuario,stUniverso.szPassWord))  {
+        fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+        return   -333 ;
+	} else	{
+		fprintf(stdout, "\n\t----------------------------------------------------  "
+				        "\n\t* Conectado a ORACLE: Usuario %s Passwd xxxxxxxx   *  "
+				        "\n\t----------------------------------------------------\n",stUniverso.szUsuario );
+    stStatus.OraConnected = 1;
+	}
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de variables.			     								 */
+/*---------------------------------------------------------------------------*/
+    memset(&szCodZonaUni   ,'\0',sizeof(szCodZonaUni));
+    memset(&szCodCentralUni,'\0',sizeof(szCodCentralUni));
+    memset(&szBcoiUni      ,'\0',sizeof(szBcoiUni));
+
+    sprintf(szCodZonaUni   ,"%d\0", ZONA);
+    sprintf(szCodCentralUni,"%d\0", CENTRAL);
+    sprintf(szBcoiUni      ,"%d\0", BCOI);
+
+    lCan_Reg        = 0;
+    lReg_Aceptados  = 0;
+    lReg_Rechazados = 0;
+    iContCli        = 0;
+
+	sprintf(szFileName,"%s\0",stUniverso.szFile);
+
+    /* Controla si el proceso es ejecutado por TMC o Externo*/
+    /*if (strcmp(szFileName,"EXT")==0)*/
+    if (!bArgumenton)
+		 iFile = 1;                          			  /* Proceso Externo */
+    else iFile = 0;                          			  /* Proceso TMC     */
+
+/*---------------------------------------------------------------------------*/
+/* Inicializacion del Proceso PAC										     */
+/*---------------------------------------------------------------------------*/
+    if (ifnInicio(&stUniverso,&stStatus)!=0)  return -1;
+/*---------------------------------------------------------------------------*/
+/* Header.								     								 */
+/*---------------------------------------------------------------------------*/
+    fprintf(stdout, "\nProcesando ...\n");
+    vDTrazasLog( modulo, "%s"      ,LOG03 , szRaya);
+    vDTrazasLog( modulo, "FECHA            [%s]",LOG03 , szSysdate);   
+    vDTrazasLog( modulo, "PROGRAMA         [%s]",LOG03 , LOGNAME    );
+    vDTrazasLog( modulo, "%s"                   ,LOG03 , GLOSA_PROG );
+    vDTrazasLog( modulo, "VERSION          [%s]",LOG03 , szVersion );
+    vDTrazasLog( modulo, "Ultima Revision  [%s]",LOG03 , LAST_REVIEW);
+    vDTrazasLog( modulo, "%s\n"    ,LOG03, szRaya);
+
+    fprintf( stdout, "%s\n"      , szRaya);
+    fprintf( stdout, "FECHA            [%s]\n", szSysdate);	
+    fprintf( stdout, "PROGRAMA         [%s]\n", LOGNAME    );
+    fprintf( stdout, "%s\n"                   , GLOSA_PROG );
+    fprintf( stdout, "VERSION          [%s]\n", szVersion );
+    fprintf( stdout, "Ultima Revision  [%s]\n", LAST_REVIEW);
+    fprintf( stdout, "%s\n\n"    , szRaya);
+
+    vDTrazasLog (modulo,"\n\t Parametros de Entrada :",LOG03);
+    vDTrazasLog (modulo,"\t\t stUniverso.szUsuario     [%s]",LOG03,stUniverso.szUsuario);
+    vDTrazasLog (modulo,"\t\t stUniverso.szFecha_Pac   [%s]",LOG03,stUniverso.szFecha_Pac);
+    vDTrazasLog (modulo,"\t\t stUniverso.szCod_Banco   [%s]",LOG03,stUniverso.szCod_Banco);
+    vDTrazasLog (modulo,"\t\t stUniverso.szFile        [%s]",LOG03,stUniverso.szFile);
+
+    vDTrazasLog (modulo,"\n\t szFileName               [%s]",LOG03,szFileName);
+
+    /* si el proceso es Externo asigna fecha actual*/
+    if ((strcmp(szFileName,"EXT")==0) || (!bArgumenton)) {
+        strcpy(szFileName,"EXT");
+        sprintf(stUniverso.szFecha_Pac,"%s\0",szFechayyyymmdd);
+    }
+    vDTrazasLog (modulo,"\t stUniverso.szFecha_Pac  [%s]",LOG03,stUniverso.szFecha_Pac);
+
+/*---------------------------------------------------------------------------*/
+/* Obtencion de Parametros Generales									     */
+/*---------------------------------------------------------------------------*/
+    vDTrazasLog( modulo, "%s\t"    ,LOG03, szRaya);
+    vDTrazasLog( modulo ,"\t Obtencion de Parametros ...", LOG03);	
+    vDTrazasLog( modulo, "%s\t"    ,LOG03, szRaya);
+    fprintf     (stdout ,"\t\tObtencion de Parametros ...\n\n");	
+
+    if (ifnGed_ParametrosPac()!=0) return -1;
+    vDTrazasLog (modulo,"\t szh1001        [%s]",LOG03,szh1001);
+    vDTrazasLog (modulo,"\t szh9999        [%s]",LOG03,szh9999);
+    vDTrazasLog (modulo,"\t szhPacTarjeta  [%s]",LOG03,szhPacTarjeta);
+/*---------------------------------------------------------------------------*/
+/* Proceso UNIVERSO  -  Principal											 */
+/*---------------------------------------------------------------------------*/
+    vDTrazasLog( modulo, "%s\t"    ,LOG03, szRaya);
+    vDTrazasLog (modulo ,"\tProceso UNIVERSO  -  Principal ...", LOG03);	
+    vDTrazasLog( modulo, "%s\n"    ,LOG03, szRaya);
+    fprintf     (stdout ,"\t\t Proceso UNIVERSO  -  Principal ...\n\n");	
+
+    if (ifnProceso_Unipac()!=0) {
+       EXEC SQL ROLLBACK WORK;
+       if (SQLCODE != SQLOK) {
+            fprintf     (stdout ,"\t\t Proceso UNIVERSO  Termino con Error ...\n\n");
+            iDError(modulo,ERR000,vInsertarIncidencia,"ROLLBACK WORK.\n ",SQLERRM);
+            return -1;
+       }
+
+       fclose(stStatus.LogFile);
+	    fclose(stStatus.ErrFile);
+        return -1;
+    }
+    EXEC SQL COMMIT WORK;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"COMMIT WORK.\n ",SQLERRM);
+        return -1;
+    }
+/*---------------------------------------------------------------------------*/
+/* Desconexion Oracle 														 */
+/*---------------------------------------------------------------------------*/
+    vDTrazasLog( modulo ,"\t\tDesconexion de Oracle ...\n\n", LOG03);	
+    fprintf     (stdout ,"\t\tDesconexion de Oracle ...\n\n");	
+
+    if (!bfnDisconnectORA(0)) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"Desconexion de Oracle con Error.\n ",SQLERRM);
+        return -1;
+    }
+    stStatus.OraConnected = FALSE;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion	estadistica del	proceso.		     		 */
+/*---------------------------------------------------------------------------*/
+    lReg_Rechazados=lCan_Reg-lReg_Aceptados;
+
+    vDTrazasLog( modulo,  "\nEstadistica del proceso", LOG03);
+    vDTrazasLog( modulo,  "--------------------------------------" , LOG03);
+    vDTrazasLog( modulo,  "Cantidad de Registros Procesados  [%d]", LOG03,lCan_Reg);
+    vDTrazasLog( modulo,  "Cantidad de Registros Aceptados   [%d]", LOG03,lReg_Aceptados);
+    vDTrazasLog( modulo,  "Cantidad de Registros Rechazados  [%d]", LOG03,lReg_Rechazados);
+    vDTrazasLog( modulo,  "--------------------------------------\n" , LOG03);
+
+	vDTrazasLog( modulo,  "\n\n\nProceso [%s] finalizado ok.\n\n\n"      , LOG03,LOGNAME);
+
+    fprintf(stdout, "\nEstadistica del proceso\n");
+    fprintf(stdout,	"------------------------\n");
+    fprintf(stdout, "Cantidad de Registros Procesados   [%d]\n",lCan_Reg);
+    fprintf(stdout, "Cantidad de Registros Aceptados    [%d]\n",lReg_Aceptados);
+    fprintf(stdout, "Cantidad de Registros Rechazados   [%d]\n",lReg_Rechazados);
+    fprintf(stdout, "\n\n\nProceso [%s] finalizado ok.\n"      ,LOGNAME);
+
+/*---------------------------------------------------------------------------*/
+/* Cerrando Archivos Log y Err							.		     		 */
+/*---------------------------------------------------------------------------*/
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+    return 0;
+}/***************************** Final main ***********************************/
+
+/*===========================================================================*/
+/* Manejo de argumentos	ingresados como	parametros externos.			     */
+/*===========================================================================*/
+int ifnManejaArgumentos(int argc, char * const argv[])
+{
+extern char *optarg;
+
+BOOL  bArgumentou = FALSE;
+BOOL  bArgumentof = FALSE;
+BOOL  bArgumentob = FALSE;
+char opt[]  = "u:f:b:n:l:";
+int  iOpt   = 0    ;
+
+char szUsuario[81] = "" ;
+char *psztmp       = "" ;
+
+	while( ( iOpt = getopt( argc, argv, opt ) ) != EOF )
+	{
+		switch( iOpt )
+		{
+			case 'u':
+				if(strlen(optarg)>0 )   {
+					strcpy(szUsuario,optarg);
+
+					if ( (psztmp=(char *)strstr (szUsuario,"/"))==(char *)NULL) {
+						fprintf (stderr, "\n\tUsuario Oracle no Valido\n%s\n",szUsage);
+						return (1);
+
+					} else {
+						strncpy(stUniverso.szUsuario,szUsuario,psztmp-szUsuario);
+						strcpy (stUniverso.szPassWord,psztmp+1);
+					}
+					bArgumentou=TRUE;
+				}
+				break;
+
+			case 'l':
+				if(strlen(optarg)>0 && strlen(optarg)<2)
+				{
+					stUniverso.iNivelLog= atoi(optarg);
+					stUniverso.bOptNivelLog = TRUE;
+				}
+				break;
+
+			case 'f':
+				if(strlen(optarg)>0)
+				{
+					strcpy(stUniverso.szFecha_Pac,optarg);
+					bArgumentof=TRUE;
+				}
+				break;
+
+			case 'b':
+				if(strlen(optarg)>0 && strlen(optarg)<16)
+				{
+					strcpy(stUniverso.szCod_Banco,optarg);
+					bArgumentob=TRUE;
+				}
+				break;
+
+			case 'n':
+				if(strlen(optarg)>0)
+				{
+					strcpy(stUniverso.szFile,optarg);
+					bArgumenton=TRUE;
+				}
+				break;
+
+		}/* fin switch ... */
+	}/* fin while */
+
+
+	if (!bArgumentou || !bArgumentob || !bArgumentof  )	{
+		fprintf(stdout,"%s",szUsage);
+		return (3)                  ;
+	}
+
+    if (strcmp(stUniverso.szPassWord," ")==0) {
+        fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: Usuario\n\n");
+        return  -888;
+    }
+
+    if (strcmp(stUniverso.szUsuario," ")==0) {
+        fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: szPassWord\n\n");
+        return  -777;
+    }
+
+    /*if (strcmp(stUniverso.szFile," ")==0) {
+        fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: Archivo\n\n");
+        return  -666;
+    }*/
+
+    if (strcmp(stUniverso.szFecha_Pac," ")==0)  {
+        fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: Fecha\n\n");
+        return  -555;
+    }
+
+
+    if (strcmp(stUniverso.szCod_Banco," ")==0) {
+        fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: Banco\n\n");
+        return  -444    ;
+    }
+
+    if (!stUniverso.bOptNivelLog)
+	    stUniverso.iNivelLog = 3;
+
+	return 0;
+} /* ifnManejaArgumentos */
+
+/*===========================================================================*/
+/* Funcion : ifnProceso_Unipac                                               */
+/* Si proceso es Externo ejecuta otro tipo de carga                          */
+/*===========================================================================*/
+int ifnProceso_Unipac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+   char 	szhCod_Banco  [20];
+EXEC SQL END DECLARE SECTION;
+	
+    vDTrazasLog (modulo,"\t iFile          [%d]",LOG03,iFile);    
+	strcpy(szhCod_Banco,stUniverso.szCod_Banco);
+	/*---------------------------------------------------------------------------*/
+	/* Seleccion de la operadora a procesar		  						         */
+	/*---------------------------------------------------------------------------*/	
+	EXEC SQL 
+	DECLARE CUR_OPERADORA CURSOR FOR      
+	SELECT  COD_OPERADORA_SCL    
+	FROM    GE_OPERADORA_SCL ORDER BY COD_OPERADORA_SCL; 
+              
+    EXEC SQL OPEN CUR_OPERADORA;      
+	if (SQLCODE)	{
+		iDError(modulo,ERR000,vInsertarIncidencia,"\t en OPEN Cursor sobre GE_OPERADORA_SCL.\n\t\t\t\t ",SQLERRM);
+		return -1;
+	}
+
+	do  {
+		
+		memset(szhOperadora,'\0',sizeof(szhOperadora));
+		EXEC SQL FETCH CUR_OPERADORA
+		INTO	:szhOperadora;   
+
+		if (SQLCODE == NOTFOUND ) {
+			break;
+		}
+
+    	vDTrazasLog (modulo,"\t szhOperadora   [%s]",LOG03,szhOperadora);
+    	vDTrazasLog (modulo,"\t szhCod_Banco   [%s]",LOG03,szhCod_Banco);
+	    EXEC SQL
+    	SELECT COD_FORMATO  INTO :szhParamTMC
+    	FROM   CO_SERVICIOPAC
+    	WHERE  COD_BANCO  		= :szhCod_Banco
+    	AND    COD_OPERADORA_SCL= :szhOperadora;
+    	if ((SQLCODE != SQLOK) && (SQLCODE!=NOTFOUND)) {
+        	iDError(modulo,ERR000,vInsertarIncidencia,"SELECT COD_FORMATO [CO_SERVICIOPAC]. ",SQLERRM);
+        	vDTrazasError (modulo,"\t No Existe Formato de Archivo [%s] [CO_SERVICIOPAC]\n",LOG03,szhCod_Banco);
+        	return -1;
+    	}			    
+		/*-----------------------------------------------------------------------*/
+		/* Proceso Externo 														 */
+		/*-----------------------------------------------------------------------*/
+    	vDTrazasLog (modulo,"\t SQLCODE        [%d]",LOG03,SQLCODE);
+    	vDTrazasLog (modulo,"\t szhParamTMC    [%s]",LOG03,szhParamTMC);
+    	if (SQLCODE!=NOTFOUND) {
+
+	    	if (iFile == 1) {
+	        	if (ifnCargaGe_Clientes()!=0) return -1;
+	        	if (ifnRecorreStrucClie()!=0) return -1;
+	    	}
+			/*-----------------------------------------------------------------------*/
+			/* Proceso TMC  														 */
+			/*-----------------------------------------------------------------------*/
+	    	if (iFile == 0) {
+	        	/*Recogemos la descripcion del banco */
+	        	if (ifnDBObtDescBanco()!=0) return -1;
+	        	if (ifnTratarFichero() !=0) return -1;
+	        	if (ifnLeerFich()      !=0) return -1;
+	    	}
+			/*-----------------------------------------------------------------------*/
+			/* LIBERA MEMORIA UTILIZADA...						     				 */
+			/*-----------------------------------------------------------------------*/
+	    	vDTrazasLog( modulo ,"\t\tLibera memoria utilizada...\n\n", LOG03);	
+	    	fprintf     (stdout ,"\t\tLibera memoria utilizada...\n\n");	
+			vLiberaGeCliente(lstGeCliente);			
+			vLiberaCoUniPac(lstCoUniPac);
+	    	vDTrazasLog( modulo ,"\t\tFin a Libera memoria utilizada...\n\n", LOG03);	
+	    	fprintf     (stdout ,"\t\tFin a Libera memoria utilizada...\n\n");	
+		} else {
+
+	    	vDTrazasLog( modulo ,"Formato para Operadora [%s] no esta definido o Banco no esta registrado en Co_serviciopac \n\n", LOG02,szhOperadora);	
+			
+		}
+	}while (1);
+
+    fflush(stStatus.LogFile);
+    fflush(stStatus.ErrFile);
+    fflush(fpDat);
+    return 0;
+}/* ifnProceso_Unipac */
+
+/*===========================================================================*/
+/* Funcion : ifnDBObtDescBanco                                               */
+/*===========================================================================*/
+int ifnDBObtDescBanco()
+{
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+     char szhDescBanco  [41]; EXEC SQL VAR szhDescBanco   IS STRING(41);
+     char szhCodBanco   [16]; EXEC SQL VAR szhCodBanco    IS STRING(16);
+EXEC SQL END DECLARE SECTION;
+
+    sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+    vDTrazasLog (modulo,"\n\t Funcion bfnDBObtDescBanco().",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s].",LOG03,szhCodigoBanco);
+
+    /*-----------------------------------------------------------------------*/
+	/* Obtenemos codigo del banco y descripcion					         	 */
+	/*-----------------------------------------------------------------------*/
+    EXEC SQL
+    SELECT  DES_BANCO    , COD_BANCO
+    INTO    :szhDescBanco, :szhCodBanco
+    FROM    GE_BANCOS
+    WHERE   COD_BANCO = :szhCodigoBanco;
+
+    if (SQLCODE == NOTFOUND) {
+        vDTrazasLog (modulo,"\t\t Descripcion del Banco [%s] no Existe.",LOG02,szhCodigoBanco);
+        vDTrazasError (modulo,"Descripcion del Banco [%s] no Existe.\n",LOG03,szhCodigoBanco);
+        return 0;
+    }
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En SELECT DES_BANCO FROM GE_BANCOS.\n ",SQLERRM);
+        vDTrazasError (modulo,"Error al consultar Descripcion del Banco [%s].\n",LOG03,szhCodigoBanco);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\t\t szhDescBanco    [%s].",LOG03,szhDescBanco);
+
+    return 0;
+} /* ifnDBObtDescBanco */
+
+/*===========================================================================*/
+/* Funcion donde vamos a realizar todo el trat. del fichero                  */
+/*===========================================================================*/
+int ifnTratarFichero()
+{
+int iResul;
+
+    /*----------------------------------------------------------------------*/
+    /* Actualiza Tabla GE_CLIENTES, de un banco determinado		         */
+    /*----------------------------------------------------------------------*/
+	if (iFile == 0)   /*TM-200406140738  21-09-2004 capc se agrega condición solo actualiza para TMC*/
+	{
+		iResul = ifnModCliente();
+		if (iResul != 0)
+			return iResul;
+	}
+    /*----------------------------------------------------------------------*/
+	/* Inserta en el Historico cabecera universo Pac                        */
+    /*----------------------------------------------------------------------*/
+	iResul = ifnDBInsHistCabUniPac();
+	if (iResul != 0)
+		return iResul;
+    /*----------------------------------------------------------------------*/
+	/* Borra de la Cabecera universo Pac                    			     */
+    /*----------------------------------------------------------------------*/
+	iResul = ifnDBDelCabUniPac();
+	if (iResul != 0)
+		return iResul;
+    /*----------------------------------------------------------------------*/
+    /* Inserta en Historico universo PAC                    				 */
+    /*----------------------------------------------------------------------*/
+	iResul = ifnDBInsHistUniPac();
+	if (iResul != 0)
+		return iResul;
+    /*----------------------------------------------------------------------*/
+    /* Carga universo PAC si es TMC		                   				 */
+    /*----------------------------------------------------------------------*/
+    if (iFile == 0) {
+    	iResul = ifnCargaUniPac();
+    	if (iResul != 0)
+    		return iResul;
+    }
+    /*----------------------------------------------------------------------*/
+    /* Borra universo PAC 					                   				 */
+    /*----------------------------------------------------------------------*/
+	iResul = ifnDBDelUniPac();
+	if (iResul != 0)
+		return iResul;
+    /*----------------------------------------------------------------------*/
+    /* Inserta en cabecera universo PAC                     				 */
+    /*----------------------------------------------------------------------*/
+	iResul = ifnDBInsCabUniPac();
+	if (iResul != 0)
+		return iResul;
+
+	return iResul;
+} /* Fin ifnTratarFichero */
+
+/*===========================================================================*/
+/* Funcion donde realizamos el Update de GE_CLIENTES                         */
+/*===========================================================================*/
+int ifnModCliente()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+     char szhLetra_M    [2];
+EXEC SQL END DECLARE SECTION;
+
+   vDTrazasLog (modulo,"\n\t Funcion ifnModCliente().",LOG03);
+   sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+   strcpy(szhLetra_M,"M");
+
+   vDTrazasLog (modulo,"\t\t szhCodigoBanco   [%s].",LOG03,szhCodigoBanco);
+
+   EXEC SQL
+   UPDATE GE_CLIENTES SET
+          IND_DEBITO  = :szhLetra_M
+   WHERE  COD_CLIENTE IN ( SELECT COD_CLIENTE
+                           FROM   CO_UNIPAC
+                           WHERE  COD_BANCO = :szhCodigoBanco );
+
+   if ((SQLCODE != SQLOK) && (SQLCODE != NOTFOUND)) {
+      iDError(modulo,ERR000,vInsertarIncidencia,"En UPDATE GE_CLIENTES IND_DEBITO  = 'M'. ",SQLERRM);
+      vDTrazasError (modulo,"Error al actualizar Clientes asociados al Banco [%s]\n",LOG03,szhCodigoBanco);
+        return -1;
+   }
+
+   if (SQLCODE == NOTFOUND) {
+		vDTrazasLog (modulo,"Clientes No existen en la tabla CO_Unipac",LOG02);
+      return 0;
+   }
+
+   vDTrazasLog (modulo,"\n\t\t Modificacion indicador debito realizada.",LOG03);
+   return 0;
+} /* Fin ifnModCliente() */
+
+/*===========================================================================*/
+/* Funcion donde Insertamos en el Historico cabecera universo Pac            */
+/*===========================================================================*/
+int ifnDBInsHistCabUniPac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhUsuario    [31]; EXEC SQL VAR szhUsuario IS STRING(31);
+     char szhFecBaja    [13]; EXEC SQL VAR szhFecBaja IS STRING(13);
+     char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+     char szhYYYYMMDDHH24MI[15];
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBInsHistCabUniPac().",LOG03);
+
+    sprintf(szhUsuario    ,"%s\0", stUniverso.szUsuario);
+    sprintf(szhFecBaja    ,"%s\0", szyyyymmddhhmm);
+    sprintf(szhCodigoBanco,"%s\0", stUniverso.szCod_Banco);
+    strcpy(szhYYYYMMDDHH24MI,"YYYYMMDDHH24MI");
+
+    vDTrazasLog (modulo,"\t\t szhUsuario     [%s].",LOG03,szhUsuario);
+    vDTrazasLog (modulo,"\t\t szhFecBaja     [%s].",LOG03,szhFecBaja);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco [%s].",LOG03,szhCodigoBanco);
+
+    EXEC SQL
+    INSERT INTO CO_HCABUNIPAC
+           (COD_BANCO   , COD_BCOI    , FEC_BAJA ,
+            NOM_USUBAJA , FEC_ALTA    , NOM_USUALTA , NOM_FICH)
+    SELECT  COD_BANCO   , COD_BCOI    , TO_DATE(:szhFecBaja,:szhYYYYMMDDHH24MI),
+            UPPER(:szhUsuario),
+            FEC_ALTA    , NOM_USUALTA , NOM_FICH
+    FROM    CO_CABUNIPAC
+    WHERE   COD_BANCO = :szhCodigoBanco;
+
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"Al Insertar en Historico de cabecera. ",SQLERRM);
+        vDTrazasError (modulo,"\t Error al insertar Codigo Banco [%s] en historico\n",LOG03,szhCodigoBanco);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\n\t\t Se ha Insertado en el Historico de cabecera.",LOG03);
+
+    return 0;
+} /* Fin ifnInsHistCabUniPac() */
+
+/*===========================================================================*/
+/* Funcion en la que Borramos de la Cabecera universo Pac                    */
+/*===========================================================================*/
+int ifnDBDelCabUniPac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+EXEC SQL END DECLARE SECTION;
+
+    sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBDelCabUniPac().",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s]."       ,LOG03,szhCodigoBanco);
+
+    EXEC SQL
+    DELETE CO_CABUNIPAC
+    WHERE  COD_BANCO = :szhCodigoBanco;
+
+    if ((SQLCODE != SQLOK) && (SQLCODE != NOTFOUND)){
+        iDError(modulo,ERR000,vInsertarIncidencia,"Al Borrar cabecera universo Pac. ",SQLERRM);
+        vDTrazasError (modulo,"Error al intentar borrar Codigo Banco [%s] \n",LOG03,szhCodigoBanco);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\n\t\t Se ha Borrado de cabecera universo Pac.",LOG03);
+    return 0;
+} /* Fin ifnDBDelCabUniPac() */
+
+/*===========================================================================*/
+/* Funcion en la que Insertamos en Historico universo PAC                    */
+/*===========================================================================*/
+int ifnDBInsHistUniPac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+     char szhFecha      [13]; EXEC SQL VAR szhFecha IS STRING(13);
+     char szhYYYYMMDDHH24MI[15];
+EXEC SQL END DECLARE SECTION;
+
+    sprintf(szhCodigoBanco,"%s\0", stUniverso.szCod_Banco);
+    sprintf(szhFecha      ,"%s\0", szyyyymmddhhmm);
+    strcpy(szhYYYYMMDDHH24MI,"YYYYMMDDHH24MI");
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBInsHistUniPac().",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s].",LOG03,szhCodigoBanco);
+    vDTrazasLog (modulo,"\t\t szhFecha        [%s].",LOG03,szhFecha);
+
+    EXEC SQL
+    INSERT INTO CO_HISTUNIPAC
+           (FEC_HISTORICO, COD_CLIENTE, COD_ZONA, COD_CENTRAL,
+            NUM_TELEFONO , COD_BANCO  , COD_BCOI)
+    SELECT  TO_DATE(:szhFecha,:szhYYYYMMDDHH24MI),
+            COD_CLIENTE  , COD_ZONA   , COD_CENTRAL,
+            NUM_TELEFONO , COD_BANCO  , COD_BCOI
+    FROM    CO_UNIPAC
+    WHERE   COD_BANCO = :szhCodigoBanco;
+
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"Al Insertar en Historico Universo Pac. ",SQLERRM);
+        vDTrazasError (modulo,"Error al insertar Codigo Banco [%s] en Historico Universo Pac\n",LOG03,szhCodigoBanco);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\n\t\t Se ha Insertado Historico Universo Pac.",LOG03);
+    return 0;
+} /* ifnDBInsHistUniPac */
+
+/*===========================================================================*/
+/* Funcion que Carga Lista de Banco y Cliente                                */
+/*===========================================================================*/
+int ifnCargaUniPac()
+{
+stCoUniPac * raux;
+
+long iLastRows    ;
+int  iFetchedRows = MAXFETCH;
+int  iRetrievRows = MAXFETCH;
+int  i;
+int  iRows_Pac    ;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    long   lMaxFetch ; 
+    char   szhCodCliente    [MAXFETCH][9] ;
+    char   szhCodBanco      [MAXFETCH][16];
+    char   szhFecInicioPac  [MAXFETCH][20];
+
+    char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+    char szhFecha      [13]; EXEC SQL VAR szhFecha       IS STRING(13);
+    char szhFormato    [22];
+EXEC SQL END DECLARE SECTION;
+
+	raux 		= NULL;
+	lMaxFetch   = MAXFETCH;
+	iLastRows   = 0;
+	iRows_Pac   = 0;
+	strcpy(szhFormato,"DD-MM-YYYY hh24:mi:ss");
+    sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+    vDTrazasLog (modulo,"\n\t Funcion ifnCargaUniPac().",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s]."    ,LOG03,szhCodigoBanco);
+    /*-----------------------------------------------------------------------*/
+    /* Cursor recorre tabla CO_UNIPAC							        	 */
+    /*-----------------------------------------------------------------------*/
+    EXEC SQL DECLARE Cur_Unipac CURSOR FOR
+    SELECT  COD_CLIENTE  , COD_BANCO  ,
+            NVL(TO_CHAR(FECHA_INICIOPAC, :szhFormato),TO_CHAR(SYSDATE, :szhFormato))
+    FROM    CO_UNIPAC
+    WHERE   COD_BANCO = :szhCodigoBanco;
+
+    if ((SQLCODE != SQLOK) && (SQLCODE != NOTFOUND)) {
+         iDError(modulo,ERR000,vInsertarIncidencia,"En DECLARE Cur_Unipac. ",SQLERRM);
+         vDTrazasError (modulo,"Error al crear cursor Cur_Unipac con Codigo Banco [%s] \n",LOG03,szhCodigoBanco);
+         return -1;
+    }
+
+    EXEC SQL OPEN Cur_Unipac;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En OPEN Cur_Unipac. ",SQLERRM);
+        return -1;
+    }
+
+	while (iFetchedRows == iRetrievRows)
+    {
+      EXEC SQL 
+      for :lMaxFetch FETCH Cur_Unipac 
+		INTO  :szhCodCliente, 
+			  :szhCodBanco  , 
+			  :szhFecInicioPac;
+
+	  iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+      iLastRows    = sqlca.sqlerrd[2];
+                
+      for (i=0; i < iRetrievRows; i++)
+      {                
+      	raux = (stCoUniPac *) malloc(sizeof(stCoUniPac));
+
+         strcpy(raux->szCodCliente  , szfnTrim(szhCodCliente  [i]));
+         strcpy(raux->szCodBanco    , szfnTrim(szhCodBanco    [i]));
+         strcpy(raux->szFecInicioPac, szfnTrim(szhFecInicioPac[i]));
+
+         raux->sgte 	 = lstCoUniPac;
+         lstCoUniPac  = raux;
+			iRows_Pac++;
+		}
+	}
+
+    EXEC SQL CLOSE Cur_Unipac;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En CLOSE Cur_Unipac. ",SQLERRM);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\t\t Lista COUNIPAC cargada con [%d] Registros.",LOG03,iRows_Pac);
+
+    return 0;
+} /* ifnCargaUniPac */
+
+/*===========================================================================*/
+/* Funcion en la que Borramos en Historico PAC                               */
+/*===========================================================================*/
+int ifnDBDelUniPac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCodigoBanco[16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+EXEC SQL END DECLARE SECTION;
+
+    sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBDelUniPac().",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s].    ",LOG03,szhCodigoBanco);
+
+	EXEC SQL
+	DELETE CO_UNIPAC
+	WHERE  COD_BANCO = :szhCodigoBanco;
+
+    if ((SQLCODE != SQLOK) && (SQLCODE != NOTFOUND)){
+        iDError(modulo,ERR000,vInsertarIncidencia,"En DELETE CO_UNIPAC. ",SQLERRM);
+        vDTrazasError (modulo,"Error al intentar borrar Codigo Banco [%s] en CO_UNIPAC \n",LOG03,szhCodigoBanco);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\n\t\t Se ha Borrado Universo Pac.",LOG03);
+    return 0;
+
+} /* ifnDBDelUniPac */
+
+/*===========================================================================*/
+/* Funcion en la que Insertamos en cabecera universo PAC                     */
+/*===========================================================================*/
+int ifnDBInsCabUniPac()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    char szhUsuario     [30];  EXEC SQL VAR szhUsuario     IS STRING(30);
+    char szhFecAlta     [13];  EXEC SQL VAR szhFecAlta     IS STRING(13);
+    char szhNomFich     [256]; EXEC SQL VAR szhNomFich     IS STRING(256);
+    char szhCodigoBanco [16];  EXEC SQL VAR szhCodigoBanco IS STRING(16);
+    char szhYYYYMMDDHH24MI[15];
+    int  ihValor_Cero   = 0;
+EXEC SQL END DECLARE SECTION;
+
+    sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+    strcpy(szhUsuario, stUniverso.szUsuario);
+    strcpy(szhFecAlta, stUniverso.szFecha_Pac);
+    strcpy(szhNomFich, szFileName);
+    strcpy(szhYYYYMMDDHH24MI,"YYYYMMDDHH24MI");
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBInsCabUniPac().",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s].",LOG03,szhCodigoBanco);
+    vDTrazasLog (modulo,"\t\t szhUsuario      [%s].",LOG03,szhUsuario);
+    vDTrazasLog (modulo,"\t\t szhFecAlta      [%s].",LOG03,szhFecAlta);
+    vDTrazasLog (modulo,"\t\t szhNomFich      [%s].",LOG03,szhNomFich);
+
+
+	EXEC SQL
+    INSERT INTO CO_CABUNIPAC
+           (COD_BANCO, COD_BCOI, NOM_USUALTA,
+            FEC_ALTA , NOM_FICH)
+    VALUES (:szhCodigoBanco, :ihValor_Cero,  UPPER(:szhUsuario),
+        	   TO_DATE(:szhFecAlta,:szhYYYYMMDDHH24MI),
+        	   :szhNomFich);
+
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En INSERT INTO CO_CABUNIPAC. ",SQLERRM);
+        vDTrazasError (modulo,"Error al insertar cabecera Universo Pac, Codigo Banco [%s] en CO_CABUNIPAC\n",LOG03,szhCodigoBanco);
+        return -1;
+    }
+
+    vDTrazasLog (modulo,"\n\t\t Se ha Insertado cabecera Universo Pac.",LOG03);
+    return 0;
+
+} /* ifnDBInsCabUniPac */
+
+/*===========================================================================*/
+/* Lectura sobre el Fich pasado como Argumento                               */
+/*===========================================================================*/
+int ifnLeerFich()
+{
+int  iRetRead ;
+int  iRet     ;
+int  Tam_Reg=0;
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnLeerFich().",LOG03);
+
+    vDTrazasLog (modulo,"\t\t szhParamTMC  [%s] -  TMC1 [%s]",LOG03,szhParamTMC,TMC1);
+    Tam_Reg=atoi(szhLargo_RegTMC2);
+    if (strcmp(szhParamTMC,TMC1)==0) Tam_Reg=atoi(szhLargo_RegTMC1);
+    vDTrazasLog (modulo,"\t\t Tam_Reg [%d]\n",LOG06,Tam_Reg);
+
+    while (!feof(fpDat)) {
+
+        /*memset(szCausa  ,'\0',sizeof(szCausa)); XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+        memset(&stDatUni,'\0',sizeof(stDatUni));
+        iRetRead =  fread(&stDatUni, sizeof(char)*Tam_Reg, 1, fpDat);
+        vDTrazasLog (modulo,"stDatUni.szCodZona     [%s]",LOG06,stDatUni.szCodZona);
+        vDTrazasLog (modulo,"stDatUni.szCodCentral  [%s]",LOG06,stDatUni.szCodCentral);
+        vDTrazasLog (modulo,"stDatUni.szCodNueve    [%s]",LOG06,stDatUni.szCodNueve);
+        vDTrazasLog (modulo,"stDatUni.szCliente     [%s]",LOG06,stDatUni.szCliente);
+        vDTrazasLog (modulo,"stDatUni.szNull        [%s]",LOG06,stDatUni.szNull);
+        vDTrazasLog (modulo,"stDatUni.szCodBanco    [%s]",LOG06,stDatUni.szCodBanco);
+        vDTrazasLog (modulo,"stDatUni.szRetorno     [%s]",LOG06,stDatUni.szRetorno);
+
+        if (iRetRead != 1)    {
+            vDTrazasLog (modulo,"\n\t Fin del Fichero.",LOG03);
+            break;
+        } else  {
+
+            lCan_Reg++;
+            memset(&szCodZona,'\0',sizeof(szCodZona));
+            memcpy(szCodZona, stDatUni.szCodZona,2);
+            /*if (strcmp(szCodZona,"09")==0) {
+                strcat(szCausa,"M2 ");
+            } XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+
+            memset(&szCodCentral,'\0',sizeof(szCodCentral));
+            memcpy(szCodCentral, stDatUni.szCodCentral,2);
+            /* if (strcmp(szCodCentral,"01")==0)  {
+                strcat(szCausa,"M3 ");
+            } XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+
+            memset(&szCodNueve,'\0',sizeof(szCodNueve));
+            memcpy(szCodNueve, stDatUni.szCodNueve,1);
+            /*if (szCodNueve[0] != '9')    {
+                strcat(szCausa,"M4 ");
+            } XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+
+            memset(&szCliente,'\0',sizeof(szCliente));
+            memcpy(szCliente , stDatUni.szCliente,7);
+
+            vDTrazasLog (modulo,"\t\t # Codigo de Zona       : [%s]",LOG03,szCodZona);
+            vDTrazasLog (modulo,"\t\t # Codigo de CodCentral : [%s]",LOG03,szCodCentral);
+            vDTrazasLog (modulo,"\t\t # Codigo de Cliente    : [%s]",LOG03,szCliente);
+            vDTrazasLog (modulo,"\t\t # Codigo de Banco      : [%s]",LOG03,stUniverso.szCod_Banco);
+
+            memset(&szCodZonaUni   ,'\0'  ,sizeof(szCodZonaUni));
+            memset(&szCodCentralUni,'\0'  ,sizeof(szCodCentralUni));
+            sprintf(szCodZonaUni   ,"%s\0", szCodZona);
+            sprintf(szCodCentralUni,"%s\0", szCodCentral);
+
+	        /*---------------------------------------------------------------*/
+	        /* Valida e Inserta registro en tabla CO_UNIPAC					 */
+	        /*---------------------------------------------------------------*/
+            iRet = ifnDBInsUniPac();
+            if (iRet == 100) vDTrazasLog (modulo,"\t\t Continua con el siguiente registro ...\n",LOG03);
+            vDTrazasLog (modulo,"\t\t ########################################.\n",LOG03);
+
+        	if ((iRet != 0) && (iRet!= 100))
+        		return iRet;
+
+        }
+    }
+    return 0;
+
+} /* ifnLeerFich */
+
+/*===========================================================================*/
+/* Valida e Inserta Registro 			                                     */
+/*===========================================================================*/
+int ifnDBInsUniPac()
+{
+int iResul;
+	/*-----------------------------------------------------------------------*/
+    /* Valida Celular														 */
+	/*-----------------------------------------------------------------------*/
+	iResul = ifnDBGetCliente();
+	if (iResul == 100)
+		return 0;
+	if (iResul != 0)
+		return iResul;
+	/*-----------------------------------------------------------------------*/
+    /* Actualiza tabla de clientes                                			 */
+	/*-----------------------------------------------------------------------*/
+	if (iFile == 0)   /*TM-1001 2004-10-20 capc se agrega condición solo actualiza para TMC*/
+	{	
+	iResul = ifnDBUpdCliente();
+	if (iResul != 0)
+		return iResul;
+	}	
+	/*-----------------------------------------------------------------------*/
+    /* Inserta universo pac en tabla CO_UNIPAC                     			 */
+	/*-----------------------------------------------------------------------*/
+	iResul = ifnDBInsUniverso();
+	if (iResul != 0)
+		return iResul;
+
+    return 0;
+} /* Fin ifnDBInsUniPac() */
+
+/*===========================================================================*/
+/* Funcion :     Valida Celular                                  			 */
+/*===========================================================================*/
+int ifnDBGetCliente()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente;
+    long l_cantidad_celu;
+    char l_cod_situacion[4];
+    char l_cod_situacion2[4];
+    int  l_ind_supertel;
+    int  ihValor_Cero  = 0;
+    int  ihValor_Uno   = 1;
+    char szhBAA      [4];
+    char szhBAP      [4];
+EXEC SQL END DECLARE SECTION;
+
+    lhCodCliente    = atol(szCliente);
+    l_cantidad_celu = 0;
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBGetCliente().",LOG03);
+    vDTrazasLog (modulo,"\t\t ==> lhCodCliente  [%ld].",LOG03,lhCodCliente);
+    strcpy(szhBAA,"BAA");
+    strcpy(szhBAP,"BAP");
+
+    EXEC SQL
+    SELECT NVL( COUNT(:ihValor_Uno), :ihValor_Cero)
+    INTO   :l_cantidad_celu
+    FROM   GA_ABOCEL
+    WHERE  COD_CLIENTE  = :lhCodCliente
+    AND	 IND_SUPERTEL   = :ihValor_Cero; 
+    /*AND	 COD_SITUACION NOT IN ( :szhBAA, :szhBAP); RA-200511170144 17.11.2005 Soporte RyC  */
+
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"Al Leer Ga_Abocel con Cod_Situacion(1). ",SQLERRM);
+        vDTrazasError (modulo,"Error al consultar Codigo Cliente [%ld] en GA_ABOCEL(1)\n",LOG03,lhCodCliente);
+        return -1;
+    }
+
+	if (!l_cantidad_celu)	{
+		EXEC SQL
+		SELECT NVL(COUNT(:ihValor_Uno), :ihValor_Cero)
+		INTO   :l_cantidad_celu
+		FROM   GA_ABOCEL
+		WHERE  COD_CLIENTE = :lhCodCliente;
+
+      if (SQLCODE != SQLOK) {
+            iDError(modulo,ERR000,vInsertarIncidencia,"Al Leer Ga_Abocel. ",SQLERRM);
+            vDTrazasError (modulo,"Error al consultar Codigo Cliente [%ld] en GA_ABOCEL(2) \n",LOG03,lhCodCliente);
+            return -1;
+      }
+
+     	if (!l_cantidad_celu)  {
+            vDTrazasLog (modulo,"No se ha encontrado el Cliente.",LOG02);
+            vDTrazasError (modulo,"No se ha encontrado Codigo Cliente [%ld] en GA_ABOCEL\n",LOG03,lhCodCliente);
+            /* strcat(szCausa,"M8 ");XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+            return 100;
+
+     	} else {
+            EXEC SQL
+            SELECT NVL(COUNT(:ihValor_Uno), :ihValor_Cero)
+            INTO   :l_cantidad_celu
+            FROM   GA_ABOCEL
+            WHERE  COD_CLIENTE  = :lhCodCliente
+            AND	 IND_SUPERTEL   = :ihValor_Cero;
+
+            if (SQLCODE != SQLOK) {
+                iDError(modulo,ERR000,vInsertarIncidencia,"Al Leer Ga_Abocel con Ind_Supertel. ",SQLERRM);
+                vDTrazasError (modulo,"Error al consultar Codigo Cliente [%ld] en GA_ABOCEL(3)\n",LOG03,lhCodCliente);
+                return -1;
+            }
+
+            if (!l_cantidad_celu) {
+                vDTrazasLog (modulo,"No se ha encontrado el cliente Supertel.",LOG02);
+                vDTrazasError (modulo,"Error al consultar Codigo Cliente Supertel [%ld] en GA_ABOCEL\n",LOG03,lhCodCliente);
+                /* strcat(szCausa,"M9 "); XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+                return 100;
+
+            } else  {
+                EXEC SQL
+                SELECT	NVL(COUNT(:ihValor_Uno), :ihValor_Cero)
+                INTO    :l_cantidad_celu
+                FROM	GA_ABOCEL
+                WHERE	COD_CLIENTE = :lhCodCliente; 
+                /*AND	   COD_SITUACION NOT IN ( :szhBAA, :szhBAP); RA-200511170144 17.11.2005 Soporte RyC  */
+
+                if (SQLCODE != SQLOK) {
+                    iDError(modulo,ERR000,vInsertarIncidencia,"Al Leer Ga_Abocel con Cod_Situacion(2). ",SQLERRM);
+                    vDTrazasError (modulo,"Error al consultar Codigo Cliente [%ld] en GA_ABOCEL(3)\n",LOG03,lhCodCliente);
+                    return -1;
+                }
+
+                if (!l_cantidad_celu)  {
+                    vDTrazasLog (modulo,"CLIENTE DE BAJA.",LOG02);
+                    vDTrazasError (modulo,"CLIENTE DE BAJA [%ld]\n",LOG03,lhCodCliente);
+                    /* strcat(szCausa,"M6 "); XO-200509300773 Soporte RyC 04.10.2005 mfqg */
+                    return 100;
+                }
+			}
+		}
+	} else	{
+        vDTrazasLog (modulo,"\t\t =====> Cliente  [%ld].",LOG03,lhCodCliente);
+	}
+    return 0;
+
+} /* Fin ifnDBGetCliente */
+
+/*===========================================================================*/
+/* Funcion que actualiza la tabla de clientes                                */
+/*===========================================================================*/
+int ifnDBUpdCliente()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente;
+    char szhCodigoBanco[16] ; EXEC SQL VAR szhCodigoBanco 	IS STRING(16);
+    char szhCodBanco   [16] ; EXEC SQL VAR szhCodBanco 		IS STRING(16);
+    char szhIndDebito  [2]  ; EXEC SQL VAR szhIndDebito 	IS STRING(2);
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBUpdCliente().",LOG03);
+
+    lhCodCliente = atol(szCliente);
+    sprintf(szhCodigoBanco,"%s\0",stUniverso.szCod_Banco);
+    sprintf(szhIndDebito  ,"A\0");
+
+    vDTrazasLog (modulo,"\t\t szhIndDebito    [%s].",LOG03,szhIndDebito);
+    vDTrazasLog (modulo,"\t\t szhCodigoBanco  [%s].",LOG03,szhCodigoBanco);
+    vDTrazasLog (modulo,"\t\t lhCodCliente    [%ld].",LOG03,lhCodCliente);
+
+    EXEC SQL
+    UPDATE GE_CLIENTES SET
+           IND_DEBITO  = :szhIndDebito,
+           COD_BANCO   = :szhCodigoBanco
+    WHERE  COD_CLIENTE = :lhCodCliente;
+
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En UPDATE GE_CLIENTES. ",SQLERRM);
+        vDTrazasError (modulo,"Error al actualizar Codigo Cliente [%ld] en GE_CLIENTES \n",LOG03,lhCodCliente);
+        return -1;
+    }
+
+    return 0;
+} /* Fin ifnDBUpdCliente */
+
+/*===========================================================================*/
+/* Funcion que verifica e inserta en tabla de universo PAC                   */
+/*===========================================================================*/
+int ifnDBInsUniverso()
+{
+stCoUniPac * raux;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente;
+    char szhCodigoBanco  [16]; EXEC SQL VAR szhCodigoBanco IS STRING(16);
+    char szhCodZona      [3] ; EXEC SQL VAR szhCodZona IS STRING(3);
+    char szhCodCentral   [3] ; EXEC SQL VAR szhCodCentral IS STRING(3);
+    char szhFecha_inicio [20];
+    char szhCodNueve     [2] ; EXEC SQL VAR szhCodNueve IS STRING(2);
+    long lhCliente;
+    char szhFormato    [22];
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnDBInsUniverso()",LOG03);
+    strcpy(szhFormato,"DD-MM-YYYY hh24:mi:ss");
+    lhCodCliente = atol(szCliente);
+
+    /*XO-200509300773 Soporte RyC 04.10.2005 mfqg*/
+    /*sprintf(szhCodigoBanco ,"%s\0",stUniverso.szCod_Banco); */
+	strcpy(szhCodigoBanco,stUniverso.szCod_Banco);
+
+    /*XO-200509300773 Soporte RyC 04.10.2005 mfqg*/
+	/*XO-200509140664 Soporte RyC 14-09-2005 capc*/
+    /*EXEC SQL
+    SELECT	TO_CHAR(SYSDATE,:szhFormato)
+    INTO    :szhFecha_inicio
+    FROM	dual;
+
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"Al obtener szhFecha_inicio. ",SQLERRM);
+        vDTrazasError (modulo,"Error Al obtener szhFecha_inicio\n",LOG03);
+        return -1;
+    }*/
+  
+    strcpy(szhCodZona   , szCodZonaUni);
+    strcpy(szhCodCentral, szCodCentralUni);
+    strcpy(szhCodNueve  , szCodNueve);
+	
+	for(raux = lstCoUniPac; raux != NULL; raux = raux->sgte){
+        if (atol(raux->szCodCliente)==lhCodCliente)  {
+            sprintf(szhFecha_inicio,"%s\0",raux->szFecInicioPac);
+            vDTrazasLog (modulo,"\t\t El Cliente ya tiene casa en la estructura Co_Unipac..!!",LOG03);
+            vDTrazasLog (modulo,"\t\t Se mantiene la misma Fecha ......\n",LOG03);
+            break;
+		} else {  
+            /*XO-200509300773 Soporte RyC 04.10.2005 mfqg*/
+    		sprintf(szhFecha_inicio,"%s\0",szSysdate);
+        } /* end if (atol(raux->szCodCliente)==lhCodCliente) */
+	} /* end for */
+
+    vDTrazasLog (modulo,"\t\t ==> lhCodCliente     : [%ld]",LOG03,lhCodCliente);
+    vDTrazasLog (modulo,"\t\t ==> szhCodZona       : [%s]" ,LOG03,szhCodZona);
+    vDTrazasLog (modulo,"\t\t ==> szhCodCentral    : [%s]" ,LOG03,szhCodCentral);
+    vDTrazasLog (modulo,"\t\t ==> szhCodigoBanco   : [%s]" ,LOG03,szhCodigoBanco);
+    vDTrazasLog (modulo,"\t\t ==> szhFecha_inicio  : [%s]" ,LOG03,szhFecha_inicio);
+
+	/*-----------------------------------------------------------------------*/
+	/* Consulta existencia del cliente en tabla CO_UNIPAC					 */
+	/*-----------------------------------------------------------------------*/
+    EXEC SQL
+	SELECT COD_CLIENTE
+	INTO   :lhCliente
+	FROM   CO_UNIPAC
+	WHERE  COD_CLIENTE = :lhCodCliente;
+	/*-----------------------------------------------------------------------*/
+	/* Si existe, se actualizan datos 										 */
+	/*-----------------------------------------------------------------------*/
+	if (sqlca.sqlcode == SQLOK) {
+		EXEC SQL
+    	UPDATE CO_UNIPAC
+    	SET    COD_BANCO   = :szhCodigoBanco,
+    	       COD_CENTRAL = :szhCodCentral,
+    	       COD_BCOI    = nvl(:szhCodNueve,'0')
+    	WHERE  COD_CLIENTE = :lhCodCliente;
+
+	   if (SQLCODE != SQLOK) {
+    	    iDError(modulo,ERR000,vInsertarIncidencia,"En UPDATE CO_UNIPAC. ",SQLERRM);
+            vDTrazasError (modulo,"Error al actualizar Codigo Cliente [%ld] en CO_UNIPAC\n",LOG03,lhCodCliente);
+        	return -1;
+    	}
+
+	   vDTrazasLog (modulo,"\t\t Se ha actualizado un Registro Universo Pac.\n",LOG03);
+	   lReg_Aceptados++;
+	/*-----------------------------------------------------------------------*/
+	/* Sino existe, se ingresa registro  									 */
+	/*-----------------------------------------------------------------------*/
+	} else if (SQLCODE == NOTFOUND) {
+    	EXEC SQL
+    	INSERT INTO CO_UNIPAC
+        	  (COD_CLIENTE    ,  COD_ZONA      ,
+               COD_CENTRAL    ,  NUM_TELEFONO  ,
+	           COD_BANCO      ,  COD_BCOI      ,
+    	       FECHA_INICIOPAC  )
+	   VALUES (:lhCodCliente  ,  :szhCodZona   ,
+    	       :szhCodCentral ,  :lhCodCliente ,
+               :szhCodigoBanco,  nvl(:szhCodNueve,'0')  ,
+               TO_DATE(:szhFecha_inicio,:szhFormato));
+
+		if (SQLCODE != SQLOK) {
+    	    iDError(modulo,ERR000,vInsertarIncidencia,"En INSERT INTO CO_UNIPAC. ",SQLERRM);
+            vDTrazasError (modulo,"Error al insertar Cod_Cliente [%ld] en CO_UNIPAC \n",LOG03,lhCodCliente);
+        	return -1;
+    	}
+
+	   vDTrazasLog (modulo,"\t\t Se ha Insertado un Registro Universo Pac.\n",LOG03);
+	   lReg_Aceptados++;
+
+    }  else {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En SELECT CO_UNIPAC. ",SQLERRM);
+        return -1;
+	}
+
+	return 0;
+
+} /* ifnDBInsUniverso */
+
+/*===========================================================================*/
+/* Funcion que Carga Todos los Clientes Pac                                  */
+/*===========================================================================*/
+int ifnCargaGe_Clientes()
+{
+int iResultado;
+
+    vDTrazasLog (modulo,"\n\t Funcion ifnCargaGe_Clientes().",LOG03);
+    sprintf(szBanco_Param,"%s\0",stUniverso.szCod_Banco);
+
+	/*------------------------------------------------------------------------*/
+    /* Clientes de todos los bancos con opcion 9999								     */
+    /*------------------------------------------------------------------------*/
+    if (strcmp(szBanco_Param,szh9999)==0) {
+		iResultado = ifnCargaClientesTodoslosBancos();
+	}
+	/*-------------------------------------------------------------------------*/
+    /* Clientes TMM tarjetas												   */
+	/*-------------------------------------------------------------------------*/
+    else if (atoi(szhPacTarjeta)==0) {
+		iResultado = ifnCargaClienteConTarjetaTMM();
+	}
+	/*-------------------------------------------------------------------------*/
+    /* Clientes MPR solo tarjetas											   */
+	/*-------------------------------------------------------------------------*/
+    else iResultado = ifnCargaClienteSoloTarjetaMPR();
+	
+
+	if (iResultado < 0) return -1;
+
+    return 0;
+} /* ifnCargaGe_Clientes */
+
+/*===========================================================================*/
+/* Funcion que Carga Todos los Clientes Pac - SIN TARJETA                    */
+/* Se modifica esta funcion para utilizarla en operadora ECU y COL           */
+/*===========================================================================*/
+int ifnCargaClientesTodoslosBancos()
+{
+stGeCliente	* paux;
+long iLastRows    ;
+int  iFetchedRows = MAXFETCH;
+int  iRetrievRows = MAXFETCH;
+int  iCantidad    ;
+int  i            ;
+EXEC SQL BEGIN DECLARE SECTION;
+    long  lMaxFetch ; 
+    long  lhaCod_cliente    [MAXFETCH]   ;
+    char  szhaCod_banco     [MAXFETCH][16];EXEC SQL VAR szhaCod_banco 		IS STRING(16);
+    
+    int   ihValor_Cero  = 0;
+    int   ihValor_Uno   = 1;
+    int   ihValor_Dos   = 2;
+    int   ihValor_Tres  = 3;
+    int   ihValor_Cuatro= 4;
+    char  szhLetra_A   [2];  
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t [ifnCargaClientesTodoslosBancos].",LOG03);
+
+    paux      = NULL;
+    lMaxFetch = MAXFETCH;     
+	iLastRows = 0;
+	iCantidad = 0;
+	strcpy(szhLetra_A,"A");
+	/*---------------------------------------------------------------------------*/
+	/* Seleccion del universo de datos a procesar  						         */
+	/*---------------------------------------------------------------------------*/
+    EXEC SQL DECLARE CUR_SINTARJETA CURSOR FOR
+    SELECT COD_CLIENTE, DECODE(COD_SISPAGO,:ihValor_Tres,COD_BANCO,:ihValor_Cuatro,COD_BANCOTARJ,:ihValor_Cero) AS COD_BANCO
+    FROM   GE_CLIENTES
+    WHERE  ( COD_BANCO   != :szh1001 OR COD_BANCOTARJ != :szh1001 )  /*XO-200509140664 Soporte RyC 14-09-2005 capc*/
+    AND    COD_SISPAGO IN (:ihValor_Tres,:ihValor_Cuatro)
+    AND    IND_DEBITO  = :szhLetra_A
+    AND    FEC_BAJA IS NULL
+	AND    COD_OPERADORA = :szhOperadora
+	ORDER BY COD_BANCO;
+
+	EXEC SQL OPEN CUR_SINTARJETA;
+	if (SQLCODE != SQLOK) {
+	    iDError(modulo,ERR000,vInsertarIncidencia,"En OPEN CUR_SINTARJETA. ",SQLERRM);
+	    return -1;
+	}
+
+	while (iFetchedRows == iRetrievRows)
+    {
+         EXEC SQL 
+			for :lMaxFetch FETCH CUR_SINTARJETA 
+           INTO :lhaCod_cliente ,
+                :szhaCod_banco  ;
+              
+		 iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+         iLastRows    = sqlca.sqlerrd[2];
+                
+         for (i=0; i < iRetrievRows; i++)
+         {                
+			paux = (stGeCliente *) malloc (sizeof(stGeCliente));
+
+            strcpy(paux->szCodBanco    , szfnTrim(szhaCod_banco[i]));
+            paux->lCodCliente = lhaCod_cliente[i];
+            paux->sgte 		  = lstGeCliente;
+            lstGeCliente 	  = paux;
+            iCantidad++;                
+            iContCli++;
+            lCan_Reg++;
+
+            vDTrazasLog (modulo,"\n\t\t iCantidad ........[%d] ",LOG03,iCantidad);
+            vDTrazasLog (modulo,"\t\t lhaCod_cliente .....[%ld]",LOG03,paux->lCodCliente)   ;
+            vDTrazasLog (modulo,"\t\t szhaCod_banco ......[%s]" ,LOG03,paux->szCodBanco)    ;
+
+			}
+	}
+
+   EXEC SQL CLOSE CUR_SINTARJETA;
+   if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En CLOSE CUR_SINTARJETA. ",SQLERRM);
+        return -1;
+   }
+
+   vDTrazasLog (modulo, "\n(ifnCargaClientesTodoslosBancos) Clientes Extraidos :[%d].\n",LOG03, iCantidad); 
+   return 0;
+
+}/* ifnCargaClientesTodoslosBancos */
+
+/*===========================================================================*/
+/* Funcion que Carga Todos los Clientes Pac - CON TARJETA                    */
+/*===========================================================================*/
+int ifnCargaClienteConTarjetaTMM()
+{
+stGeCliente	* paux;
+
+long iLastRows    ;
+int  iFetchedRows = MAXFETCH;
+int  iRetrievRows = MAXFETCH;
+int  iCantidad    ;
+int  i            ;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    long  lMaxFetch ; 
+    long  lhaCod_cliente    [MAXFETCH];
+    char  szhaCod_banco     [MAXFETCH][16];EXEC SQL VAR szhaCod_banco 		IS STRING(16);
+    char  szhaCod_bancoTarj [MAXFETCH][16];EXEC SQL VAR szhaCod_bancoTarj 	IS STRING(16);
+    int   ihaCod_Sispago	[MAXFETCH];
+    int   ihValor_Cero  = 0;
+    int   ihValor_Tres  = 3;
+    int   ihValor_Cuatro= 4;
+    char  szhLetra_A   [2];  
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t ifnCargaClienteConTarjetaTMM.   Banco_Param [%s]",LOG03,szBanco_Param);
+
+	paux      = NULL;
+    lMaxFetch = MAXFETCH;     
+	iLastRows = 0;
+	iCantidad = 0;
+	strcpy(szhLetra_A,"A");
+	/*---------------------------------------------------------------------------*/
+	/* Seleccion del universo de datos a procesar  						         */
+	/*---------------------------------------------------------------------------*/
+    EXEC SQL DECLARE CUR_CONTARJETA CURSOR FOR
+	SELECT COD_CLIENTE, NVL(COD_BANCO,:ihValor_Cero), NVL(COD_BANCOTARJ,:ihValor_Cero), COD_SISPAGO
+	FROM   GE_CLIENTES
+	WHERE  COD_SISPAGO   IN (:ihValor_Tres,:ihValor_Cuatro)
+	AND    (COD_BANCOTARJ= :szBanco_Param OR COD_BANCO = :szBanco_Param)
+	AND    IND_DEBITO    = :szhLetra_A
+	AND    FEC_BAJA      IS NULL
+	AND    COD_OPERADORA = :szhOperadora
+	ORDER BY COD_BANCO,COD_CLIENTE;
+
+    EXEC SQL OPEN CUR_CONTARJETA;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En OPEN CUR_CONTARJETA. ",SQLERRM);
+        return -1;
+    }
+
+    while (iFetchedRows == iRetrievRows)
+    {
+		EXEC SQL 
+		for  :lMaxFetch FETCH CUR_CONTARJETA 
+		INTO :lhaCod_cliente    ,
+		    	:szhaCod_banco    ,
+		    	:szhaCod_bancoTarj,
+		    	:ihaCod_Sispago   ;
+
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+		iLastRows    = sqlca.sqlerrd[2];
+                
+		for (i=0; i < iRetrievRows; i++)
+        {                
+			paux = (stGeCliente *) malloc(sizeof(stGeCliente));
+				
+            /* si cod_sispago es 3 corresponde el cod_banco sino cod_banco tarjeta*/
+            if (ihaCod_Sispago[i]==3)  {
+					strcpy(paux->szCodBanco    , szfnTrim(szhaCod_banco[i]));
+				} else {
+					strcpy(paux->szCodBanco    , szfnTrim(szhaCod_bancoTarj[i]));
+				    vDTrazasLog (modulo,"\n\t\t Cambiando Cod_banco por Cod_BancoTarj",LOG03);
+				    /* 16-05-2005 GAC. Se reversa esta homologacion por aportar solucion solo a TMM y no a las demas operadoras. 
+				    strcpy(paux->szCodBanco    , szfnTrim(szhaCod_banco[i]));  20-10-2004 capc TM-1001 No debe cambiar cod_banco por cod_bancotarj, si es TDC. MAntiene cod_banco Original */
+				}
+
+				paux->lCodCliente = lhaCod_cliente[i];
+				paux->sgte 		  = lstGeCliente;
+				lstGeCliente 	  = paux;
+				iCantidad++;                
+				iContCli++;
+				lCan_Reg++;
+				
+				vDTrazasLog (modulo,"\n\t\t iCantidad ........[%d] ",LOG03,iCantidad);
+				vDTrazasLog (modulo,"\t\t lhaCod_cliente .....[%ld]",LOG03,paux->lCodCliente);
+				vDTrazasLog (modulo,"\t\t szhaCod_banco ......[%s]",LOG05,paux->szCodBanco );
+				vDTrazasLog (modulo,"\t\t szhaCod_bancoTarj ..[%s]",LOG05,szhaCod_bancoTarj[i] );
+
+		}
+	}
+
+    EXEC SQL CLOSE CUR_CONTARJETA;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En CLOSE CUR_CONTARJETA. ",SQLERRM);
+        return -1;
+    }
+
+    vDTrazasLog (modulo, "\n\t\t*** Clientes Extraidos con Tarjeta :[%ld].\n",LOG03,iCantidad);        
+    return 0;
+
+}/* ifnCargaClienteConTarjetaTMM */
+
+/*===========================================================================*/
+/* Funcion que Carga Todos los Clientes Pac - SOLO TARJETA                   */
+/*===========================================================================*/
+int ifnCargaClienteSoloTarjetaMPR()
+{
+stGeCliente	* paux;
+
+long iLastRows    ;
+int  iFetchedRows = MAXFETCH;
+int  iRetrievRows = MAXFETCH;
+int  iCantidad    ;
+int  i            ;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    long  lMaxFetch ; 
+    long  lhaCod_cliente    [MAXFETCH]   ;
+    char  szhaCod_banco     [MAXFETCH][16];EXEC SQL VAR szhaCod_banco 		IS STRING(16);
+    char  szhaCod_bancoTarj [MAXFETCH][16];EXEC SQL VAR szhaCod_bancoTarj 	IS STRING(16);
+    int   ihaCod_Sispago		[MAXFETCH];
+    int   ihValor_Cero  = 0;
+    int   ihValor_Tres  = 3;
+    int   ihValor_Cuatro= 4;
+    char  szhLetra_A   [2];  
+EXEC SQL END DECLARE SECTION;
+
+   vDTrazasLog (modulo,"\n\t [ifnCargaClienteSoloTarjetaMPR].",LOG03);
+
+   paux      = NULL;
+   lMaxFetch = MAXFETCH;     
+	iLastRows = 0;
+	iCantidad = 0;
+	strcpy(szhLetra_A,"A");
+	/*---------------------------------------------------------------------------*/
+	/* Seleccion del universo de datos a procesar  						         */
+	/*---------------------------------------------------------------------------*/
+   EXEC SQL DECLARE CUR_SOLOTARJETA CURSOR FOR
+	SELECT COD_CLIENTE, NVL(COD_BANCO,:ihValor_Cero), NVL(COD_BANCOTARJ,:ihValor_Cero), COD_SISPAGO
+   FROM   GE_CLIENTES
+   WHERE  COD_SISPAGO IN (:ihValor_Tres,:ihValor_Cuatro)
+	AND    COD_BANCO  = :szBanco_Param
+   AND    IND_DEBITO = :szhLetra_A
+   AND    FEC_BAJA IS NULL
+	AND    COD_OPERADORA  = :szhOperadora
+	ORDER BY COD_BANCO,COD_CLIENTE;
+
+   EXEC SQL OPEN CUR_SOLOTARJETA;
+   if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En OPEN CUR_SOLOTARJETA. ",SQLERRM);
+        return -1;
+   }
+
+   while (iFetchedRows == iRetrievRows)
+   {
+			EXEC SQL 
+         for :lMaxFetch FETCH CUR_SOLOTARJETA 
+         INTO	:lhaCod_cliente   ,
+              	:szhaCod_banco    ,
+              	:szhaCod_bancoTarj,
+		    		:ihaCod_Sispago   ;
+
+			iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+         iLastRows    = sqlca.sqlerrd[2];
+                
+         for (i=0; i < iRetrievRows; i++)
+         {                
+               paux = (stGeCliente *) malloc(sizeof(stGeCliente));
+
+	            /* si cod_sispago es 3 corresponde el cod_banco sino cod_banco tarjeta*/
+	            if (ihaCod_Sispago[i]==3)  {
+               	strcpy(paux->szCodBanco    , szfnTrim(szhaCod_banco[i]));
+               } else {
+               	strcpy(paux->szCodBanco    , szfnTrim(szhaCod_bancoTarj[i]));
+                  vDTrazasLog (modulo,"\n\t\t Cambiando Cod_banco por Cod_BancoTarj",LOG03);
+					}
+
+               paux->lCodCliente = lhaCod_cliente[i];
+               paux->sgte 		  = lstGeCliente;
+               lstGeCliente 	  = paux;
+               iCantidad++;                
+               iContCli++;
+               lCan_Reg++;
+
+               vDTrazasLog (modulo,"\n\t\t iCantidad ........[%d] ",LOG03,iCantidad);
+               vDTrazasLog (modulo,"\t\t lhaCod_cliente .....[%ld]",LOG03,paux->lCodCliente);
+               vDTrazasLog (modulo,"\t\t szhaCod_banco ......[%s]" ,LOG03,paux->szCodBanco);
+               vDTrazasLog (modulo,"\t\t szhaCod_bancoTarj ..[%s]" ,LOG03,szhaCod_bancoTarj[i]);
+			}
+	}
+
+    EXEC SQL CLOSE CUR_SOLOTARJETA;
+    if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En CLOSE CUR_SOLOTARJETA. ",SQLERRM);
+        return -1;
+    }
+
+    vDTrazasLog (modulo, "\n(ifnCargaClienteConTarjetaMPR) Clientes Extraidos solo Tarjeta :[%ld].\n",LOG03,iCantidad);        
+    return 0;
+
+}/* ifnCargaClienteSoloTarjetaMPR */
+
+/*===========================================================================*/
+/* Funcion que Recorre la estructura de  clientes                            */
+/*===========================================================================*/
+int ifnRecorreStrucClie()
+{
+stGeCliente * paux;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables 													 */
+/*---------------------------------------------------------------------------*/
+char  szBanco_Ant [16];
+
+   vDTrazasLog (modulo,"\n\tFuncion ifnRecorreStrucClie().",LOG03);
+   vDTrazasLog (modulo,"\t\tRecorremos la Lista de Clientes.",LOG03);
+
+	for(paux = lstGeCliente; paux != NULL; paux = paux->sgte)
+	{
+   	vDTrazasLog (modulo,"\n\t<<<<<< ================================================================== >>>>>>",LOG03);
+
+vDTrazasLog (modulo,"\t\t ==> stUniverso.szCod_Banco  : [%s]" ,LOG03,stUniverso.szCod_Banco);
+
+    	if (iUnaVez == 0)  {
+        	/*Recogemos la descripcion del banco */
+        	sprintf(stUniverso.szCod_Banco,"%s\0",paux->szCodBanco);
+	      if (ifnDBObtDescBanco()!=0) return -1;
+        	if (ifnCargaUniPac()   !=0) return -1;
+        	if (ifnTratarFichero() !=0) return -1;
+
+			iUnaVez = 1;
+    		sprintf(szBanco_Ant,"%s\0",paux->szCodBanco);
+    	}
+
+		sprintf(szCliente,"%ld\0",paux->lCodCliente);
+		vDTrazasLog (modulo,"\t\t szCliente          [%s]",LOG03,szCliente);
+		vDTrazasLog (modulo,"\t\t paux->lCodCliente  [%ld]",LOG03,paux->lCodCliente);
+
+      if (strcmp(szBanco_Param,szh9999)==0)  {
+      	if (strcmp(szBanco_Ant,paux->szCodBanco)!=0) {
+	          vDTrazasLog (modulo,"\t ******************************************  ",LOG03);
+	          vDTrazasLog (modulo,"\t\t szBanco_Ant       [%s]",LOG03,szBanco_Ant);
+	          vDTrazasLog (modulo,"\t\t paux->szCod_banco [%s]",LOG03,paux->szCodBanco);
+	          sprintf(stUniverso.szCod_Banco,"%s\0",paux->szCodBanco);
+	
+	          /*Recogemos la descripcion del banco */
+	          if (ifnDBObtDescBanco()!=0) return -1;
+	          if (ifnCargaUniPac()   !=0) return -1;
+	          if (ifnTratarFichero() !=0) return -1;
+	          
+         }
+         sprintf(szBanco_Ant,"%s\0",paux->szCodBanco);
+      }
+
+vDTrazasLog (modulo,"\t\t ==> stUniverso.szCod_Banco  : [%s]" ,LOG03,stUniverso.szCod_Banco);
+
+      if (ifnDBInsUniPac()!=0) return -1;	
+	}
+
+    vDTrazasLog (modulo,"\t Fin a ifnRecorreStrucClie()\n",LOG03);
+    return 0;
+} /* ifnRecorreStrucClie */
+
+/*===========================================================================*/
+/* Funcion : ifnGed_ParametrosPac                                            */
+/*===========================================================================*/
+int ifnGed_ParametrosPac()
+{
+char szNulo        [2] ;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+     char  szhCod_Banco   [20];
+     
+     char  szhModulo 		[3];
+     char  szhPAGOPAC_TARJETA [16];
+     char  szhTARJETA_PAC_MPR [16];
+     char  szhPAC_MASIVO_MPR  [15];
+     char  szhLARGO_UNI_TMC1  [15];
+     char  szhLARGO_UNI_TMC2  [15];
+EXEC SQL END DECLARE SECTION;
+
+    szNulo   [0]=' ';
+    sprintf(szhCod_Banco,"%s\0",stUniverso.szCod_Banco);
+    strcpy(szhModulo,"RE");
+    strcpy(szhPAGOPAC_TARJETA,"PAGOPAC_TARJETA");
+    strcpy(szhTARJETA_PAC_MPR,"TARJETA_PAC_MPR");
+    strcpy(szhPAC_MASIVO_MPR,"PAC_MASIVO_MPR");
+    strcpy(szhLARGO_UNI_TMC1,"LARGO_UNI_TMC1");
+    strcpy(szhLARGO_UNI_TMC2,"LARGO_UNI_TMC2");
+
+    vDTrazasLog (modulo,"\t ifnGed_ParametrosPac()",LOG03);
+    vDTrazasLog (modulo,"\t\t szhCod_Banco [%s]\n" ,LOG03,szhCod_Banco);
+
+    /*-----------------------------------------------------------------------*/
+    /* Parametros Generales										         	 */
+    /*-----------------------------------------------------------------------*/
+    EXEC SQL
+    SELECT VAL_PARAMETRO INTO :szhPacTarjeta
+    FROM   GED_PARAMETROS
+    WHERE  COD_MODULO    = :szhModulo
+    AND    NOM_PARAMETRO = :szhPAGOPAC_TARJETA;
+    if (SQLCODE == NOTFOUND) {
+		strcpy(szhPacTarjeta , "0");
+    	vDTrazasLog (modulo,"\t\t * Warning...Parametro PAGOPAC_TARJETA no existe en tabla GED_PARAMETROS",LOG03);
+
+    } else if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"SELECT VAL_PARAMETRO [PAGOPAC_TARJETA]. ",SQLERRM);
+        return -1;
+    }
+
+    /*-----------------------------------------------------------------------*/
+    /* Parametros para MPR 										         	 */
+    /*-----------------------------------------------------------------------*/
+    EXEC SQL
+    SELECT VAL_PARAMETRO INTO :szh1001
+    FROM   GED_PARAMETROS
+    WHERE  COD_MODULO    = :szhModulo
+    AND    NOM_PARAMETRO = :szhTARJETA_PAC_MPR;
+    if (SQLCODE == NOTFOUND) {
+		strcpy(szh1001 , szNulo);
+    	vDTrazasLog (modulo,"\t\t * Warning...Parametro TARJETA_PAC_MPR no existe en tabla GED_PARAMETROS",LOG03);
+    }
+    else if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"SELECT VAL_PARAMETRO [TARJETA_PAC_MPR]. ",SQLERRM);
+        vDTrazasError (modulo,"Error de parametro en tabla GED_PARAMETROS [TARJETA_PAC_MPR]\n",LOG03);
+        return -1;
+    }
+
+    EXEC SQL
+    SELECT VAL_PARAMETRO INTO :szh9999
+    FROM   GED_PARAMETROS
+    WHERE  COD_MODULO    = :szhModulo
+    AND    NOM_PARAMETRO = :szhPAC_MASIVO_MPR;
+    if (SQLCODE == NOTFOUND) {
+		strcpy(szh9999 , szNulo);
+    	vDTrazasLog (modulo,"\t\t * Warning...Parametro PAC_MASIVO_MPR no existe en tabla GED_PARAMETROS",LOG03);
+    }
+    else if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"SELECT VAL_PARAMETRO [PAC_MASIVO_MPR]. ",SQLERRM);
+        vDTrazasError (modulo,"Error de parametro en tabla GED_PARAMETROS [PAC_MASIVO_MPR].\n",LOG03);
+        return -1;
+    }
+
+    /*-----------------------------------------------------------------------*/
+    /* Parametros para TMC 										         	 */
+    /*-----------------------------------------------------------------------*/
+    EXEC SQL
+    SELECT VAL_PARAMETRO  INTO :szhLargo_RegTMC1
+    FROM   GED_PARAMETROS
+    WHERE  COD_MODULO = :szhModulo
+    AND    NOM_PARAMETRO = :szhLARGO_UNI_TMC1;
+    if (SQLCODE == NOTFOUND) {
+		strcpy(szhLargo_RegTMC1 , szNulo);
+    	vDTrazasLog (modulo,"\t\t * Warning...Parametro LARGO_UNI_TMC1 no existe en tabla GED_PARAMETROS",LOG03);
+    }
+    else if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"SELECT VAL_PARAMETRO [LARGO_UNI_TMC1]. ",SQLERRM);
+        vDTrazasError (modulo,"Error de parametro en tabla GED_PARAMETROS [LARGO_UNI_TMC1].\n",LOG03);
+        return -1;
+    }
+
+    EXEC SQL
+    SELECT VAL_PARAMETRO  INTO :szhLargo_RegTMC2
+    FROM   GED_PARAMETROS
+    WHERE  COD_MODULO = :szhModulo
+    AND    NOM_PARAMETRO = :szhLARGO_UNI_TMC2;
+    if (SQLCODE == NOTFOUND) {
+		strcpy(szhLargo_RegTMC2 , szNulo);
+    	vDTrazasLog (modulo,"\t\t * Warning...Parametro LARGO_UNI_TMC2 no existe en tabla GED_PARAMETROS",LOG03);
+    }
+    else if (SQLCODE != SQLOK) {
+        iDError(modulo,ERR000,vInsertarIncidencia,"SELECT VAL_PARAMETRO [LARGO_UNI_TMC2]. ",SQLERRM);
+        vDTrazasError (modulo,"Error de parametro en tabla GED_PARAMETROS [LARGO_UNI_TMC2].\n",LOG03);
+        return -1;
+    }
+
+    return 0;
+} /* ifnGed_ParametrosPac */
+
+/*===========================================================================*/
+/* Funcion : bfnInicio                                                       */
+/*===========================================================================*/
+int ifnInicio ( UNIV_PAC *stUniverso, STATUS *pstStatus )
+{
+int  iRes=0;
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhDdmmyyyyhhmiss[22];
+     char szhHh24miss      [11];
+     char szhYyyymmdd      [9];
+     char szhYYYYMMDDHH24MI[15];
+EXEC SQL END DECLARE SECTION ;
+
+   strcpy(szhDdmmyyyyhhmiss,"dd-mm-yyyy hh24:mi:ss");
+   strcpy(szhHh24miss,"hh24:mi:ss");
+   strcpy(szhYyyymmdd,"yyyymmdd");
+   strcpy(szhYYYYMMDDHH24MI,"yyyymmddhh24mi");
+	/*-----------------------------------------------------------------------*/
+	/* Obtenemos la Fecha y hora del Sistema 								 */
+	/*-----------------------------------------------------------------------*/
+	EXEC SQL EXECUTE
+		BEGIN
+			:szSysdate 		 :=TO_CHAR(SYSDATE,:szhDdmmyyyyhhmiss);
+			:szHora	  		 :=TO_CHAR(SYSDATE,:szhHh24miss);
+			:szFechayyyymmdd:=TO_CHAR(SYSDATE,:szhYyyymmdd);
+			:szyyyymmddhhmm :=TO_CHAR(SYSDATE,:szhYYYYMMDDHH24MI);
+		END;
+	END-EXEC;
+
+
+	/*-----------------------------------------------------------------------*/
+    /* Inicializacion de Archivos LOG y Error								 */
+	/*-----------------------------------------------------------------------*/
+    iRes=ifnAbreArchivosLog();
+    if (iRes!=0) return iRes;
+
+    strcpy (modulo,"Universo Pac");
+    pstStatus->LogNivel = stUniverso->iNivelLog;
+
+    vDTrazasError(modulo,
+    "\n     *******************************************************************"
+    "\n     *%s      ERRORES EN UNIVERSO PAC          HORA: %s     *"
+    "\n     *******************************************************************\n", LOG03,szVersion,szHora);
+
+
+    return 0;
+}/* bfnInicio */
+
+/*===========================================================================*/
+/* Funcion que abre los archivos de log y de error                           */
+/*===========================================================================*/
+int ifnAbreArchivosLog()
+{
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables 									         		 */
+/*---------------------------------------------------------------------------*/
+char *pathDir            ;
+char szFileNamePac [1024];
+char szArchivo     [32]   ="" ;
+char szComando     [128]  ="" ;
+char szPath        [128]  ="" ;
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    char szPathUniverso [250]; EXEC SQL VAR szPathUniverso 	IS STRING(250);
+    char szPathPac      [250]; EXEC SQL VAR szPathPac 		IS STRING(250);
+EXEC SQL END DECLARE SECTION;
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    if (iFile == 0) {
+	         sprintf(szArchivo,szFileName);
+    } else  {
+	         sprintf(szArchivo,"universo");
+    }
+
+    /*-----------------------------------------------------------------------*/
+    /* Obtencion del path de los archivos 						         	 */
+    /*-----------------------------------------------------------------------*/
+    EXEC SQL
+    SELECT PATHUNIVERSO   , PATHPAC
+    INTO   :szPathUniverso, :szPathPac
+    FROM   CO_DATGEN;
+    if (SQLCODE != SQLOK) {
+	    fprintf( stderr, "\n Error En SELECT PATHUNIVERSO - %s\n",SQLERRM);
+        return -1;
+    }
+
+    sprintf(szPath  ,"%s%s",szPathUniverso,szFechayyyymmdd);
+    sprintf(szComando,"/usr/bin/mkdir -m 777 -p %s", szPath);
+    system (szComando);
+
+    /*-----------------------------------------------------------------------*/
+    /* Modifica permisos de escritura en path					         	 */
+    /*-----------------------------------------------------------------------*/
+    if (iCambiaPermisos(szPath)!=0)
+	return -1;
+
+    /*-----------------------------------------------------------------------*/
+    /* Creando archivos LOG , ERR y de datos 					         	 */
+    /*-----------------------------------------------------------------------*/
+	sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+	    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+	    return -221;
+	}
+    printf("Creando Archivo de Error en : %s\n\n",szPath);
+
+	sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+	    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+    	return -222;
+    }
+    printf("Creando Archivo de Log en : %s\n\n",szPath);
+
+
+	if (iFile == 0) {
+        printf("Leyendo Archivo de datos : [%s%s]\n",szPathPac,szFileName);
+    	sprintf(szFileNamePac,"%s%s\0",szPathPac,szFileName);
+    	if ((fpDat=fopen(szFileNamePac,"r")) == (FILE *)NULL) {
+            vDTrazasLog (modulo,"\t Fallo al abrir Fichero de datos [%s].",LOG01,szFileNamePac);
+    		return -223;
+    	}
+    }
+
+    return 0;
+}/* ifnAbreArchivosLog */
+
+/*===========================================================================*/
+/* Funcion que crea un directorio, usando el path y nombre que se entregan   */
+/* como parametros. Si el directorio ya existe, no se considera error,       */
+/* pero si un componente del path falta (no esta creado), la funcion         */
+/* devuelve un error (valor -1).                                             */
+/* USA UNA LLAMADA A SISTEMA                                                 */
+/* SAAM-20030509 se utiliza esta funcion para que no se inhiban los          */
+/* permisos debido a diferencias de mascaras entre las cuentas               */
+/*===========================================================================*/
+int iCambiaPermisos (char *pszDir)
+{
+   char  szComando[1024] = ""    ;
+
+   sprintf(szComando,"/usr/bin/chmod 777 %s", pszDir);
+   fprintf(stderr, "\nComando : %s\n",szComando);
+
+    if (system (szComando))   {
+        if (errno!=17) { /* Directorio existe */
+                fprintf(stderr, "Fallo en los cambios de permisos del directorio \n[%s]\n", pszDir);
+                fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+                fprintf(stderr, "Proceso se cancela.\n");
+                return(1);
+        }
+    }
+
+    return(0);
+} /* iCambiaPermisos */
+
+/*===========================================================================*/
+/* QUITA LOS ESPACIOS EN BLANCO AL INICIO Y AL FINAL DE UNA CADENA DE        */
+/* CARACTERES                                                                */
+/*===========================================================================*/
+char * szfnTrim(char * strin)
+{
+        int  i= 0,l=0;
+        char strtmps[STR_HUGE];
+  
+        memset(strtmps, 0, STR_LONG);
+        
+        while (*(strin + i) == ' ') 
+                i++;
+         
+        strcpy(strtmps,(strin + i));    
+         
+        
+        l = strlen(strtmps) - 1;
+        while ((l >= 0) && ((*(strtmps + l ) == ' ')||(*(strtmps + l ) == '\n')))
+        {        
+                *(strtmps + l ) = '\0';l--;
+        }
+        
+        strcpy(strin,strtmps);
+        return(strin);
+}/* szfnTrim */
+
+/*===========================================================================*/
+/* Libera espacio de memoria stGeCliente							         */
+/*===========================================================================*/
+void vLiberaGeCliente(stGeCliente * paux)
+{
+	if (paux == NULL)
+		return;
+	vLiberaGeCliente(paux->sgte);	
+	free(paux);
+} /*vLiberaGeCliente*/
+
+/*===========================================================================*/
+/* Libera espacio de memoria stGeCliente							         */
+/*===========================================================================*/
+void vLiberaCoUniPac(stCoUniPac * paux)
+{
+	if (paux == NULL)
+		return;
+	vLiberaCoUniPac(paux->sgte);	
+	free(paux);
+} /*vLiberaCoUniPac*/
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

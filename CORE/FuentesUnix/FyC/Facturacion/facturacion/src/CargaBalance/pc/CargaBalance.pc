@@ -1,0 +1,2137 @@
+/* *********************************************************************** */
+/* *  Fichero : CargaBalance.pc                                          * */
+/* *  Carga tablas de balance                                            * */
+/* *  Autor : Nelson Contreras Helena                                    * */
+/* *  Modif : 03-06-2004                                                 * */
+/* *  Parametros :  Codigo de Ciclo de Facturacion                       * */
+/* *            Cliente Inicial                                          * */
+/* *            Cliente Final                                            * */
+/* *            Nivel de log                                             * */
+/* *********************************************************************** */
+
+#include <deftypes.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include "CargaBalance.h"
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+
+EXEC SQL INCLUDE sqlca;
+
+char    szFecha[20] = ""  ;
+long    lContClientes   = 0;
+
+
+/*
+ * Funcion      : bfnPrepare
+ * Descripcion  : Funcion se encarga de preparar el cursor y update de tabla ciclo
+ */
+/*
+BOOL bfnPrepare ()
+ {
+	char szAux2[200];
+
+    sprintf(szAux2, "SELECT ROUND(TOT_CARGOSME, 2) FROM FA_FACTDOCU_%d WHERE COD_CLIENTE = :CodCliente ", stLineaComando.iCodCiclFact);
+
+    vDTrazasLog("CargaBalance", "QUERY [%s]\n", LOG03, szAux2);
+
+    EXEC SQL PREPARE SELECT_CARGO_MENS FROM :szAux2;
+    if (sqlca.sqlcode != SQLOK) 
+    {
+        vDTrazasLog  ("CargaBalance",	"\n\t**  Error en SQL-PREPARE Select CARGOSMEnsual  **"
+		                                "\n\t\t=> Error : [%d]  [%s] "
+		                                ,LOG01, SQLCODE,SQLERRM);
+    	return (FALSE);
+	}
+
+    EXEC SQL DECLARE CUR_CARGO_MENS CURSOR FOR SELECT_CARGO_MENS;
+    if (sqlca.sqlcode != SQLOK)  
+    {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-DECLARE CURSOR Select CARGOSMEnsual  **"
+                                "\n\t\t=> Error : [%d]  [%s] "
+                                ,LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+    sprintf(szAux2, "UPDATE FA_FACTDOCU_%d SET TOT_PAGAR = :TotPagar WHERE COD_CLIENTE = :CodCliente "
+    			  , stLineaComando.iCodCiclFact);
+
+    vDTrazasLog("CargaBalance", "QUERY [%s]\n", LOG05, szAux2);
+
+    EXEC SQL PREPARE UPDATE_TOT_PAGAR FROM :szAux2;
+    if (sqlca.sqlcode != SQLOK) {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-PREPARE Update Tot_Pagar  **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+	return (1);
+}
+*/
+
+int iUpdateFatBalance (long lCodCliente)
+{
+    int     i;
+    long    TotalRegs=0;
+    double  FatBalance[10];
+	char szAux2[200];
+
+    EXEC SQL BEGIN DECLARE SECTION;
+            double  dhMonto[10];    /* [CANTIDAD_CAMPO_FATBALANCE] */
+            int     ihItem[10];
+            long    CodCli;
+            double  dTotCargosMes;
+            double  dTotalAPagar;
+/* 20040310 TM-200403030552 Respaldo Total Real a Pagar */
+            double  dTotalAPagarReal;
+            char    szFecDesde[15];EXEC SQL VAR szFecDesde IS STRING (15);
+            const int     ihValorUno   = 1;
+            const int     ihValorDos   = 2;
+            const int     ihValorCinco = 5;
+            const int     ihValorSeis = 6;
+            const int     ihValorSiete = 7;
+            const int     ihValorOcho = 8;
+    EXEC SQL END DECLARE SECTION;
+
+    CodCli = lCodCliente;
+
+    /* SE RECUPERA EL SALDO TOTAL */
+    strcpy(szFecDesde, sthFaCicloFact.szhFecDesdeLLam);
+
+    vDTrazasLog("CargaBalance", "QRY:SELECT Fat_Balance, Cliente[%ld]\n", LOG05, CodCli);
+
+    for (i=0;i<10;i++) { /* Inicializamos Array */
+         dhMonto[i] = 0;
+         FatBalance[i] = 0;
+        }
+
+    EXEC SQL SELECT ROUND(SUM(IMP_DOCUMENTO), :ihValorDos), COD_ITEM
+            INTO    :dhMonto,:ihItem
+            FROM FAT_BALANCE
+            WHERE COD_ITEM BETWEEN :ihValorUno AND :ihValorCinco
+            AND COD_CLIENTE = :CodCli
+            GROUP BY COD_ITEM;
+
+    if (sqlca.sqlcode < SQLOK && sqlca.sqlcode != SQLNOTFOUND)  {
+        vDTrazasLog("CargaBalance", "Error en ejecucion del SELECT SQLCODE[%d]", LOG05, sqlca.sqlcode);
+        return(FALSE);
+    }
+
+    TotalRegs = sqlca.sqlerrd[2];
+    vDTrazasLog("CargaBalance", "Fat _Balance[%ld] Registros\n", LOG05, TotalRegs);
+    for (i=0;i<TotalRegs;i++) 
+    {
+    	vDTrazasLog("CargaBalance", "QRY:SELECT FatBalance[%d] = [%f];\n", LOG05, i, dhMonto[i]);
+        FatBalance[ihItem[i]] = dhMonto[i];
+    }
+
+    /*sprintf(szAux2, "SELECT ROUND(TOT_CARGOSME, 2) FROM FA_FACTDOCU_%d WHERE COD_CLIENTE = :CodCliente ", stLineaComando.iCodCiclFact);*/
+		/*Se agrega esta condicion (AND COD_TIPDOCUM=2) de acuerdo a la INC 186409 - JHJ - 19-07-2012*/	
+	sprintf(szAux2, "SELECT ROUND(TOT_CARGOSME, 2) FROM FA_FACTDOCU_%d WHERE COD_CLIENTE = :CodCliente AND COD_TIPDOCUM = 2 ", stLineaComando.iCodCiclFact); //Restaca el importe
+	/*Se agrega esta condicion (AND COD_TIPDOCUM=2) de acuerdo a la INC 186409 - JHJ - 19-07-2012*/	
+	
+
+    vDTrazasLog("CargaBalance", "QUERY [%s]\n", LOG03, szAux2);
+
+    EXEC SQL PREPARE SELECT_CARGO_MENS FROM :szAux2;
+
+    if (sqlca.sqlcode != SQLOK) 
+    {
+        vDTrazasLog  ("CargaBalance",	"\n\t**  Error en SQL-PREPARE Select CARGOSMEnsual  **"
+		                                "\n\t\t=> Error : [%d]  [%s] "
+		                                ,LOG01, SQLCODE,SQLERRM);
+    	return (FALSE);
+	}
+
+    EXEC SQL DECLARE CUR_CARGO_MENS CURSOR FOR SELECT_CARGO_MENS;
+
+    if (sqlca.sqlcode != SQLOK)  
+    {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-DECLARE CURSOR Select CARGOSMEnsual  **"
+                                "\n\t\t=> Error : [%d]  [%s] "
+                                ,LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+	vDTrazasLog("CargaBalance", "QRY:SELECT TOTAL CARGOS MES, Cliente[%ld]\n", LOG05, CodCli);
+
+    EXEC SQL OPEN CUR_CARGO_MENS USING :CodCli;
+
+    if (sqlca.sqlcode != SQLOK) 
+    {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-OPEN CURSOR Select CARGOSMEnsual  **"
+                                "\n\t\t=> Error : [%d]  [%s] "
+                                ,LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+       }
+
+    EXEC SQL FETCH CUR_CARGO_MENS INTO :dTotCargosMes ;
+
+    vDTrazasLog("CargaBalance", "QRY:SELECT dTotCargosMes[%f];\n", LOG05, dTotCargosMes);
+
+    if (sqlca.sqlcode != SQLOK && SQLCODE != 1403)  {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-FETCH CURSOR Select CARGOSMEnsual  **"
+                                "\n\t\t=> Error : [%d]  [%s] "
+                                ,LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+       }
+
+    vDTrazasLog("CargaBalance", "TOTAL CARGOS MES cliente %ld = [%f]\n", LOG05, CodCli, dTotCargosMes);
+
+    EXEC SQL CLOSE CUR_CARGO_MENS;
+
+    if (sqlca.sqlcode != SQLOK) {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-CLOSE CURSOR Select CARGOSMEnsual  **"
+                                "\n\t\t=> Error : [%d]  [%s] "
+                                ,LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+       }
+
+    vDTrazasLog("CargaBalance:", "Retornno SELECT FA_HISTDOCU SQLCODE[%d]", LOG05, sqlca.sqlcode);
+    if (sqlca.sqlcode < SQLOK && sqlca.sqlcode != SQLNOTFOUND){
+        vDTrazasLog("CargaBalance", "Error en ejecucion del SELECT TOTAL CARGOS MES SQLCODE[%d]", LOG05, sqlca.sqlcode);
+        return(FALSE);
+       }
+
+    vDTrazasLog("CargaBalance", "\ndTotalAPagar = dTotCargosMes[%f] +  ..."
+    							"\n... ITEM[%d](%f) + ITEM[%d](%f) + ..."
+    							"\n... ITEM[%d](%f) + ITEM[%d](%f) + ..."
+    							"\n... ITEM[%d](%f) "
+    							, LOG05 , dTotCargosMes
+    							, iAJUSTE_CREDITO , FatBalance[iAJUSTE_CREDITO]
+    							, iBALANCE_ANTERIOR, FatBalance[iBALANCE_ANTERIOR]
+    							, iPAGOS_RECIBIDOS, FatBalance[iPAGOS_RECIBIDOS]
+    							, iPAGOS_REVERTIDOS, FatBalance[iPAGOS_REVERTIDOS]
+    							, iMISCELANEA, FatBalance[iMISCELANEA]);
+    dTotalAPagar =  dTotCargosMes +
+            FatBalance[iAJUSTE_CREDITO] +
+            FatBalance[iBALANCE_ANTERIOR] +
+            FatBalance[iPAGOS_RECIBIDOS] +
+            FatBalance[iPAGOS_REVERTIDOS] +
+            FatBalance[iMISCELANEA];
+
+    vDTrazasLog("CargaBalance", "dTotalAPagar = [%f]", LOG05, dTotalAPagar);
+
+    EXEC SQL UPDATE FAT_BALANCE
+        SET     IMP_DOCUMENTO   = :dTotalAPagar
+        WHERE   COD_CLIENTE = :CodCli
+        AND     COD_ITEM    = :ihValorOcho;
+
+    if (sqlca.sqlcode != SQLOK) {
+        vDTrazasLog("CargaBalance: iUpdateFatBalance", "Error en UPDATE ITEM 8. Error [%d][%s]", LOG05, sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return(FALSE);
+       }
+
+    dTotalAPagarReal = dTotalAPagar;
+    if (dTotalAPagar < 0) dTotalAPagar = 0;
+
+    EXEC SQL UPDATE FAT_BALANCE
+        SET     IMP_DOCUMENTO   = :dTotalAPagar
+        WHERE   COD_CLIENTE = :CodCli
+        AND     COD_ITEM    = :ihValorSiete;
+
+    if (sqlca.sqlcode != SQLOK) {
+        vDTrazasLog("CargaBalance: iUpdateFatBalance", "Error en UPDATE ITEM 7. Error [%d][%s]", LOG05, sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return(FALSE);
+       }
+
+
+    EXEC SQL UPDATE FAT_BALANCE
+        SET     IMP_DOCUMENTO   = :dTotCargosMes
+        WHERE   COD_CLIENTE = :CodCli
+        AND     COD_ITEM    = :ihValorSeis;
+
+    if (sqlca.sqlcode != SQLOK) {
+        vDTrazasLog("CargaBalance: iUpdateFatBalance", "Error en UPDATE ITEM 6. Error [%d][%s]", LOG05, sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return(FALSE);
+       }
+
+    sprintf(szAux2, "UPDATE FA_FACTDOCU_%d SET TOT_PAGAR = :TotPagar WHERE COD_CLIENTE = :CodCliente "
+    			  , stLineaComando.iCodCiclFact);
+
+    vDTrazasLog("CargaBalance", "QUERY [%s]\n", LOG05, szAux2);
+
+    EXEC SQL PREPARE UPDATE_TOT_PAGAR FROM :szAux2;
+    if (sqlca.sqlcode != SQLOK) {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-PREPARE Update Tot_Pagar  **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+	vDTrazasLog("CargaBalance", "QRY:UPDATE TOTAL_PAGAR FA_FACTDOCU, Cliente[%ld]\n", LOG05, CodCli);
+
+    EXEC SQL EXECUTE UPDATE_TOT_PAGAR USING :dTotalAPagarReal, :CodCli ;
+    if (sqlca.sqlcode != SQLOK)  {
+        vDTrazasLog  ("CargaBalance",  "\n\t**  Error en SQL-EXECUTE Update Tot_Pagar **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01, SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+    return(1);
+}/*********************************** Final iUpdateFatBalance  ***********************************/
+
+/* 20040310 TM-200403030552  bfnValidaTipoDocumento() Funcion que compara los documentos existentes en GE_TIPDOCUMEN y que no estan en FAD_CONFBALANCE */
+/*                          Si encuentra diferencias las imprime en los archivos LOG y ERR y retorna FALSE. Asi se pueden tomar las medidas correctivas */
+BOOL bfnValidaTipoDocumento()
+{
+    char *modulo="bfnValidaTipoDocumento() ";
+    BOOL bRetorno;
+    int iCantidad;
+EXEC SQL BEGIN DECLARE SECTION;
+    int iCodTipdocum;
+    char szDesTipdocum[41];
+EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL DECLARE Cursor_TipoDocumento CURSOR FOR
+        SELECT a.COD_TIPDOCUM, a.DES_TIPDOCUM
+          FROM GE_TIPDOCUMEN a
+         WHERE a.COD_TIPDOCUM NOT IN ( SELECT b.COD_TIPDOCUM
+        								 FROM FAD_CONFBALANCE b
+        								WHERE a.COD_TIPDOCUM = b.COD_TIPDOCUM )  ;
+
+    if ( SQLCODE != SQLOK  && SQLCODE != SQLNOTFOUND )
+    {
+        vDTrazasLog  (modulo,"\n\t\t** Error DECLARE Cursor_TipoDocumento [%d] [%s]\n", LOG03, SQLCODE, SQLERRM);
+        vDTrazasError(modulo,"\n\t\t** Error DECLARE Cursor_TipoDocumento [%d] [%s]\n", LOG03, SQLCODE, SQLERRM);
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cursor_TipoDocumento;
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  ( modulo,"\n\t\t** Error OPEN Cursor_TipoDocumento [%d] [%s]\n", LOG03, SQLCODE, SQLERRM);
+        vDTrazasError(modulo, "\n\t\t** Error OPEN Cursor_TipoDocumento [%d] ]%s]\n", LOG03, SQLCODE, SQLERRM);
+        return FALSE;
+    }
+
+    iCantidad=0;
+    bRetorno=FALSE;
+
+    while(bRetorno==FALSE)
+    {
+        memset(szDesTipdocum,0,sizeof(szDesTipdocum));
+
+        EXEC SQL FETCH Cursor_TipoDocumento
+        INTO :iCodTipdocum, :szDesTipdocum ;
+
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+        {
+            vDTrazasLog  (modulo,"\n\t\t** Error en FETCH Cursor_TipoDocumento [%d] [%s]\n",LOG03, SQLCODE, SQLERRM);
+            vDTrazasError(modulo,"\n\t\t** Error en FETCH Cursor_TipoDocumento [%d] [%s]\n",LOG03, SQLCODE, SQLERRM);
+            return FALSE;
+        }
+		/* No hay diferencias, esta todo OK */
+        if (iCantidad == 0 && SQLCODE == SQLNOTFOUND)
+        {
+            iCantidad=0;
+            break;
+        }
+		/* Se llego a NO hay mas y conto registros, llego al final del cursor */
+        if (iCantidad > 0 && SQLCODE == SQLNOTFOUND)
+        {
+            bRetorno=1;
+            continue;
+        }
+
+		/* Encontro registros, SQLCODE == SQLOK */
+        iCantidad++;
+        vDTrazasLog  (modulo,"\n\t\t** En GE_TIPDOCUMEN Falta Documento %d [%s]",LOG03, iCodTipdocum, szDesTipdocum);
+        vDTrazasError(modulo,"\n\t\t** En GE_TIPDOCUMEN Falta Documento %d [%s]",LOG03, iCodTipdocum, szDesTipdocum);
+    }
+
+    EXEC SQL CLOSE Cursor_TipoDocumento  ;
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo,"\n\t\t** Error en CLOSE Cursor_TipoDocumento [%d] [%s]",LOG03, SQLCODE, SQLERRM);
+        vDTrazasError(modulo,"\n\t\t** Error en CLOSE Cursor_TipoDocumento [%d] [%s]",LOG03, SQLCODE, SQLERRM);
+        return FALSE;
+    }
+
+	/* Si hay registros, retorna FALSO */
+    return((iCantidad?FALSE:1));
+}
+
+
+int ifnInsertaFatBalance (long  lCod_Cliente
+						, int iCod_Item
+						, int iCod_Docum
+						, int iCod_CiclFact
+						, int iCant_Docum
+						, double dImp_Docum)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lhCod_Cliente;
+        int 	ihCod_Item;
+        int 	ihCod_Docum;
+        int 	ihCod_CiclFact;
+        int 	ihCant_Docum;
+        double  dhImp_Docum;
+    EXEC SQL END DECLARE SECTION;
+
+/*  Si el cliente es 0, no hace nada y retorna     */
+    if(lCod_Cliente == 0)
+    {
+        return (0);
+    }
+
+    if ( iCod_Item == iPAGOS_RECIBIDOS || iCod_Item == iAJUSTE_CREDITO)
+        dImp_Docum   = dImp_Docum * -1;
+
+    lhCod_Cliente   = lCod_Cliente;
+    ihCod_Item  	= iCod_Item;
+    ihCod_Docum 	= iCod_Docum;
+    ihCod_CiclFact  = iCod_CiclFact;
+    ihCant_Docum    = iCant_Docum;
+    dhImp_Docum 	= dImp_Docum;
+
+    EXEC SQL INSERT INTO FAT_BALANCE
+            (COD_CLIENTE    ,
+             COD_ITEM   	,
+             COD_TIPDOCUM   ,
+             COD_CICLFACT   ,
+             CAN_DOCUMENTO  ,
+             IMP_DOCUMENTO  )
+        VALUES (:lhCod_Cliente  ,
+                :ihCod_Item 	,
+                :ihCod_Docum    ,
+                :ihCod_CiclFact ,
+                :ihCant_Docum   ,
+                :dhImp_Docum    );
+
+    vDTrazasLog  ("ifnInsertaFatBalance", " \nVALORES A INSERTAR EN FAT_BALANCE [%d]"
+    									  " \n\t\t\tCod. Cliente    [%ld]"
+    									  " \n\t\t\tCod. Item  	    [%d]" 
+    									  " \n\t\t\tCod. Docum 		[%d]" 
+    									  " \n\t\t\tCod. CiclFact   [%d]" 
+    									  " \n\t\t\tCant. Docum     [%d]" 
+    									  " \n\t\t\tImporte Docum 	[%f]\n" 
+    									  , LOG03, sqlca.sqlcode
+    									  , lhCod_Cliente, ihCod_Item
+    									  , ihCod_Docum, ihCod_CiclFact
+    									  , ihCant_Docum, dhImp_Docum  );
+
+    if (sqlca.sqlcode != SQLOK)
+    {
+        if (sqlca.sqlcode == -1)
+        {
+            vDTrazasLog  ("ifnInsertaFatBalance", "UPDATE EN FAT_BALANCE \n" , LOG05);
+
+            EXEC SQL UPDATE FAT_BALANCE
+                SET IMP_DOCUMENTO = IMP_DOCUMENTO + :dhImp_Docum ,
+                    CAN_DOCUMENTO = CAN_DOCUMENTO + :ihCant_Docum
+                WHERE COD_CLIENTE  = :lhCod_Cliente
+                  AND COD_ITEM     = :ihCod_Item
+                  AND COD_TIPDOCUM = :ihCod_Docum
+                  AND COD_CICLFACT = :ihCod_CiclFact;
+
+				  if (sqlca.sqlcode != SQLOK)
+				  {
+					  vDTrazasLog ("ifnInsertaFatBalance", 
+								   " REGISTRO NO SE REALIZO UPDATE de FAT_BALANCE CODE[%ld]"
+								   " lhCod_Cliente   	[%ld]"
+								   " ihCod_Item  		[%d]" 
+								   " ihCod_Docum 		[%d]" 
+								   " ihCod_CiclFact  	[%d]" 
+								   " ihCant_Docum    	[%d]" 
+								   " dhImp_Docum 		[%f]" 
+								   " SQLERR             [%s]" 
+								   , LOG03, sqlca.sqlcode
+								   , lhCod_Cliente, ihCod_Item
+								   , ihCod_Docum , ihCod_CiclFact
+								   , ihCant_Docum, dhImp_Docum, sqlca.sqlerrm.sqlerrmc   );
+				  }
+        }
+        else { /* Rechazo de Incidencia TM-0414 */
+            vDTrazasLog ("ifnInsertaFatBalance", 
+            			 " REGISTRO NO SE PUDO INSERTAR EN FAT_BALANCE CODE[%ld]"
+            			 " VALORES A INSERTAR EN FAT_BALANCE "
+            			 " lhCod_Cliente   	[%ld]"
+            			 " ihCod_Item  		[%d]" 
+            			 " ihCod_Docum 		[%d]" 
+            			 " ihCod_CiclFact  	[%d]" 
+            			 " ihCant_Docum    	[%d]" 
+            			 " dhImp_Docum 		[%f]" 
+            			 " sqlca.sqlcode	[%ld]" 
+            			 , LOG03, sqlca.sqlcode
+            			 , lhCod_Cliente, ihCod_Item
+            			 , ihCod_Docum , ihCod_CiclFact
+            			 , ihCant_Docum, dhImp_Docum, sqlca.sqlcode   );
+            sqlca.sqlcode = 0; /* LA idea es que imprima el error ocurrido en el LOG y que continue... */
+        }
+    }
+
+	vDTrazasLog  ("ifnInsertaFatBalance", "Retorno de ifnInsertaFatBalance con sqlca.sqlcode=[%d]\n" , LOG05,sqlca.sqlcode);
+    return (sqlca.sqlcode);
+}
+
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+    char modulo[]="main";
+    char *szUserid_Aux;
+
+    extern  char *optarg             ;
+    char    opt[]=":u:c:g:h:l:" ;
+    int     iOpt =0                  ;
+    BOOL    bRetorno = FALSE         ;
+    int     sts;
+    char    szHelpString[1024] = " " ;
+    int     iExisteHostId = 0        ;  /* XO-200611141251 */
+    char    szHostId     [25] = ""   ;  /* XO-200611141251 */
+    int     iResultado    = -1       ;  /* XO-200611141251 */
+    BOOL    bClieIniFlag  = FALSE    ;  /* XO-200611141251 */
+    BOOL    bClieFinFlag  = FALSE    ;  /* XO-200611141251 */
+
+    memset(&stLineaComando,0    ,sizeof(CARGABALANCELINEACOMANDO));
+
+    fprintf(stdout, "\n\tCargaBalance, Fecha de compilacion: [%s]-[%s]\n",__DATE__, __TIME__);
+
+    sprintf(szHelpString,"\n Argumentos de entrada de proceso : "
+                         "\n\t -u Usuario/Password"
+                         "\n\t -c Ciclo de Facturacion"
+                         "\n\t -g Codigo Cliente Inicial"
+                         "\n\t -h Codigo Cliente Final"
+                         "\n\t -l Nivel de Log\n");
+
+    while ( (iOpt = getopt(argc,argv,opt)) != EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':
+                    strcpy(stLineaComando.szUsuario, optarg);
+                    if((szUserid_Aux=(char *)strstr(stLineaComando.szUsuario,"/")) == (char *)NULL)
+                    {
+                        fprintf(stderr, "\nUsuario Oracle no es valido\n");
+                        return(1);
+                    }
+                    else
+                    {
+                        strncpy(stLineaComando.szUser,stLineaComando.szUsuario, szUserid_Aux-stLineaComando.szUsuario);
+                        strcpy(stLineaComando.szPass, szUserid_Aux+1);
+                    }
+                    break;
+            case 'c':
+                    if (strlen (optarg))
+                    {
+                        stLineaComando.iCodCiclFact = atoi (optarg);
+                        fprintf (stdout," -c%d ", stLineaComando.iCodCiclFact);
+                    }
+                    break;
+            case 'g':
+                    if (strlen (optarg))
+                    {
+                        stLineaComando.lCodClienteIni = atoi (optarg);
+                        fprintf (stdout," -g%ld ", stLineaComando.lCodClienteIni);
+                        bClieIniFlag = 1;
+                    }
+                    else
+                    {
+                        fprintf(stdout,"Error, Falta parametro Cliente Desde\n" );
+                        return 1;
+                    }
+                    break;
+            case 'h':
+                    if (strlen (optarg))
+                    {
+                        stLineaComando.lCodClienteFin = atoi (optarg);
+                        fprintf (stdout," -h%ld ", stLineaComando.lCodClienteFin);
+                        bClieFinFlag = 1;
+                    }
+                    break;
+            case 'l':
+                    if (strlen (optarg) )
+                    {
+                        stStatus.LogNivel =(atoi (optarg) > 0)? atoi (optarg):iLOGNIVEL_DEF ;
+                        fprintf (stdout,"-l%d ", stStatus.LogNivel)     ;
+                    }
+                    break;
+            case '?':
+                    fprintf(stderr,"\n<< ERROR (main): Se ha ingresado parametro desconocido: -%c >>\n%s\n",optopt,szHelpString);
+                    return -1;
+            case ':':
+                    if ( optopt == 'u' ) {
+                        fprintf(stderr,"\n<< ERROR (main): Falta parametro para usuario/password o \"/\" >>\n%s\n",szHelpString);
+                        return -1;
+                    }
+                    if ( optopt == 'c' ) {
+                        fprintf(stderr,"\n<< ERROR (main): Falta parametro para ciclo de facturacion. >>\n%s\n",szHelpString);
+                        return -1;
+                    }
+                    if ( optopt == 'l' ) {
+                        fprintf(stderr,"\n<< ERROR (main): Falta parametro para Nivel de Log. >>\n%s\n",szHelpString);
+                        return -1;
+                    }
+            default:
+                    return -1;
+
+        }/*End Switch */
+
+    } /* End While */
+    fprintf (stdout,"\n");
+
+    /* Validacion de Parametros */
+
+    if( (bClieIniFlag==1 && bClieFinFlag==FALSE) || (bClieIniFlag==FALSE && bClieFinFlag==1))
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-g' o '-h' >>\n%s\n",szHelpString);
+        return (FALSE);
+    }
+
+    if((bClieIniFlag==1 && bClieFinFlag==1))
+        stLineaComando.iExisteRango = 1;
+    else
+        stLineaComando.iExisteRango = 0;
+
+    if ( stLineaComando.lCodClienteFin < stLineaComando.lCodClienteIni )
+    {
+        fprintf(stderr, "\n\tCliente Final Menor que Cliente Inicial\n");
+        fprintf(stderr,"%s",szHelpString);
+        return (1);
+    }
+
+    if ( !stLineaComando.iCodCiclFact )
+    {
+        fprintf(stderr, "\n\tCiclo facturacion invalido o no ingresado\n");
+        fprintf(stderr,"%s",szHelpString);
+        return (1);
+    }
+
+
+    if (stStatus.LogNivel <= 0) stStatus.LogNivel = iLOGNIVEL_DEF     ;
+
+    stLineaComando.iNivLog = stStatus.LogNivel;
+
+    if(!bfnConnectORA(stLineaComando.szUser,stLineaComando.szPass))
+    {
+        fprintf(stderr, "\n\tUsuario/Passwd Invalido\n\t\t"
+                        "'sptel  <usuario> <passwd> '\n");
+        return (2);
+    }
+    else
+    {
+        printf( "\n\t-------------------------------------------------------"
+                "\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx "
+                "\n\t-------------------------------------------------------\n",
+                stLineaComando.szUser);
+    }
+
+    if (!bGetDatosGener (&stDatosGener, szSysDate))
+        return FALSE;
+
+    /**************************************************************************************/
+    /* Crear archivos y directorios de log y errores */
+
+    sts = ifnAbreArchivosLog();
+
+
+    if ( sts != 0 ) return sts;
+
+    /*********************************************************************************************/
+
+    vDTrazasLog  ( modulo ,"\n\n\t*************************************"
+                           "\n\n\t****        Log   CargaBalance     **"
+                           "\n\n\t*************************************"
+                           ,LOG03);
+
+    vDTrazasLog  ( modulo ,"\n\t\t***  Parametro de Entrada CargaBalance  ***"
+                           "\n\t\t=> Usuario               [%s]"
+                           "\n\t\t=> Ciclo Facturacion     [%d]"
+                           "\n\t\t=> Cliente Inicial       [%ld]"
+                           "\n\t\t=> Cliente Final         [%ld]"
+                           "\n\t\t=> Niv.Log               [%d]"
+                           ,LOG03
+                           ,stLineaComando.szUser
+                           ,stLineaComando.iCodCiclFact
+                           ,stLineaComando.lCodClienteIni
+                           ,stLineaComando.lCodClienteFin
+                           ,stLineaComando.iNivLog);
+
+    /************************************************************************************/
+    /*          Proceso Principal                       */
+    /************************************************************************************/
+
+    strcpy(modulo,"bCargaBalances");
+
+    vDTrazasLog  ( modulo ,"\n\t\t***  Inicio Proceso principal  ***"
+                           ,LOG03);
+
+    /* XO-200611141251: Obtencion de Host_id si existe, para rescatar rangos de clientes */
+    if( (ifnGetHostId(szHostId))!=0 )
+        iExisteHostId = 0;
+    else
+        iExisteHostId = 1;
+
+    /* Rescate de rangos de clientes desde base de datos */
+    iResultado = ifnBuscarRangosClientesBD( (long)stLineaComando.iCodCiclFact, &stLineaComando.lCodClienteIni
+                                        , &stLineaComando.lCodClienteFin, &stLineaComando.iExisteRango);
+    vDTrazasLog(modulo,"\n\t*** Tratando de obtener datos desde base de datos...\n",LOG03);
+    switch(iResultado)
+    {
+        case  0: /* No existe host_id */
+            vDTrazasLog(modulo,"\n\t*** No existe Host_id configurado. Se Continua con rangos de linea de comando. ***\n",LOG03);
+            break;
+        case  1: /* Obtiene Datos BD */
+            vDTrazasLog(modulo,"\n\t*** Se han actualizado datos de clientes desde la Base de datos. ***\n",LOG03);
+            break;
+        case -1: /* Error: No existen rangos en BD. */
+            vDTrazasLog(modulo,"\n\t*** No se encuentran Rangos de clientes configurados en base de datos. ***"
+                                "\n\t** Saliendo de la aplicacion, revisar configuracion de rangos en base de datos. **"
+                                ,LOG01);
+            return FALSE;
+        default:
+            vDTrazasLog(modulo,"\n\t*** No se encuentran Rangos de clientes configurados en base de datos. ***"
+                                "\n\t** Saliendo de la aplicacion, revisar configuracion de rangos en base de datos. **"
+                                ,LOG01);
+            return FALSE;
+    }
+
+
+
+    vDTrazasLog(modulo,"\n\t*** Datos de Host_id Obtenidos ***\n"
+                      "\n\t     Host ID        : [%s]"
+                      "\n\t     iExisteHostId  : [%d]"
+                      "\n\t     Cliente Inicial: [%ld]"
+                      "\n\t     Cliente Final  : [%ld]"
+                      "\n\t     Existe Rango   : [%d]"
+                      , LOG03
+                      , szHostId
+                      , iExisteHostId
+                      , stLineaComando.lCodClienteIni
+                      , stLineaComando.lCodClienteFin
+                      , stLineaComando.iExisteRango);
+
+
+
+    bRetorno = bObtieneFechasCiclo(stLineaComando.iCodCiclFact);
+    if (bRetorno == FALSE)
+    {
+        vDTrazasLog(modulo,"\n\t*** Imposible Obtener fechas para el ciclo ingresado. ***", LOG01);
+        return FALSE;
+    }
+
+    iContLeidos = 0;
+    iContTotal  = 0;
+    bIndPrimera = 1;
+
+/* 20040310 TM-200403030552 Se validad existencia de documentos GE_TIPDOCUMEN vs FAD_CONFBALANCE */
+    vDTrazasLog(modulo,"\n\t*** Verificando Tipos de Documentos ***\n", LOG03);
+    if(!bfnValidaTipoDocumento())
+    {
+        fprintf(stderr, "\n\n\n\n\n\t\t\t\t\t*** ATENCION ***\n\n\n\t*** Existen documentos en la tabla GE_TIPDOCUMEN NO configurados en la tabla FAD_CONFBALANCE ***\n\n\n\n\n");
+        fprintf(stderr, "\t\tRevise la Informacion faltante en el LOG y vuelva a ejecutar CargaBalance\n\n\n\n");
+        vDTrazasLog  (modulo,"\n\t*** ATENCION ***\n\t\t\t Existen documentos en la tabla GE_TIPDOCUMEN NO configurados en la tabla FAD_CONFBALANCE ***\n", LOG01);
+        vDTrazasError(modulo,"\n\t*** ATENCION ***\n\t\t\t Existen documentos en la tabla GE_TIPDOCUMEN NO configurados en la tabla FAD_CONFBALANCE ***\n", LOG01);
+        return FALSE;
+    }
+    vDTrazasLog(modulo,"\n\t*** Tipos de Documentos Verificados OK ***\n", LOG03);
+
+
+    if (!bfnWrapperValidaTrazaProc(stLineaComando.iCodCiclFact, iPROC_BALANCE, iIND_FACT_ENPROCESO))
+        return FALSE;
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        return FALSE;
+    }
+    bfnWrapperSelectTrazaProc (stLineaComando.iCodCiclFact, iPROC_BALANCE, &stTrazaProc);
+    bPrintTrazaProc(stTrazaProc);
+
+
+    bRetorno = bProcesaClientes(szHostId, iExisteHostId);
+
+
+    /********************************************************************************/
+    /********************************************************************************/
+    bfnWrapperSelectTrazaProc (stLineaComando.iCodCiclFact, iPROC_BALANCE, &stTrazaProc);
+    bPrintTrazaProc(stTrazaProc);
+
+    if (!bfnSelectSysDate(szFecha))
+        return FALSE;
+
+    if (!bRetorno) {
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Carga Balance Termino con Error");
+    }
+    else
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Carga Balance Terminado OK");
+    }
+
+    if(!bfnWrapperUpdateTrazaProc(stTrazaProc))
+        return FALSE;
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperUpdateTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperUpdateTrazaProc", LOG01);
+        return FALSE;
+    }
+    /********************************************************************************/
+    if(!bRetorno)
+    {
+        vDTrazasError( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado de Forma Irregular"
+                               " \n\t------------------------------------"
+                               ,LOG03);
+        return 3;
+    }
+    else
+    {
+        vDTrazasLog  ( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado Correctamente"
+                               " \n\t------------------------------------\n"
+                               ,LOG03);
+        vDTrazasError( modulo ," \n\t------------------------------------"
+                               " \n\tProceso Terminado Correctamente"
+                               " \n\t------------------------------------\n"
+                               ,LOG03);
+        if ( !fnOraCommit())
+        {
+            vDTrazasLog ( modulo , " \n\t------------------------------------"
+                                   " \n\tFallo en el Commit"
+                                   " \n\t------------------------------------"
+                                   ,LOG03);
+            vDTrazasError( modulo ," \n\t------------------------------------"
+                                   " \n\tFallo en el Commit"
+                                   " \n\t------------------------------------"
+                                   ,LOG03);
+            return 4;
+        }
+
+    }
+
+    if(!bfnDisconnectORA(0))
+    {
+      vDTrazasLog  ( modulo ,"\n\t--------------------------------------------"
+                             "\n\t ERROR en Desconeccion de  ORACLE  = finaliza"
+                             "\n\t--------------------------------------------\n"
+                             ,LOG03);
+      vDTrazasError( modulo ,"\n\t--------------------------------------------"
+                             "\n\t ERROR en Desconeccion de  ORACLE  = finaliza"
+                             "\n\t--------------------------------------------\n"
+                             ,LOG03);
+    }
+    else
+    {
+      vDTrazasLog  ( modulo ,"\n\t--------------------------------------------"
+                             "\n\tDesconectado de  ORACLE"
+                             "\n\t--------------------------------------------\n"
+                             ,LOG03);
+      vDTrazasError( modulo ,"\n\t--------------------------------------------"
+                             "\n\tDesconectado de  ORACLE"
+                             "\n\t--------------------------------------------\n"
+                             ,LOG03);
+
+    }
+
+    vDTrazasLog  ( modulo , "\n\t\t%s***  Estadisticas Finales  ***\n"
+                            "\n\t\t            Clientes Procesados : %d\n"
+                           ,LOG03
+                           ,cfnGetTime(3)
+                           ,lContClientes);
+
+
+    return (0);
+}/* ********************* Fin Main * *************************************** */
+
+/* ******************************************************************************** */
+/* ifnAbreArchivosLog : Crea para escritura o appendea archivos de Log y de Errores */
+/* ******************************************************************************** */
+int ifnAbreArchivosLog(void)
+{
+    char modulo[]="ifnAbreArchivosLog";
+
+    char *pathDir;
+    char szArchivo[32]="";
+    char szPath[128]="";
+    char szComando[128]="";
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"CargaBalance"); /* 'FaSched' */
+
+    pathDir=(char *)malloc(128);
+    pathDir=szGetEnv("XPF_LOG");
+    sprintf(szPath,"%s/CargaBalance/%s",pathDir,cfnGetTime(2)); /* '....log/FaSched/YYYYMMDD/' */
+    free(pathDir);
+
+    fprintf(stdout, "\nCrea Directorio Log  : %s\n", szPath);
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    fprintf(stdout, "\nCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+    sprintf(stStatus.ErrName,"%s/%s_%s.err",szPath,szArchivo,cfnGetTime(5));
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"w")) == (FILE*)NULL )/* "wb+" */
+    {   fprintf(stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+        return -7;    }
+
+    vDTrazasError(modulo, "%s  << Abre Archivo de Errores >>", LOG04, cfnGetTime(1));
+
+    sprintf(stStatus.LogName,"%s/%s_%s.log",szPath,szArchivo,cfnGetTime(5));
+    if((stStatus.LogFile = fopen(stStatus.LogName,"w")) == (FILE*)NULL ) /* "wb+" */
+    {   fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+        vDTrazasError(modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+        return -8;    }
+
+    vDTrazasLog(modulo, "%s << Abre Archivo de Log >>", LOG04, cfnGetTime(1));
+    vDTrazasLog(modulo, "%s << Inicio de CargaBalance >>" , LOG03, cfnGetTime(1));
+
+    return 0;
+
+
+} /* Fin ifnAbreArchivosLog  */
+
+/********* Procesos para Cargar Tablas de Balance                        ****/
+BOOL bCargaCoPagos(long lCodCliente, char *szFecHasta, int *iIndBalance)
+{
+char modulo[]="bCargaCoPagos";
+BOOL ret;
+BOOL bIndInsert;
+int i;
+
+EXEC SQL BEGIN DECLARE SECTION;
+ long   lCodCli;
+ char	szhFecHasta[15];
+EXEC SQL END DECLARE SECTION;
+
+    lCodCli     = lCodCliente;
+    strcpy(szhFecHasta, szFecHasta);
+
+
+    vDTrazasLog  ( modulo , "\n\t\t** Select en CO_PAGOS **"
+                            "\n\t\t Cliente          : [%d]"
+                            "\n\t\t Fecha Hasta Llam : [%s]\n"
+                            ,LOG05
+                            ,lCodCli
+                            ,szhFecHasta);
+
+    EXEC SQL DECLARE Cursor_Pagos CURSOR FOR
+        SELECT  A.COD_ITEM,
+                B.COD_TIPDOCUM,
+                SUM(ROUND(B.IMP_PAGO, 2)),
+				COUNT(1)
+        FROM FAD_CONFBALANCE A,
+             CO_PAGOS        B
+        WHERE A.COD_ORIGEN      = 'PAGOS'
+        AND   B.COD_CLIENTE     = :lCodCli
+        AND   B.FEC_EFECTIVIDAD <=  TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')
+        AND   B.COD_TIPDOCUM    = A.COD_TIPDOCUM
+        AND   B.COD_CICLFACT_BAL IS NULL
+        GROUP BY A.COD_ITEM,B.COD_TIPDOCUM
+		ORDER BY A.COD_ITEM,B.COD_TIPDOCUM;
+
+    if ( SQLCODE != SQLOK  && SQLCODE != SQLNOTFOUND )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error DECLARE Cursor_Pagos [%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error DECLARE Cursor_Pagos %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cursor_Pagos ;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error OPEN Cursor_Pagos  [%d]***"
+                              ,LOG03, SQLCODE);
+
+        vDTrazasError(modulo,"%s Error OPEN Cursor_Pagos %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    ret = 1 ;
+
+    iContLeidos     = 0;
+    iContTotal      = 0;
+    
+    /* Proceso sobre CO_PAGOS */
+    while ( ret )
+    {
+        EXEC SQL FETCH Cursor_Pagos INTO
+               :sthCoPagos;
+
+        if ( iContLeidos == 0 )
+            iContLeidos = sqlca.sqlerrd[2];
+        else
+            iContLeidos =  sqlca.sqlerrd[2] - iContTotal;
+
+        iContTotal  = sqlca.sqlerrd[2];
+
+        if ( SQLCODE != SQLOK )
+        {
+            if ( SQLCODE == SQLNOTFOUND )
+                ret = FALSE;
+            else
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error FETCH Cursor_Pagos  [%d]***"
+                                      ,LOG03, SQLCODE);
+
+                vDTrazasError(modulo,"%s Error FETCH Cursor_Pagos %s [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3)
+                                    ,sqlca.sqlerrm.sqlerrmc, SQLCODE);
+                fnOraRollBack();
+                return FALSE;
+            }
+        }
+
+        /**** Procesa clientes leidos en FETCH de Pagos ****/
+        vDTrazasLog  ( modulo ,"\n\t\t** Pagos leidos : [%d]  ***"
+                              ,LOG05
+                              ,iContLeidos);
+
+        
+        for ( i = 0; i< iContLeidos  ; i++)
+        {
+            vDTrazasLog(modulo, "\n\t\tCodCliente     [%d]=[%ld]"
+            				    "\n\t\tCodItem        [%d]=[%d]"
+            				    "\n\t\tCodDocum       [%d]=[%d]"
+            				    "\n\t\tImpPago Total  [%d]=[%f]"
+            				    "\n\t\tCantidad Docum [%d]=[%d]\n"
+            				    ,LOG05, i, lCodCli
+            				    , i, sthCoPagos[i].ihCodItem
+            				    , i, sthCoPagos[i].ihCodDocum 
+            				    , i, sthCoPagos[i].fhImpPago
+            				    , i, sthCoPagos[i].iContDocum);
+
+            bIndInsert=ifnInsertaFatBalance (lCodCli
+	                                        ,sthCoPagos[i].ihCodItem
+	                                        ,sthCoPagos[i].ihCodDocum
+	                                        ,stLineaComando.iCodCiclFact
+	                                        ,sthCoPagos[i].iContDocum
+	                                        ,sthCoPagos[i].fhImpPago
+	                                        );
+                                            
+            if ( bIndInsert != SQLOK )
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error en bCargaCoPagos al Insert en FAT_BALANCE [%d] ***\n"
+                                      ,LOG03, bIndInsert);
+                vDTrazasError(modulo,"%s Error  Error en bCargaCoPagos al Insert en FAT_BALANCE [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3), bIndInsert);
+                fnOraRollBack();
+                return FALSE;
+            }else{
+            	*iIndBalance = 1;
+            }
+        }     /* Fin For */
+    } /* Fin While FETCH Cursor_Pagos */
+
+    EXEC SQL CLOSE Cursor_Pagos;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error CLOSE Cursor_Pagos  [%d]***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error CLOSE Cursor_Pagos %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+    
+    return 1;
+} /* Fin bCargaCoPagos() */
+
+BOOL bUpdateCoPagos(long lCodCliente, char *szFecHasta)
+{
+char modulo[]="bUpdateCoPagos";
+
+EXEC SQL BEGIN DECLARE SECTION;
+ long   lCodCli;
+ char	szhFecHasta[15];
+ int   iCodCicloFact   ;
+EXEC SQL END DECLARE SECTION;
+
+    lCodCli     = lCodCliente;
+    strcpy(szhFecHasta, szFecHasta);
+    iCodCicloFact   = stLineaComando.iCodCiclFact;
+
+
+    vDTrazasLog  ( modulo , "\n\t\t** Update en CO_PAGOS **"
+                            "\n\t\t Cliente          : [%d]"
+                            "\n\t\t Fecha Hasta Llam : [%s]"
+                            "\n\t\t CodCicloFact     : [%d]"
+                            ,LOG05
+                            ,lCodCli
+                            ,szhFecHasta
+                            ,iCodCicloFact);
+
+
+		EXEC SQL UPDATE CO_PAGOS
+		 SET COD_CICLFACT_BAL = :iCodCicloFact
+        WHERE COD_CLIENTE     = :lCodCli
+        AND   FEC_EFECTIVIDAD <=  TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')
+        AND   COD_CICLFACT_BAL IS NULL
+        AND   EXISTS ( SELECT 1 
+        			   FROM FAD_CONFBALANCE F
+			  		   WHERE F.COD_ORIGEN      = 'PAGOS'
+					   AND   COD_TIPDOCUM = F.COD_TIPDOCUM )
+        ;
+
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error Al Actualizar Tabla CO_PAGOS [%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error Al Actualizar Tabla CO_PAGOS %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+	return TRUE;
+}
+
+BOOL bCargaBalanceDocu(long lCodCliente, char *szFecHasta, int *iIndBalance)
+{
+ char modulo[]="bCargaBalanceDocu";
+ BOOL ret;
+ BOOL bIndInsert;
+ int i;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    long    lCodCli;
+    char	szhFecHasta[15];
+EXEC SQL END DECLARE SECTION;
+
+    lCodCli         = lCodCliente;
+    strcpy(szhFecHasta, szFecHasta);
+    
+    
+    vDTrazasLog  ( modulo , "\n\t\t** Select en Balance de Documentos **"
+                            "\n\t\t Cliente          : [%d]"
+                            "\n\t\t Fecha Hasta Llam : [%s]"
+                            ,LOG05
+                            ,lCodCli
+                            ,szhFecHasta);
+
+    EXEC SQL DECLARE Cursor_BalanceDocum CURSOR FOR
+        SELECT  CONF.COD_ITEM,
+	 			CONF.COD_TIPDOCUM,
+	 			ROUND (SUM (TOT_FACTURA),2),
+	 			COUNT(1)
+		FROM (SELECT COD_TIPDOCUM,
+  	       			 TOT_FACTURA
+        	  	FROM FA_HISTDOCU 
+       		  	WHERE COD_CLIENTE  = :lCodCli
+         	  	AND   FEC_EMISION <= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')
+         	  	AND   COD_CICLFACT_BAL IS NULL
+ 				AND   IND_BALANCE IS NULL) DOCU,
+	  		 FAD_CONFBALANCE CONF
+		WHERE CONF.COD_ORIGEN   = 'DOCUM'
+  		AND CONF.COD_TIPDOCUM = DOCU.COD_TIPDOCUM
+		GROUP BY CONF.COD_ITEM, CONF.COD_TIPDOCUM
+		ORDER BY CONF.COD_ITEM, CONF.COD_TIPDOCUM;
+
+
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error DECLARE Cursor_BalanceDocum [%d] ***"
+                              ,LOG03, SQLCODE);
+
+        vDTrazasError(modulo,"%s Error DECLARE Cursor_BalanceDocum %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+
+    EXEC SQL OPEN Cursor_BalanceDocum ;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error OPEN Cursor_BalanceDocum [%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error OPEN Cursor_BalanceDocum %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    ret = 1 ;
+
+    iContLeidos     = 0;
+    iContTotal      = 0;
+    
+
+    
+    while ( ret )
+    {
+        EXEC SQL FETCH Cursor_BalanceDocum INTO
+               :sthBalDocum;
+
+        if ( iContLeidos == 0 )
+            iContLeidos = sqlca.sqlerrd[2];
+        else
+            iContLeidos =  sqlca.sqlerrd[2] - iContTotal;
+
+        iContTotal  = sqlca.sqlerrd[2];
+
+        if ( SQLCODE != SQLOK )
+        {
+            if ( SQLCODE == SQLNOTFOUND )
+                ret = FALSE;
+            else
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error FETCH Cursor_BalanceDocum [%d] ***"
+                                      ,LOG03, SQLCODE);
+                vDTrazasError(modulo,"%s Error FETCH Cursor_BalanceDocum %s [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3)
+                                    ,sqlca.sqlerrm.sqlerrmc, SQLCODE);
+                fnOraRollBack();
+
+                return FALSE;
+            }
+        }
+
+        /**** Procesa clientes leidos en FETCH de Co Cartera ****/
+
+        vDTrazasLog  ( modulo ,"\n\t\t** Balances leidos : [%d]  ***"
+                              ,LOG05
+                              ,iContLeidos);
+
+        
+        for ( i = 0; i< iContLeidos  ; i++)
+        {
+            
+             
+            vDTrazasLog(modulo, "\n\t\tCodCliente     [%d]=[%ld]"
+            					"\n\t\tCodItem        [%d]=[%d]"
+            					"\n\t\tCodDocum       [%d]=[%d]"
+            					"\n\t\tImpPago Total  [%d]=[%f]"
+            				    "\n\t\tCantidad Docum [%d]=[%d]"
+            					, LOG05, i, lCodCli
+            					, i, sthBalDocum[i].ihCodItem
+            					, i, sthBalDocum[i].ihCodDocum 
+            					, i, sthBalDocum[i].fhImpPago
+            					, i, sthBalDocum[i].iContDocum);
+
+            bIndInsert=ifnInsertaFatBalance (lCodCli
+	                                        ,sthBalDocum[i].ihCodItem
+	                                        ,sthBalDocum[i].ihCodDocum
+	                                        ,stLineaComando.iCodCiclFact
+	                                        ,sthBalDocum[i].iContDocum
+	                                        ,sthBalDocum[i].fhImpPago);
+            
+            if ( bIndInsert != SQLOK )
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error en bCargaBalanceDocu al Insert en FAT_BALANCE [%d]  ***\n"
+                                      ,LOG03, bIndInsert);
+
+                vDTrazasError(modulo,"%s Error  Error en bCargaBalanceDocu al Insert en FAT_BALANCE [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3), bIndInsert);
+
+                fnOraRollBack();
+                return FALSE;
+            }else{
+            	*iIndBalance = 1;
+            }
+        }     /* Fin For */
+
+    } /* Fin While FETCH Cursor_Cartera */
+
+    EXEC SQL CLOSE Cursor_BalanceDocum;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error CLOSE Cursor_BalanceDocum [%d] ***"
+                              ,LOG03, SQLCODE);
+
+        vDTrazasError(modulo,"%s Error CLOSE Cursor_BalanceDocum %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+
+        fnOraRollBack();
+
+        return FALSE;
+    }
+
+    return 1;
+
+} /* Fin bCargaBalanceDocu() */
+
+BOOL bUpdateBalanceDocu(long lCodCliente, char *szFecHasta, int iIndBalance)
+{
+char modulo[]="bUpdateBalanceDocu";
+
+EXEC SQL BEGIN DECLARE SECTION;
+ long   lCodCli;
+ char	szhFecHasta[15];
+ int   iCodCicloFact   ;
+ int   ihIndBalance    ;
+EXEC SQL END DECLARE SECTION;
+
+    lCodCli      = lCodCliente;
+    ihIndBalance = iIndBalance;
+    strcpy(szhFecHasta, szFecHasta);
+    iCodCicloFact   = stLineaComando.iCodCiclFact;
+
+
+    vDTrazasLog  ( modulo , "\n\t\t** Update en Balance Documentos **"
+                            "\n\t\t Cliente          : [%d]"
+                            "\n\t\t Fecha Hasta Llam : [%s]"
+                            "\n\t\t CodCicloFact     : [%d]"
+                            "\n\t\t iIndBalance      : [%d]"
+                            ,LOG05
+                            ,lCodCli
+                            ,szhFecHasta
+                            ,iCodCicloFact
+                            ,iIndBalance);
+
+
+	EXEC SQL UPDATE FA_HISTDOCU
+	 SET COD_CICLFACT_BAL = :iCodCicloFact ,
+	 	 IND_BALANCE      = :ihIndBalance	 	  
+    WHERE COD_CLIENTE  = :lCodCli
+    AND   FEC_EMISION <= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')
+    AND   COD_CICLFACT_BAL IS NULL
+	AND   IND_BALANCE IS NULL
+	AND   EXISTS ( SELECT 1 
+       			   FROM FAD_CONFBALANCE CONF
+		  		   WHERE CONF.COD_ORIGEN   = 'DOCUM'
+				   AND   COD_TIPDOCUM = CONF.COD_TIPDOCUM )
+    ;
+
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error Al Actualizar Tabla FA_HISTDOCU [%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error Al Actualizar Tabla FA_HISTDOCU %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+    
+	return TRUE;
+}
+
+
+
+BOOL bCargaCoAjustes(long lCodCliente, char *szFecHasta, int *iIndBalance)
+{
+char modulo[]="bCargaCoAjustes";
+BOOL ret;
+BOOL bIndInsert;
+int i;
+
+EXEC SQL BEGIN DECLARE SECTION;
+ long   lCodCli;
+ char	szhFecHasta[15];
+EXEC SQL END DECLARE SECTION;
+
+    lCodCli     = lCodCliente;
+    strcpy(szhFecHasta, szFecHasta);
+
+
+    vDTrazasLog  ( modulo , "\n\t\t** Select en CO_AJUSTES **"
+                            "\n\t\t Cliente          : [%d]"
+                            "\n\t\t Fecha Hasta Llam : [%s]"
+                            ,LOG05
+                            ,lCodCli
+                            ,szhFecHasta);
+
+    EXEC SQL DECLARE Cursor_Ajustes CURSOR FOR
+        SELECT  A.COD_ITEM,
+        		B.COD_TIPDOCUM,
+        		ROUND(sum (B.IMPORTE_DEBE), 2),
+	  			count(1)	
+		FROM 	FAD_CONFBALANCE A,
+     			CO_AJUSTES      B
+		WHERE A.COD_ORIGEN      = 'AJUST'
+		AND   B.COD_CLIENTE     = :lCodCli
+		AND   B.FEC_EFECTIVIDAD<= TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')
+		AND   B.COD_TIPDOCUM    = A.COD_TIPDOCUM
+		AND   COD_CICLFACT_BAL IS NULL
+		group by A.COD_ITEM, B.COD_TIPDOCUM
+		ORDER BY A.COD_ITEM, B.COD_TIPDOCUM;
+;
+
+    if ( SQLCODE != SQLOK  && SQLCODE != SQLNOTFOUND )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error DECLARE Cursor_Ajustes [%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error DECLARE Cursor_Ajustes %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cursor_Ajustes ;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error OPEN Cursor_Ajustes  [%d]***"
+                              ,LOG03, SQLCODE);
+
+        vDTrazasError(modulo,"%s Error OPEN Cursor_Ajustes %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    ret = 1 ;
+
+    iContLeidos     = 0;
+    iContTotal      = 0;
+    
+    /* Proceso sobre Cursor_Ajustes */
+    while ( ret )
+    {
+        EXEC SQL FETCH Cursor_Ajustes INTO
+               :sthCoAjustes;
+
+        if ( iContLeidos == 0 )
+            iContLeidos = sqlca.sqlerrd[2];
+        else
+            iContLeidos =  sqlca.sqlerrd[2] - iContTotal;
+
+        iContTotal  = sqlca.sqlerrd[2];
+
+        if ( SQLCODE != SQLOK )
+        {
+            if ( SQLCODE == SQLNOTFOUND )
+                ret = FALSE;
+            else
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error FETCH Cursor_Ajustes  [%d]***"
+                                      ,LOG03, SQLCODE);
+
+                vDTrazasError(modulo,"%s Error FETCH Cursor_Ajustes %s [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3)
+                                    ,sqlca.sqlerrm.sqlerrmc, SQLCODE);
+                fnOraRollBack();
+                return FALSE;
+            }
+        }
+
+        /**** Procesa clientes leidos en FETCH de Pagos ****/
+        vDTrazasLog  ( modulo ,"\n\t\t** Ajustes leidos : [%d]  ***"
+                              ,LOG05
+                              ,iContLeidos);
+
+        
+        for ( i = 0; i< iContLeidos  ; i++)
+        {
+            vDTrazasLog(modulo, "\n\t\tCodCliente     [%d]=[%ld]"
+            				    "\n\t\tCodItem        [%d]=[%d]"
+            				    "\n\t\tCodDocum       [%d]=[%d]"
+            				    "\n\t\tImpPago Total  [%d]=[%f]"
+            				    "\n\t\tCantidad Docum [%d]=[%d]"
+            				    ,LOG05, i, lCodCli
+            				    , i, sthCoAjustes[i].ihCodItem
+            				    , i, sthCoAjustes[i].ihCodDocum 
+            				    , i, sthCoAjustes[i].fhImpPago
+            				    , i, sthCoAjustes[i].iContDocum);
+
+            bIndInsert=ifnInsertaFatBalance (lCodCli
+	                                        ,sthCoAjustes[i].ihCodItem
+	                                        ,sthCoAjustes[i].ihCodDocum
+	                                        ,stLineaComando.iCodCiclFact
+	                                        ,sthCoAjustes[i].iContDocum
+	                                        ,sthCoAjustes[i].fhImpPago
+	                                        );
+                                            
+            if ( bIndInsert != SQLOK )
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error en bCargaCoAjustes al Insert en FAT_BALANCE [%d] ***\n"
+                                      ,LOG03, bIndInsert);
+                vDTrazasError(modulo,"%s Error  Error en bCargaCoAjustes al Insert en FAT_BALANCE [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3), bIndInsert);
+                fnOraRollBack();
+                return FALSE;
+            }else{
+            	*iIndBalance = 1;
+            }
+        }     /* Fin For */
+    } /* Fin While FETCH Cursor_Ajustes */
+
+    EXEC SQL CLOSE Cursor_Ajustes;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error CLOSE Cursor_Ajustes  [%d]***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error CLOSE Cursor_Ajustes %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    return 1;
+} /* Fin bCargaCoAjustes() */
+
+BOOL bUpdateCoAjustes(long lCodCliente, char *szFecHasta)
+{
+char modulo[]="bUpdateCoAjustes";
+
+EXEC SQL BEGIN DECLARE SECTION;
+ long   lCodCli;
+ char	szhFecHasta[15];
+ int   iCodCicloFact   ;
+EXEC SQL END DECLARE SECTION;
+
+    lCodCli     = lCodCliente;
+    strcpy(szhFecHasta, szFecHasta);
+    iCodCicloFact   = stLineaComando.iCodCiclFact;
+
+
+    vDTrazasLog  ( modulo , "\n\t\t** Update en CO_AJUSES **"
+                            "\n\t\t Cliente          : [%d]"
+                            "\n\t\t Fecha Hasta Llam : [%s]"
+                            "\n\t\t CodCicloFact     : [%d]"
+                            ,LOG05
+                            ,lCodCli
+                            ,szhFecHasta
+                            ,iCodCicloFact);
+
+
+		EXEC SQL UPDATE CO_AJUSTES
+		 SET COD_CICLFACT_BAL = :iCodCicloFact
+        WHERE COD_CLIENTE     = :lCodCli
+        AND   FEC_EFECTIVIDAD <=  TO_DATE(:szhFecHasta,'YYYYMMDDHH24MISS')
+        AND   COD_CICLFACT_BAL IS NULL
+        AND   EXISTS ( SELECT 1 
+        			   FROM FAD_CONFBALANCE F
+			  		   WHERE F.COD_ORIGEN      = 'AJUST'
+					   AND   COD_TIPDOCUM = F.COD_TIPDOCUM )
+        ;
+
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error Al Actualizar Tabla CO_AJUSTES [%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error Al Actualizar Tabla CO_AJUSTES %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+	return TRUE;
+}
+
+BOOL bObtieneFechasCiclo(int iCodCiclFact)
+{
+char modulo[]="bObtieneFechasCiclo";
+
+EXEC SQL BEGIN DECLARE SECTION;
+
+long	iCodCiclo;
+char    szFecDesde[15];EXEC SQL VAR szFecDesde IS STRING (15);
+char    szFecHasta[15];EXEC SQL VAR szFecHasta IS STRING (15);
+int     iCodCicloCli;
+
+EXEC SQL END DECLARE SECTION;
+
+    iCodCiclo = iCodCiclFact;
+
+    EXEC SQL
+    SELECT TO_CHAR(FEC_DESDELLAM,'YYYYMMDDHH24MISS'),
+           TO_CHAR(FEC_HASTALLAM,'YYYYMMDDHH24MISS'),
+           COD_CICLO  INTO
+           :szFecDesde,
+           :szFecHasta,
+           :iCodCicloCli
+    FROM FA_CICLFACT
+    WHERE COD_CICLFACT = :iCodCiclo;
+
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (modulo ,"\n\t\t** Error Select FA_CICLFACT [%d] ***"
+                             ,LOG03, SQLCODE);
+
+        vDTrazasError(modulo,"%s Error Select FA_CICLFACT  %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3)
+                            ,sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    strcpy(szFecUltFact, szFecDesde); /* PGG SOPORTE CO-059 17-04-2006 */
+    strcpy( szFecActual, szFecHasta); /* PGG SOPORTE CO-059 17-04-2006 */
+
+    strcpy(sthFaCicloFact.szhFecDesdeLLam, szFecDesde);
+    strcpy(sthFaCicloFact.szhFecHastaLLam, szFecHasta);
+    sthFaCicloFact.iCodCiclo = iCodCicloCli;
+
+    vDTrazasLog  ( modulo , "\n\t\t** Select en FA_CICLFACT  ***"
+                            "\n\t\t** Fecha Desde : [%s]     ***"
+                            "\n\t\t** Fecha Hasta : [%s]     ***"
+                            ,LOG03
+                            ,sthFaCicloFact.szhFecDesdeLLam
+                            ,sthFaCicloFact.szhFecHastaLLam);
+    return 1;
+}
+
+
+/************************************************************************/
+/* Funcion :  bProcesaClientes                                          */
+/*      Realiza proceso principal de carga de balance                   */
+/************************************************************************/
+BOOL bProcesaClientes (const char *szpHostId, int iExisteHostId)
+{
+
+char modulo[]="bProcesaClientes";
+BOOL bExiste = 1;
+int   i;
+int   iContLeidos = 0;
+int   iContTotal  = 0;
+char  szCadenaSQL [1024];
+
+EXEC SQL BEGIN DECLARE SECTION;
+ int    iCodCiclo;
+ int    iCodCicloFact;
+ long   lCodClienteIni;
+ long   lCodClienteFin;
+ char   FEC_PARTIDA[15];EXEC SQL VAR FEC_PARTIDA IS STRING (15);
+ char   FEC_HASTA[15];EXEC SQL VAR FEC_HASTA IS STRING (15);
+ char   szFecHasta[15];EXEC SQL VAR szFecHasta IS STRING (15);
+ int    ihExisteHostId;
+ char   szhHostId[25]=""; EXEC SQL VAR szhHostId IS STRING (25);
+ int    ihCodProceso = 3000;
+ int    ihExisteRangoClientes = 0;
+ const 	int ihValorCero= 0;
+ const 	int ihValorUno = 1;
+ int	iIndBalance;
+ 
+ long	lhCodCliente [MAXCLIENTES];
+ char   szhFecEmision[MAXCLIENTES][15];
+ char   szhRowid     [MAXCLIENTES][19];
+
+EXEC SQL END DECLARE SECTION;
+
+    iCodCiclo       = sthFaCicloFact.iCodCiclo;
+    lCodClienteIni  = stLineaComando.lCodClienteIni;
+    lCodClienteFin  = stLineaComando.lCodClienteFin;
+    iCodCicloFact   = stLineaComando.iCodCiclFact;
+    ihExisteHostId  = iExisteHostId;
+    strcpy(szhHostId, szpHostId);
+    ihExisteRangoClientes = stLineaComando.iExisteRango;
+    strcpy(szFecHasta,sthFaCicloFact.szhFecHastaLLam);
+
+    EXEC SQL
+        SELECT TO_CHAR(SYSDATE - 365, 'YYYYMMDDHH24MISS'),
+               TO_CHAR(FEC_INICIO, 'YYYYMMDDHH24MISS')
+        INTO   :FEC_PARTIDA, :FEC_HASTA
+        FROM   FA_TRAZAPROC
+        WHERE   COD_PROCESO = :ihCodProceso
+        AND COD_CICLFACT    = :iCodCicloFact
+        AND ( (HOST_ID = :szhHostId) OR ( 1 <> :ihExisteHostId) );
+
+    if ( SQLCODE != SQLOK )
+    {
+        strcpy( FEC_PARTIDA, "20030501000000");
+        strcpy( FEC_HASTA,   "30000101235959");
+    }
+    /* ASIGNAMOS LA FECHA ACTUAL COMO FECHA HASTA */
+    /* strcpy( szFecActual, FEC_HASTA); */ /* PGG SOPORTE Se comenta para usar la fec_hastallam de la Fa_ciclfact CO-059 17-04-2006 */
+    SQLCODE = 0;
+
+	/* realiza prepare para tablas ciclo */
+/*  if (!bfnPrepare ())																			   
+  {																							   
+      vDTrazasLog  ( modulo ,"\n\t\t** Error en PREPARE de tablas ciclo[%d] ***",LOG00, SQLCODE);
+  }																							   */
+
+    vDTrazasLog  ( modulo ,"\n\t\t*** bProcesaClientes  ***"
+                           "\n\t\t=> Ciclo Facturacion     [%d]"
+                           "\n\t\t=> Ciclo Clientes        [%d]"
+                           "\n\t\t=> Cliente Inicial       [%ld]"
+                           "\n\t\t=> Cliente Final         [%ld]"
+                           "\n\t\t=> Existe Rng Clientes   [%d]"
+                           ,LOG03
+                           ,stLineaComando.iCodCiclFact
+                           ,iCodCiclo
+                           ,stLineaComando.lCodClienteIni
+                           ,stLineaComando.lCodClienteFin
+                           ,stLineaComando.iExisteRango);
+
+    memset(szCadenaSQL,0,sizeof(szCadenaSQL));
+    
+    sprintf(szCadenaSQL," SELECT DISTINCT COD_CLIENTE \n"
+    					"\t , TO_CHAR(FEC_EMISION,'YYYYMMDDHH24MISS') \n"
+						"\t , ROWID \n"
+						"\t FROM FA_FACTDOCU_%d\n"
+						"\t WHERE COD_CICLFACT = %d\n"
+						"\t AND ( (COD_CLIENTE BETWEEN %ld AND %ld) OR (1 <> %d) )\n"
+						"\t AND (IND_BALANCE = 0 OR IND_BALANCE IS NULL)\n"
+						, iCodCicloFact, iCodCicloFact, lCodClienteIni, lCodClienteFin, ihExisteRangoClientes);
+    					
+    vDTrazasLog ( modulo,"\n\t** CadenaSQL  para Select de clientes.**\n\t%s"
+                         ,LOG04, szCadenaSQL);
+
+
+	EXEC SQL PREPARE stConsultaDinamica FROM :szCadenaSQL;
+
+	if (SQLCODE) {
+		vDTrazasError(modulo,"<< Fallo en 'PREPARE' de la Consulta de Clientes >>\n\t%s",
+					  LOG01,sqlca.sqlerrm.sqlerrmc);
+		vDTrazasLog  (modulo,"<< Fallo en 'PREPARE' de la Consulta de Clientes >>",
+					  LOG01);
+	    return SQLCODE;
+	}
+    
+    
+    
+    
+    EXEC SQL DECLARE Cursor_Clientes CURSOR for stConsultaDinamica;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error Declare Cusor_Clientes {%d] ***"
+                              ,LOG03, SQLCODE);
+        vDTrazasError(modulo,"%s Error Declare Cursor_Clientes  %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3)
+                            ,sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cursor_Clientes ;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  ( modulo ,"\n\t\t** Error OPEN  Cusor_Clientes SQLCODE : [%d] ***"
+                              ,LOG03
+                              ,sqlca.sqlcode);
+        vDTrazasError(modulo,"%s Error Open Cursor_Clientes  %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3)
+                            ,sqlca.sqlerrm.sqlerrmc, sqlca.sqlcode);
+
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    iContLeidos = 0;
+    iContTotal  = 0;
+
+    while ( bExiste )
+    {
+        EXEC SQL FETCH Cursor_Clientes INTO
+                :lhCodCliente,
+                :szhFecEmision,
+                :szhRowid;
+
+        vDTrazasLog  ( modulo ,"\n\t\t** Resultado FETCH : [%d]  ***"
+                              ,LOG04
+                              ,SQLCODE);
+
+        if ( iContLeidos == 0 )
+            iContLeidos = sqlca.sqlerrd[2];
+        else
+            iContLeidos =  sqlca.sqlerrd[2] - iContTotal;
+
+        iContTotal  = sqlca.sqlerrd[2];
+
+        if ( SQLCODE != SQLOK )
+        {
+            if ( SQLCODE != SQLNOTFOUND )
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** Error Open Cusor_Clientes [%d] ***"
+                                      ,LOG03, SQLCODE);
+                vDTrazasError(modulo,"%s Error Open Cursor_Clientes  %s [%d]\n"
+                                    ,LOG03
+                                    ,cfnGetTime(3)
+                                    ,sqlca.sqlerrm.sqlerrmc, SQLCODE);
+                fnOraRollBack();
+                return FALSE;
+            }
+            else
+            {
+                vDTrazasLog  ( modulo ,"\n\t\t** No existen registros para proceso  ***"
+                                      ,LOG03);
+                bExiste = FALSE;
+            }
+        }
+
+        vDTrazasLog  ( modulo ,"\n\t\t** Clientes leidos : [%d]  ***",LOG03,iContLeidos);
+
+        for ( i = 0 ; i < iContLeidos ; i++ )
+        {
+            lContClientes++;
+            
+            iIndBalance = 3;
+
+        	SQLCODE = 0;
+
+        	vDTrazasLog  ( modulo ,"\n\t\t**Procesando Cliente : [%d] , Fec. Emision [%s] -- FecUltFact[%s] ***"
+                          		  ,LOG05
+                          		  ,lhCodCliente[i],szhFecEmision[i], szFecUltFact);
+
+            if (!bCargaCoPagos(lhCodCliente[i], szFecHasta,&iIndBalance))
+                return FALSE;
+                
+            if (!bUpdateCoPagos(lhCodCliente[i], szFecHasta))
+            	return FALSE;
+
+            if (!bCargaBalanceDocu(lhCodCliente[i], szFecHasta,&iIndBalance))
+                return FALSE;
+            
+            if (!bUpdateBalanceDocu(lhCodCliente[i], szFecHasta,iIndBalance))
+            	return FALSE;
+            
+            if (!bCargaCoAjustes(lhCodCliente[i], szFecHasta,&iIndBalance))
+                return FALSE;
+                
+            if (!bUpdateCoAjustes(lhCodCliente[i], szFecHasta))
+                return FALSE;
+
+            if (!bCargaItemesCero(lhCodCliente[i], iCARGOS_MES, FACTCICLAFEC))
+                return FALSE;
+
+            if (!bCargaItemesCero(lhCodCliente[i],iTOTAL_FACTURA, FACTCICLAFEC))
+                return FALSE;
+
+            if (!bCargaItemesCero(lhCodCliente[i], iTOTAL_PAGAR, FACTCICLAFEC))
+                return FALSE;
+
+            if (!bCargaBalanceAnterior(lhCodCliente[i]))
+                return FALSE;
+
+            /* Incidencia TM-%0414 */
+            if (iUpdateFatBalance(lhCodCliente[i])) 
+            {
+				vDTrazasLog  ( "bProcesaClientes","\n\t\t** UPDATE FAT_BALANCE OK ***",LOG03);
+            }
+            else  
+			{
+                vDTrazasLog ( 	"bProcesaClientes", 
+                				" REGISTRO NO SE PUDO INSERTAR EN FAT_BALANCE CODE[%ld]"
+                				" VALORES A INSERTAR EN FAT_BALANCE "
+                 				" lhCod_Cliente  [%ld]"
+                 				, LOG03, sqlca.sqlcode, lhCodCliente[i] );
+                 return FALSE;
+            }
+            
+            
+            /*Actualiza Indice Balance*/
+            if (iUpdateIndBalance(szhRowid[i], iIndBalance)) 
+            {
+				vDTrazasLog  ( "bProcesaClientes","\n\t\t** UPDATE Indice Balance OK , Cliente [%ld], Indice [%d] ***",LOG03,lhCodCliente[i],iIndBalance);
+            }
+            else  
+			{
+                vDTrazasLog ( 	"bProcesaClientes", 
+                				" No se puedo actualizar el indice balance para el cliente [%ld] CODE[%ld]"
+                				, LOG03, lhCodCliente[i], sqlca.sqlcode );
+                 return FALSE;
+            }
+            
+        }
+    } /* End While */
+
+    return 1;
+}
+
+/****************************************************************************/
+/*                         funcion : bfnUpdateIndConsumosLibroIva                     */
+/****************************************************************************/
+BOOL iUpdateIndBalance( char *szRowid, int iIndBalance)
+{
+char modulo[]="Update Ind Balance";
+static char szCadenaSQL[1024];
+
+EXEC SQL BEGIN DECLARE SECTION;
+     int   ihIndBalance    ;
+     int   iCodCicloFact   ;
+	 char  szhRowid   [19] ;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t*** Inicio de iUpdateIndBalance***\n",LOG04);
+
+	strcpy(szhRowid,szRowid);
+	ihIndBalance = iIndBalance;
+	iCodCicloFact   = stLineaComando.iCodCiclFact;
+	
+
+    vDTrazasLog (modulo,"\n\t*** iCodCicloFact [%d]***"
+                        "\n\t*** ihIndBalance  [%d]***"
+                        "\n\t*** lhCodCiclFBal [%ld]***"
+                        "\n\t*** szhRowid      [%s]***"
+                        ,LOG04       ,iCodCicloFact
+                        ,ihIndBalance,iCodCicloFact,szhRowid);
+
+	memset(szCadenaSQL,0,sizeof(szCadenaSQL));
+    
+    sprintf(szCadenaSQL," UPDATE FA_FACTDOCU_%d SET "
+						"\t IND_BALANCE = %d, "
+						"\t COD_CICLFACT_BAL = %ld "
+						"\t WHERE ROWID = '%s' "
+						, iCodCicloFact, ihIndBalance, iCodCicloFact, szhRowid);
+						
+	vDTrazasLog (modulo,"\n\t*** szCadenaSQL***"
+                        "\n\t*** [%s] ***"
+                        ,LOG04       ,szCadenaSQL);
+
+	EXEC SQL PREPARE stUpdateTabla FROM :szCadenaSQL;
+	if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) {
+            
+            vDTrazasLog  ( modulo ,"\n\t\t** Error en 'PREPARE' de Update Indice balance [%d] ***"
+                              ,LOG03, SQLCODE);
+        	vDTrazasError(modulo,"%s Error en 'PREPARE' de Update Indice balance %s [%d]\n"
+                            ,LOG03
+                            ,cfnGetTime(3), sqlca.sqlerrm.sqlerrmc, SQLCODE);
+        return FALSE;
+    }
+    EXEC SQL EXECUTE stUpdateTabla ;
+	if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) {
+		vDTrazasError(modulo,"\n\t<< Error en 'UPDATE' Indice Balance >>\n\t[%d] : [%s]",
+					  LOG01,SQLCODE,SQLERRM);
+		vDTrazasLog  (modulo,"\n\t<< Error en 'UPDATE' Indice Balance >>\n\t[%d] : [%s]",
+					  LOG01,SQLCODE,SQLERRM);
+	    return FALSE;
+	}
+	return TRUE;
+}
+/****************************************************************************/
+
+
+/************************************************************************/
+/* Funcion :  bCargaItemesCero                                          */
+/* Carga itemes en cero                                                 */
+/************************************************************************/
+
+BOOL bCargaItemesCero(long lCodCliente, int iCodItem, int iCodTipDocum)
+{
+char modulo[]="bCargaItemesCero";
+int     Result;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente;
+    int  ihCodCiclo;
+    int  ihCodItem;
+    int  ihCodTipDocum;
+EXEC SQL END DECLARE SECTION;
+
+    lhCodCliente    = lCodCliente;
+    ihCodCiclo      = stLineaComando.iCodCiclFact;
+    ihCodItem       = iCodItem;
+    ihCodTipDocum   = iCodTipDocum;
+
+    Result = ifnInsertaFatBalance(  lhCodCliente,
+                                    ihCodItem,
+                                    ihCodTipDocum,
+                                    ihCodCiclo,
+                                    0,
+                                    0.0);
+    if ( Result != SQLOK )
+    {
+        vDTrazasLog  ( modulo , "\n\t\t** Error Insert FAT_BALANCES ***"
+                				"\n\t\t** Codigo de Item : [%d] - Tipo de Doc. : [%d]"
+                                ,LOG03, ihCodItem,ihCodTipDocum);
+        vDTrazasError(modulo,"%s Error Insert Balances Cargos Corrientes  %s\n"
+                    		 "\n\t\t** Codigo de Item : [%d] - Tipo de Doc. : [%d]"
+		                    ,LOG03
+		                    ,cfnGetTime(3)
+		                    ,sqlca.sqlerrm.sqlerrmc
+		                    , ihCodItem,ihCodTipDocum);
+        fnOraRollBack();
+        return FALSE;
+    }
+
+    return 1;
+}
+
+
+BOOL bCargaBalanceAnterior(long lCodCliente)
+{
+char modulo[]="bCargaBalanceAnterior";
+int     Result;
+
+EXEC SQL BEGIN DECLARE SECTION;
+    long    lhCodCliente;
+    int     ihCodCiclo;
+    int     ihCodItem;
+    int     ihCodTipDocum;
+    double  dImpDocumento;
+    int     iCantDocum;
+EXEC SQL END DECLARE SECTION;
+
+    lhCodCliente    = lCodCliente;
+    ihCodCiclo      = stLineaComando.iCodCiclFact;
+    ihCodItem   	= iTOTAL_PAGAR;
+    ihCodTipDocum   = FACTCICLAFEC;
+
+   /* Obtiene balance anterior de tablas historicas */
+    EXEC  SQL
+          SELECT ROUND(NVL(IMP_DOCUMENTO, 0), 2), ROUND(NVL(CAN_DOCUMENTO, 0), 2)
+            INTO :dImpDocumento, :iCantDocum
+            FROM FAH_BALANCE
+           WHERE COD_CLIENTE = :lCodCliente
+             AND FEC_HISTORICO = ( SELECT MAX(FEC_HISTORICO)
+                                     FROM FAH_BALANCE
+                                    WHERE COD_CLIENTE = :lCodCliente
+                                      AND COD_ITEM    = :ihCodItem)
+             AND COD_ITEM = :ihCodItem ;
+
+    if ( SQLCODE != SQLOK )
+    {
+        if (SQLCODE == SQLNOTFOUND)
+        {
+            vDTrazasLog  ( modulo ,"\n\t\t** Cliente %ld sin balance anterior  ***"
+                                  ,LOG03,lCodCliente);
+            dImpDocumento = 0;
+            iCantDocum = 0;
+        }
+        else
+        {
+            vDTrazasLog  (modulo,"\n\t\t** Error Select FAH_BALANCE  ***",LOG03);
+            vDTrazasError(modulo,"%s  Error Select FAH_BALANCE  %s\n"
+			                    ,LOG03
+			                    ,cfnGetTime(3)
+			                    ,sqlca.sqlerrm.sqlerrmc);
+            fnOraRollBack();
+            return FALSE;
+        }
+    }
+
+    ihCodItem    =iBALANCE_ANTERIOR;
+
+    vDTrazasLog  ( modulo ,"\n dImpDocumento [%f]\n", LOG03, dImpDocumento);  /* Corrección para que imprima correctamente el monto. */
+
+    Result = ifnInsertaFatBalance(lhCodCliente,
+                              ihCodItem,
+                              ihCodTipDocum,
+                              ihCodCiclo,
+                              iCantDocum,
+                              dImpDocumento);
+
+
+    if ( Result != SQLOK )
+        {
+            vDTrazasLog  ( modulo ,"\n\t\t** Error Insert FAT_BALANCE Balance Anterior [%d] ***", LOG03, Result);
+            vDTrazasError(modulo,"%s  Error Insert FAT_BALANCE Balance Anterior %s [%d]\n"
+                    ,LOG03
+                    ,cfnGetTime(3)
+                    ,sqlca.sqlerrm.sqlerrmc, Result);
+        fnOraRollBack();
+        return FALSE;
+    }
+    return 1;
+}
+
+
+/*
+ * Funcion      : bfnValidarTrazaDeProceso
+ * Descripcion  : Funcion "wrapper" que ejecuta la validacion de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperValidaTrazaProc(long lCodCiclFact,int iCodProceso, int iIndFacturacion)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnValidaTrazaProc( lCodCiclFact, iCodProceso, iIndFacturacion))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnValidaTrazaProcHost( lCodCiclFact, iCodProceso, iIndFacturacion, szHostId))
+            return (FALSE);
+    }
+
+    return (1);
+
+}
+
+/*
+ * Funcion      : bfnWrapperSelectTrazaProc
+ * Descripcion  : Funcion "wrapper" que selecciona datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperSelectTrazaProc (long lCicloFac,int iCodProc, TRAZAPROC * pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnSelectTrazaProc (lCicloFac, iCodProc, pstTraza))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnSelectTrazaProcHost (lCicloFac, iCodProc, pstTraza, szHostId))
+            return (FALSE);
+    }
+
+    return (1);
+
+}
+
+/*
+ * Funcion      : bfnWrapperUpdateTrazaProc
+ * Descripcion  : Funcion "wrapper" que actualiza datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperUpdateTrazaProc (TRAZAPROC pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnUpdateTrazaProc (pstTraza))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnUpdateTrazaProcHost (pstTraza, szHostId))
+            return (FALSE);
+    }
+
+    return (1);
+
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

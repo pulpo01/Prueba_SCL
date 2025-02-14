@@ -1,0 +1,248 @@
+CREATE OR REPLACE TRIGGER PV_RECORRIDO_BEIN_TG
+BEFORE INSERT ON PV_ERECORRIDO
+REFERENCING OLD AS OLD NEW AS NEW
+FOR EACH ROW
+
+DECLARE
+
+	V_NUMOS	      	  PV_ERECORRIDO.NUM_OS%TYPE;
+	V_NUMOSPADRE 	  PV_IORSERV.NUM_OSPADRE%TYPE;
+	V_MODO			  PV_IORSERV.COD_MODGENER%TYPE;
+	V_ABONADO		  GA_ABOCEL.NUM_ABONADO%TYPE;
+
+	V_MODULO		  PV_IORSERV.COD_MODULO%TYPE;
+	V_IDTAREA		  PV_IORSERV.ID_GESTOR%TYPE;
+
+	V_COD_PROCESO	  PV_ARCOS.COD_PROCESO%TYPE;
+    V_DES_PROCESO     FA_INTPROCESOS.DES_PROCESO%TYPE;
+
+	TIPO_OS           VARCHAR2(20);
+
+	V_MENSAJE		  VARCHAR2(100);
+
+	V_CANT_OS_EJE	  NUMBER;
+	V_CANT_OS_TER	  NUMBER;
+	V_CANT_OS_ERR	  NUMBER;
+	V_OoSsPuntualRel  Boolean;
+
+BEGIN
+
+	V_MENSAJE:='';
+
+	BEGIN
+		TIPO_OS:='PUNTUAL';
+
+		V_NUMOS := :NEW.NUM_OS;
+		--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,0,'OOSS ->' || to_char(V_NUMOS));
+
+		-- CASO PUNTUAL
+		SELECT NUM_OS,COD_MODULO,ID_GESTOR,COD_MODGENER
+		INTO   V_NUMOS,V_MODULO,V_IDTAREA,V_MODO
+		FROM   PV_IORSERV
+		WHERE  NUM_OSPADRE=V_NUMOS
+		AND    NUM_OS=NUM_OSPADRE;
+
+		SELECT NUM_ABONADO
+		INTO   V_ABONADO
+		FROM   PV_CAMCOM
+		WHERE  NUM_OS=V_NUMOS;
+
+		-- CLASIFICACION POR ESTADO
+		--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,1,'Estado Puntual ->' || :NEW.TIP_ESTADO);
+
+		IF :NEW.TIP_ESTADO=4 THEN
+		   BEGIN
+
+			SELECT COD_PROCESO
+			  INTO V_COD_PROCESO
+			  FROM PV_ARCOS
+			 WHERE EST_FINAL=:NEW.COD_ESTADO
+			   AND COD_MODGENER = V_MODO
+			   AND ROWNUM=1;
+
+
+		    --insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,1,'Proceso Puntual ->' || to_char(V_COD_PROCESO));
+
+			SELECT UPPER(DES_PROCESO)
+			INTO   V_DES_PROCESO
+			FROM   FA_INTPROCESOS
+			WHERE  COD_APLIC='PVA'
+			AND    COD_PROCESO=V_COD_PROCESO;
+
+		    --insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+             --values('CE',0,1,'Proceso Puntual ->' || V_DES_PROCESO);
+
+			 PV_INFORMAR_ESTADO_TAFI_PR(V_MODULO,V_IDTAREA,V_ABONADO,NULL,'CERRADA','ERROR EN -> ' || V_DES_PROCESO);
+
+		   END;
+	    END IF;
+
+	EXCEPTION
+		WHEN NO_DATA_FOUND THEN
+
+			--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,2,'MASIVA ->' || to_char(V_NUMOS));
+
+
+		  BEGIN
+			TIPO_OS:='MASIVO_HIJO';
+
+			-- CASO MASIVO
+			SELECT NUM_OSPADRE
+			  INTO V_NUMOSPADRE
+			  FROM PV_IORSERV
+			 WHERE NUM_OS=V_NUMOS
+			   AND NUM_OSPADRE IS NOT NULL;
+
+			--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,3,'PADRE->' ||to_char(V_NUMOSPADRE));
+
+
+			SELECT COD_MODULO,ID_GESTOR,COD_MODGENER
+			INTO   V_MODULO,V_IDTAREA,V_MODO
+			FROM   PV_IORSERV
+			WHERE  NUM_OS = V_NUMOSPADRE
+			  AND  NUM_OSPADRE IS NULL;
+
+			--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,4,v_modulo || '-' || to_char(V_IDTAREA));
+
+
+			SELECT NUM_ABONADO
+			  INTO   V_ABONADO
+			  FROM   PV_CAMCOM
+			 WHERE  NUM_OS=V_NUMOS;
+
+			--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,5,'Estado Masiva ->' || :NEW.TIP_ESTADO);
+
+			-- CLASIFICACION POR ESTADO
+			IF :NEW.TIP_ESTADO=4 THEN
+			   BEGIN
+				SELECT COD_PROCESO
+				  INTO V_COD_PROCESO
+				  FROM PV_ARCOS
+				 WHERE EST_FINAL=:NEW.COD_ESTADO
+				   AND COD_MODGENER = V_MODO
+				   AND ROWNUM=1;
+
+				SELECT UPPER(DES_PROCESO)
+				INTO   V_DES_PROCESO
+				FROM   FA_INTPROCESOS
+				WHERE  COD_APLIC='PVA'
+				AND    COD_PROCESO=V_COD_PROCESO;
+
+			   END;
+
+   			   PV_INFORMAR_ESTADO_TAFI_PR(V_MODULO,V_IDTAREA,V_ABONADO,NULL,'CERRADA','ERROR EN -> ' || V_DES_PROCESO);
+
+		    END IF;
+		  EXCEPTION
+		  	 WHEN NO_DATA_FOUND THEN
+			 	 TIPO_OS:='MASIVO_PADRE';
+		  END;
+	END;
+
+
+
+	IF V_MODULO IS NOT NULL THEN
+	   BEGIN
+		-- CASO PUNTUAL
+		IF :NEW.COD_ESTADO=990 AND :NEW.TIP_ESTADO=3 AND TIPO_OS='PUNTUAL' THEN
+		   	V_OoSsPuntualRel := Fn_Valida_OoSs_Relacionadas(V_MODULO,V_IDTAREA,V_NUMOS);
+			if V_OoSsPuntualRel = True then
+						PV_INFORMAR_ESTADO_TAFI_PR(V_MODULO,V_IDTAREA,V_ABONADO,NULL,'CERRADA','CERRADA');
+			End if;
+		END IF;
+
+	    --insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+             --values('CE',0,6,TIPO_OS);
+
+
+		-- CASO MASIVO
+		IF TIPO_OS = 'MASIVO_HIJO' THEN
+		   BEGIN
+
+			 --insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+	              --values('CE',0,7,'ENTRAMOS A MASIVO');
+
+
+		   		-- OOSS EJECUTADAS
+		   		SELECT COUNT(*)
+				INTO   V_CANT_OS_EJE
+		   		FROM   PV_IORSERV
+				WHERE  NUM_OSPADRE=V_NUMOSPADRE;
+
+
+				--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+				              --values('CE',1,8,'TOTAL ORDENES->' || to_char(V_CANT_OS_EJE));
+
+
+
+				-- OOSS TERMINADAS
+		   		SELECT COUNT(*)
+				INTO   V_CANT_OS_TER
+				FROM   PV_ERECORRIDO B, PV_IORSERV A
+				WHERE  A.NUM_OSPADRE=V_NUMOSPADRE
+				AND    B.NUM_OS=A.NUM_OS
+				AND    B.COD_ESTADO=990
+				AND    B.TIP_ESTADO=3;
+
+				--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+				              --values('CE',1,9,'TOTAL Finalizadas->' || to_char(V_CANT_OS_TER));
+
+
+				-- OOSS TERMINADAS con ERROR
+		   		SELECT COUNT(*)
+				INTO   V_CANT_OS_ERR
+				FROM   PV_ERECORRIDO B, PV_IORSERV A
+				WHERE  A.NUM_OSPADRE=V_NUMOSPADRE
+				AND    B.NUM_OS=A.NUM_OS
+				AND    B.COD_ESTADO<=990
+				AND    B.TIP_ESTADO=4;
+
+				--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+				              --values('CE',1,10,'TOTAL Error->' || to_char(V_CANT_OS_ERR));
+
+
+				IF :NEW.TIP_ESTADO = 3 THEN --bUENAS
+				   V_CANT_OS_TER := V_CANT_OS_TER + 1;
+				ELSIF :NEW.TIP_ESTADO = 4 THEN --MALAS
+				   V_CANT_OS_ERR := V_CANT_OS_ERR + 1;
+				END IF;
+
+				--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+				              --values('CE',1,11,'TOTAL Finalizadas->' || to_char(V_CANT_OS_TER));
+
+
+				--insert into pv_estay(COD_MODULO, ESTADO, ID_TAREA, GLOSA)
+				              --values('CE',1,12,'TOTAL Error->' || to_char(V_CANT_OS_ERR));
+
+
+			    IF V_CANT_OS_EJE = V_CANT_OS_TER + V_CANT_OS_ERR THEN
+				   BEGIN
+
+					V_MENSAJE:= V_CANT_OS_TER || ': OK, ' || V_CANT_OS_ERR || ': CON ERROR .';
+			    	PV_INFORMAR_ESTADO_TAFI_PR(V_MODULO,V_IDTAREA,V_ABONADO,NULL,'CERRADA',V_MENSAJE);
+
+				   END;
+				END IF;
+
+		   END;
+
+		END IF;
+
+	   END;
+
+	END IF;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR  (-20002,'ERROR INESPERADO EN TRIGGER : ORA-'||TO_CHAR(SQLCODE)||'.',TRUE);
+        NULL;
+END;
+/
+SHOW ERRORS

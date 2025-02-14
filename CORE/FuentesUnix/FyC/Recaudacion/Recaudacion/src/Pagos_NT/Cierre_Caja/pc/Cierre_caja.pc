@@ -1,0 +1,661 @@
+/*=============================================================================
+   Nombre      : Cierre_caja.pc
+   Autor       : Guido Antio Cares  
+   Fecha       : 28-Agosto-2001
+   Actualizado : 15-02-2002
+  ============================================================================= */
+#include <pasoc.h>
+#include <unistd.h>
+#include "Cierre_caja.h"
+ 
+EXEC SQL INCLUDE sqlca; 
+
+/*****************************************************************************/
+/*                    -- Declaracion de Variables Globales --                */
+/*****************************************************************************/
+
+EXEC SQL BEGIN DECLARE SECTION;
+  char  szhCod_Proceso [6];
+  long  lhPid_Proceso     ;
+  char  szhEstado_Proc [2];
+
+  char  szahEmp_Recauda   [MAX_REG][16]; EXEC SQL VAR szahEmp_Recauda  IS STRING(16);    
+  char  szahCod_servicio  [MAX_REG][6] ; EXEC SQL VAR szahCod_servicio IS STRING(6);
+  char  szahCod_periodo   [MAX_REG][7] ; EXEC SQL VAR szahCod_periodo  IS STRING(7);
+  int   iahNum_transac    [MAX_REG]    ;
+  char  szahCod_empresa   [MAX_REG][16]; EXEC SQL VAR szahCod_empresa   IS STRING(16);
+  char  szahCod_tipoper   [MAX_REG][6] ; EXEC SQL VAR szahCod_tipoper   IS STRING(6);
+  char  szahCod_tipuso    [MAX_REG][3] ; EXEC SQL VAR szahCod_tipuso    IS STRING(3);
+  char  szahNum_ejercicio [MAX_REG][13]; EXEC SQL VAR szahNum_ejercicio IS STRING(13);
+
+  char  szhEmp_Recauda   [16]; EXEC SQL VAR szhEmp_Recauda  IS STRING(16);    
+  char  szhCod_servicio  [6] ; EXEC SQL VAR szhCod_servicio IS STRING(6);
+  char  szhCod_periodo   [7] ; EXEC SQL VAR szhCod_periodo  IS STRING(7);
+  int   ihNum_transac        ;
+  char  szhCod_empresa   [16]; EXEC SQL VAR szhCod_empresa   IS STRING(16);
+  char  szhCod_tipoper   [6] ; EXEC SQL VAR szhCod_tipoper   IS STRING(6);
+  char  szhCod_tipuso    [3] ; EXEC SQL VAR szhCod_tipuso    IS STRING(3);
+  char  szhNum_ejercicio [13]; EXEC SQL VAR szhNum_ejercicio IS STRING(13);
+
+  char  szhCod_Moneda   [4] ; EXEC SQL VAR szhCod_Moneda   IS STRING(4);
+  long  lhCod_Cliente       ;
+  char  szhGlosaError   [60];
+  int   ihRetorno           ;
+
+  char  szCod_Oficina   [3] ; EXEC SQL VAR szCod_Oficina   IS STRING(4);
+  char  szCod_Caja      [4] ; EXEC SQL VAR szCod_Caja   IS STRING(4);
+EXEC SQL END DECLARE SECTION;
+
+static char szExeCierre_caja [1024];
+
+static CIERRE stCierreCaja;
+int    iValorPL=0;
+long   lTotalRows;
+int    iCan_Reg = 0;
+static char szUsage [] =
+   "\nUso : Cierre_caja "
+   "\n\t -u [Usuario]/[Password]\n"
+   "\n\t -l [NivelLog]\n";
+
+/*****************************************************************************/
+/*     main                                                                  */
+/*****************************************************************************/
+int main (int argc, char* argv[])
+{
+extern int   opterr;
+extern int   optopt;
+extern char *optarg;
+
+char opt[]  = "u:l:n:";
+int  iOpt   = 0    ;
+
+char szUsuario[61] = "" ;
+char *pszTmp       = "" ;
+
+    memset (&stCierreCaja,0,sizeof (CIERRE));
+    memset (&stStatus,0,sizeof (STATUS));
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF) {
+        switch (iOpt) {
+            case 'u':  
+                if ( strlen (optarg) ) {
+                    strcpy (szUsuario,optarg)  ;
+                    stCierreCaja.bOptUsuario = TRUE;
+                }
+                break;
+            case 'l': 
+                if ( strlen (optarg) ) {
+                    stCierreCaja.bOptNivelLog = TRUE         ;
+                    stCierreCaja.iNivelLog    = atoi (optarg);
+                }
+                break;   
+            case 'n': 
+                if ( strlen (optarg) ) {
+                    stCierreCaja.bOptNivelLog = TRUE         ;
+                    sprintf(szhCod_Proceso,"%s",optarg);
+                }
+                break;   
+        }/* fin switch */
+    }/* fin While de Opciones */
+
+    if (!stCierreCaja.bOptUsuario) {
+         fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: \n%s\n\n",szUsage);
+         return  (1)      ;
+
+    } else {
+       
+       if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL) {
+             fprintf (stderr,"\n\t=>Formato Usuario Oracle Incorrecto:\n%s\n\n",szUsage);
+             return (1)       ;
+
+       } else {
+             strncpy (stCierreCaja.szUsuario ,szUsuario,pszTmp-szUsuario);
+             strcpy  (stCierreCaja.szPassWord, pszTmp+1)                 ;
+       }
+    }
+    
+    if (!stCierreCaja.bOptNivelLog)
+         stCierreCaja.iNivelLog = iNIVEL_DEF;
+
+    if (!bfnInicio(&stCierreCaja,&stStatus)) {
+         vDTrazasLog (szExeCierre_caja,"\n\n\t Funcion bfnInicio con Error ***\n",LOG03);
+         return (2);
+    }
+    if (!bfnCierre_Caja(stCierreCaja)) {
+        fclose(stStatus.LogFile);
+	    fclose(stStatus.ErrFile);
+        vDTrazasLog (szExeCierre_caja,"\n\t *** Proceso Termino con Error *****",LOG03);
+    } else {
+        vDTrazasLog (szExeCierre_caja,"\n\t *** Proceso Termino OK *****",LOG03);
+        bfnExitCierre_Caja();
+        fclose(stStatus.LogFile);
+        fclose(stStatus.ErrFile);
+    }
+
+    return (0); 
+}/***************************** Final main ***********************************/
+
+/*****************************************************************************/
+/* Funcion : bfnInicio                                                       */
+/*****************************************************************************/
+static BOOL bfnInicio ( CIERRE *stCierreCaja, STATUS *pstStatus )
+{
+char szHora [9], szAux[3];
+char szFecha[11];
+char szComando[260];
+int  iRes=0;
+   if (!bfnConnectORA (stCierreCaja->szUsuario,stCierreCaja->szPassWord))  {
+        fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+        return   FALSE ;
+   }
+   
+   if (!bGetDatosGener (&stDatosGener,szSysDate)) return  FALSE;
+   strncpy(szHora,&szSysDate[8],6); 
+
+   /* Datos Iniciales de Tiempo */
+   cpu_ini = clock();
+   time (&real_ini) ;
+   pstStatus->OraConnected = 1;
+
+   iRes = ifnAbreArchivosLog();
+   if (iRes != 0) return FALSE;
+   
+   szAux[0]='\0';
+   strncpy(szAux,&szSysDate[8],2); sprintf(szHora,"%2.2s\0",szAux);
+   strncpy(szAux,&szSysDate[10],2);sprintf(szHora,"%s:%2.2s\0",szHora,szAux);
+   strncpy(szAux,&szSysDate[12],2);sprintf(szHora,"%s:%2.2s\0",szHora,szAux);
+
+   strcpy (szExeCierre_caja,"Cierre caja");
+   pstStatus->LogNivel = stCierreCaja->iNivelLog;
+   vDTrazasLog  (szExeCierre_caja,
+   "\n     *******************************************************************"
+   "\n     *                   CIERRE CAJA  HORA : %s                  *"
+   "\n     *******************************************************************\n", LOG03,szHora);
+
+   vDTrazasError(szExeCierre_caja,
+   "\n     *******************************************************************"
+   "\n     *             ERRORES EN CIERRE CAJA   HORA : %s            *"
+   "\n     *******************************************************************\n", LOG03,szHora);
+
+   lhPid_Proceso=getpid();
+   if (strlen(szhCod_Proceso)<1)  strcpy(szhCod_Proceso,"CCAJA");
+   
+   if (!bfnUpdateColasProc("R")) {
+        vDTrazasLog (szExeCierre_caja,"\n\n\t Funcion bfnUpdateColasProc(W) con Error ***\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO Funcion bfnUpdateColasProc(W).");
+        return FALSE;
+   }
+
+
+   return TRUE;
+}/************************** Final bfnInicio *************************/ 
+
+/*****************************************************************************/
+/* Funcion : bfnExitCierre_Caja                                              */
+/*****************************************************************************/
+static BOOL bfnExitCierre_Caja (void)
+{
+    /* Desconexion Oracle */
+    if (!bfnDisconnectORA(0)) {
+        iDError(szExeCierre_caja,ERR000,vInsertarIncidencia,"Desconexion",SQLERRM);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO Desconexion Oracle.");
+        return FALSE;
+    }
+    stStatus.OraConnected = FALSE;
+    vDTrazasLog (szExeCierre_caja,"\t *** Desconexion a Oracle ***",LOG03);
+    
+    /* Datos Fin de Tiempo */
+    times (&tms)     ;
+    cpu_fin = clock();
+    time (&real_fin) ;
+    
+    real = (real_fin-real_ini)                ;
+    cpu  =(float)cpu_fin/(float)CLOCKS_PER_SEC;
+    
+    vDTrazasLog (szExeCierre_caja,"\n\t => Tiempo de CPU : [%g]"
+                                  "\n\t => Tiempo Real   : [%g]"
+                                  "\n\t => Reg.Procesados: [%d]\n\n",LOG03, cpu, real,iCan_Reg); 
+}/*************************** Final bfnExitCierre_Caja ************************/
+
+
+/*****************************************************************************/
+/* Funcion : ifnDBOpenInterfaz                                               */
+/*****************************************************************************/
+static BOOL ifnDBOpenInterfaz ()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     int ihCod_Servicio = SERVICIO;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCierre_caja,"\t Open Query de Interfaz\n",LOG03);
+
+	EXEC SQL DECLARE Cur_Interfaz CURSOR FOR
+    SELECT UNIQUE A.EMP_RECAUDADORA, B.COD_SERVICIO, B.COD_PERIODO, A.NUM_TRANSACCION,
+           B.COD_EMPRESA, B.COD_TIPPERIODO, B.COD_TIPUSO, A.NUM_EJERCICIO
+    FROM   CET_PERIODOSERV B , CO_INTERFAZ_PAGOS A
+    WHERE  A.SER_SOLICITADO  = 'INT'
+    AND    A.TIP_TRANSACCION = 'A'
+    AND    A.COD_ESTADO      IS NULL 
+    AND    A.COD_SERVICIO    = :ihCod_Servicio
+    AND    A.EMP_RECAUDADORA = B.COD_EMPRESA
+    AND    SUBSTR(A.NUM_EJERCICIO,7,2)||SUBSTR(A.NUM_EJERCICIO,5,2)||SUBSTR(A.NUM_EJERCICIO,3,2) = B.COD_PERIODO 
+    AND    B.COD_SERVICIO    = 'REX02'
+    ORDER BY A.NUM_EJERCICIO;
+
+ 	if (SQLCODE!= SQLOK) {
+		iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"\t Declare ifnDBOpenInterfaz",SQLERRM);
+        vDTrazasLog (szExeCierre_caja,"\t Error en Declare ifnDBOpenInterfaz\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO DECLARE CURSOR INTERFAZ.");
+		return FALSE;
+	}
+
+	EXEC SQL OPEN Cur_Interfaz;
+	if (SQLCODE!=SQLOK) {
+		iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"\t Open ifnDBOpenInterfaz",SQLERRM);
+        vDTrazasLog (szExeCierre_caja,"\t Error en Open ifnDBOpenInterfaz\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO Desconexion Oracle.");
+        return FALSE;
+	}
+	return TRUE;
+}/**************************** Final ifnDBOpenInterfaz ***********************/
+
+/*****************************************************************************/
+/* Funcion : ifnDBFetchInterfaz                                              */
+/*****************************************************************************/
+static BOOL ifnDBFetchInterfaz ()
+{
+    vfnMemsetVariables();
+    
+    vDTrazasLog (szExeCierre_caja,"\t Fetch Query de Interfaz\n",LOG03);
+	EXEC SQL FETCH Cur_Interfaz 
+             INTO  :szahEmp_Recauda ,
+                   :szahCod_servicio,
+                   :szahCod_periodo ,
+                   :iahNum_transac  ,
+                   :szahCod_empresa ,
+                   :szahCod_tipoper ,
+                   :szahCod_tipuso  ,
+                   :szahNum_ejercicio;
+                   
+    lTotalRows=SQLROWS;                   
+                     
+    vDTrazasLog (szExeCierre_caja,"\t\t* Total de Filas Recuperadas [%ld] *\n",LOG03,lTotalRows);
+
+	if ((SQLCODE != SQLOK) && (SQLCODE != SQLNOTFOUND)) {
+		iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"\t Fetch ifnDBFetchInterfaz",SQLERRM);
+        vDTrazasLog (szExeCierre_caja,"\t Error en Fetch ifnDBFetchInterfaz\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO FETCH CURSOR INTERFAZ.");
+		return FALSE;
+    }
+
+  	return TRUE;
+}/************************* Final ifnDBFetchInterfaz *************************/
+
+/*****************************************************************************/
+/* Funcion : ifnDBCloseInterfaz                                              */
+/*****************************************************************************/
+static BOOL ifnDBCloseInterfaz ()
+{
+  vDTrazasLog (szExeCierre_caja,"\t Cerrando Cursor \n",LOG03);
+  EXEC SQL CLOSE Cur_Interfaz;
+  if (SQLCODE!=SQLOK)  {
+      iDError(szExeCierre_caja,ERR000,vInsertarIncidencia,"\t CLOSE Cur_Interfaz",SQLERRM ); 
+      ifnMailAlert("CIERRECAJA","TODOS","FALLO CLOSE CUR_INTERFAZ.");
+      return FALSE;
+  }
+  return TRUE;
+}/************************* Final ifnDBCloseInterfaz *************************/
+
+/*****************************************************************************/
+/* Funcion : bfnCierre_Caja                                              */
+/*****************************************************************************/
+static BOOL bfnCierre_Caja (CIERRE stCierreCaja)
+{
+int  iRes = 0, i=0, iSql = 0;
+
+    vDTrazasLog (szExeCierre_caja,"\t\t* Funcion Cierre Caja *\n",LOG03);
+
+    if (!ifnDBOpenInterfaz())  return FALSE;
+    
+    if (!ifnDBFetchInterfaz()) return FALSE;
+
+    if (!ifnDBCloseInterfaz ()) return FALSE;
+    
+    vDTrazasLog (szExeCierre_caja,"\t\t* For a lTotalRows *\n",LOG03);
+    for (i=0;i<lTotalRows;i++) {
+
+        /*strcpy(szhGlosaError,"Error\0");
+        ihRetorno=1;*/
+        iValorPL=0;
+
+        vDTrazasLog (szExeCierre_caja,"\t\t Traspasando Valores.",LOG03);
+        sprintf(szhEmp_Recauda  ,"%s", szahEmp_Recauda  [i]);  
+        sprintf(szhCod_servicio ,"%s", szahCod_servicio [i]);  
+        sprintf(szhCod_periodo  ,"%s", szahCod_periodo  [i]);  
+        sprintf(szhCod_empresa  ,"%s", szahCod_empresa  [i]);  
+        sprintf(szhCod_tipoper  ,"%s", szahCod_tipoper  [i]);  
+        sprintf(szhCod_tipuso   ,"%s", szahCod_tipuso   [i]);  
+        sprintf(szhNum_ejercicio,"%s", szahNum_ejercicio[i]);  
+
+        ihNum_transac = iahNum_transac[i] ;
+
+        iSql = bfnDBValidaRegistros(szhNum_ejercicio);
+
+        if (iSql < SQLOK) return FALSE;
+
+        if (iSql == SQLOK) {
+            vDTrazasLog (szExeCierre_caja,"\t *** Ejecutando PL CO_CIERRECAJAS con los sigtes. Parametros :",LOG03);
+            vDTrazasLog (szExeCierre_caja,"\t szhEmp_Recauda   [%s]",LOG03,szhEmp_Recauda);
+            vDTrazasLog (szExeCierre_caja,"\t szhCod_servicio  [%s]",LOG03,szhCod_servicio);
+            vDTrazasLog (szExeCierre_caja,"\t szhCod_periodo   [%s]",LOG03,szhCod_periodo);
+            vDTrazasLog (szExeCierre_caja,"\t szhCod_empresa   [%s]",LOG03,szhCod_empresa);
+            vDTrazasLog (szExeCierre_caja,"\t szhCod_tipoper   [%s]",LOG03,szhCod_tipoper);
+            vDTrazasLog (szExeCierre_caja,"\t szhCod_tipuso    [%s]",LOG03,szhCod_tipuso);
+            vDTrazasLog (szExeCierre_caja,"\t szhNum_ejercicio [%s]",LOG03,szhNum_ejercicio);
+            vDTrazasLog (szExeCierre_caja,"\t ihNum_transac    [%d]\n",LOG03,ihNum_transac);
+            
+            /* Ejecuta PL Co_Desapago */
+            vDTrazasLog (szExeCierre_caja,"\t *** Ejecutando PL CO_DEPOSITO_VALORES. ",LOG03);
+            vDTrazasLog (szExeCierre_caja,"\t szhEmp_Recauda   [%s]",LOG03,szhEmp_Recauda);
+            vDTrazasLog (szExeCierre_caja,"\t szhNum_ejercicio [%s]\n",LOG03,szhNum_ejercicio);
+
+            vDTrazasLog (szExeCierre_caja,"\t\t Valor de Retorno =====> [%d] ",LOG03,ihRetorno);
+            vDTrazasLog (szExeCierre_caja,"\t\t Glosa de Retorno =====> [%s] \n",LOG03,szhGlosaError);
+            EXEC SQL EXECUTE
+            BEGIN
+              CO_DEPOSITO_VALORES(:szhEmp_Recauda, :szhNum_ejercicio, :szhGlosaError, :ihRetorno);
+            END;
+            END-EXEC;
+            vDTrazasLog (szExeCierre_caja,"\t\t Valor de Retorno =====> [%d] ",LOG03,ihRetorno);
+            vDTrazasLog (szExeCierre_caja,"\t\t Glosa de Retorno =====> [%s] \n",LOG03,szhGlosaError);
+
+            iValorPL = ihRetorno;
+            if (iValorPL != 0) {
+                vDTrazasLog (szExeCierre_caja,"\t ** Error en PL CO_DEPOSITO_VALORES",LOG03);
+                vDTrazasLog (szExeCierre_caja,"\t ** [%s] **\n",LOG03,szhGlosaError);
+                ifnMailAlert("CIERRECAJA","TODOS","FALLO PL CO_DEPOSITO_VALORES.");
+                vDTrazasLog (szExeCierre_caja,"\t .....Continua el sigte. Registro\n",LOG03);
+		    } else {
+
+                /*strcpy(szhGlosaError,"Error\0");
+                ihRetorno=1;*/
+
+                vDTrazasLog (szExeCierre_caja,"\t *** Ejecutando PL CO_CIERRECAJAS ",LOG03);
+                EXEC SQL EXECUTE
+                BEGIN
+                   CO_CIERRECAJAS(:szhCod_servicio, :szhCod_periodo , :szhCod_empresa  , 
+                                  :szhCod_tipoper , :szhCod_tipuso  , :szhNum_ejercicio, 
+                                  :ihNum_transac  , :szhGlosaError  , :ihRetorno);
+                END;
+                END-EXEC;
+                vDTrazasLog (szExeCierre_caja,"\t\t Valor de Retorno =====> [%d] ",LOG03,ihRetorno);
+                vDTrazasLog (szExeCierre_caja,"\t\t Glosa de Retorno =====> [%s] \n",LOG03,szhGlosaError);
+                if (ihRetorno > 0) {
+                    vDTrazasLog (szExeCierre_caja,"\t ** Error en PL C0_CIERRE_CAJA",LOG03);
+                    vDTrazasLog (szExeCierre_caja,"\t ** [%s] **\n",LOG03,szhGlosaError);
+                    ifnMailAlert("CIERRECAJA","TODOS","FALLO PL C0_CIERRE_CAJA.");
+                    vDTrazasLog (szExeCierre_caja,"\t .....Continua el sigte. Registro\n",LOG03);
+    		    } else {
+
+                    EXEC SQL
+                    SELECT UNIQUE A.COD_OFICINA  , A.COD_CAJA
+                    INTO   :szCod_Oficina , :szCod_Caja
+                    FROM   CO_EMPRESAS_REX A, CO_CAJEROS B
+                    WHERE  A.EMP_RECAUDADORA = :szhEmp_Recauda
+                    AND    A.COD_CAJA        = B.COD_CAJA
+                    AND    A.COD_OFICINA     = B.COD_OFICINA;
+                	if (SQLCODE != SQLOK) {
+                		iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"\t SELECT UNIQUE A.COD_OFICINA",SQLERRM);
+                        vDTrazasLog (szExeCierre_caja,"\t Error en Select Cod_Oficina y Cod_Caja\n",LOG03);
+                        ifnMailAlert("CIERRECAJA","TODOS","FALLO SELECT EMPRESAS_REX.");
+                        vDTrazasLog (szExeCierre_caja,"\t .....Continua el sigte. Registro\n",LOG03);
+                    }
+
+                    vDTrazasLog (szExeCierre_caja,"\n\t\t szCod_Oficina    =====> [%s] ",LOG03,szCod_Oficina);
+                    vDTrazasLog (szExeCierre_caja,"\t\t szCod_Caja       =====> [%s] ",LOG03,szCod_Caja);
+                    vDTrazasLog (szExeCierre_caja,"\t\t szhNum_ejercicio =====> [%s]\n ",LOG03,szhNum_ejercicio);
+
+                    vDTrazasLog (szExeCierre_caja,"\t *** Ejecutando PL CO_GEN_INFORME_CONTABLE_CAJAS ",LOG03);
+                    EXEC SQL EXECUTE
+                    BEGIN
+                       CO_GEN_INFORME_CONTABLE_CAJAS(:szCod_Oficina, :szCod_Caja, :szhNum_ejercicio);
+                    END;
+                    END-EXEC;
+                    vDTrazasLog (szExeCierre_caja,"\t\t Valor de Retorno =====> SQLCODE [%d] ",LOG03,SQLCODE);
+                    if (SQLCODE != 0) {
+                        vDTrazasLog (szExeCierre_caja,"\t ** Error en PL CO_GEN_INFORME_CONTABLE_CAJAS",LOG02);
+                        vDTrazasLog (szExeCierre_caja,"\t .....Continua el sigte. Registro\n",LOG03);
+        		    } else {
+
+                        vDTrazasLog (szExeCierre_caja,"\t *** Ejecutando PL CO_IMPUTACION_CONTABLE_CAJAS ",LOG03);
+                        EXEC SQL EXECUTE
+                        BEGIN
+                           CO_IMPUTACION_CONTABLE_CAJAS(:szCod_Oficina, :szCod_Caja, :szhNum_ejercicio);
+                        END;
+                        END-EXEC;
+                        vDTrazasLog (szExeCierre_caja,"\t\t Valor de Retorno =====> SQLCODE [%d] ",LOG03,SQLCODE);
+                        if (SQLCODE != 0) {
+                            vDTrazasLog (szExeCierre_caja,"\t ** Error en PL CO_IMPUTACION_CONTABLE_CAJAS",LOG02);
+                            vDTrazasLog (szExeCierre_caja,"\t .....Continua el sigte. Registro\n",LOG03);
+            		    } else {
+
+                            vDTrazasLog (szExeCierre_caja,"\t *** Ejecutando PL CO_IMPUTACION_CONTABLE_DEP ",LOG03);
+                            EXEC SQL EXECUTE
+                            BEGIN
+                               CO_IMPUTACION_CONTABLE_DEP(:szCod_Oficina, :szCod_Caja, :szhNum_ejercicio);
+                            END;
+                            END-EXEC;
+                            vDTrazasLog (szExeCierre_caja,"\t\t Valor de Retorno =====> SQLCODE [%d] ",LOG03,SQLCODE);
+                            if (SQLCODE != 0) {
+                                vDTrazasLog (szExeCierre_caja,"\t ** Error en PL CO_IMPUTACION_CONTABLE_DEP",LOG02);
+                                vDTrazasLog (szExeCierre_caja,"\t .....Continua el sigte. Registro\n",LOG03);
+                		    } else {
+
+                               iCan_Reg++;                
+                               vDTrazasLog (szExeCierre_caja,"\t 5 PLs Ejecutadas con Exito *****\n",LOG03);
+                            }
+                        }
+                        
+                    }                        
+                }
+            }
+            
+        }
+        vDTrazasLog (szExeCierre_caja,"\t *************************************************************\n",LOG03);
+    }
+    
+    if (!bfnUpdateColasProc("W")) {
+         vDTrazasLog (szExeCierre_caja,"\t Funcion bfnUpdateColasProc(W) con Error ***\n",LOG03);
+         ifnMailAlert("CIERRECAJA","TODOS","FALLO UpdateColasProc(W).");
+         return FALSE;
+    }
+
+    return TRUE;
+}/**************************** Final bfnCierre_Caja ***************************/
+
+/*****************************************************************************/
+/* Funcion : ifnDBValidaRegistros                                            */
+/*****************************************************************************/
+static int bfnDBValidaRegistros (char *szNum_Ejercicio)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     int  ihCan_Reg = 0;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCierre_caja,"\n\t * Funcion bfnDBValidaRegistros *",LOG03);
+    vDTrazasLog (szExeCierre_caja,"\t\t szNum_Ejercicio  [%s]",LOG03,szNum_Ejercicio);
+
+ 	EXEC SQL 
+    SELECT COUNT(*)
+    INTO   :ihCan_Reg
+    FROM   CET_PERIODOSERV B, CO_INTERFAZ_PAGOS A
+    WHERE  A.SER_SOLICITADO  = 'REX' 
+    AND    A.TIP_TRANSACCION IN ('R','K')
+    AND    A.EMP_RECAUDADORA = :szhEmp_Recauda
+    AND    (A.COD_ESTADO  != 'PRO' OR A.COD_ESTADO IS NULL)
+    AND    A.NUM_EJERCICIO   = :szNum_Ejercicio
+    AND    A.EMP_RECAUDADORA = B.COD_EMPRESA
+    AND    SUBSTR(A.NUM_EJERCICIO,7,2)||SUBSTR(A.NUM_EJERCICIO,5,2)||SUBSTR(A.NUM_EJERCICIO,3,2) = B.COD_PERIODO 
+    AND    B.COD_SERVICIO    = 'REX02';
+
+	if (SQLCODE != SQLOK) {
+		iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"\t Error Select Count(*). (bfnDBValidaRegistros) ",SQLERRM);
+        vDTrazasLog (szExeCierre_caja,"\t Error Select Count(*). (bfnDBValidaRegistros)\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO VALIDAREGISTROS.");
+	    return -1;
+	}
+
+    vDTrazasLog (szExeCierre_caja,"\t\t Cant. Registros  [%d]\n",LOG03,ihCan_Reg);
+    if (ihCan_Reg > 0) {
+        vDTrazasLog (szExeCierre_caja,"\t Faltan Pagos o Reversas por Procesar en Empresa : [%s].\n",LOG03,szhEmp_Recauda);
+        return 1;
+    }
+
+	return 0;
+}/**************************** Final ifnDBValidaRegistros ***********************/
+
+static BOOL bfnUpdateColasProc (char *szEstado)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhEstado  [2];
+EXEC SQL END DECLARE SECTION;    
+    
+    sprintf(szhEstado,"%s",szEstado);
+
+    vDTrazasLog (szExeCierre_caja,"\t Actualizando CO_COLASPROC con Estado [%s]*****",LOG03,szEstado);
+    EXEC SQL
+    UPDATE CO_COLASPROC SET
+           COD_ESTADO  = :szhEstado,
+           FEC_ESTADO  = SYSDATE,
+           PID_PROCESO = :lhPid_Proceso
+    WHERE  COD_PROCESO = :szhCod_Proceso;
+    
+    if (SQLCODE != SQLOK ) {
+        iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"Error en UPDATE CO_COLASPROC. [%d]",SQLERRM);
+        vDTrazasLog (szExeCierre_caja,"\t Error en bfnUpdateColasProc\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO UPDATE CO_COLASPROC.");
+        return FALSE;
+    }
+        
+    EXEC SQL COMMIT WORK;
+    if (SQLCODE != SQLOK ) {
+        iDError (szExeCierre_caja,ERR000,vInsertarIncidencia,"Error en COMMIT WORK CO_COLASPROC. [%d]",SQLERRM);
+        vDTrazasLog (szExeCierre_caja,"\t Error en COMMIT WORK CO_COLASPROC\n",LOG03);
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO COMMIT WORK CO_COLASPROC.");
+        return FALSE;
+    }
+
+    return TRUE;
+}/**************************** Final bfnUpdateColasProc ***************************/
+
+static void vfnMemsetVariables()
+{
+ memset(&szhEmp_Recauda ,0,sizeof(szhEmp_Recauda));  
+ memset(&szhCod_servicio,0,sizeof(szhCod_servicio));  
+ memset(&szhCod_periodo ,0,sizeof(szhCod_periodo));  
+ memset(&szhCod_empresa ,0,sizeof(szhCod_empresa));  
+}
+
+int ifnAbreArchivosLog()
+{
+char modulo[]="ifnAbreArchivosLog";
+char *pathDir               ;
+char szArchivo  [32]    ="" ;
+char szPath     [128]   ="" ;
+char szComando  [128]   ="" ;
+char szFecha    [9]     ="" ;
+
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	sprintf(szArchivo,"CCAJA");
+
+    strncpy(szFecha,&szSysDate[0],8);
+	pathDir =(char *)malloc(128);
+	/*pathDir =szGetEnv("CO_HOME");
+	sprintf(szPath  ,"%s/log/%s/Pagos_NT",pathDir,szFecha);*/
+	pathDir =szGetEnv("XPC_LOG");
+	sprintf(szPath  ,"%s/CO_SCHEDULER/%s",pathDir,szFecha);
+
+	free(pathDir);
+
+	sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+
+	sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+	    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+	    return -1;
+	}
+
+	sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+        ifnMailAlert("CIERRECAJA","TODOS","FALLO CREACION EL ARCHIVO DE LOG.");
+	    fprintf(stderr, "\n<< No pudo se crear el archivo de log %s >>\n", stStatus.LogName);
+    	return -1;
+    }
+return 0;
+}
+/******************************************************/
+
+/* ============================================================================= */
+/* En startel2 escribe en el log ; En startel 1 ademßs envia un mensaje de alerta*/
+/* via E-mail al equipo de desarrollo y al encargado en produccion del sistema   */
+/* ============================================================================= */
+int ifnMailAlert (char* szFrom, char* szMailTo, char* szTxt, ...)
+{
+char szMsg[BUFSIZ]="";
+char szComando[512]="";
+va_list ap;
+int iAux = 0;
+FILE *fh;    /* file handler generico */   
+   
+    fh = stderr;  
+    va_start (ap,szTxt);
+    vsprintf (szMsg,szTxt,ap);  /* pasa el texto con los formatos ... a un string normal */
+    va_end   (ap);  
+    
+    iAux = fprintf (fh,"\n -------------------------------------- "
+                       "\n DE         : %s "
+                       "\n ENVIADO EL : %s "
+                       "\n PARA       : %s"
+                       "\n ASUNTO     : ALERTA - ALERTA - ALERTA  "
+                       "\n -------------------------------------- "
+                       "\n %s "
+                       "\n -------------------------------------- "
+                       "\n"
+                      ,szFrom ,szSysDate, szMailTo, szMsg);
+
+    if (iAux < 0) return -1;
+    if ( fflush(fh) != 0 )  return -2; 
+    
+    sprintf(szComando,"%s/MailAlert.sh %s \" Mensaje desde %s\" \"Error en la Cola %s de la Aplicacion de Recaudacion => %s\" " 
+                     ,getenv("REX_KSH"), szMailTo, szFrom, szFrom, szMsg);
+    /*system(szComando);*/
+    
+    return 0; 
+}
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

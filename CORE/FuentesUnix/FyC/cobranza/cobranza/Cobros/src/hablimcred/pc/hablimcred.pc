@@ -1,0 +1,379 @@
+#include <hablimcred.h>
+char g_szPathBin[128];
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                        INICIO DEL PROGRAMA                                */
+/*****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+
+   char modulo[]="main";
+   
+   LINEACOMANDO  stLineaComando ;
+  
+   memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+   if (!bfnInitInstance(argc,argv,&stLineaComando))
+   {
+        return -1;
+   }
+
+   fprintf(stdout,"\nVamos a rehabilitar celulares");
+   fflush (stdout);
+   
+   bfnHabLimCred(&stLineaComando);
+
+   bfnExitInstance();
+
+   fprintf(stdout,"\nFin \n");
+   fflush(stdout);
+
+   return 0;
+
+}/* Fin main() */
+   
+   
+/*------------------------------------------------------------------------*/   
+BOOL bfnInitInstance(int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    char modulo[]="bfnInitInstance";
+/*-Valida parametros de entrada------------------------------------------------------*/
+    extern char  *optarg;
+    extern  int  optind, opterr, optopt;
+            int  iOpt=0;
+           char  opt[] = ":u:l:c:";
+
+           char  *psztmp = "";
+
+            int  Userflag=0;
+            int  Logflag=0;
+            int  Cicloflag=0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        varchar szhPathLog[128];
+        varchar szhPathBin[128];
+    EXEC SQL END DECLARE SECTION;
+    
+    opterr=0;
+    stStatus.LogNivel = iLOGNIVEL_DEF ; /* valor por defecto para el nivel de log */
+
+    if(argc == 1) /* ejecucion sin parametros : despliega la ayuda en pantalla */
+    {
+        fprintf(stderr,"\n\thablimcred -cCICLOFACT [-uUsuario/Password] [-lLOG]   \n");
+        fprintf(stderr,"\n\t  Nota : Por defecto se asumen: -u/ -l3.  \n");
+        fflush (stderr);
+        return FALSE; 
+    }
+
+    while ((iOpt=getopt(argc, argv, opt))!=EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':  /*-- Usuario/Password --*/
+                if(!Userflag)
+                {
+                    strcpy(pstLC->szUsuarioOra, optarg);                      
+                    Userflag=1;
+                    if ((psztmp=(char *)strchr(pstLC->szUsuarioOra,'/'))==(char *)NULL)
+                    {
+                        fprintf (stderr,"\n\tError >> Usuario no valido. Requiere '/' \n");
+                        fflush  (stderr);
+                        return FALSE;
+                    }
+                    else
+                    {
+                        strncpy (pstLC->szOraAccount,pstLC->szUsuarioOra,psztmp-pstLC->szUsuarioOra);
+                        strcpy  (pstLC->szOraPasswd, psztmp+1);
+                    }
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return FALSE;
+                }
+                break;
+
+            case 'l': /*-- Nivel de Log --*/
+                if(!Logflag)
+                {
+                    stStatus.LogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=1;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return FALSE;
+                }
+                break;
+
+            case 'c': /*-- ciclo de facturacion --*/
+                if(!Cicloflag)
+                {
+                    strcpy (pstLC->szCicloFact,optarg);
+                    pstLC->lCicloFact = atol(optarg);
+                    Cicloflag=1;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return FALSE;
+                }
+                break;
+
+            case '?':
+                fprintf (stderr,"\n\tError >> opcion '-%c' es desconocida\n",optopt);
+                fflush  (stderr);
+                return FALSE;
+                /*break;*/
+
+            case ':':
+                fprintf (stderr,"\n\tError >> falta argumento para opcion '-%c'\n",optopt);
+                fflush  (stderr);
+                return FALSE;
+                /*break;*/
+        }
+    } 
+    
+    pstLC->iLogLevel=stStatus.LogNivel;
+    
+    if (!Cicloflag)
+    {
+        fprintf (stderr,"\n\tError >> falta definir para opcion '-c' Ciclo de Facturacion \n",optopt);
+        fflush  (stderr);
+        return FALSE;
+    }   
+
+/*-Parametros de entrada validados-Intento de conexion a oracle-------------------------*/
+
+    /* Conexion a Oracle */
+    if (!bfnConnectORA(pstLC->szOraAccount,pstLC->szOraPasswd))
+    {
+        fprintf(stderr,"\n\tError >> No hay conexion a ORACLE \n");
+        fflush (stderr);
+        return FALSE;
+    }
+
+	fprintf(stdout, "\n\t----------------------------------------------------"
+	                "\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx      "
+	                "\n\t----------------------------------------------------"
+	                ,pstLC->szOraAccount);
+    fflush(stdout);
+
+/*-Conectado a Oracle-Obtener el path de los archivos de log------------------------------*/
+    
+    EXEC SQL SELECT PATHLOG,PATHBIN INTO :szhPathLog, :szhPathBin FROM CO_DATGEN ;
+   
+    if (SQLCODE != SQLOK)
+    {
+        fprintf(stderr,"\n\tError >> al recuperar path de archivos de log \n");
+        fflush (stderr);
+        return FALSE;
+    } 
+ 
+    sprintf(g_szPathBin,"%.*s\0",szhPathBin.len,szhPathBin.arr);
+/*-Obtenido el Path se intenta abrir el archivo de log ----------------------------------*/
+ 
+	sprintf(stStatus.LogName,"%.*s/hablimcred_%s_%s.log",szhPathLog.len, szhPathLog.arr,pstLC->szCicloFact,szGetTime(2));
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) 
+    {
+        fprintf(stderr,"\n No se pudo abrir : [%s]\n",stStatus.LogName);
+        fflush (stderr);
+        return FALSE;
+    }
+    fprintf(stdout,"\nCreado : %s",stStatus.LogName);
+    fflush(stdout);
+   
+    vDTrazasLog(modulo,"\n Inicio de Habilitacion : %s \n",LOG03,szGetTime(1));
+  
+/*-Obtenido el Path se intenta abrir el archivo de log ----------------------------------*/
+
+    return TRUE;
+
+} /* Fin ifnInitInstance() */
+
+/*------------------------------------------------------------------------------------*/   
+
+BOOL bfnExitInstance()
+{
+	char modulo[]="bfnExitInstance";
+	
+	if(bfnDisconnectORA(0))
+	   vDTrazasLog(modulo,"\n%s <<Desconectado de  ORACLE>> ",LOG03, szGetTime(1));
+	
+	fclose(stStatus.ErrFile);
+	fclose(stStatus.LogFile);
+	
+	return TRUE;
+}
+
+/*------------------------------------------------------------------------------------*/   
+BOOL bfnHabLimCred(LINEACOMANDO *pstLC)
+{
+    char modulo[]="bfnHabLimCred";
+    
+    int  iSqlCodeInt = SQLOK;
+    char szComando[2048];
+    
+    EXEC SQL BEGIN DECLARE SECTION ;
+        long lhCodCiclFact  ;
+        long lhCodCliente   ;
+        long lhNumAbonado   ;
+         int ihProducto = 1 ;
+         int ihCuenta = 0   ;
+    EXEC SQL END DECLARE SECTION ;
+    
+    lhCodCiclFact = pstLC->lCicloFact;
+
+    vDTrazasLog(modulo,"\n\t*** Parametro de Entrada %s ***"
+                       "\n\t=>  Cod_CiclFact [%ld]", LOG03,modulo, lhCodCiclFact);
+    
+    
+    if (lhCodCiclFact == 0) 
+    {
+        vDTrazasLog  (modulo, "\n\t*** Error en COD_CICLFACT = [%ld]", LOG01,lhCodCiclFact);
+        return (FALSE);
+    }
+    else
+    {
+    
+        fprintf(stdout,"\nCreando Cursor ...");
+        fflush(stdout);
+
+        EXEC SQL DECLARE cGaInFacCel CURSOR FOR
+              SELECT  A.COD_CLIENTE, A.NUM_ABONADO
+                FROM  GA_INFACCEL  A , CO_SUSPLIMCRED B
+               WHERE  A.COD_CLIENTE  = B.COD_CLIENTE
+                 AND  A.NUM_ABONADO  = B.NUM_ABONADO
+                 AND  A.COD_CICLFACT = :lhCodCiclFact 
+                 AND  A.IND_ACTUAC   = 1 ;
+       
+        EXEC SQL OPEN cGaInFacCel;
+    
+        if (SQLCODE != SQLOK)
+        {
+            vDTrazasLog (modulo, "\n\tError en Select sobre GA_INFACCEL Cod_CiclFact [%ld] Error[%s]"
+                                , LOG01, lhCodCiclFact, SQLERRM);
+            return (FALSE);
+        }
+    
+        while ( iSqlCodeInt == SQLOK )
+        {
+            EXEC SQL FETCH cGaInFacCel INTO
+                :lhCodCliente , :lhNumAbonado ;
+                
+            iSqlCodeInt = SQLCODE;
+           
+            if (iSqlCodeInt == SQLOK)
+            {
+                    fprintf(stdout,"\n Cli : %8ld  Abo : %8ld",lhCodCliente, lhNumAbonado);fflush(stdout);
+                    vDTrazasLog (modulo, "\n Cli : %8ld  Abo : %8ld",LOG03,lhCodCliente, lhNumAbonado);
+                                
+                    memset(szComando,'\0',sizeof(szComando));
+                    sprintf (szComando,"%ssrlimcred %ld %ld 1 0 0 %d / " /* 0: rehabilita 0: no simulacion */
+                                      ,g_szPathBin, lhCodCliente, lhNumAbonado, pstLC->iLogLevel);
+                    
+                    fprintf(stdout,"\n szComando : %s\n",szComando);fflush(stdout);
+                    vDTrazasLog (modulo, "\n szComando : %s\n",LOG03,szComando);
+
+                    /* re-direcciono la salida standard del srlimcred al log del hablimcred */
+                    strcat (szComando,">> "); strcat (szComando,stStatus.LogName);
+
+                    /* re-direcciono la salida standard de errores del srlimcred al log del hablimcred */
+                    strcat (szComando," 2>> "); strcat (szComando,stStatus.LogName);
+
+                    if (system(szComando)==0) /* rehabilito correctamente */
+                    {
+                        fprintf(stdout,"Rehabilitado\n"); fflush(stdout);
+                        vDTrazasLog (modulo, "Rehabilitado\n",LOG03);
+
+                        EXEC SQL DELETE 
+                        FROM CO_SUSPLIMCRED
+                        WHERE COD_CLIENTE = :lhCodCliente
+                        AND NUM_ABONADO = :lhNumAbonado ;
+                        
+                        if (SQLCODE)
+                        {
+                            fprintf(stdout,"Fallo la Eliminacion %s\n", SQLERRM);fflush(stdout);
+                            vDTrazasLog (modulo, "Fallo la Eliminacion %s\n",LOG03, SQLERRM);
+                            EXEC SQL ROLLBACK;
+                        }
+                        else
+                        {
+                            fprintf(stdout,"Eliminado de la CO_SUSPLIMCRED\n");fflush(stdout);
+                            vDTrazasLog (modulo, "Eliminado de la CO_SUSPLIMCRED\n",LOG03);
+                            EXEC SQL COMMIT;
+                            if (SQLCODE)
+                            {
+                                fprintf(stdout,"NO ELIMINADO Fallo el Commit %s\n",SQLERRM);fflush(stdout);
+                                vDTrazasLog (modulo,"NO ELIMINADO Fallo el Commit %s\n",LOG03, SQLERRM);
+                                EXEC SQL ROLLBACK;
+                            }
+                        }
+                    }
+                    else
+                    {   
+                        fprintf(stdout,"No se rehabilito este cliente-abonado (revise el log)\n");fflush(stdout);
+                        vDTrazasLog (modulo,"###### No se rehabilito ######\n",LOG03);
+                    }
+             } /* endif sqlok */
+             else if (iSqlCodeInt == SQLNOTFOUND)
+             {
+                 vDTrazasLog  (modulo, "\n\tNo hay mas datos que procesar", LOG01);
+             }
+             else
+             {
+                 vDTrazasLog  (modulo, "\n\tError en Select sobre GA_INFACCEL Cod_CiclFact [%ld] Error[%s]"
+                               , LOG01, lhCodCiclFact, SQLERRM);
+
+             }
+          } /* endwhile */
+    
+        fprintf(stdout,"\nEndWhile");
+        fflush(stdout);
+    
+        EXEC SQL CLOSE cGaInFacCel  ;
+        iSqlCodeInt = SQLCODE;  
+        if ( iSqlCodeInt != SQLOK )
+        {
+            vDTrazasLog  (modulo,"\n\tError en Close de Interfaz GA_INFACCEL [%s]"
+                                  ,LOG01, SQLERRM);
+        }
+    
+        vDTrazasLog(modulo, "\n\t**  SALIENDO DE %s ", LOG03, modulo);
+        
+        return (iSqlCodeInt == SQLOK )? TRUE:FALSE ;
+          
+       
+    }
+
+/*    return (TRUE);*/
+}/***********************   Final bfn_RehabLimCred_Ciclo **************************/
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

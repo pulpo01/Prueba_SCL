@@ -1,0 +1,415 @@
+/* =================================================================================================
+Tipo        :  ACCION
+Nombre      :  Enrutamiento.pc ("ENRUT"->szfnEnrutamiento)
+Descripcion :  Suspende Bidireccionalmente todos los abonados celular del cliente dado, y enruta llamada
+			       a numero de servicios.	
+Recibe      :  by Val -> Cod Cliente 
+Devuelve    :  "OK"   -> La accion se ejecuto correctamente
+               "PND"  -> Encontro Reposiciones en proceso. La accion queda pendiente.
+Autor       :  Manuel Garcia.
+Fecha       :  Un dia XXXXXX.
+======================================================================
+Modificado  : 	Proyecto MPR_04008 - Flexibilidad de Enrutamiento.
+Fecha       :  GAC 09-08-2004
+
+Modificacion    :  12-11-2004
+						 Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+	
+====================================================================================================*/
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "Enrutamiento.h"
+
+EXEC SQL INCLUDE sqlca;
+/* ============================================================================= */
+/* funcion de Suspende BiDireccionalmente a todos los abonados de un cliente     */
+/* y los enruta a un telefono de servicio de cobranza                            */
+/* ============================================================================= */
+char  *szfnEnrutamiento(FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+struct sqlca sqlca;
+EXEC SQL BEGIN DECLARE SECTION;
+	long lhCodCliente       = 0;
+	char szhCodSuspReha  [4];			   EXEC SQL VAR szhCodSuspReha IS STRING (4);
+	char szhCodCauSusp   [4];			   EXEC SQL VAR szhCodCauSusp IS STRING (4);
+	int  ihCodActuacion     = 0;
+	long lhNumAbonado       = 0;
+	char szhCodSituacion [4];		      EXEC SQL VAR szhCodSituacion IS STRING (4);
+	long lhNumCelular       = 0;
+	int  ihIndPlexsys       = 0;
+	int  ihCodCentral       = 0;
+	char szhNumSerieHex  [9];			   EXEC SQL VAR szhNumSerieHex IS STRING (9);  
+	char szhTipTerminal  [2];		   	EXEC SQL VAR szhTipTerminal IS STRING(2);
+	int  ihNumMin           = 0;
+	int  iCuentaAboCelu     = 0;
+	int  iCuentaAboBeep     = 0;   
+	long lhNumSecuencia		= 0;
+	char szhCodTecnologia[iLENCODTECNO];EXEC SQL VAR szhCodTecnologia IS STRING (iLENCODTECNO);
+	char szhNumSerie[iLENNUMSERIE];		EXEC SQL VAR szhNumSerie IS STRING (iLENNUMSERIE);
+	char szhNumImei[iLENNUMIMEI];		   EXEC SQL VAR szhNumImei IS STRING (iLENNUMIMEI);
+	char szhNumImsi[iLENNUMIMSI];		   EXEC SQL VAR szhNumImsi IS STRING (iLENNUMIMSI);
+	char szhCodTiPlan[9];			      EXEC SQL VAR szhCodTiPlan IS STRING (9);
+	char szhCod_Param_Enrut  [5];       EXEC SQL VAR szhCod_Param_Enrut IS STRING (5);
+	char szhCodPlanTarif[4]     ;       EXEC SQL VAR szhCodPlanTarif IS STRING (4); /* Homol.a TMM-0747 17.08.2004 GAC */
+
+	/* Variables Bind */
+	int  ihValor_Cero   = 0;
+	int  ihValor_Tres   = 3;
+	
+	char szhValor_0   [2];
+	char szhERA   [4];
+	char szhERP   [4];
+	char szhGSM   [4];
+	char szhIMSI  [5];
+	char szhAAA   [4];
+	char szhSAA   [4];
+	char szhFiller[2];
+	char szhENRUT [6];
+	char szhEPR   [4];
+	int	ihCntTemp;
+	char  szhLetra_T [2];
+	sql_context CXX;
+
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog=*ptArchLog;
+
+char modulo[] = "szfnEnrutamiento";
+int iError = 0, iResul = 0, iGeneraSuspencion = 0, iInsertaCentral = 0;
+char szCodEstado[3];
+char szValRetorno[4];
+char szCodActAbo[3];
+
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+
+
+	memset( szhCodSuspReha, '\0', sizeof( szhCodSuspReha ) );
+	memset( szhCodCauSusp, '\0', sizeof( szhCodCauSusp ) );
+	memset( szhCodSituacion, '\0', sizeof( szhCodSituacion ) );
+	memset( szhNumSerieHex, '\0', sizeof( szhNumSerieHex ) );
+	memset( szhTipTerminal, '\0', sizeof( szhTipTerminal ) );
+	memset( szValRetorno, '\0', sizeof( szValRetorno ) );
+	memset( szhCodTecnologia, '\0', sizeof( szhCodTecnologia ) );
+	memset( szhNumSerie, '\0', sizeof( szhNumSerie ) );
+	memset( szhNumImei, '\0', sizeof( szhNumImei ) );
+	memset( szhNumImsi, '\0', sizeof( szhNumImsi ) );
+	memset( szhCodTiPlan, '\0', sizeof( szhCodTiPlan ) );
+	memset( szCodActAbo, '\0', sizeof( szCodActAbo ) );
+	memset( szhCodPlanTarif, '\0', sizeof( szhCodPlanTarif ) );/* Homol.a TMM-0747 17.08.2004 GAC */	
+
+	iAboCeluGlobal = 0; /* Cantidad de abonados Celular suspendidos */
+	iAboBeepGlobal = 0; /* Cantidad de abonados Beeper suspendidos */
+   strcpy(szhERA ,"ERA"); 
+	strcpy(szhERP ,"ERP");
+   strcpy(szhGSM ,"GSM"); 
+	strcpy(szhIMSI,"IMSI");
+	strcpy(szhAAA ,"AAA");
+	strcpy(szhSAA ,"SAA");	
+	strcpy(szhValor_0,"0");
+	strcpy(szhFiller," ");
+	strcpy(szhENRUT,"ENRUT");
+	strcpy(szhEPR,"EPR");
+   strcpy(szCodEstado, "EN" );
+   lhCodCliente = lCliente;
+	strcpy(szhLetra_T,"T");
+
+   ifnTrazaHilos( modulo,&pfLog, "Enrutamiento de Cliente => [%ld].", LOG05, lhCodCliente );
+
+	/* verifica si algun abonado del cliente se encuentra en un estado temporal 
+	if( ( iResul = ifnAbonadosSituacionTemporal(&pfLog, lhCodCliente, CXX ) ) < 0 )
+		return "PND";
+	if( iResul )	 el cliente presenta abonados en situacion temporal 
+		return "PND";*/
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT COUNT(*)
+	INTO  :ihCntTemp
+	FROM  GA_ABOCEL G
+	WHERE G.COD_CLIENTE = :lhCodCliente
+	AND   G.COD_SITUACION IN (SELECT COD_SITUACION
+								     FROM  GA_SITUABO
+								     WHERE G.COD_SITUACION = COD_SITUACION 
+							        AND   TIP_SITUACION = :szhLetra_T );	 /* marca estado temporal */
+    
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )	{   
+		ifnTrazaHilos( modulo,&pfLog,  "Cliente => [%ld], Error comprobando situacion temporal =>[%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "PND";
+	}
+	if ( ihCntTemp > 0 )	  {
+		ifnTrazaHilos( modulo,&pfLog,  "Cliente => [%ld], TIENE ABONADOS CON SITUACION TEMPORAL.", LOG02, lhCodCliente );  
+		return "PND";
+	}
+
+
+	/* Se agrega query para rescatar parametro de enrutamiento (Proy. MPR_04008) */
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT B.COD_PARAM  , B.NUM_SECUENCIA
+	INTO   :szhCod_Param_Enrut , :lhNumSecuencia
+	FROM   CO_ACCIONES A, CO_PARAM_ACCIONES B
+	WHERE  A.NUM_SECUENCIA= B.NUM_SECUENCIA
+	AND    A.COD_CLIENTE  = :lhCodCliente
+	AND    A.COD_RUTINA   = :szhENRUT
+	AND    A.COD_ESTADO   = :szhEPR;
+	if (sqlca.sqlcode != SQLOK ) {
+        ifnTrazaHilos( modulo,&pfLog, "Parametro de Enrutamiento  (Cliente:%ld) - %s.", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND";    
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL DECLARE curAbonadosENRUT CURSOR FOR 
+	SELECT /*+ AK_GA_ABOCEL_CLIENTE */
+		   NUM_ABONADO, 
+		   COD_SITUACION, 
+		   NUM_CELULAR,
+		   NVL( IND_PLEXSYS, :ihValor_Cero ), 
+		   COD_CENTRAL,
+		   NVL( NUM_SERIEHEX, :szhValor_0),
+		   TIP_TERMINAL,
+		   NUM_MIN,
+		   COD_TECNOLOGIA,
+		   DECODE( COD_TECNOLOGIA, :szhGSM,  NUM_SERIE, :szhFiller ),
+		   NVL( NUM_IMEI, :szhFiller ), 
+		   DECODE( COD_TECNOLOGIA, :szhGSM, fRecuperSIMCARD_FN( NUM_SERIE, :szhIMSI), :szhFiller ) IMSI,
+		   CO_fGetTipPlanCelular( COD_PLANTARIF ),
+		   COD_PLANTARIF  
+	FROM  GA_ABOCEL
+	WHERE COD_CLIENTE    = :lhCodCliente
+	AND   COD_USO       != :ihValor_Tres /* Amistar */
+	AND   COD_SITUACION IN (:szhAAA,:szhSAA, :szhERA )
+	FOR UPDATE ;
+
+   if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )  {   
+        ifnTrazaHilos( modulo,&pfLog, "Declare curAbonadosENRUT (Cliente:%ld) %s.", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND";    
+   }
+        
+   sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+   EXEC SQL OPEN curAbonadosENRUT;
+   if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )   {   
+        ifnTrazaHilos( modulo,&pfLog, "Open curAbonadosENRUT (Cliente:%ld) %s.", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND";    
+   }
+	for(;;)  /* Forever */
+   {
+      sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+      EXEC SQL 
+		FETCH curAbonadosENRUT 
+		INTO :lhNumAbonado,
+		 	  :szhCodSituacion,
+		 	  :lhNumCelular,
+		 	  :ihIndPlexsys,
+		 	  :ihCodCentral,
+		 	  :szhNumSerieHex,
+		 	  :szhTipTerminal,
+		 	  :ihNumMin,
+		 	  :szhCodTecnologia,
+		 	  :szhNumSerie,
+		 	  :szhNumImei,
+		 	  :szhNumImsi,
+		 	  :szhCodTiPlan,
+	 	     :szhCodPlanTarif; 
+	 	     
+      if( sqlca.sqlcode == SQLNOTFOUND )  {   
+             ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], no tiene mas abonados celulares", LOG03, lhCodCliente );  
+             break;    
+      }
+      else if( sqlca.sqlcode )  {   
+             ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], Fetch curAbonadosENRUT => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+             strcpy( szValRetorno, "PND" );   
+             break;    
+      }
+   
+      ifnTrazaHilos( modulo,&pfLog, "Enrutando abonado => [%ld].", LOG05, lhNumAbonado );
+          
+     	/* recuperamos la actuacion de abonado celular */
+		if( !bfnGetActAbodeAccion(&pfLog, szCODRUTINA, szhCodTiPlan, 1, szCodActAbo, CXX ) ) {
+	   	 strcpy( szValRetorno, "PND" );   
+	       break;   
+		}
+   
+		/* recuperamos el codigo de actuacion de la central, relacionado con la actuacion del abonado */
+		if( ( ihCodActuacion = ifnGetActuacionCentralCelularAcc(&pfLog, szCodActAbo, 1, szMODULOCOBRANZA, szhCodTecnologia, CXX ) ) < 0 )	{
+          strcpy( szValRetorno, "PND" );   
+          break;   
+		}	
+   
+      /* recuperamos el codigo suspension/rehabilitacion relacionado con el codigo de la actuacion en central */
+		if( !bfnGetCodSuspReha(&pfLog, ihCodActuacion, szACCIONSUSP, 1, szMODULOCOBRANZA, szhCodSuspReha, CXX ) )	{
+        	 strcpy( szValRetorno, "PND" );   
+          break;   
+		}
+   
+		/* recuperamos la causa de suspension del abonado */
+		if( !bfnGetCodCausaSusp(&pfLog, szhCodSuspReha, szhCodCauSusp, CXX ) )	{
+          strcpy( szValRetorno, "PND" );   
+          break;   
+		}
+   
+      	iResul = -1;
+      	iResul = ifnValidaOtrasSuspensiones(&pfLog, lhNumAbonado, 2, szhCodSuspReha, szhCodTecnologia, CXX );
+      
+      	switch( iResul )
+      	{
+          case 0  : /* no tiene ninguna suspencion */
+                  ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Abonado => [%ld], NO TIENE ENRUTAMIENTO PREVIO.", LOG02, lhCodCliente, lhNumAbonado );  
+                  iGeneraSuspencion = 1;
+                  iInsertaCentral = 1;
+                  break;
+                   
+          case 1  : /* tiene solo suspencion Bidireccional del modulo */
+                  ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Abonado => [%ld], TIENE ENRUTAMIENTO PREVIO.", LOG02, lhCodCliente, lhNumAbonado );  
+                  iGeneraSuspencion = 0;
+                  iInsertaCentral = 0;
+                  break;
+                   
+          case 2  : /* tiene otras suspensiones del mismo nivel */
+                  ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Abonado => [%ld], TIENE OTRAS SUSPENSIONES DEL MISMO NIVEL.", LOG02, lhCodCliente, lhNumAbonado );  
+                  iGeneraSuspencion = 1;
+                  iInsertaCentral = 0;
+                  break;
+                   
+          case 3  : /* tiene suspencion Bidireccional del modulo y otra(s) del mismo nivel */
+                  ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Abonado => [%ld], TIENE ENRUTAMIENTO Y OTRAS SUSPENSIONES DEL MISMO NIVEL.", LOG02, lhCodCliente, lhNumAbonado );  
+                  iGeneraSuspencion = 0;
+                  iInsertaCentral = 0;
+                  break;
+                   
+          default : /* otro valor : error sql ( mensaje enviado al log dentro de la funcion) */
+                  iGeneraSuspencion = 0;
+                  iInsertaCentral = 0;
+                  break;
+      	} 
+          
+	if( iGeneraSuspencion )
+	{
+		iResul = 0;
+		iResul = ifnSuspende(&pfLog, lhNumAbonado, szhCodSituacion, lhNumCelular, ihIndPlexsys,ihCodCentral,
+				 szhNumSerieHex, ihNumMin, szhCodCauSusp,ihCodActuacion, szhTipTerminal,
+				 szhCodSuspReha, szCodActAbo, szhCodTecnologia, szhNumSerie, szhNumImei,
+				 szhNumImsi, iInsertaCentral, szhCodTiPlan ,  szhCodPlanTarif,  /* Homol.a TMM-0747 17.08.2004 GAC */
+				 szhCod_Param_Enrut, CXX);
+		              
+		if ( iResul < 0)  
+		{   
+			ifnTrazaHilos( modulo,&pfLog, "Fallo la Suspencion\n"
+		                 "(Cliente:%ld|Abonado:%ld|Celular:%ld)\n"
+		                 "%s"
+		                 ,LOG00,lhCodCliente,lhNumAbonado,lhNumCelular,sqlca.sqlerrm.sqlerrmc);
+			strcpy(szValRetorno,"PND");   
+			break;   
+		}
+		else if (iResul > 0 )  
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Abonado %ld con Situacion no Enrutable.", LOG05, lhNumAbonado ); 
+		}    
+		else /* if (iResul == 0)*/
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Abonado => [%ld], Enrutado con Exito.", LOG05, lhNumAbonado ); 
+		}    
+	}
+   	
+   	if ( iInsertaCentral ) /* genera cargo sólo si inserta comando en centrales PR-517 CAPC */ /* Homologado por PGonzalez 23-11-2004 */
+	{   	
+		if( !ifnGeneraCargo(&pfLog, lhCodCliente, lhNumAbonado, 1, szCodEstado, CXX ) )	
+		{
+			strcpy( szValRetorno, "PND" );   
+			break;   
+		}
+	}
+	
+	iCuentaAboCelu = iCuentaAboCelu + iInsertaCentral; /**** PR-517 CAPC *****/             
+	
+   } /* endfor */
+    
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL CLOSE curAbonadosENRUT ;
+	if( sqlca.sqlcode )  {   
+       ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], Close curAbonadosENRUT => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+       return "PND";   
+   }
+   
+	if( strcmp( szValRetorno, "" ) ) /* szValRetorno != "" */	{  
+	    ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld], Error al tratar de Enrutar.", LOG01, lhCodCliente ); 
+		 return szValRetorno;
+	}  
+
+   ifnTrazaHilos( modulo,&pfLog, "Ok abonados celulares del cliente => [%ld].", LOG05, lhCodCliente ); 
+ 
+ 
+	/*- MGG 01/03/2001, Se cuenta la cantidad total a la fecha, de abonados celulares y -*/
+	/*- beepers afectados por la accion, para guardar estadistica en la tabla co_morosos-*/ 
+/***** PR-517 ********   	
+	EXEC SQL 
+	SELECT COUNT(*)
+	INTO   :iCuentaAboCelu
+	FROM   GA_SUSPREHABO SU, GA_ABOCEL AB
+	WHERE  AB.COD_CLIENTE   = :lhCodCliente
+   AND    AB.COD_SITUACION IN ( :szhERA, :szhERP )
+   AND    AB.NUM_ABONADO   = SU.NUM_ABONADO
+   AND    SU.COD_SERVICIO  = :szhCodSuspReha;
+   if (sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND)  {
+      ifnTrazaHilos( modulo,&pfLog, "Recuperando abonados Suspencion Bidireccional GA_SUSPREHABO(1) (Cliente:%ld) %s",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);
+      return "PND";
+   }
+   
+	EXEC SQL 
+	SELECT COUNT(*)
+	INTO   :iCuentaAboBeep
+	FROM   GA_SUSPREHABO SU, GA_ABOBEEP AB
+	WHERE  AB.COD_CLIENTE   = :lhCodCliente
+   AND    AB.COD_SITUACION IN ( :szhERA, :szhERP )
+   AND    AB.NUM_ABONADO   = SU.NUM_ABONADO
+   AND    SU.COD_SERVICIO  = :szhCodSuspReha;
+
+   if (sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND)    {
+      ifnTrazaHilos( modulo,&pfLog, "Recuperando abonados Suspension Bidireccional GA_SUSPREHABO(2) (Cliente:%ld) %s",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);
+      return "PND";
+	}
+      
+   iMRAboCeluGlobal = iCuentaAboCelu;
+	iMRAboBeepGlobal = iCuentaAboBeep;
+****   PR-517 ********/
+
+	/* se debe borrar el registro de la CO_PARAM_ACCIONES */
+	if( !bfnBorrarCoParamAcc(&pfLog, lhNumSecuencia, CXX ) )	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error en bfnBorrarCoParamAcc.", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NOELI";   
+	}	
+
+   
+   ifnTrazaHilos( modulo,&pfLog, "Ok abonados celulares del cliente %ld",LOG05,lhCodCliente); 
+   return "OK";   
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

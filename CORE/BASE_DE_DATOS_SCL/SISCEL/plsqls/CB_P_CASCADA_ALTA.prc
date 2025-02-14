@@ -1,0 +1,69 @@
+CREATE OR REPLACE PROCEDURE        CB_P_CASCADA_ALTA(fec_baja_prueba IN VARCHAR2)
+IS
+v_existe                 NUMBER;
+v_tabla          VARCHAR2(30):='CB_CASCADA_BAJA';
+v_accion         VARCHAR2(2);
+v_sqlcode        VARCHAR2(10);
+v_sqlerrm        VARCHAR2(100);
+v_cont           NUMBER := 0;
+--
+CURSOR C1 IS
+       SELECT A.COD_TIPCOMIS,B.COD_VENDEDOR,TO_DATE(TO_CHAR(B.FEC_VENTA,'YYYYMM'),'YYYYMM') FEC_VENTA
+       FROM VE_VENDEDORES A,GA_VENTAS B,GA_ABOCEL C
+       WHERE A.COD_VENDEDOR = B.COD_VENDEDOR
+       AND C.COD_PLANTARIF <> 'AMI'
+       AND C.NUM_VENTA = B.NUM_VENTA
+       AND B.FEC_VENTA < TO_DATE(TO_CHAR(SYSDATE,'YYYYMM')||'01','YYYYMMDD')
+       AND B.FEC_VENTA >= ADD_MONTHS(TO_DATE(TO_CHAR(SYSDATE,'YYYYMM')||'01','YYYYMMDD'),-1)
+       AND NOT EXISTS (SELECT ROWID
+                  FROM GA_TRASPABO TRAS
+                  WHERE TRAS.NUM_ABONADO = C.NUM_ABONADO);
+C1_CASCADA_ALTA          C1%ROWTYPE;
+--
+BEGIN
+OPEN C1;
+--
+LOOP
+   FETCH C1 INTO C1_CASCADA_ALTA;
+   EXIT WHEN C1%NOTFOUND;
+   v_accion := 'S';
+   SELECT COUNT(*)
+   INTO v_existe
+   FROM CB_CASCADA_BAJA
+   WHERE TIP_ACCION = 'ALTA'
+   AND FEC_ACCION = C1_CASCADA_ALTA.FEC_VENTA
+   AND FEC_ORIGEN = C1_CASCADA_ALTA.FEC_VENTA;
+   v_accion := '';
+--
+   IF v_existe = 0 THEN
+      v_accion := 'I';
+      INSERT INTO CB_CASCADA_BAJA (TIP_CASCADA,CAN_VENTA,
+      COD_VENDEDOR,TIP_ACCION,FEC_ACCION,FEC_ORIGEN,CANTIDAD)
+      VALUES ('B',C1_CASCADA_ALTA.COD_TIPCOMIS,C1_CASCADA_ALTA.COD_VENDEDOR,
+      'ALTA',C1_CASCADA_ALTA.FEC_VENTA,C1_CASCADA_ALTA.FEC_VENTA,1);
+      v_sqlcode := sqlcode;
+      v_sqlerrm := sqlerrm;
+      v_accion := '';
+   ELSE
+      v_accion := 'U';
+      UPDATE CB_CASCADA_BAJA
+      SET CANTIDAD = CANTIDAD + 1
+      WHERE TIP_ACCION = 'ALTA'
+      AND FEC_ACCION = C1_CASCADA_ALTA.FEC_VENTA
+      AND FEC_ORIGEN = C1_CASCADA_ALTA.FEC_VENTA;
+      v_accion := '';
+   END IF;
+   v_cont := v_cont + 1;
+   IF v_cont = 30000 THEN
+      COMMIT;
+      v_cont := 0;
+   END IF;
+END LOOP;
+COMMIT;
+EXCEPTION WHEN OTHERS THEN
+   v_sqlcode := sqlcode;
+   v_sqlerrm := sqlerrm;
+   ROLLBACK;
+END CB_P_CASCADA_ALTA;
+/
+SHOW ERRORS

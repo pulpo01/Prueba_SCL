@@ -1,0 +1,1934 @@
+/************************************************************************/
+/* Programa encargado de generar liquidaciones de comisionistas         */
+/*----------------------------------------------------------------------*/
+/* Version 2 - Revision 00.                                             */
+/* Inicio: Viernes 5 de Julio de 2002 .                                 */
+/* Fin:                                                                 */
+/* Autor : Nelson Contreras Helena                                      */
+/************************************************************************/
+/*---------------------------------------------------------------------------*/
+/* Modificacion por PGonzaleg                                                */
+/* Inicio: Lunes 2 de diciembre de 2002.                                     */
+/* Fin:    Lunes 2 de diciembre de 2002.                                     */
+/* Autor : Patricio Gonzalez Gomez                                           */
+/* Modificacion de condiciones en los WHERE referentes a la tabla            */
+/* CMD_PARAMETROS. Cambio en los campos COD_TIPCODIGO, COD_CODIGO y          */
+/* COD_PARAMETRO.                                                            */
+/*---------------------------------------------------------------------------*/
+/* Modificacion por Fabian Aedo R.                                           */
+/* Se optimiza el uso de punteros y consultas SQL....                        */
+/* Enero - 2003. Version Aranjuez.                                           */
+/*---------------------------------------------------------------------------*/
+/* Modificacion por Fabian Aedo R.                                           */
+/* Se incorporan mejoras de versión Cuzco-2003                               */
+/* Se incorpora menejo de conceptos críticos                                 */
+/* Se incorpora manejo de nueva estructura de red de ventas                  */
+/* Se reconstruyen funcionalidades de repartición de comisiones, en funcion  */
+/*    de lo generado por cada uno de los hijos receptores (o sus hijos...)   */
+/*---------------------------------------------------------------------------*/
+/* Inclusion de librería para definiciones generales del programa.           */
+/*---------------------------------------------------------------------------*/
+#include "Liq_Comisiones.h"
+#include "GEN_biblioteca.h"
+#include <geora.h>                      
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;                     
+EXEC SQL WHENEVER SQLERROR DO vSqlError_2();
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;     
+char    szhUser[30]="";         
+char    szhPass[30]="";         
+char    szhSysDate[17]="";        
+char    szFechaYYYYMMDD[9]="";  
+EXEC SQL END DECLARE SECTION;      
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA MANEJO DE MENSAJES DE ERRORES ORACLE. TEMPORAL                */
+/*---------------------------------------------------------------------------*/
+void vSqlError_2( void )                                                                              
+{                                                                                                     
+    if (!iPl)                                                                                         
+    {                                                                                                             
+       EXEC SQL ROLLBACK WORK;                                                                       
+       fprintf(stderr,"\n\nERROR ORACLE: Se Cierra Traza de Procesos.");  
+       fprintf(stderr,"[%d] [%s]\n\n", sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);                       
+       exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,-1,sqlca.sqlerrm.sqlerrmc,0,0));          
+    }                                                                                                 
+}                                                                                                                                                                                                            
+/*---------------------------------------------------------------------------*/
+/* Crea el universo de comisiones / bonos en la lista de universo.           */
+/*---------------------------------------------------------------------------*/
+void vCreaConceptosCriticos()      
+{     
+    stCriticos  * paux;
+    
+    long		lCantRegistros=0;
+    int         i;
+    short       iLastRows     = 0;
+    int         iFetchedRows  = MAXFETCH;
+    int         iRetrievRows  = MAXFETCH;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed		[MAXFETCH];
+	    char	szhCodPlanComis		[MAXFETCH][7];
+	    int     lhCodConcepto    	[MAXFETCH];
+	    double  dhNivCritico    	[MAXFETCH];
+	    char	chCodOperador		[MAXFETCH][2];
+	    
+	    char	cPeriodico;
+	    char	cEsporadico;
+	    char	chTipCiclComis;
+	    char	szhIdCiclComis[11];
+	    long    lMaxFetch;      
+    EXEC SQL END DECLARE SECTION;
+        
+    lMaxFetch = MAXFETCH;
+    paux      = NULL;
+
+	chTipCiclComis       = stCiclo.cTipCiclComis;
+	strcpy(szhIdCiclComis, stCiclo.szIdCiclComis);
+	
+	cPeriodico  = PERIODICO;
+	cEsporadico = ESPORADICO;
+    
+    fprintf(pfLog ,"\n[vCreaConceptosCriticos]Carga Conceptos de Comisiones Criticos para el Periodo.\n");
+    fprintf(stderr,"\n[vCreaConceptosCriticos]Carga Conceptos de Comisiones Criticos para el Periodo.\n");
+    
+    EXEC SQL DECLARE CUR_UNIVERSO_CRITICOS CURSOR FOR SELECT          
+			   A.COD_TIPORED,
+			   A.COD_PLANCOMIS,
+			   A.COD_CONCEPTO,
+			   B.NIV_CRITICO,
+			   B.COD_OPERADOR
+		FROM CM_CONCEPTOSTIPORED_TD A,
+			 CM_PLANESCONCEPTOS_TD B,
+			 CM_PLANESCOMIS_TD C
+		WHERE A.COD_PLANCOMIS 	= C.COD_PLANCOMIS
+		AND C.TIP_CICLCOMIS 	= :chTipCiclComis
+		AND ((C.TIP_CICLCOMIS 	= :cEsporadico 
+			  AND ID_CICLCOMIS 	= :szhIdCiclComis) OR
+			 (C.TIP_CICLCOMIS 	= :cPeriodico))
+		AND A.COD_PLANCOMIS 	= B.COD_PLANCOMIS
+		AND A.COD_CONCEPTO 		= B.COD_CONCEPTO
+		AND B.IND_CRITICO 		= 'S';
+                   
+    EXEC SQL OPEN CUR_UNIVERSO_CRITICOS;
+    while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL for :lMaxFetch FETCH  CUR_UNIVERSO_CRITICOS INTO   
+			:ihCodTipoRed, :szhCodPlanComis, :lhCodConcepto, 
+			:dhNivCritico   , :chCodOperador;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+
+        for (i=0; i < iRetrievRows; i++)
+        {
+            
+            paux = (stCriticos *) malloc(sizeof(stCriticos));
+
+			strcpy(paux->szCodPlanComis	, szfnTrim(szhCodPlanComis[i]));
+			strcpy(paux->cCodOperador	, szfnTrim(chCodOperador[i]));
+			paux->iCodTipoRed			= ihCodTipoRed[i];
+			paux->lCodConcepto   		= lhCodConcepto[i];
+			paux->dNivCritico    		= dhNivCritico[i];
+			fprintf(pfLog ,"[vCreaConceptosCriticos] TR:[%d] PlCom:[%s] Conc:[%d] OP:[%s] Nivel:[%5.2f]\n",paux->iCodTipoRed, paux->szCodPlanComis, paux->lCodConcepto, paux->cCodOperador, paux->dNivCritico);
+			fprintf(stderr,"[vCreaConceptosCriticos] TR:[%d] PlCom:[%s] Conc:[%d] OP:[%s] Nivel:[%5.2f]\n",paux->iCodTipoRed, paux->szCodPlanComis, paux->lCodConcepto, paux->cCodOperador, paux->dNivCritico);
+            paux->sgte 					= lstCriticos;
+            lstCriticos 				= paux;
+            lCantRegistros++;
+        }
+    }
+    EXEC SQL CLOSE CUR_UNIVERSO_CRITICOS;
+    
+    fprintf(stderr,"\n[vCreaConceptosCriticos]Cantidad de conceptos Criticos Recuperados:[%d]\n",lCantRegistros);
+    fprintf(pfLog ,"\n[vCreaConceptosCriticos]Cantidad de conceptos Criticos Recuperados:[%d]\n",lCantRegistros);
+}
+/*---------------------------------------------------------------------------*/
+/* Busca en la lista de conceptos criticos, la ocurrencia del par            */
+/* Tipo de Red - Concepto, que se recibe.                                    */
+/* La evaluación no incluye diferenciación por tipo de comisionista.         */
+/*---------------------------------------------------------------------------*/
+stCriticos * stFndCriticos(int piTipoRed, long piConcepto, stCriticos * paux)
+{
+	if (paux == NULL)
+		return NULL;
+	if ((paux->iCodTipoRed == piTipoRed)&&(paux->lCodConcepto==piConcepto))
+		return paux;
+	return stFndCriticos(piTipoRed, piConcepto, paux->sgte);
+}
+/*---------------------------------------------------------------------------*/
+/* Eecuta la comparacion lógica del nivel de cumplimiento con la exigencia   */
+/* del nivel critico establecido.                                            */
+/*---------------------------------------------------------------------------*/
+int bEvaluaCumplimiento(long lNumRegistros, char * cCodOperador, double dNivCritico)
+{
+	if (strcmp(cCodOperador,"1" )==0) 
+		return (lNumRegistros == (long)dNivCritico );
+	if (strcmp(cCodOperador,"2" )==0) 
+		return (lNumRegistros >  (long)dNivCritico );
+	if (strcmp(cCodOperador,"3" )==0) 
+		return (lNumRegistros >= (long)dNivCritico );
+	if (strcmp(cCodOperador,"4" )==0) 
+		return (lNumRegistros <  (long)dNivCritico );
+	if (strcmp(cCodOperador,"5" )==0) 
+		return (lNumRegistros <= (long)dNivCritico );
+	if (strcmp(cCodOperador,"6" )==0) 
+		return (lNumRegistros != (long)dNivCritico );
+	return (FALSE);
+}
+/*---------------------------------------------------------------------------*/
+/* Marca la estructura de ventas para el tipo de red y vendedor, con         */
+/* indicador de cumplimiento en 'N'...                                       */
+/*---------------------------------------------------------------------------*/
+void vMarcaTipoRed(int iCodTipoRed, long lCodVendedor)
+{
+	stRedVentas 	* lstRedVentas 	= NULL;
+	stUniverso 		* paux 			= NULL;
+	stRedVentas 	* qaux 			= NULL;
+	long			lCodComisPadre;
+	
+	/*primero, crear la lista de comisionistas pertenecientes a la estructura a modificar...*/
+	
+	if ((lCodComisPadre = lGetVendedorPadre(iCodTipoRed, lCodVendedor ))!=0)
+	{
+		lstRedVentas = stCreaRedVentas(iCodTipoRed, lCodVendedor);
+		for (qaux = lstRedVentas; qaux != NULL; qaux = qaux->sgte)
+		{
+			/* Para cada registro de la red de ventas, verifica si tiene liquidación */
+			/* y lo marca con el indicador en 'S' según corresponde.                 */
+			
+			for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+			{
+				if ((qaux->iCodTipoRed == paux->iCodTipoRed)&&(qaux->lCodVendedor == paux->lCodComisionista))
+				{
+					paux->cIndCumplimiento = 'N';
+					fprintf(pfLog, "\n\t[vMarcaTipoRed] Marcado Vendedor:[%d]. No Cumple Nivel Critico.\n  ",paux->lCodComisionista);
+				}
+			}
+		}
+	}
+	/* Al salir, libera la lista de Red de Ventas, para ser recreada con otro caso... */
+	vLiberaRedVentas(lstRedVentas);
+}
+/*---------------------------------------------------------------------------*/
+/* Evalua la aplicación de conceptos crítico sobre las liquidaciones.        */
+/*---------------------------------------------------------------------------*/
+void vEvaluaCriticos()
+{
+    stUniverso	* paux;
+    stConceptos	* qaux;
+    stCriticos	* raux;
+   
+    for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+    {
+    	for (qaux = paux->sgte_concepto; qaux != NULL; qaux = qaux->sgte)
+    	{
+    		raux = stFndCriticos(paux->iCodTipoRed, qaux->lCodConcepto, lstCriticos);
+    		if (raux!=NULL)
+    		{
+    			if (strcmp(qaux->cTipCalculo ,TIPCALMETA)!=0)
+    			{
+				    if (!(bEvaluaCumplimiento(qaux->lNumRegistros, raux->cCodOperador,raux->dNivCritico)))
+				    {
+						vMarcaTipoRed(paux->iCodTipoRed, paux->lCodComisionista);
+					}
+    			}
+    			if (strcmp(qaux->cTipCalculo ,TIPCALMETA)==0)
+    			{
+					if (!(bEvaluaCumplimiento(qaux->lNumLogro, raux->cCodOperador,raux->dNivCritico)))
+					{
+						vMarcaTipoRed(paux->iCodTipoRed, paux->lCodComisionista);
+					}
+    			}
+    		}
+    	}	
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* FUNCIÓN QUE BUSCA UN COMISIONISTA EN LA LISTA PRINCIPAL                   */
+/*---------------------------------------------------------------------------*/
+stUniverso * stfnFindComisionista(int iCodTipoRed, long plCodComisionista, stUniverso * paux)
+{
+    if (paux==NULL)
+		return (NULL);
+            
+    if ((paux->lCodComisionista == plCodComisionista)&&(paux->iCodTipoRed == iCodTipoRed)&&(paux->cIndConsidera == 'S'))
+		return (paux);
+    return (stfnFindComisionista(iCodTipoRed, plCodComisionista, paux->sgte));
+}
+/*---------------------------------------------------------------------------*/
+/* FUNCION QUE BUSCA UN CONCEPTO EN UNA LISTA DE CONCEPTOS...                */
+/*---------------------------------------------------------------------------*/
+stConceptos * stfnFindConcepto(long lCodConcepto, stConceptos * paux)
+{
+    if (paux==NULL)
+		return (NULL);
+	if ((paux->lCodConcepto == lCodConcepto)&&(paux->cIndConsidera == 'S'))
+		return paux;
+	return (stfnFindConcepto(lCodConcepto, paux->sgte));   	
+}
+/*---------------------------------------------------------------------------*/
+/* Crea el universo de comisionistas a liquidar para Ciclo Periodico         */
+/*---------------------------------------------------------------------------*/
+stUniverso * stCreaUniversoPeriodico()      
+{     
+    stUniverso  * paux;
+    stUniverso  * qaux;
+
+    long		lCantRegistros  =0;
+    int         i;
+    short       iLastRows       = 0;
+    int         iFetchedRows    = MAXFETCH;
+    int         iRetrievRows    = MAXFETCH;
+    int 		NroComisionistas= 0;
+    
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed			[MAXFETCH];
+	    char    szhCodTipComis       	[MAXFETCH][3];
+	    long    lhCodComisionista		[MAXFETCH];
+	    long    lhCodCliente     		[MAXFETCH];
+	    char    szhCodOficina    		[MAXFETCH][3];
+	    char	szhIndAplicSubordinada 	[MAXFETCH][2];
+	    long	lhClienteGenerico;
+	    long    lhCodPeriodo;
+	    char    szhIdPeriodo[11];
+	    long	lhCodCiclo;
+	    char	chTipCiclComis;
+	    long    lMaxFetch;      
+    EXEC SQL END DECLARE SECTION;
+        
+    strcpy(szhIdPeriodo	, stCiclo.szIdCiclComis);
+    lhCodPeriodo 		= stCiclo.lCodCiclComis;
+    lhCodCiclo   		= stCiclo.lCodCiclo;
+    chTipCiclComis 		= stCiclo.cTipCiclComis;
+	lhClienteGenerico	= lClienteGenerico;
+
+    lMaxFetch           = MAXFETCH;
+    paux 				= NULL;
+    qaux 				= NULL;
+
+    fprintf(pfLog ,"[stCreaUniversoPeriodico]Carga Detalle de Comisionistas a Liquidar.\n");
+    fprintf(stderr,"[stCreaUniversoPeriodico]Carga Detalle de Comisionistas a Liquidar.\n");
+    
+    EXEC SQL DECLARE CUR_UNIVERSO_PERIODICO CURSOR FOR SELECT DISTINCT
+            D.COD_TIPORED,
+            E.COD_TIPCOMIS,
+            G.COD_VENDEDOR,
+            NVL(G.COD_CLIENTE, 0),
+            G.COD_OFICINA,
+            D.IND_APLIC_SUBORDINADA
+        FROM 	VE_TIPORED_TD 			D,
+        		CM_PLANESTIPORED_TD 	F,
+        		CM_PLANESCOMIS_TD 		H,
+        		CM_CONCEPTOSTIPORED_TD  B,
+        		VE_DETALLE_TIPORED_TD 	E,
+        		VE_VENDEDORES 			G
+        WHERE	D.COD_CICLOCOMIS 	= :lhCodCiclo
+          AND 	D.COD_TIPORED 		= F.COD_TIPORED
+          AND 	F.COD_PLANCOMIS 	= H.COD_PLANCOMIS
+          AND	H.TIP_CICLCOMIS 	= :chTipCiclComis
+          AND	D.COD_TIPORED 		= B.COD_TIPORED
+          AND 	F.COD_PLANCOMIS 	= B.COD_PLANCOMIS
+          AND 	B.COD_TIPORED		= E.COD_TIPORED
+          AND 	B.NIV_APLICACION	= E.NUM_NIVEL
+          AND 	E.COD_TIPCOMIS 		= G.COD_TIPCOMIS
+        ORDER BY G.COD_VENDEDOR;                
+    
+    EXEC SQL OPEN CUR_UNIVERSO_PERIODICO;
+    while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL for    :lMaxFetch FETCH  CUR_UNIVERSO_PERIODICO INTO   
+        	:ihCodTipoRed,  :szhCodTipComis, :lhCodComisionista,
+			:lhCodCliente,  :szhCodOficina,  :szhIndAplicSubordinada;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+        
+        for (i=0; i < iRetrievRows; i++)
+        {
+		    paux = (stUniverso *) malloc(sizeof(stUniverso));
+			paux->iCodTipoRed			       	= ihCodTipoRed[i];
+		    paux->lCodComisionista             	= lhCodComisionista[i];   
+		    strcpy(paux->szTipComis		       	, szfnTrim(szhCodTipComis[i]));   
+		    strcpy(paux->szCodOficina          	, szfnTrim(szhCodOficina[i]));    
+		    strcpy(paux->szIndAplicSubordinada	, szfnTrim(szhIndAplicSubordinada[i]));
+
+		    if (lhCodCliente[i] == 0)
+		    	paux->lCodCliente           = lhClienteGenerico;                        
+			else
+				paux->lCodCliente           = lhCodCliente[i];                        
+
+		    paux->dAcumComisiones 		= 0.00;
+		    paux->dAcumAjustes 			= 0.00;
+		    paux->dAcumAnticipos 		= 0.00;
+		    paux->dAcumPenaliza 		= 0.00;
+		    paux->dValorNeto 			= 0.00;
+		    paux->dValorImpuesto 		= 0.00;
+		    paux->dValorTotal 			= 0.00;
+		    paux->cIndCumplimiento		= 'S';
+		    paux->cIndConsidera         = 'S';
+		    paux->sgte_concepto 		= NULL;
+		    paux->sgte_anticipo 		= NULL;
+		    paux->sgte_ajuste 			= NULL;
+		    
+		    paux->sgte 					= qaux;
+		    qaux						= paux;
+		    lCantRegistros++;
+        }
+    }
+    EXEC SQL CLOSE CUR_UNIVERSO_PERIODICO;
+    
+    fprintf(stderr,"[stCreaUniversoPeriodico]Cantidad Comisionistas a Liquidar en Periodo:[%s] ==>[%d]\n",szhIdPeriodo, lCantRegistros);
+    fprintf(pfLog ,"[stCreaUniversoPeriodico]Cantidad Comisionistas a Liquidar en Periodo:[%s] ==>[%d]\n",szhIdPeriodo, lCantRegistros);
+	stStatusProc.lComisiones = lCantRegistros;
+	return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* Crea el universo de comisionistas a liquidar para Ciclo Periodico         */
+/*---------------------------------------------------------------------------*/
+stUniverso * stCreaUniversoEsporadico()      
+{     
+    stUniverso  * paux;
+    stUniverso  * qaux;
+
+    long		lCantRegistros= 0;
+    int         i;
+    short       iLastRows     = 0;
+    int         iFetchedRows  = MAXFETCH;
+    int         iRetrievRows  = MAXFETCH;
+    
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed			[MAXFETCH];
+	    char    szhCodTipComis       	[MAXFETCH][3];
+	    long    lhCodComisionista		[MAXFETCH];
+	    long    lhCodCliente     		[MAXFETCH];
+	    char    szhCodOficina    		[MAXFETCH][3];
+	    char	szhIndAplicSubordinada	[MAXFETCH][2];
+	    long	lhClienteGenerico;
+	    long    lhCodPeriodo;
+	    char    szhIdPeriodo[11];
+	    long	lhCodCiclo;
+	    char	chTipCiclComis;
+	    long    lMaxFetch;      
+    EXEC SQL END DECLARE SECTION;
+        
+    strcpy(szhIdPeriodo	, stCiclo.szIdCiclComis);
+    lhCodPeriodo 		= stCiclo.lCodCiclComis;
+    lhCodCiclo   		= stCiclo.lCodCiclo;
+    chTipCiclComis 		= stCiclo.cTipCiclComis;
+    lhClienteGenerico	= lClienteGenerico;
+
+    lMaxFetch           = MAXFETCH;
+    paux 				= NULL;
+    qaux 				= NULL;
+
+    fprintf(pfLog ,"[stCreaUniversoEsporadico]Carga Detalle de Comisionistas a Liquidar.\n");
+    fprintf(stderr,"[stCreaUniversoEsporadico]Carga Detalle de Comisionistas a Liquidar.\n");
+    
+    EXEC SQL DECLARE CUR_UNIVERSO_ESPORADICO CURSOR FOR SELECT DISTINCT
+            D.COD_TIPORED,
+            E.COD_TIPCOMIS,
+            G.COD_VENDEDOR,
+            NVL(G.COD_CLIENTE,:lhClienteGenerico), 
+            G.COD_OFICINA,
+            D.IND_APLIC_SUBORDINADA
+        FROM 	VE_TIPORED_TD 			D,
+        		CM_PLANESTIPORED_TD 	F,
+        		CM_PLANESCOMIS_TD 		H,
+        		CM_CONCEPTOSTIPORED_TD  B,
+        		VE_DETALLE_TIPORED_TD 	E,
+        		VE_VENDEDORES 			G
+        WHERE	H.TIP_CICLCOMIS 	= :chTipCiclComis
+          AND	H.ID_CICLCOMIS 		= :szhIdPeriodo
+          AND 	H.COD_PLANCOMIS 	= F.COD_PLANCOMIS
+          AND	F.COD_TIPORED 		= D.COD_TIPORED
+          AND	D.COD_TIPORED 		= B.COD_TIPORED
+          AND 	F.COD_PLANCOMIS 	= B.COD_PLANCOMIS
+          AND 	B.COD_TIPORED		= E.COD_TIPORED
+          AND 	B.NIV_APLICACION	= E.NUM_NIVEL
+          AND 	E.COD_TIPCOMIS 		= G.COD_TIPCOMIS
+        ORDER BY G.COD_VENDEDOR;                
+                   
+    EXEC SQL OPEN CUR_UNIVERSO_ESPORADICO;
+    while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL for    :lMaxFetch FETCH  CUR_UNIVERSO_ESPORADICO INTO   
+        	:ihCodTipoRed,  :szhCodTipComis, :lhCodComisionista,
+			:lhCodCliente,  :szhCodOficina,  :szhIndAplicSubordinada;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+        
+        for (i=0; i < iRetrievRows; i++)
+        {
+		    paux = (stUniverso *) malloc(sizeof(stUniverso));
+		    strcpy(paux->szTipComis		        , szfnTrim(szhCodTipComis[i]));   
+		    strcpy(paux->szCodOficina           , szfnTrim(szhCodOficina[i]));    
+		    strcpy(paux->szIndAplicSubordinada  , szfnTrim(szhIndAplicSubordinada[i]));		    
+		    
+		    paux->iCodTipoRed			= ihCodTipoRed[i];
+		    paux->lCodComisionista      = lhCodComisionista[i];   
+		    paux->lCodCliente           = lhCodCliente[i];                        
+		    paux->dAcumComisiones 		= 0.00;
+		    paux->dAcumAjustes 			= 0.00;
+		    paux->dAcumAnticipos 		= 0.00;
+		    paux->dAcumPenaliza 		= 0.00;
+		    paux->dValorNeto 			= 0.00;
+		    paux->dValorImpuesto 		= 0.00;
+		    paux->dValorTotal 			= 0.00;
+		    paux->cIndCumplimiento		= 'S';
+		    paux->cIndConsidera         = 'S';
+		    paux->sgte_concepto 		= NULL;
+		    paux->sgte_anticipo 		= NULL;
+		    paux->sgte_ajuste 			= NULL;
+		    
+		    paux->sgte 					= qaux;
+		    qaux						= paux;
+		    lCantRegistros++;
+        }
+    }
+    EXEC SQL CLOSE CUR_UNIVERSO_ESPORADICO;
+    
+    fprintf(stderr,"[stCreaUniversoEsporadico]Cantidad Comisionistas a Liquidar en Periodo:[%s] ==>[%d]\n",szhIdPeriodo, lCantRegistros);
+    fprintf(pfLog ,"[stCreaUniversoEsporadico]Cantidad Comisionistas a Liquidar en Periodo:[%s] ==>[%d]\n",szhIdPeriodo, lCantRegistros);
+	stStatusProc.lComisiones = lCantRegistros;
+	return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* Recupra los Ajustes de Cada Comisionista, para el periodo en proceso.     */
+/*---------------------------------------------------------------------------*/
+stConceptos * stCargaAjustes(int iTipoRed, long lComisionista)      
+{     
+    stConceptos	* paux;
+    stConceptos	* qaux;
+        
+    int		i;
+    long    lCantRegistros 		= 0;
+    short   iLastRows     		= 0;
+    int     iFetchedRows  		= MAXFETCH;
+    int     iRetrievRows  		= MAXFETCH;
+    int 	NroComisionistas	= 0;
+        
+	EXEC SQL BEGIN DECLARE SECTION;
+        double  dhImpConcepto   		[MAXFETCH];
+		long	lhNumAjuste				[MAXFETCH];
+        int		ihCodTipoRed;
+        long	lhCodComisionista;
+        char	szhIdPeriodo[11];
+        long    lMaxFetch;
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhIdPeriodo	, stCiclo.szIdCiclComis);
+	lhCodComisionista 	= lComisionista;
+	ihCodTipoRed 		= iTipoRed;
+
+    lMaxFetch = MAXFETCH;
+    paux 	  = NULL;
+    qaux 	  = NULL;
+
+	fprintf(pfLog ,"\n\n[stCargaAjustes]Carga de Ajustes del Periodo. TipoRed:[%d] Comisionista:[%ld]\n",ihCodTipoRed, lhCodComisionista);
+
+    EXEC SQL DECLARE CUR_UNIVERSO_AJUSTES CURSOR FOR SELECT  
+	    	NUM_AJUSTE,
+	        IMP_CONCEPTO
+        FROM    CMT_AJUSTES_COMISIONES 
+        WHERE   COD_TIPORED 		= :ihCodTipoRed
+        AND 	ID_PERIODO   		= :szhIdPeriodo
+        AND     COD_COMISIONISTA 	= :lhCodComisionista
+        AND     COD_ESTADO    		= 'ING';
+
+    EXEC SQL OPEN CUR_UNIVERSO_AJUSTES;
+    while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL for :lMaxFetch FETCH CUR_UNIVERSO_AJUSTES  INTO 
+        	:lhNumAjuste, :dhImpConcepto;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+
+        for (i=0; i < iRetrievRows; i++)
+        {
+		    paux = (stConceptos *) malloc(sizeof(stConceptos));                                                             
+
+		    paux->lCodConcepto      = lhNumAjuste[i];
+		    strcpy(paux->cTipComision, "A");
+		    paux->dImpConcepto      = dhImpConcepto[i];
+		    strcpy(paux->szUniverso , "AJUSTES");
+		    strcpy(paux->cTipCalculo, "D");
+		    paux->lNumLogro			= 0;
+		    paux->lNumRegistros		= 0; 
+			paux->iNivSeleccion		= 1;
+			paux->iNivAplicacion	= 1; 
+			paux->cIndConsidera     = 'S';
+			
+			paux->sgte				= qaux;
+			qaux 					= paux;            
+            lCantRegistros++;
+        }
+	}
+    EXEC SQL CLOSE CUR_UNIVERSO_AJUSTES;
+
+    fprintf(pfLog ,"\t[stCargaAjustes]Cantidad de Ajustes Recuperados:[%d]\n", lCantRegistros);
+	return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* Crea el universo de Anticipos en la lista de universo.                      */
+/*---------------------------------------------------------------------------*/
+stConceptos * stCargaAnticipos(int iTipoRed, long lComisionista)      
+{     
+    stConceptos     * paux;
+    stConceptos     * qaux;
+    
+    int  	i;
+    long    lCantRegistros 		= 0;
+    short   iLastRows     		= 0;
+    int     iFetchedRows  		= MAXFETCH;
+    int     iRetrievRows  		= MAXFETCH;
+    int 	NroComisionistas	= 0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        double  dhImpConcepto   [MAXFETCH];
+        long	lhNumAnticipo	[MAXFETCH];
+
+        int		ihCodTipoRed;
+        long    lhCodComisionista;
+        char	szhIdPeriodo	[11];
+        long    lMaxFetch;
+    EXEC SQL END DECLARE SECTION;
+    
+    ihCodTipoRed	  	= iTipoRed;
+	lhCodComisionista 	= lComisionista;
+    lMaxFetch 			= MAXFETCH;
+	strcpy(szhIdPeriodo	, stCiclo.szIdCiclComis);
+    paux 				= NULL;
+    qaux 				= NULL;
+	
+    fprintf(pfLog ,"\n\n[stCargaAnticipos] Carga de Anticipos TipoRed:[%d] Comisionista:[%ld]\n",ihCodTipoRed, lhCodComisionista);
+    
+    EXEC SQL DECLARE CUR_UNIVERSO_ANTICIPOS CURSOR FOR SELECT  
+            A.NUM_ANTICIPO,
+            A.IMP_ANTICIPO
+        FROM    CMT_ANTICIPOS A
+        WHERE   A.COD_TIPORED		= :ihCodTipoRed
+        AND     A.COD_COMISIONISTA 	= :lhCodComisionista
+        AND 	A.ID_PERIODO_LIQ	= :szhIdPeriodo
+        AND     A.COD_ESTADO_LIQ  	= 'ING';
+
+                   
+    EXEC SQL OPEN CUR_UNIVERSO_ANTICIPOS;
+    while(iFetchedRows == iRetrievRows)
+    {
+		EXEC SQL for :lMaxFetch FETCH CUR_UNIVERSO_ANTICIPOS INTO   
+			:lhNumAnticipo, :dhImpConcepto;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+
+        for (i=0; i < iRetrievRows; i++)
+        {
+    		paux = (stConceptos *) malloc(sizeof(stConceptos));                                                             
+
+		    paux->lCodConcepto      = lhNumAnticipo[i];
+		    strcpy(paux->cTipComision, "A");
+		    paux->dImpConcepto      = dhImpConcepto[i];
+		    strcpy(paux->szUniverso , "ANTICIPOS");
+		    strcpy(paux->cTipCalculo, "D");
+		    paux->lNumLogro			= 0;
+		    paux->lNumRegistros		= 0; 
+			paux->iNivSeleccion		= 1;
+			paux->iNivAplicacion	= 1; 
+			paux->cIndConsidera     = 'S';
+
+			
+			paux->sgte				= qaux;
+			qaux 					= paux;            
+            lCantRegistros++;
+		}
+	}
+	EXEC SQL CLOSE CUR_UNIVERSO_ANTICIPOS;
+
+    fprintf(pfLog ,"\t[stCargaAnticipos]Cantidad de Anticipos Recuperados:[%d]\n", lCantRegistros);
+	return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* Carga universo de conceptos acumulados para cada comisionista.            */
+/*---------------------------------------------------------------------------*/
+stConceptos * stCargaConceptos(int iTipoRed, long lComisionista)      
+{     
+    stConceptos     * paux;
+    stConceptos     * qaux;
+    
+    int  	i;
+    long    lCantRegistros 		= 0;
+    short   iLastRows     		= 0;
+    int     iFetchedRows  		= MAXFETCH;
+    int     iRetrievRows  		= MAXFETCH;
+    int 	NroComisionistas	= 0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        char    szRowId         [MAXFETCH][19];
+        long	lhCodConcepto	[MAXFETCH];
+        double  dhImpConcepto   [MAXFETCH];
+        long	lhNumLogro		[MAXFETCH];
+        long	lhNumRegistros	[MAXFETCH];
+        char	chTipConcepto	[MAXFETCH][2];
+        char	szhCodUniverso	[MAXFETCH][7];
+		char	chTipCalculo	[MAXFETCH][2];
+		int		ihNivSeleccion  [MAXFETCH];
+		int		ihNivAplicacion [MAXFETCH];
+        int		ihCodTipoRed;
+        long    lhCodComisionista;
+        char	szhIdPeriodo	[11];
+        long    lMaxFetch;
+    EXEC SQL END DECLARE SECTION;
+    
+    ihCodTipoRed	  	= iTipoRed;
+	lhCodComisionista 	= lComisionista;
+    lMaxFetch 			= MAXFETCH;
+	strcpy(szhIdPeriodo	, stCiclo.szIdCiclComis);
+    paux 				= NULL;
+    qaux 				= NULL;
+	
+    fprintf(pfLog ,"\n\n[stCargaConceptos] Carga de Cocneptos TipoRed:[%d] Comisionista:[%ld]\n",ihCodTipoRed, lhCodComisionista);
+
+    EXEC SQL DECLARE CUR_UNIVERSO_CONCEPTOS CURSOR FOR SELECT  
+            A.COD_CONCEPTO,
+            NUM_LOGRO,
+            NUM_REGISTROS,
+            A.IMP_CONCEPTO,
+            B.TIP_CONCEPTO,
+            B.COD_UNIVERSO,
+            B.TIP_CALCULO,
+            C.NIV_SELECCION,
+            C.NIV_APLICACION
+        FROM    CMT_ACUMULADOS A,
+        		CMD_CONCEPTOS B,
+        		CM_CONCEPTOSTIPORED_TD C
+        WHERE   A.COD_TIPORED		= :ihCodTipoRed
+        AND     A.COD_COMISIONISTA 	= :lhCodComisionista
+        AND 	A.ID_PERIODO		= :szhIdPeriodo
+        AND     A.COD_CONCEPTO 		= B.COD_CONCEPTO
+        AND 	A.COD_TIPORED 		= C.COD_TIPORED
+        AND 	A.COD_CONCEPTO 		= C.COD_CONCEPTO;
+
+                   
+    EXEC SQL OPEN CUR_UNIVERSO_CONCEPTOS;
+    while(iFetchedRows == iRetrievRows)
+    {
+		EXEC SQL for :lMaxFetch FETCH CUR_UNIVERSO_CONCEPTOS INTO   
+			:lhCodConcepto , :lhNumLogro   , 
+			:lhNumRegistros, :dhImpConcepto, :chTipConcepto,
+			:szhCodUniverso, :chTipCalculo , :ihNivSeleccion,
+			:ihNivAplicacion;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows    = sqlca.sqlerrd[2];
+
+        for (i=0; i < iRetrievRows; i++)
+        {
+    		paux = (stConceptos *) malloc(sizeof(stConceptos));                                                             
+
+		    paux->lCodConcepto      = lhCodConcepto[i];
+		    strcpy(paux->cTipComision, chTipConcepto[i]);
+		    paux->dImpConcepto      = dhImpConcepto[i];
+		    strcpy(paux->szUniverso , szfnTrim(szhCodUniverso[i]));
+		    strcpy(paux->cTipCalculo, chTipCalculo[i]);
+		    paux->lNumLogro			= lhNumLogro[i];
+		    paux->lNumRegistros		= lhNumRegistros[i]; 
+			paux->iNivSeleccion		= ihNivSeleccion[i];
+			paux->iNivAplicacion	= ihNivAplicacion[i]; 
+			paux->cIndConsidera     = 'S';
+
+			paux->sgte				= qaux;
+			qaux 					= paux;            
+            lCantRegistros++;
+		}
+	}
+	EXEC SQL CLOSE CUR_UNIVERSO_CONCEPTOS;
+
+    fprintf(pfLog ,"\t[stCargaConceptos]Cantidad de Conceptos Recuperados:[%d]\n", lCantRegistros);
+	return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* Ejecuta la carga de las estructuras de comisionistas, conceptos y ajustes */
+/* para proceder al cálculo de la liquidación de comisiones.                 */
+/*---------------------------------------------------------------------------*/
+void vCargaDatosLiquidacion()
+{
+	stUniverso * paux;
+	
+	switch(stCiclo.cTipCiclComis)
+	{
+		case PERIODICO:
+			lstComisionistas = stCreaUniversoPeriodico();
+			break;
+		case ESPORADICO:
+			lstComisionistas = stCreaUniversoEsporadico();
+			break;
+		default:
+			fprintf(pfLog ,"\n\n[vCargaDatosLiquidacion] Tipo de Ciclo de Comisiones [%c] Desconocido. Se aborta la ejecucion.", stCiclo.cTipCiclComis);
+			fprintf(stderr,"\n\n[vCargaDatosLiquidacion] Tipo de Ciclo de Comisiones [%c] Desconocido. Se aborta la ejecucion.", stCiclo.cTipCiclComis);
+			exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,-1,"Tipo de Ciclo de Comisiones Desconocido.",0,0));
+	}
+	for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+	{
+		paux->sgte_concepto = stCargaConceptos(paux->iCodTipoRed, paux->lCodComisionista);
+		paux->sgte_ajuste   = stCargaAjustes(paux->iCodTipoRed, paux->lCodComisionista);
+		paux->sgte_anticipo	= stCargaAnticipos(paux->iCodTipoRed, paux->lCodComisionista);
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Calcula losvalores totales de liquidación, para lalista principal.        */
+/*---------------------------------------------------------------------------*/
+void vTotalizaLiquidaciones()
+{
+	stUniverso 	* paux;
+	stConceptos * qaux;
+
+	double  	dhAcumComisiones;
+    double  	dhAcumAjustes;
+    double  	dhAcumAnticipos;
+    double  	dhAcumPenaliza;
+	
+	for(paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+	{
+	    if (paux->cIndConsidera == 'S')
+	    {
+		    dhAcumComisiones = 0.00;
+		    dhAcumAjustes	 = 0.00;
+		    dhAcumAnticipos	 = 0.00;
+		    dhAcumPenaliza	 = 0.00;
+		    /* Conceptos de Comoisiones / Bonos y Penalizaciones */
+		    for (qaux = paux->sgte_concepto; qaux != NULL; qaux = qaux->sgte)
+		    {
+		    	if (qaux->cIndConsidera == 'S')
+		    	{
+		    		if (strcmp(qaux->cTipComision,"P")!=0)	dhAcumComisiones += qaux->dImpConcepto;
+		    		if (strcmp(qaux->cTipComision,"P")==0)	dhAcumPenaliza += qaux->dImpConcepto;		    		
+		    	}
+		    }
+		    paux->dAcumComisiones 	= dhAcumComisiones;
+		    paux->dAcumPenaliza		= dhAcumPenaliza;
+			/* Anticipos */
+		    for (qaux = paux->sgte_anticipo; qaux != NULL; qaux = qaux->sgte)
+		    {
+		    	if (qaux->cIndConsidera == 'S')
+		    	{
+		    		dhAcumAnticipos += qaux->dImpConcepto;
+		    	}
+		    }
+		    paux->dAcumAnticipos	= dhAcumAnticipos;
+			/* Ajustes */
+		    for (qaux = paux->sgte_ajuste; qaux != NULL; qaux = qaux->sgte)
+		    {
+		    	if (qaux->cIndConsidera == 'S')
+		    	{
+		    		dhAcumAjustes += qaux->dImpConcepto;
+		    	}
+		    }
+		    paux->dAcumAjustes	= dhAcumAjustes;
+		}
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Aplica Criterios de Impuestos a las liquidaciones de Comisiones.          */
+/*---------------------------------------------------------------------------*/
+void vCalculaImpuestos()
+{
+	stUniverso 	* paux;
+    double  	dhAcumComisiones;
+    double  	dhAcumAjustes;
+    double  	dhAcumAnticipos;
+    double  	dhAcumPenaliza;
+    
+    double  	dhValorNeto;
+    double  	dhValorImpuesto;
+    double  	dhValorTotal;
+	
+	for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+	{
+		dhAcumComisiones= paux->dAcumComisiones ;
+        dhAcumAjustes   = paux->dAcumAjustes    ;
+        dhAcumAnticipos = paux->dAcumAnticipos  ;
+        dhAcumPenaliza  = paux->dAcumPenaliza   ;
+       	dhValorTotal    = dhAcumComisiones + dhAcumAjustes - dhAcumAnticipos - dhAcumPenaliza;
+        
+        fFactorImpuesto = dObtenerFactor(paux->lCodCliente, paux->szCodOficina);
+        dhValorNeto     = dhValorTotal * (100.00/(100.00 + fFactorImpuesto));
+        dhValorImpuesto	= dhValorTotal - dhValorNeto;
+
+		paux->dAcumComisiones   = fnCnvDouble(dhAcumComisiones, 0); 
+		paux->dAcumAjustes      = fnCnvDouble(dhAcumAjustes   , 0); 
+		paux->dAcumAnticipos    = fnCnvDouble(dhAcumAnticipos , 0); 
+		paux->dAcumPenaliza     = fnCnvDouble(dhAcumPenaliza  , 0); 
+        paux->dValorNeto		= fnCnvDouble(dhValorNeto	  , 0);
+        paux->dValorImpuesto  	= fnCnvDouble(dhValorImpuesto , 0);
+        paux->dValorTotal    	= fnCnvDouble(dhValorTotal    , 0);
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Inserta en tabla el registro de liquidacion                               */
+/*---------------------------------------------------------------------------*/
+void vInsertaLiquidacion()
+{
+	stUniverso 	* paux;
+	stConceptos * qaux;
+
+	long		lCantRegs = 0;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    ihCodComisionista;
+        char    szhTipComis[3];
+        int     ihCodPeriodo;
+        double  dhAcumComisiones;
+        double  dhAcumPenaliza;
+        double  dhAcumAnticipos;
+        double  dhAcumAjustes;
+        double  dhValorNeto;
+        double  dhValorImpuesto;
+        double  dhValorTotal;
+        char	chIndCumplimiento;
+        char	szhIndAplicSubordinada[2];
+        char	szhIdPeriodo[11];
+        int		ihCodTipoRed;
+    EXEC SQL END DECLARE SECTION;
+
+    ihCodPeriodo        = stCiclo.lCodCiclComis;
+    strcpy(szhIdPeriodo , stCiclo.szIdCiclComis);   
+	fprintf(pfLog , "[vInsertaLiquidacion] Inicia Grabado de Registros en Tabla de Liquidaciones.\n");
+	fprintf(stderr, "[vInsertaLiquidacion] Inicia Grabado de Registros en Tabla de Liquidaciones.\n");
+
+	for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+	{
+        ihCodComisionista  				= paux->lCodComisionista;
+        strcpy(szhTipComis				, paux->szTipComis);
+        dhAcumComisiones   				= paux->dAcumComisiones;
+        dhAcumPenaliza     				= paux->dAcumPenaliza;
+        dhAcumAnticipos    				= paux->dAcumAnticipos;
+        dhAcumAjustes      				= paux->dAcumAjustes;
+        dhValorNeto        				= paux->dValorNeto;
+        dhValorImpuesto    				= paux->dValorImpuesto;
+        dhValorTotal       				= paux->dValorTotal;
+        ihCodTipoRed       				= paux->iCodTipoRed;
+        chIndCumplimiento				= paux->cIndCumplimiento;
+        strcpy(szhIndAplicSubordinada	, paux->szIndAplicSubordinada);
+        lCantRegs++;
+
+        EXEC SQL INSERT INTO CM_LIQUIDACION_TO  (
+        	COD_COMISIONISTA, COD_TIPCOMIS , COD_PERIODO      , ACUM_COMISION   ,
+        	ACUM_ANTICIPO   , ACUM_AJUSTES , ACUM_PENALIZACION,
+        	ACUM_NETO       , ACUM_IMPUESTO, TOT_PAGAR        , IND_CUMPLIMIENTO,
+			IND_APLIC_SUBORDINADA, ID_PERIODO, COD_TIPORED) 
+        VALUES (
+        	:ihCodComisionista, :szhTipComis    ,  :ihCodPeriodo   , :dhAcumComisiones , 
+            :dhAcumAnticipos  , :dhAcumAjustes  ,  :dhAcumPenaliza ,
+            :dhValorNeto      , :dhValorImpuesto,  :dhValorTotal   , :chIndCumplimiento,
+            :szhIndAplicSubordinada, :szhIdPeriodo, :ihCodTipoRed); 
+	}
+	fprintf(pfLog , "[vInsertaLiquidacion] Fin Grabado. Registros en Tabla de Liquidaciones:[%ld].", lCantRegs);
+	fprintf(stderr, "[vInsertaLiquidacion] Fin Grabado. Registros en Tabla de Liquidaciones:[%ld].", lCantRegs);
+	stStatusProc.lLiquidaciones = lCantRegs;
+}
+/*---------------------------------------------------------------------------*/
+/* Marca los registros de Anticipo y Ajuste como liquidados...               */
+/*---------------------------------------------------------------------------*/
+void vMarcaAjustesAnticipos()
+{
+	stUniverso 		* paux;
+	stConceptos 	* qaux;
+	long		  	lCantAjustes = 0;
+	long		  	lCantAnticipos = 0;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	lhNumId;
+	EXEC SQL END DECLARE SECTION;
+
+	long		lNumId;
+
+	fprintf(pfLog , "[vMarcaAjustesAnticipos] Marca los registros de Anticipo y Ajuste como liquidados.\n");
+	fprintf(stderr, "[vMarcaAjustesAnticipos] Marca los registros de Anticipo y Ajuste como liquidados.\n");
+
+	for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+	{
+        for( qaux = paux->sgte_ajuste;qaux !=NULL ; qaux = qaux->sgte)
+        {
+			lhNumId = qaux->lCodConcepto;
+			EXEC SQL UPDATE CMT_AJUSTES_COMISIONES
+                SET COD_ESTADO = 'LIQ'
+                WHERE NUM_AJUSTE = :lhNumId;
+           	lCantAjustes++;
+		}
+        for( qaux = paux->sgte_anticipo;qaux !=NULL ; qaux = qaux->sgte)
+        {
+            lhNumId = qaux->lCodConcepto;
+            EXEC SQL UPDATE CMT_ANTICIPOS
+                SET COD_ESTADO_LIQ = 'LIQ'
+                WHERE NUM_ANTICIPO = :lhNumId;
+            lCantAnticipos++;
+        }
+	
+	}
+	stStatusProc.lAjustes 	= lCantAjustes;
+	stStatusProc.lAnticipos	= lCantAnticipos;
+	
+	fprintf(pfLog ,"[vMarcaAjustesAnticipos] Cantidad de Ajustes   Liquidados:[%ld].", lCantAjustes);
+	fprintf(pfLog ,"[vMarcaAjustesAnticipos] Cantidad de Anticipos Liquidados:[%ld].", lCantAnticipos);
+	fprintf(stderr,"[vMarcaAjustesAnticipos] Cantidad de Ajustes   Liquidados:[%ld].", lCantAjustes);
+	fprintf(stderr,"[vMarcaAjustesAnticipos] Cantidad de Anticipos Liquidados:[%ld].", lCantAnticipos);
+}
+
+/*---------------------------------------------------------------------------*/
+/* OBTIENE CATEGORIA DE IMPUESTO                                             */
+/*---------------------------------------------------------------------------*/
+long lObtenerCategoria(long lCodCliente)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        long     lhCliente;
+		int      iExiste;
+        long     lhCodCatImpos;
+    EXEC SQL END DECLARE SECTION;
+
+	iExiste   = 0;
+    lhCliente = lCodCliente;
+
+    EXEC SQL SELECT COUNT(*)  
+   	INTO :iExiste
+    FROM GE_CATIMPCLIENTES
+    WHERE COD_CLIENTE = :lhCliente;
+
+	if (iExiste > 0) 
+	{
+	    EXEC SQL SELECT COD_CATIMPOS  
+    	INTO :lhCodCatImpos
+        FROM GE_CATIMPCLIENTES
+        WHERE COD_CLIENTE = :lhCliente;
+
+		return lhCodCatImpos;
+	}
+
+	return -1;
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE FACTOR DE IMPUESTO APLICADO                                       */
+/*---------------------------------------------------------------------------*/
+double dObtenerFactor(long lCodCliente, char * szCodOficina)
+{
+	char szMsgErr[MAXARRAY];
+    EXEC SQL BEGIN DECLARE SECTION;
+        long     lhSecuencia;
+        int      ihConceptoComisiones;
+        long     lhClienteGenerico;
+        float    fhValorNeto;
+        float    fhValorConImpto;
+        int      ihCodTipConce;
+        long     lhCodCatImpos;
+        char     szhRetorno[250];
+        double   fhFactor;
+        char     szhCodOficina[3];
+		char     szhRetorno1[250]; 
+		char     szhRetorno2[250]; 
+		char     szhRetorno3[250]; 
+		char     szhRetorno4[250]; 
+		char     szhRetorno5[250]; 
+		char     szhRetorno6[250]; 
+    EXEC SQL END DECLARE SECTION;
+
+	strcpy(szhRetorno1	, "");
+	strcpy(szhRetorno2	, "");
+	strcpy(szhRetorno3	, "");
+	strcpy(szhRetorno4	, "");
+	strcpy(szhRetorno5	, "");
+	strcpy(szhRetorno6	, "");
+	
+    strcpy(szhCodOficina	, szCodOficina);
+    lhClienteGenerico 		= ((lCodCliente==0)?lClienteGenerico:lCodCliente);
+    ihConceptoComisiones	= iConceptoComisiones;  
+    fhValorNeto         	= 0.00;
+    
+    EXEC SQL SELECT FAS_PRESUPTEMP.NEXTVAL 
+    	INTO :lhSecuencia
+        FROM DUAL;
+        
+    EXEC SQL SELECT COD_TIPCONCE 
+    	INTO :ihCodTipConce  
+        FROM FA_CONCEPTOS
+        WHERE COD_CONCEPTO = :ihConceptoComisiones
+        AND COD_PRODUCTO = 1;     
+
+    EXEC SQL INSERT INTO FAT_PRESUPTEMP (
+		NUM_PROCESO, COD_CONCEPTO, COLUMNA,  COD_CLIENTE, 
+        FEC_EFECTIVIDAD, IMP_CONCEPTO, IMP_FACTURABLE, 
+        COD_TIPCONCE, COD_CONCEREL,  COLUMNA_REL, 
+        FLAG_IMPUES, PRC_IMPUESTO)
+        VALUES(:lhSecuencia, :ihConceptoComisiones, 1,
+               :lhClienteGenerico, SYSDATE, :fhValorNeto,
+               :fhValorNeto, :ihCodTipConce, 0, 0, 0, 0.0);
+
+    EXEC SQL COMMIT;   
+                    
+    lhCodCatImpos = lObtenerCategoria(lhClienteGenerico);
+    
+    sprintf(szMsgErr , "Cliente [%ld] no cuenta con Categoria de Impuesto \n" ,lhClienteGenerico);
+        
+	if (lhCodCatImpos < 0) 
+        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,-1,szMsgErr,lhClienteGenerico,0));        
+   
+	iPl=1;
+     
+	EXEC SQL EXECUTE                                 
+		BEGIN                                            
+            FA_PROC_IMPTOS (:lhSecuencia, :lhCodCatImpos, :szhCodOficina,            
+            	:szhRetorno1, :szhRetorno2, :szhRetorno3, :szhRetorno4,                 
+    			:szhRetorno5, :szhRetorno6);
+     	END;                                             
+	END-EXEC;
+     
+	/*if (sqlca.sqlcode != 0)
+	{
+    	fprintf(stderr, "Error [%ld] en ejecucion del Calculo de Impuesto...Secuencia [%ld]\n", sqlca.sqlcode, lhSecuencia);
+    	vSqlError_2();
+    }
+    */
+                                                      
+	EXEC SQL COMMIT;                                   
+	
+	iPl=0;
+	
+     EXEC SQL SELECT NVL(MAX(PRC_IMPUESTO),0)  
+     	INTO :fhFactor
+        FROM FAT_PRESUPTEMP
+        WHERE NUM_PROCESO = :lhSecuencia
+        AND PRC_IMPUESTO IS NOT NULL
+        ORDER BY PRC_IMPUESTO DESC;
+    
+	return fhFactor;   
+}
+/*---------------------------------------------------------------------------*/
+/* PROCEDIMIENTO QUE CARGA LOS PARAMETROS GENERALES DEL PROCESO              */
+/*---------------------------------------------------------------------------*/
+void vCargaParametros()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+       int      ihCodConcepComisiones;
+       long     lhCodClienteGenerico;
+       char     szhMonto[15]; EXEC SQL VAR  szhMonto IS STRING(15);
+    EXEC SQL END DECLARE SECTION;     
+
+	fprintf(pfLog, "\n[vCargaParametros]Carga Parametros para CALCULO de IMPUESTOS.\n");
+	fprintf(stderr,"\n[vCargaParametros]Carga Parametros para CALCULO de IMPUESTOS.\n");
+    
+    EXEC SQL SELECT TO_NUMBER(VAL_PARAMETRO1) INTO
+         :ihCodConcepComisiones
+         FROM CMD_PARAMETROS
+         WHERE COD_TIPCODIGO = 4 
+         AND COD_CODIGO = 1
+         AND COD_PARAMETRO  =1;    
+         
+    iConceptoComisiones = ihCodConcepComisiones;        
+
+    EXEC SQL SELECT TO_NUMBER(VAL_PARAMETRO1) INTO
+         :lhCodClienteGenerico
+         FROM CMD_PARAMETROS
+         WHERE COD_TIPCODIGO = 4
+         AND COD_CODIGO = 2
+         AND COD_PARAMETRO  =1;    
+    
+    lClienteGenerico = lhCodClienteGenerico;
+    fprintf(pfLog ,"[vCargaParametros]Concepto de Facturacion Para Calculo de Impuestos:[%d].\n",iConceptoComisiones);
+    fprintf(stderr,"[vCargaParametros]Concepto de Facturacion Para Calculo de Impuestos:[%d].\n",iConceptoComisiones);
+    fprintf(pfLog ,"[vCargaParametros]Cliente Generico Para Calculo de Impuestos:[%d].\n",lClienteGenerico);
+    fprintf(stderr,"[vCargaParametros]Cliente Generico Para Calculo de Impuestos:[%d].\n",lClienteGenerico);
+}
+/*---------------------------------------------------------------------------*/
+/* Lista el contenido de la estructura en el archivo LOG.                    */
+/*---------------------------------------------------------------------------*/
+void vMuestraListas(stUniverso * lstUniverso)
+{
+    stUniverso      * pUniver;
+    stConceptos     * pConcep;
+        
+	fprintf(pfLog, "\nMuestra estructura de listas de comisionistas...\n");   
+    for(pUniver=lstUniverso; pUniver!=NULL; pUniver=pUniver->sgte)
+    {
+    	if (pUniver->cIndConsidera == 'S')
+    	{
+	        fprintf(pfLog, "-------------COMISIONISTA-------------------------------------\n");   
+	        fprintf(pfLog, "Tipo de Red         [%d]\n"  , pUniver->lCodComisionista  	);        
+	        fprintf(pfLog, "Tipo Comisionista   [%s]\n"   , pUniver->szTipComis 	    );      
+	        fprintf(pfLog, "Comisionista        [%d]\n"  , pUniver->lCodComisionista  	);        
+	        fprintf(pfLog, "Cliente             [%d]\n"  , pUniver->lCodCliente      	);      
+	        fprintf(pfLog, "Oficina             [%s]\n"   , pUniver->szCodOficina      	); 
+	        fprintf(pfLog, "Bonos y Comisiones  [%6.2f]\n", pUniver->dAcumComisiones	); 
+	        fprintf(pfLog, "Ajustes             [%6.2f]\n", pUniver->dAcumAjustes		); 
+	        fprintf(pfLog, "Anticipos           [%6.2f]\n", pUniver->dAcumAnticipos		); 
+	        fprintf(pfLog, "Penalizaciones      [%6.2f]\n", pUniver->dAcumPenaliza		); 
+	        fprintf(pfLog, "Neto                [%6.2f]\n", pUniver->dValorNeto			); 
+	        fprintf(pfLog, "Impuesto            [%6.2f]\n", pUniver->dValorImpuesto		); 
+	        fprintf(pfLog, "Total a PAgar       [%6.2f]\n", pUniver->dValorTotal		); 
+		    /* Conceptos... */
+		    for(pConcep=pUniver->sgte_concepto; pConcep!=NULL; pConcep=pConcep->sgte)
+		    {
+		    	if (pConcep->cIndConsidera == 'S')
+		    	{
+		            fprintf(pfLog, "\t----CONCEPTOS DE COMISION/BONO/PENALIZACION---------------\n");
+		            fprintf(pfLog, "\tConcepto        [%d]\n", pConcep->lCodConcepto       );
+		            		            
+		            if (strcmp(pConcep->cTipComision, "B")==0) fprintf(pfLog, "\tTipo Concepto   [%s][BONOS]\n", pConcep->cTipComision);
+					if (strcmp(pConcep->cTipComision, "C")==0) fprintf(pfLog, "\tTipo Concepto   [%s][COMISION]\n", pConcep->cTipComision);
+					if (strcmp(pConcep->cTipComision, "P")==0) fprintf(pfLog, "\tTipo Concepto   [%s][PENALIZACION]\n", pConcep->cTipComision);
+							            		
+		            fprintf(pfLog, "\tImporte         [%f]\n", pConcep->dImpConcepto     );                     
+		            fprintf(pfLog, "\tUniverso        [%s]\n", pConcep->szUniverso       );
+		            fprintf(pfLog, "\tRegistros       [%d]\n", pConcep->lNumRegistros    );
+		            if (strcmp(pConcep->cTipCalculo,"M")==0) 
+		            	fprintf(pfLog, "\tLogro Metas     [%d]\n", pConcep->lNumLogro);		            	
+	            }
+	        }
+	        /* Ajustes */
+		    for(pConcep=pUniver->sgte_ajuste; pConcep!=NULL; pConcep=pConcep->sgte)
+		    {
+		    	if (pConcep->cIndConsidera == 'S')
+		    	{
+		            fprintf(pfLog, "\t-------------AJUSTES COMISIONALES-------------------------\n");
+		            fprintf(pfLog, "\tNum. Ajuste    [%d]\n", pConcep->lCodConcepto    );
+		            fprintf(pfLog, "\tImporte        [%6.2f]\n" , pConcep->dImpConcepto    );
+				}
+	        }
+	        /* Anticipos */
+		    for(pConcep=pUniver->sgte_anticipo; pConcep!=NULL; pConcep=pConcep->sgte)
+		    {
+		    	if (pConcep->cIndConsidera == 'S')
+		    	{
+		            fprintf(pfLog, "\t-----------ANTICIPOS COMISIONALES-------------------------\n");
+		            fprintf(pfLog, "\tNum. Anticipo  [%d]\n", pConcep->lCodConcepto    );
+		            fprintf(pfLog, "\tImporte        [%6.2f]\n" , pConcep->dImpConcepto    );
+				}
+	        }
+		}
+    }       
+}
+/*---------------------------------------------------------------------------*/
+/* Crea lista de Comisionistas Hijos, para comenzar la repartición...        */
+/*---------------------------------------------------------------------------*/
+stUniverso * stCreaComisHijos(int iCodTipoRed, long lCodVendedor)
+{
+	stUniverso 	* paux = NULL;
+	stUniverso 	* qaux = NULL;
+    int  		i;
+    long    	lCantRegistros 		= 0;
+    short   	iLastRows     		= 0;
+    int     	iFetchedRows  		= MAXFETCH;
+    int     	iRetrievRows  		= MAXFETCH;
+    int 		NroComisionistas	= 0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        char    szhTipComis      		[MAXFETCH][3];
+        long    lhCodVendedor			[MAXFETCH];
+        long    lhCodCliente     		[MAXFETCH];
+        char    szhCodOficina    		[MAXFETCH][3];
+        long    lMaxFetch;
+        long	lhCodPadre;
+        int		ihCodTipoRed;
+        int		iCantHijos = 0;
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodPadre 		= lCodVendedor;
+    ihCodTipoRed 	= iCodTipoRed;
+    lMaxFetch 		= MAXFETCH;
+    paux 			= NULL;
+    qaux 			= NULL;
+    
+    fprintf(pfLog ,"\n\n[stCreaComisHijos] Inicia Carga de Hijos de TipoRed:[%d] Comisionista:[%ld]\n", ihCodTipoRed, lhCodPadre );
+    fprintf(stderr,"\n\n[stCreaComisHijos] Inicia Carga de Hijos de TipoRed:[%d] Comisionista:[%ld]\n", ihCodTipoRed, lhCodPadre );
+
+	EXEC SQL SELECT COUNT(A.COD_VENDEDOR)
+		INTO :iCantHijos
+		FROM VE_REDVENTAS_TD A,
+			 VE_VENDEDORES C
+		WHERE A.COD_TIPORED = :ihCodTipoRed
+		AND   A.COD_VENDE_PADRE = :lhCodPadre
+		AND   A.COD_VENDEDOR = C.COD_VENDEDOR
+		AND   A.COD_VENDEDOR != A.COD_VENDE_PADRE;
+	
+	if (iCantHijos == 0)
+	{
+    	fprintf(pfLog ,"\t[stCreaComisHijos] TipoRed:[%d] Comisionista:[%ld] NO POSEE HIJOS \n", ihCodTipoRed, lhCodPadre );
+    	fprintf(stderr,"\t[stCreaComisHijos] TipoRed:[%d] Comisionista:[%ld] NO POSEE HIJOS \n", ihCodTipoRed, lhCodPadre );
+		return NULL;
+	}
+    EXEC SQL DECLARE CUR_COMISHIJOS CURSOR FOR SELECT  
+			C.COD_TIPCOMIS,
+			A.COD_VENDEDOR,
+			C.COD_CLIENTE,
+			C.COD_OFICINA
+		FROM VE_REDVENTAS_TD A,
+			 VE_VENDEDORES C
+		WHERE A.COD_TIPORED = :ihCodTipoRed
+		AND   A.COD_VENDE_PADRE = :lhCodPadre
+		AND   A.COD_VENDEDOR = C.COD_VENDEDOR
+		AND   A.COD_VENDEDOR != A.COD_VENDE_PADRE;
+	
+    EXEC SQL OPEN CUR_COMISHIJOS;
+    while(iFetchedRows == iRetrievRows)
+    {
+		EXEC SQL for :lMaxFetch FETCH CUR_COMISHIJOS INTO   
+			:szhTipComis,  :lhCodVendedor, :lhCodCliente, :szhCodOficina;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+		    paux = (stUniverso *) malloc(sizeof(stUniverso));
+
+			paux->iCodTipoRed					= ihCodTipoRed;
+		    paux->lCodComisionista      		= lhCodVendedor[i];   
+		    strcpy(paux->szTipComis				, szfnTrim(szhTipComis[i]));   
+		    strcpy(paux->szCodOficina   		, szfnTrim(szhCodOficina[i]));    
+		    paux->lCodCliente           		= lhCodCliente[i];                        
+		    paux->dAcumComisiones 				= 0.00;
+		    paux->dAcumAjustes 					= 0.00;
+		    paux->dAcumAnticipos 				= 0.00;
+		    paux->dAcumPenaliza 				= 0.00;
+		    paux->dValorNeto 					= 0.00;
+		    paux->dValorImpuesto 				= 0.00;
+		    paux->dValorTotal 					= 0.00;
+		    paux->cIndCumplimiento				= 'S';
+		    paux->cIndConsidera					= 'S';
+		    
+		    strcpy(paux->szIndAplicSubordinada 	, "N");
+		    paux->sgte_concepto 				= NULL;
+		    paux->sgte_anticipo 				= NULL;
+		    paux->sgte_ajuste 					= NULL;
+		                              
+		    lCantRegistros++;
+
+			paux->sgte 							= qaux;
+			qaux 								= paux;
+	    }
+	}
+	EXEC SQL CLOSE CUR_COMISHIJOS;
+    fprintf(stderr,"\n\t[stCreaComisHijos] Registros Seleccionados (TipoRed:[%d] Comisionista:[%ld])[%d]\n",ihCodTipoRed, lhCodPadre, lCantRegistros);
+    fprintf(pfLog ,"\n\t[stCreaComisHijos] Registros Seleccionados (TipoRed:[%d] Comisionista:[%ld])[%d]\n",ihCodTipoRed, lhCodPadre, lCantRegistros);
+	return qaux;
+}
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA CODIFICAR LOS UNIVERSOS  			                         */
+/*---------------------------------------------------------------------------*/
+int ifnGetNomTablaSeleccion(char * szUniverso, reg_campos * stMiCampos )
+{
+	if(strcmp(szUniverso,"HABCEL")==0)
+	{
+		strcpy(stMiCampos->szNomTabla	 	, "CMT_HABIL_CELULAR");
+		strcpy(stMiCampos->szNomComisAplic 	, "COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec	, "COD_AGENCIA");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"HABPRE")==0)
+	{
+		strcpy(stMiCampos->szNomTabla		, "CMT_HABIL_PREPAGO");
+		strcpy(stMiCampos->szNomComisAplic	, "COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec	, "COD_AGENCIA");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"BAJAS")==0)
+	{
+		strcpy(stMiCampos->szNomTabla,"CMT_BAJAS_CELULAR");
+		strcpy(stMiCampos->szNomComisAplic,"COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec,"COD_AGENCIA");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"RECHAZ")==0)
+	{
+		strcpy(stMiCampos->szNomTabla,"CMT_RECHAZOS_CELULAR");
+		strcpy(stMiCampos->szNomComisAplic,"COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec,"COD_AGENCIA");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"CONPAC")==0)
+	{
+		strcpy(stMiCampos->szNomTabla,"CM_CONVENIOS_TO");
+		strcpy(stMiCampos->szNomComisAplic,"COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec,"COD_VENDEDOR");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"EVALUA")==0)
+	{
+		strcpy(stMiCampos->szNomTabla,"CMT_EVALUACIONES");
+		strcpy(stMiCampos->szNomComisAplic,"COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec,"COD_VENDEDOR");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"CARTER")==0)
+	{
+		strcpy(stMiCampos->szNomTabla,"CMT_EVALUACIONES");
+		strcpy(stMiCampos->szNomComisAplic,"COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec,"COD_AGENCIA");
+		return TRUE;
+	}
+	if(strcmp(szUniverso,"RETENC")==0)
+	{
+		strcpy(stMiCampos->szNomTabla,"CM_RETENCIONES_TO");
+		strcpy(stMiCampos->szNomComisAplic,"COD_COMISIONISTA");
+		strcpy(stMiCampos->szNomComisSelec,"COD_VENDEDOR");
+		return TRUE;
+	}
+	return FALSE;
+}
+/*---------------------------------------------------------------------------*/
+/* Determina la porción del monto total, que le corresponde al hijo, en raux */
+/*(stPadre->iCodTipoRed, stPadre->lCodComisionista, stHijos->lCodComisionista, raux, paux->szTipComis);*/
+/*---------------------------------------------------------------------------*/
+void vDeterminaMontos(int iCodTipoRed, long lCodComisionista, long lCodComisHijo, stConceptos * raux)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szStmSql[MAXARRAY];
+		int		ihCodTipoRed;
+		long	lhCodComisionista;
+		long	lhCodComisHijo;
+		long	lhCodConcepto;
+		long	lCantRegistros;
+		double	dImpComision;
+	EXEC SQL END DECLARE SECTION;
+
+	memset(&stCampos, 0, sizeof(reg_campos));
+	if(ifnGetNomTablaSeleccion(raux->szUniverso, &stCampos))
+	{
+		ihCodTipoRed 		= iCodTipoRed;
+		lhCodComisionista 	= lCodComisionista;
+		lhCodConcepto 		= raux->lCodConcepto;
+		lhCodComisHijo 		= lCodComisHijo;
+		if (raux->iNivAplicacion == raux->iNivSeleccion)
+		{
+			/* caso 1: son niveles contiguos... */
+			sprintf(szStmSql, "SELECT NVL(COUNT(A.NUM_GENERAL), 0), "
+			" NVL(SUM(A.IMP_CONCEPTO), 0) "
+			"FROM CMT_VALORIZADOS A, %s B "
+			"WHERE A.COD_TIPORED      = :tipored "
+			"  AND A.COD_CONCEPTO     = :concepto "
+			"  AND A.COD_COMISIONISTA = :comisionista "
+			"  AND A.NUM_GENERAL      = B.NUM_GENERAL "
+			"  AND B.%s               = :hijo ",stCampos.szNomTabla, stCampos.szNomComisSelec );
+		}
+		else
+		{
+			/* caso 2: No son niveles contiguos...*/
+				sprintf(szStmSql, "SELECT NVL(COUNT(A.NUM_GENERAL), 0), "
+				" NVL(SUM(A.IMP_CONCEPTO), 0) "
+				"FROM CMT_VALORIZADOS A, %s B "
+				"WHERE A.COD_TIPORED = :tipored "
+				"  AND A.COD_CONCEPTO = :concepto "
+				"  AND A.COD_COMISIONISTA = :comisionista "
+			"  AND A.NUM_GENERAL = B.NUM_GENERAL "
+			"  AND CM_VALIDA_CICLCOMIS_PG.IESVENDEPADRE(A.COD_TIPORED,:hijo, B.%s)= 1 ",stCampos.szNomTabla, stCampos.szNomComisSelec );
+
+		}
+	
+		EXEC SQL PREPARE MICUR FROM :szStmSql;
+		
+		EXEC SQL DECLARE CUR_REPARTE CURSOR FOR MICUR;
+		
+		EXEC SQL OPEN CUR_REPARTE USING :ihCodTipoRed, :lhCodConcepto, :lhCodComisionista, :lhCodComisHijo;
+		
+		EXEC SQL FETCH CUR_REPARTE INTO :lCantRegistros, :dImpComision;
+		
+		EXEC SQL CLOSE CUR_REPARTE;
+
+		raux->lNumRegistros = lCantRegistros;
+		raux->dImpConcepto  = dImpComision;
+	}
+	else
+	{
+		raux->lNumRegistros = 0;
+		raux->dImpConcepto  = 0.00;
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Reparte la comisión del padre entre los hijos, de acuerdo a la valoración */
+/* de eventos, es decir, el prorrateo se hará de manera directa desde la     */
+/* tabla de valorizados.                                                     */
+/*---------------------------------------------------------------------------*/
+void vReparteComision(stUniverso * stPadre, stUniverso * stHijos)
+{
+	stConceptos * paux;
+	stUniverso 	* qaux;
+	stConceptos * raux;
+	fprintf(stderr, "\n[vReparteComision] Reparte las comisiones de TR[%d] CatVta:[%s] Comis:[%d]\n",stPadre->iCodTipoRed, stPadre->szTipComis, stPadre->lCodComisionista);
+	fprintf(pfLog , "\n[vReparteComision] Reparte las comisiones de TR[%d] CatVta:[%s] Comis:[%d]\n",stPadre->iCodTipoRed, stPadre->szTipComis, stPadre->lCodComisionista);
+	for (paux = stPadre->sgte_concepto; paux != NULL; paux = paux->sgte)
+	{
+		if((paux->iNivAplicacion < paux->iNivSeleccion)&&(paux->cIndConsidera== 'S'))
+		{
+			fprintf(stderr, "\n\t[vReparteComision] Concepto:[%d] Comision:[%7.2f]\n",paux->lCodConcepto, paux->dImpConcepto);
+			fprintf(pfLog , "\n\t[vReparteComision] Concepto:[%d] Comision:[%7.2f]\n",paux->lCodConcepto, paux->dImpConcepto);
+			for (qaux = stHijos; qaux != NULL; qaux = qaux->sgte)
+			{
+
+				/* se crea el nuevo nodo de concepto, para el hijo qaux)...*/
+				raux = (stConceptos *) malloc(sizeof(stConceptos));
+
+			    raux->lCodConcepto      	= paux->lCodConcepto;   
+			    strcpy(raux->cTipComision	, paux->cTipComision);
+			    strcpy(raux->szUniverso 	, paux->szUniverso);
+			    strcpy(raux->cTipCalculo	, paux->cTipCalculo); 
+			    raux->lNumLogro				= paux->lNumLogro;	 
+				raux->iNivSeleccion			= paux->iNivSeleccion;	 
+				raux->iNivAplicacion		= paux->iNivAplicacion + 1; 
+				raux->cIndConsidera     	= 'S';
+
+				vDeterminaMontos(stPadre->iCodTipoRed, stPadre->lCodComisionista, qaux->lCodComisionista, raux);
+				fprintf(stderr, "\n\t[vReparteComision] Comis. Hijo:[%d] Se lleva:[%7.2f]\n",qaux->lCodComisionista, raux->dImpConcepto);
+				fprintf(pfLog , "\n\t[vReparteComision] Comis. Hijo:[%d] Se lleva:[%7.2f]\n",qaux->lCodComisionista, raux->dImpConcepto);
+
+				/* asocia el nuevo nodo de concepto a la lista de conceptos del hijo. */
+				raux->sgte 				= qaux->sgte_concepto;
+				qaux->sgte_concepto 	= raux;
+				/* Se marca el concepto en el padre para que no sea considerado al final. */
+				paux->cIndConsidera     = 'N';
+			}
+		}
+		else
+		{
+			fprintf(stderr,"\n\n[vReparteComision] No Es Posible Ejecutar la Reparticion de Comisiones\n");
+			fprintf(stderr,"\tNivel de Aplicación es IGUAL al Nivel de Seleccion.\n");
+			fprintf(stderr,"\tTipoRed:[%d] Concepto:[%d] Comisionista:%ld]\n",stPadre->iCodTipoRed, paux->lCodConcepto,stPadre->lCodComisionista  );
+
+			fprintf(pfLog ,"\n\n[vReparteComision] No Es Posible Ejecutar la Reparticion de Comisiones\n");
+			fprintf(pfLog ,"\tNivel de Aplicación es IGUAL al Nivel de Seleccion.\n");
+			fprintf(pfLog ,"\tTipoRed:[%d] Concepto:[%d] Comisionista:%ld]\n",stPadre->iCodTipoRed, paux->lCodConcepto,stPadre->lCodComisionista  );
+		}
+	}
+}
+
+/*---------------------------------------------------------------------------*/
+/* Añade el contenido de la lista stSource a la lista stTarget...            */
+/*---------------------------------------------------------------------------*/
+void vConcatenaListas(stUniverso * stSource)
+{
+	stUniverso * paux;
+	stUniverso * qaux;
+
+	if (stSource != NULL)
+	{
+		paux = stSource;
+		qaux = paux->sgte;
+		while (qaux != NULL)
+		{
+			paux = qaux;
+			qaux = paux->sgte;
+		}
+		paux->sgte 	= lstAuxiliar;
+		lstAuxiliar = stSource;
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Mezcla las listas de Padres e Hijos, para dejar una única lista...        */
+/*---------------------------------------------------------------------------*/
+void vMergeListas(stUniverso * lstPadres, stUniverso * lstHijos)
+{
+	stUniverso * paux;
+	stUniverso * raux;
+	
+	stConceptos * qaux;
+	stConceptos * saux;
+	
+	
+	while (lstHijos != NULL)
+	{
+		fprintf(stderr, "\n[vMergeListas] Inserta al Comis.Hijo[%d] TR:[%d] en la lista General de Comisionistas.\n", lstHijos->iCodTipoRed, lstHijos->lCodComisionista);
+		fprintf(pfLog , "\n[vMergeListas] Inserta al Comis.Hijo[%d] TR:[%d] en la lista General de Comisionistas.\n", lstHijos->iCodTipoRed, lstHijos->lCodComisionista);
+		paux=stfnFindComisionista(lstHijos->iCodTipoRed, lstHijos->lCodComisionista, lstPadres);
+		if (paux!=NULL)
+		{
+			/* se deben comparar las listas de conceptos. No debieran haber intersecciones... */
+			qaux = lstHijos->sgte_concepto;
+			while (qaux != NULL)
+			{
+				fprintf(stderr, "\n[vMergeListas] }Comisionista Existe. Intercala el concepto[%d].\n",qaux->lCodConcepto);
+				fprintf(pfLog , "\n[vMergeListas] }Comisionista Existe. Intercala el concepto[%d].\n",qaux->lCodConcepto);
+				saux=stfnFindConcepto(qaux->lCodConcepto, paux->sgte_concepto);
+				if (saux!=NULL)
+				{
+					/* ERROR: El tipo de red posee dos veces el mismo concepto a niveles diferentes de aplicacion.*/
+					fprintf(stderr,"\n\n[vMergeListas]El tipo de red posee dos veces el mismo concepto a niveles diferentes de aplicacion\n");
+					fprintf(stderr,"\tTipoRed:[%d] Comisionista:[%ld] Concepto:[%ld]\n",paux->iCodTipoRed, paux->lCodComisionista, qaux->lCodConcepto);
+					fprintf(pfLog ,"\n\n[vMergeListas]El tipo de red posee dos veces el mismo concepto a niveles diferentes de aplicacion\n");
+					fprintf(pfLog ,"\tTipoRed:[%d] Comisionista:[%ld] Concepto:[%ld]\n",paux->iCodTipoRed, paux->lCodComisionista, qaux->lCodConcepto);
+					exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,-1,"TIPO RED POSEE DOS VECES EL MISMO CONCEPTO A NIVELES DIFERENTES DE APLICACION.",0,0));
+				}
+				else
+				{
+					saux 				= qaux->sgte;
+					qaux->sgte 			= paux->sgte_concepto;
+					paux->sgte_concepto = qaux;
+					qaux 				= saux;
+				}
+			}
+			paux = lstHijos->sgte;
+			free (lstHijos);
+			lstHijos = paux;
+		}
+		else
+		{
+			/* Pasa la lista completa de conceptos... */
+			fprintf(stderr, "\n[vMergeListas] Comisionista NO Existe. Pasa la Lista Completa de Conceptos.\n");
+			fprintf(pfLog , "\n[vMergeListas] Comisionista NO Existe. Pasa la Lista Completa de Conceptos.\n");
+			raux 			= lstHijos->sgte;
+			lstHijos->sgte 	= lstPadres;
+			lstPadres 		= lstHijos;
+			lstHijos 		= raux;
+		}
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* Realiza la "repartición de comisiones" para el caso de Tipo de Red con    */
+/* Ind_Aplic_Subordinada = 'S'.                                              */
+/* SOLO LOS REGISTROS ASOCIADOS A CONCEPTOS DE COMISIONES.                   */
+/* SE EXCLUYEN LOS RELACIONADOS CON AJUSTES Y ANTICIPOS.                     */
+/*---------------------------------------------------------------------------*/
+void vComisionesSubordinadas()
+{
+	stUniverso 	* paux;
+	stUniverso 	* raux;
+
+	for (paux = lstComisionistas; paux != NULL; paux = paux->sgte)
+	{
+		if (strcmp(paux->szIndAplicSubordinada ,"S")==0)
+		{
+			/* Se crea la lista "comisionista" con los hijos...  */
+			raux = NULL;
+			raux = stCreaComisHijos(paux->iCodTipoRed, paux->lCodComisionista);
+			if (raux!=NULL)
+			{
+				/* Reparte las comisiones de cada concepto entre los distintos comisionistas */
+				fprintf(pfLog ,"\n[vComisionesSubordinadas] Reparte los conceptos del padre en la lista de hijos creada.\n" );
+				fprintf(stderr,"\n[vComisionesSubordinadas] Reparte los conceptos del padre en la lista de hijos creada.\n" );
+				vReparteComision(paux, raux);
+				
+				/* pasamos la lista raux, a la lista qaux, para inicial otro ciclo con raux vacio */
+				fprintf(pfLog ,"\n[vComisionesSubordinadas] Respalda en Lista Auxiliar la lista de comisionistas hijos.\n" );
+				fprintf(stderr,"\n[vComisionesSubordinadas] Respalda en Lista Auxiliar la lista de comisionistas hijos.\n" );
+				vConcatenaListas(raux);
+			}
+		}
+	}
+	/* Debe realizar el mix entre los comisionistas padres y los comisionistas hijos */
+	/* para dejar una única lista de liquidación.                                    */
+	fprintf(pfLog ,"\n[vComisionesSubordinadas] Realiza El Merge de las listas, de padres e hijos...\n" );
+	fprintf(stderr,"\n[vComisionesSubordinadas] Realiza El Merge de las listas, de padres e hijos...\n" );
+	vMergeListas(lstComisionistas, lstAuxiliar);
+}
+/*---------------------------------------------------------------------------*/
+/* Libera la memoria utilizada por las estructuras de proceso...             */
+/*---------------------------------------------------------------------------*/
+void vLiberaConceptos(stConceptos * paux)
+{
+	if (paux == NULL)
+		return;
+	vLiberaConceptos(paux->sgte);
+	free(paux);
+}
+/*---------------------------------------------------------------------------*/
+void vLiberaUniverso(stUniverso * paux)
+{
+	stUniverso 	* raux;
+	
+	if (paux != NULL)
+	{
+		while ((raux=paux->sgte)!=NULL)
+		{
+			vLiberaConceptos(paux->sgte_concepto);
+			vLiberaConceptos(paux->sgte_ajuste);
+			vLiberaConceptos(paux->sgte_anticipo);
+			free (paux);
+			paux = raux;
+		}
+		if (paux != NULL)
+		{
+			vLiberaConceptos(paux->sgte_concepto);
+			vLiberaConceptos(paux->sgte_ajuste);
+			vLiberaConceptos(paux->sgte_anticipo);
+			free (paux);
+		}
+	}
+}
+/*---------------------------------------------------------------------------*/
+void vLiberaCriticos(stCriticos * paux)
+{
+	if (paux == NULL)
+		return;
+	vLiberaCriticos(paux->sgte);
+	free(paux);
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina principal.                                                         */
+/*---------------------------------------------------------------------------*/
+int main (int argc, char *argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+    memset(&stArgs, 0, sizeof(rg_argumentos));
+    memset(&stCiclo, 0, sizeof(reg_ciclo));
+    memset(&stStatusProc, 0, sizeof(rg_estadistica));
+    memset(&proceso, 0, sizeof(proceso));
+    stArgs.bFlagUser     		= FALSE;
+	stStatusProc.lLiquidaciones = 0;
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+    vManejaArgs(argc, argv);  
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+    strcpy(szhUser, stArgs.szUser);
+    strcpy(szhPass, stArgs.szPass);
+    if(fnOraConnect(szhUser, szhPass) == FALSE)
+    {
+            fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+            exit(EXIT_205);
+    }
+    else
+    {
+            fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");
+            fprintf(stderr, "Username: %s\n\n", szhUser);
+    }
+/*---------------------------------------------------------------------------*/
+/* Inicia estructura de proceso y bloques.                                   */
+/*---------------------------------------------------------------------------*/
+    vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);     
+    ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);                                         
+    if (ibiblio)                                                                                    
+    {                                                                                               
+        fprintf(stderr, "Error al Abrir Traza");                                                    
+        fprintf(stderr, "Error [%d] al escribir en TRAZA de Proceso.\n", ibiblio);                     
+        exit(ibiblio);                                                                              
+    }                                                                                               
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+    if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+    {
+            setlocale(LC_TIME, LC_TIME_SPANISH);
+    }
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");
+    if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)                                                      
+    {                                                                                                                         
+        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));     
+    }                                                                                                                         
+    fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);                                          
+/*------------------------------------------------------------*/        
+/* Ingresa parametros para estructura que crea archivo de Log */
+/*------------------------------------------------------------*/  
+    strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+    strncpy(szhSysDate, pszGetDateLog(),16);
+    strcpy(stArgsLog.szProceso,LOG_NAME);
+    strncpy(stArgsLog.szSysDate,szhSysDate,16);
+    sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);
+	if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)
+    {
+        fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", szLogName);
+        fprintf(stderr, "Revise su existencia.\n");
+        fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+        fprintf(stderr, "Proceso finalizado con error.\n");
+                exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_301,"ARCHIVO DE LOG NO PUDO SER ABIERTO.",0,0));
+    }
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+	lSegIni=lGetTimer(); 
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    
+    fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+
+    fprintf(pfLog, "Identificador de Proceso		<%s>\n", stArgs.szProceso);
+    fprintf(pfLog, "Identificador de Bloque			<%s>\n", stArgs.szBloque);
+    fprintf(pfLog, "Secuencia de Ejecucion			<%d>\n", stArgs.izSecuencia);
+
+	fprintf(pfLog, "Base de datos : %s\n\n", (strcmp(getenv((const char *)"TWO_TASK"), "")!=0?getenv((const char *)"TWO_TASK"):getenv((const char *)"ORACLE_SID")));
+    fprintf(pfLog, "\nUsuario ORACLE      :[ %s ]\n",(char * )sysGetUserName()); 
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+	EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';
+/*---------------------------------------------------------------------------*/
+/* Procesamiento principal.                                                  */
+/*---------------------------------------------------------------------------*/
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Inicio procesamiento principal ...\n\n");
+/*---------------------------------------------------------------------------*/
+/*    - Recupera fechas que conforman periodo del parametro.                 */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Carga fechas que definen el periodo actual...\n\n");
+    fprintf(stderr, "Carga fechas que definen el periodo actual...\n\n");
+    if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))
+    {
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	exit(EXIT_101);
+    }
+/*---------------------------------------------------------------------------*/
+/*    - Cargando Parametros                                                  */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Cargando Parametros Para Calculo de Impuestos...\n\n");
+    fprintf(stderr, "Cargando Parametros Para Calculo de Impuestos...\n\n");
+    vCargaParametros();
+/*---------------------------------------------------------------------------------------------*/
+/*    - Carga universo de Registros  de bonos/comisiones   a considerar para el calculo.       */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog , "Carga universo de registros de bonos/comisiones/ajustes/anticipos a considerar para el calculo....\n\n");
+    fprintf(stderr, "Carga universo de registros de bonos/comisiones/ajustes/anticipos a considerar para el calculo....\n\n");
+    vCargaDatosLiquidacion();
+/*---------------------------------------------------------------------------------------------*/
+/* Evalua la existencia de Tipos de Red con Ind_Aplica_Subordinada en 'S', para repartir las   */
+/* comisiones entre sus hijos directos.                                                        */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Reparte Comisiones para Tipos de Red con Comisión Subordinada.\n\n");
+    fprintf(stderr,"Reparte Comisiones para Tipos de Red con Comisión Subordinada.\n\n");
+	vComisionesSubordinadas();
+/*---------------------------------------------------------------------------------------------*/
+/* Totaliza los conceptos en nodo Padre...                                                     */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Totaliza los conceptos en nodo Padre.\n\n");
+    fprintf(stderr, "Totaliza los conceptos en nodo Padre.\n\n");
+    vTotalizaLiquidaciones();
+/*---------------------------------------------------------------------------------------------*/
+/*    - Aplica impuestos a la lista de liquidaciones cargadas.                                 */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Aplica Criterios de Impuestos a las liquidaciones de Comisiones.\n\n");
+    fprintf(stderr, "Aplica Criterios de Impuestos a las liquidaciones de Comisiones.\n\n");
+	vCalculaImpuestos();
+/*---------------------------------------------------------------------------------------------*/
+/*    - Crea lista de conceptos criticos.                                                      */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Crea lista de conceptos criticos.\n\n");
+    fprintf(stderr,"Crea lista de conceptos criticos.\n\n");
+	vCreaConceptosCriticos();
+/*---------------------------------------------------------------------------------------------*/
+/*    - Evalua existencia de Conceptos Criticos, y Marca Liquidaciones.                        */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Evalua existencia de Conceptos Criticos, y Marca Liquidaciones.\n\n");
+    fprintf(stderr,"Evalua existencia de Conceptos Criticos, y Marca Liquidaciones.\n\n");
+	vEvaluaCriticos();
+/*---------------------------------------------------------------------------------------------*/
+/*    - Inserta los registros procesados en tablas de Liquidacion.                             */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Inserta los registros procesados en tablas de Liquidacion.\n\n");
+    fprintf(stderr, "Inserta los registros procesados en tablas de Liquidacion.\n\n");
+	vInsertaLiquidacion();
+/*---------------------------------------------------------------------------------------------*/
+/*    - Marca los registros de ajustes y anticipos como liquidados.                            */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Marca los registros de ajustes y anticipos como liquidados.\n\n");
+    fprintf(stderr, "Marca los registros de ajustes y anticipos como liquidados.\n\n");
+	vMarcaAjustesAnticipos();
+/*---------------------------------------------------------------------------------------------*/
+/*    - MUESTRA EL CONTENIDO DE LA ESTRUCTURA....                                              */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();                                                                                                                   
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Muestra el contenido de la estructura....\n\n");  
+    fprintf(stderr, "Muestra el contenido de la estructura......\n\n");                     
+    vMuestraListas(lstComisionistas);
+/*---------------------------------------------------------------------------------------------*/
+/*    - Libera las estructuras cargadas en memoria.                                            */
+/*---------------------------------------------------------------------------------------------*/
+    vFechaHora();                                                                                                                   
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Libera las estructuras cargadas en memoria.\n\n");  
+    fprintf(stderr, "Libera las estructuras cargadas en memoria.\n\n");                     
+	vLiberaUniverso(lstComisionistas); 
+	vLiberaCriticos(lstCriticos);
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+    lSegFin=lGetTimer();                            
+    stStatusProc.lSegProceso = lSegFin - lSegIni;   
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(pfLog, "\nEstadistica del proceso\n");
+    fprintf(pfLog, "-----------------------------------------\n");
+    fprintf(pfLog, "Segundos Reales Utilizados         : [%ld]\n", stStatusProc.lSegProceso);
+    fprintf(pfLog, "Cantidad Comisiones Cargadas       : [%ld]\n", stStatusProc.lComisiones);
+    fprintf(pfLog, "Cantidad Ajustes Cargados          : [%ld]\n", stStatusProc.lAjustes);
+    fprintf(pfLog, "Cantidad Anticipos                 : [%ld]\n", stStatusProc.lAnticipos);
+	fprintf(pfLog, "Cantidad Liquidaciones Generadas   : [%ld]\n", stStatusProc.lLiquidaciones);
+
+    ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,EXIT_0,"",stStatusProc.lSegProceso,stStatusProc.lLiquidaciones);
+    if (ibiblio)
+            exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));
+    EXEC SQL COMMIT WORK RELEASE;
+
+    fprintf(pfLog , "\n\nProceso [%s] finalizado ok.\n", basename(argv[0]));
+    fprintf(stderr, "\n\nProceso [%s] finalizado ok.\n", basename(argv[0]));
+    fclose(pfLog);
+    return(EXIT_0);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

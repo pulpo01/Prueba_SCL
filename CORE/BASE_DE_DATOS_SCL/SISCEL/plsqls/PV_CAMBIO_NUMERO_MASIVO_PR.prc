@@ -1,0 +1,76 @@
+CREATE OR REPLACE PROCEDURE PV_CAMBIO_NUMERO_MASIVO_PR
+/******************************************************************************
+AUTOR    	: DIEGO MEJIAS Z.
+AREA     	: POSTVENTA.
+EMPRESA  	: TELEFONICA MOVIL SOLUTION S.A.
+FECHA	 	: 23/12/2002.
+VERSION	 	: 1.0.
+FEC_ULT_MOD.: 24/01/2003.
+******************************************************************************/
+IS
+	nNumAbonado   GA_CNCAMBPLAZA.NUM_ABONADO%TYPE;
+	vRegCelu      GA_CNCAMBPLAZA.COD_REGION%TYPE;
+	vProvinCelu	  GA_CNCAMBPLAZA.COD_PROVINCIA%TYPE;
+	vCiudCelu	  GA_CNCAMBPLAZA.COD_CIUDAD%TYPE;
+	vCeldaCelu	  GA_CNCAMBPLAZA.COD_CELDA%TYPE;
+	vCenCelu	  GA_CNCAMBPLAZA.COD_CENTRAL%TYPE;
+	nNewCelular	  GA_CNCAMBPLAZA.NEW_CELULAR%TYPE;
+	vCodUsoNue	  GA_CNCAMBPLAZA.COD_USO%TYPE;
+	vNomUsuarora  GA_CNCAMBPLAZA.NOM_USUARORA%TYPE;
+	nCodProducto  GA_CNCAMBPLAZA.COD_PRODUCTO%TYPE;
+	nNumTransac	  GA_CNCAMBPLAZA.NUM_TRANSACCION%TYPE;
+
+	sCOD_SQLCODE  GA_ERRORES.COD_SQLCODE%TYPE;
+	sCOD_SQLERRM  GA_ERRORES.COD_SQLERRM%TYPE;
+
+	nJobProceso	  NUMBER(3);
+
+	ERROR_PROCESO EXCEPTION;
+
+	CURSOR CMB_PLAZA IS
+	   	SELECT NUM_ABONADO, COD_REGION, COD_PROVINCIA, COD_CIUDAD, COD_CELDA, COD_CENTRAL,
+			   NEW_CELULAR, COD_USO, NOM_USUARORA, COD_PRODUCTO, NUM_TRANSACCION
+		FROM   GA_CNCAMBPLAZA
+		WHERE  ROWNUM <= 50
+		AND    COD_ESTADO=0; -- MAM 08/01
+BEGIN
+	/*
+	Nos aseguramos de que no exista ningun Job en ejecucion.
+	*/
+	SELECT NVL(MAX(job),0) INTO nJobProceso FROM USER_JOBS WHERE WHAT LIKE '%PV_CAMBIO_NUMERO_MASIVO_PR%';
+
+	-- MAM 24/01
+	IF nJobProceso <>0 THEN
+	   DBMS_JOB.REMOVE(nJobProceso);
+	END IF;
+
+	OPEN CMB_PLAZA;
+	LOOP
+		FETCH CMB_PLAZA
+			  INTO nNumAbonado, vRegCelu, vProvinCelu, vCiudCelu, vCeldaCelu, vCenCelu,
+				   nNewCelular, vCodUsoNue, vNomUsuarora, nCodProducto, nNumTransac;
+		EXIT WHEN CMB_PLAZA%NOTFOUND;
+		DBMS_OUTPUT.PUT_LINE('N.Abonado :'||nNumAbonado);
+		BEGIN
+			PV_CAMBIONUMERO_PR(nNumAbonado, nNewCelular, vRegCelu, vProvinCelu, vCiudCelu,
+							 vCeldaCelu, vCenCelu, vCodUsoNue, vNomUsuarora, nCodProducto,'3','CN',
+							 nNumTransac, sCOD_SQLCODE, sCOD_SQLERRM);
+			IF sCOD_SQLCODE = '0' THEN
+			   DELETE GA_CNCAMBPLAZA WHERE NUM_ABONADO = nNumAbonado;
+			ELSE
+			   -- MAM 08/01
+			   ROLLBACK;
+			   UPDATE GA_CNCAMBPLAZA SET COD_ESTADO=1 WHERE NUM_ABONADO = nNumAbonado;
+			END IF;
+		EXCEPTION
+			WHEN OTHERS THEN
+			RAISE ERROR_PROCESO;
+		END;
+		COMMIT;
+	END LOOP;
+EXCEPTION
+	WHEN ERROR_PROCESO THEN
+	ROLLBACK;
+END;
+/
+SHOW ERRORS

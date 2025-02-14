@@ -1,0 +1,795 @@
+/* *********************************************************************** */
+/* *  Fichero : FacRepFacCarrier.pc (Generador de FacRepFacCarrier.c)    * */
+/* *  Reporte de detalle de facturacion Carrier                          * */
+/* *  Autor   : Jorge Quintanilla.                                       * */
+/* *********************************************************************** */
+
+
+EXEC SQL INCLUDE sqlca;
+
+
+#define _REPCARRIER_C_
+
+#include "FacRepCarrier.h"
+
+int main(int argc, char *argv[])
+{
+    
+    char szPath  [256] = "";
+
+/* -Variables acerca de la version---------------------------------------------------- */
+	char szAppName[]="FacRepCarrier";
+	char szAppVerN[]="1.0";
+	char szAppDate[]="27-Abr-2005";
+
+/* -Variables para manejo de archivos y opciones de invocacion------------------------- */
+	char szUsuario [128] = "";
+	char *psztmp , szOraAccount[32]="", szOraPasswd[32]="";
+	char *pathDir;
+    char szAux[30]= "";
+    char szModulo[10]="main";
+    
+	char szUsage[]=
+	"\n Uso: FacRepCarrier -u [usuario/password | / ] -c {ciclo} -p {portadora} [-d]"
+	"\n Donde      -u : Usuario/Password Oracle."
+	"\n            -c : Ciclo de facturacion. "
+	"\n            -p : Portadora (Carrier)."
+	"\n            -d : Delimitador (opcional)."
+	"\n";
+
+	int Userflag       =FALSE;
+	int iIngresoCarrier=FALSE;
+	int iIngresoCiclo  =FALSE;
+
+	extern char *optarg;
+	extern int optind, opterr, optopt;
+
+	char opt[] = "u:c:p:d";
+	int iOpt=0;
+	
+	long lCodCiclFact  = 0;
+    char szCodCarrier[6] = "";
+    char szDelim[2]= "";
+    
+    long lNumProceso = 0;
+    long lNumRegs=0;
+    char szFecEmision[11+1] = "";
+    char szTablaVenc[20]    = "";
+    
+	
+    /** Muestra Informacion de la version **/
+    fprintf(stdout, "\n\tAplicacion : \"%s\" \n\tVersion    : %s\n\tRevision   : %s\n\n",
+                    szAppName,szAppVerN,szAppDate);
+
+    /** Seteo inicial de fecha, nivel de Log y contador de errores **/
+    stStatus.LogNivel = 5;
+    strcpy(szfecproceso, cfnGetTime(2)); 
+
+    /** Validacion de parametros de invocacion **/
+
+    if(argc == 1)
+    {   
+        fprintf(stderr,"\n\t<< Numero invalido de parametros >>\n%s\n",szUsage);
+        return FALSE;
+    }
+
+	opterr=0;
+
+	while ((iOpt = getopt(argc, argv, opt)) != EOF)
+	{
+		switch(iOpt)
+		{
+			case 'u': /* username */
+				if (strlen(optarg))
+                {
+                    strcpy(szUsuario,optarg);
+                    Userflag=TRUE;
+                }
+				break;
+
+			case 'c':
+                if (strlen (optarg))
+                {
+                    strncpy(szAux,optarg,iMaxLargoCiclo);
+                    szAux[iMaxLargoCiclo] = '\0';
+                    lCodCiclFact = atol(szAux);
+                    iIngresoCiclo=TRUE;
+                }
+                else
+                {
+                    fprintf(stderr, "\n\t<< Error: Debe ingresar ciclo >>\n%s",szUsage);
+                    return -1;        
+                }
+                break;
+                
+            case 'p':
+                if (strlen (optarg))
+                {
+                    strncpy(szCodCarrier,optarg,iMaxLargoCarrier);
+                    szCodCarrier[iMaxLargoCarrier] = '\0';
+                    iIngresoCarrier= TRUE;
+                }
+                else
+                {
+                    fprintf(stderr, "\n\t<< Error: Debe ingresar Carrier >>\n%s",szUsage);
+                    return -2;        
+                }
+                break;
+            
+            case 'd': /* username */
+				
+                strcpy(szDelim,";");
+				break;
+			
+			case '?':
+				fprintf(stderr,"\n<< Error: Se ha ingresado parametro desconocido: -%c >>\n%s\n",optopt,szUsage);
+				return FALSE;
+
+            
+			case ':':
+				if ( optopt == 'u' )
+					fprintf(stderr,"\n<< Error: Falta especificar usuario/password o \"/\" >>\n%s",szUsage);
+				if ( optopt == 'c' )
+					fprintf(stderr,"\n<< Error: Falta especificar ciclo. >>\n%s",szUsage);
+                if ( optopt == 'p' )
+					fprintf(stderr,"\n<< Error: Falta especificar portadora. >>\n%s",szUsage);
+
+				return FALSE;
+            
+			default :
+			    return FALSE;
+		}
+	}
+    
+    if (lCodCiclFact == 0)
+    {
+        fprintf (stderr, "\n<< Error: Falta especificar ciclo. >>\n%s", szUsage);
+        return -1;
+    }
+
+    if (lCodCiclFact < 1000 || lCodCiclFact > 999999)
+    {
+        fprintf (stderr, "\n<< Error: Ciclo de Facturacion Invalido.>>\n%s\n", szUsage);
+        return -1;
+    }
+    
+    if(!iIngresoCarrier)
+    {
+        fprintf(stderr,"\n<< Error: Falta especificar portadora. >>\n%s",szUsage);
+        return -1;    
+    }
+    else
+    {
+        /* Validacion de la cadena */
+        if(strpbrk(szCodCarrier,szCadValidacion) != NULL) {
+            fprintf(stderr,"\n<< Error: Caracteres no permitidos en cadena de portadora. >>\n%s",szUsage);
+            return -1;    
+            
+        }
+        if(!ifnEsNumerico(szCodCarrier)) {
+            fprintf(stderr,"\n<< Error: Caracteres no permitidos en cadena de portadora. >>\n%s",szUsage);
+            return -1;    
+            
+        }
+            
+            
+    }
+    
+    
+	if (Userflag == FALSE)	/*Si no se especifico usuario/password asume los de oracle */
+	{
+		fprintf (stdout,"\tUsuario  : [default]\n\tPassword : [default]");
+	}
+	else
+	{
+		if ( (psztmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+		{
+			fprintf (stderr,"\n\t<< Usuario Oracle especificado [%s] no Valido >> \n", szUsuario);
+			return -1;
+		}
+		else if (strlen(szUsuario) == 1)
+		{
+			fprintf (stdout,"\n\tUsuario  : [default]\n\tPassword : [default]");
+		}
+		else
+		{
+			strncpy (szOraAccount,szUsuario,psztmp-szUsuario);
+			strcpy  (szOraPasswd, psztmp+1);
+		    fprintf (stdout,"\n\tUsuario  : [%s]"
+		                    "\n\tPassword : [%s]"
+		                    "\n\tCiclo    : [%ld]"
+		                    "\n\tCarrier  : [%s]",
+		    	 			 szOraAccount, szOraPasswd,lCodCiclFact,szCodCarrier);
+		}
+
+    }
+
+    fprintf(stdout,"\n\tFec Proc : [%s]\n",szfecproceso);
+
+    /** Conexion a Oracle **/
+	if (!fnOraConnect(szOraAccount,szOraPasswd))
+	{
+		fprintf (stderr, "\n\t<< Fallo la conexion a la Base de Datos >> \n");
+        return -1;
+    }
+    else
+    {
+        fprintf(stdout,"\n\t--> Conectado a Oracle <--\n\n");    
+    }
+    
+    /** Apertura de archivos de Log y de reporte **/ 
+	pathDir=(char *)malloc(512*sizeof(char));
+	pathDir=szGetEnv("XPF_LOG");
+	sprintf(szPath,"%s/carrier",pathDir);
+	free(pathDir);    
+
+	sprintf(stStatus.ErrName,"%s/FacRepCarrier_%ld_%s.err", szPath, lCodCiclFact, szCodCarrier);
+	if( (stStatus.ErrFile = fopen(stStatus.ErrName,"wb")) == (FILE*)NULL )
+    {
+      	fprintf( stderr, "\n*Error: No se pudo abrir el archivo de errores %s \n", stStatus.ErrName);
+        return -1;
+    }
+    
+    sprintf(stStatus.LogName, "%s/FacRepCarrier_%ld_%s.log", szPath, lCodCiclFact, szCodCarrier);
+    if ((stStatus.LogFile = fopen(stStatus.LogName,"wb")) == (FILE*)NULL)
+    {
+      	fprintf(stderr, "\n*Error: No pudo abrirse el archivo de log %s\n", stStatus.LogName);
+        vDTrazasError(szModulo , "\n<< No pudo abrirse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+        return -1;
+    }    
+    
+    vDTrazasLog(szModulo , "\n\tAplicacion : \"%s\" \n\tVersion    : %s\n\tRevision   : %s\n\n",
+                    LOG03,szAppName,szAppVerN,szAppDate);
+    vDTrazasLog(szModulo , "\n\tUsuario  : [%s]"
+	                      "\n\tPassword : [%s]"
+	                      "\n\tCiclo    : [%ld]"
+	                      "\n\tCarrier  : [%s]",
+	 			          LOG03,szOraAccount, szOraPasswd,lCodCiclFact,szCodCarrier);
+    
+    /** Extraccion de los datos necesarios para la creacion del reporte **/ 
+    
+    /* Ambiente: Espanol */
+    EXEC SQL ALTER SESSION SET NLS_DATE_LANGUAGE=SPANISH;
+    
+    /* Obtencion del numero de proceso y fecha de emision */
+    if(!bfnObtenerDatosProceso(lCodCiclFact,&lNumProceso,szFecEmision))
+    {
+        /* Error */
+        fprintf(stderr,"*ERROR(main) : En la extraccion del numero de proceso para el ciclo [%ld]\n",lCodCiclFact);
+        vDTrazasError(szModulo , "\n<< En la extraccion del numero de proceso para el ciclo [%ld] >>\n", LOG01, lCodCiclFact);
+        fprintf(stderr,"** Proceso finalizado debido a errores. \n");
+        return -1;
+    }
+    
+    vDTrazasLog( szModulo, "\n\tNumero de proceso: [%ld]"
+                    "\n\tFecha de emision : [%s]\n",LOG03, lNumProceso, szFecEmision);
+    
+    /* Identificar la tabla desde la cual obtener fecha de vencimientos */
+    if(!bfnDetectarTablaVencimientos(lCodCiclFact, szTablaVenc))
+    {
+        /* Error */
+        vDTrazasError(szModulo , "\n<< En la extraccion de tabla de vencimento ciclo [%ld] >>\n", LOG01, lCodCiclFact);
+        fprintf(stderr,"*Error: En la extraccion de tabla de vencimento ciclo [%ld]\n",lCodCiclFact);
+        fprintf(stderr,"** Proceso finalizado debido a errores. \n");
+        return -1;
+    }
+    
+    vDTrazasLog(szModulo ,"*(main):Tabla desde la cual obtener fechas de vencimiento : [%s]\n",LOG05,szTablaVenc);
+    
+    /* Impresion por pantalla de rutas de Archivos de Log y de Error. */
+    fprintf(stdout,"\tArchivo de Log: %s\n",stStatus.LogName);
+    fprintf(stdout,"\tArchivo de Errores: %s\n",stStatus.ErrName);
+    
+    /* Recuperacion de los datos necesarios para el reporte */
+    
+    lNumRegs = lfnCargarReporte(szTablaVenc,lCodCiclFact, szCodCarrier, lNumProceso,szFecEmision);
+    if( lNumRegs < 0 )
+    {
+        /* Error */
+        vDTrazasError(szModulo , "\n<< En la carga del reporte para ciclo [%ld] >>\n", LOG01, lCodCiclFact);
+        fprintf(stderr,"*Error: En la carga del reporte para ciclo [%ld]\n",lCodCiclFact);
+        fprintf(stderr,"** Proceso finalizado debido a errores. \n");
+        bfnLiberarReporte();
+        return -1;
+        
+    }
+
+    if( lNumRegs == 0 )
+    {
+        /* No se recuperaron registros para procesar */
+        vDTrazasError(szModulo , "\n<< No se encontraron registros para crear el Reporte. >>\n", LOG01);
+        fprintf(stderr,"*Error: No se encontraron registros para crear el Reporte.\n");
+        fprintf(stderr,"** Proceso finalizado. \n");
+        bfnLiberarReporte();
+        return -1;
+        
+    }    
+    
+    /** Imprimir reporte en archivo de impresion **/
+    if( (lNumRegs = lfnImprimirReporte(lCodCiclFact,szCodCarrier,szDelim)) <= 0)
+    {
+        vDTrazasError(szModulo , "\n<< Han ocurrido errores en el proceso de Impresion del reporte. >>\n", LOG01);
+        fprintf(stderr,"*Error: en la Impresion del Reporte.\n");
+        fprintf(stderr,"** Proceso finalizado debido a errores. \n");
+        return -1;
+    }
+    
+    fprintf(stdout,"\n\tCantidad de abonados impresos en el Reporte: [%ld].\n",lNumRegs);
+    vDTrazasLog(szModulo ,"\n\tCantidad de abonados impresos en el Reporte: [%ld].\n",LOG05,lNumRegs);
+    
+    /** Liberar la memoria asignada al reporte **/
+    bfnLiberarReporte();
+    
+    /** Programa terminado OK **/
+    vDTrazasLog(szModulo ,"\n\t** Proceso Finalizado OK. **\n",LOG05);
+    fprintf(stdout,"\n\t** Proceso Finalizado OK. **\n");
+    
+    return 0;
+}
+
+
+
+/**
+ * Funcion     : bfnObtenerDatosProceso
+ * Descripcion : Obtener el numero de proceso y fecha de emision dado un ciclo de facturacion <lCodCiclFact>
+ * Retorna     : El numero de proceso y la fecha de emision del ciclo ingresado por parametro
+ */
+BOOL bfnObtenerDatosProceso(long lCodCiclFact,long *lNumProceso, char *pszFecEmision)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCiclFact       = 0;
+    char szhFecEmision[11+1] = "";
+    long lhNumProceso        = 0;
+    EXEC SQL END   DECLARE SECTION;        
+    
+    lhCodCiclFact = lCodCiclFact;
+    
+    EXEC SQL
+        SELECT 
+            A.NUM_PROCESO, TO_CHAR(B.FEC_EMISION,'DD/MON/YYYY')
+        INTO
+            :lhNumProceso, :szhFecEmision        
+        FROM 
+            FA_PROCESOS A, FA_CICLFACT B     
+        WHERE 
+            A.COD_CICLFACT = B.COD_CICLFACT
+            AND A.COD_CICLFACT = :lhCodCiclFact; 
+            
+    if(SQLCODE!=SQLOK)
+    {
+        fprintf(stderr,"* ERROR(lfnObtenerNumProceso): No se ha logrado obtener datos de fecha y proceso para ciclo [%ld].\n",
+                        lCodCiclFact);
+        return FALSE;    
+        
+    }
+    
+    *lNumProceso = lhNumProceso;
+    strcpy(pszFecEmision, szhFecEmision);
+    
+    return TRUE;
+    
+}
+
+/**
+ * Funcion     : bfnDetectarTablaVencimientos
+ * Descripcion : Detectar la tabla desde la cual obtener los vencimientos de los clientes.
+ * Retorna     : TRUE       Se ha logrado ejecutar la consulta.
+ *               FALSE      No se ha logrado ejecutar la consulta.
+ */
+BOOL bfnDetectarTablaVencimientos(long lCodCiclFact, char *pszTablaVenc)
+{
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int  ihContReg     = 0;
+    long lhCodCiclFact = 0;      
+    EXEC SQL END   DECLARE SECTION;
+    
+    lhCodCiclFact = lCodCiclFact;
+    
+    EXEC SQL
+        SELECT 
+            COUNT(*)
+        INTO
+            :ihContReg
+        FROM
+            FA_ENLACEHIST
+        WHERE 
+            COD_CICLFACT = :lhCodCiclFact;
+            
+    if(SQLCODE!=SQLOK)
+    {
+        fprintf(stderr,"* ERROR(bfnDetectarTablaVencimientos): En sentencia de acceso a FA_ENLACEHIST.\n");
+        return FALSE;    
+        
+    }
+    
+    if(ihContReg == 0)
+    {
+        /* Se debe obtener la fecha de vencimiento desde FA_FACTDOCU */    
+        sprintf(pszTablaVenc,"FA_FACTDOCU_%ld",lCodCiclFact);
+       
+    }
+    else
+    { 
+        /* Se debe obtener la fecha de vencimiento desde FA_HISTDOCU */    
+        strcpy(pszTablaVenc,"FA_HISTDOCU");    
+        
+    }
+    return TRUE;
+}
+
+/**
+ * Funcion     : lfnCargarReporte
+ * Descripcion : Cargar en la lista de Reporte los abonados a imprimir.
+ * Retorna     : >=0        Numero de registros procesados por la consulta.
+ *               < 0       Se ha producido un error dentro de la funcion.
+ */
+long lfnCargarReporte(char *pszTablaVenc,long lCodCiclFact,char *pszCarrier, long lNumProceso, char *pszFecEmi)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szStmtSql[1024] = "";
+   
+    long    lhNumAbonado    = 0;
+    long    lhCodCliente    = 0;
+    long    lhNumCelular    = 0;
+    long    lhCodPeriodo    = 0;
+    char    szhCodTrafico[3]= "";
+    double  dhTotImpNeto  = 0.0;
+    long    lhCodTipConce  = 0;
+    double  dhImpConsumido= 0.0;
+    char    szhFecVenc[12]  = ""; 
+    EXEC SQL END   DECLARE SECTION;    
+    
+    int  i=1,iPrimeraVez=1;
+    long lAboAnt =0;
+    char *pszModulo = "lfnCargarReporte";
+    
+    int  iCelularCargado = 0;
+    int  iFecEmiCargada  = 0;
+    int  iFecVenCargada  = 0;
+    
+    TReporte *pstNodo=NULL;
+    TReporte *pstActual=NULL;
+    
+    
+    /* Preparacion de la sentencia SQL */
+    sprintf(szStmtSql,
+                     "SELECT /*+ FIRST_ROWS (100) */ A.NUM_ABONADO, A.COD_CLIENTE, C.NUM_CELULAR, A.COD_PERIODO, B.COD_TRAFICO"
+                    "\n, ROUND(B.TOT_IMP_NETO,2), ROUND(A.COD_TIPCONCE,2), ROUND(A.IMP_CONSUMIDO,2), TO_CHAR(D.FEC_VENCIMIE,'DD/MON/YYYY')" 
+                    "\nFROM FA_ACUMFORTAS A, FA_SUBFORTAS_TO B "
+                    "\n,GA_ABOCEL C, %s D "
+                    "\nWHERE A.NUM_ABONADO = B.NUM_ABONADO "
+                    "\nAND A.COD_CLIENTE = B.COD_CLIENTE "
+                    "\nAND A.COD_PERIODO = B.COD_PERIODO "
+                    "\nAND A.NUM_ABONADO = C.NUM_ABONADO "
+                    "\nAND A.COD_CLIENTE = D.COD_CLIENTE "
+                    "\nAND A.COD_OPERADOR = B.COD_OPERADOR "
+                    "\nAND A.COD_OPERADOR = %s "
+                    "\nAND A.NUM_PROCESO =  %ld "
+                    "\nORDER BY A.NUM_ABONADO, A.COD_CLIENTE, B.COD_TRAFICO, A.COD_TIPCONCE "
+                    ,pszTablaVenc,pszCarrier, lNumProceso);
+   
+    vDTrazasLog(pszModulo,"Sentencia SQL para FETCH: [\n%s\n]\n",LOG03,szStmtSql);
+    
+    
+    EXEC SQL PREPARE select_stmt FROM :szStmtSql;
+    
+    if(SQLCODE!=SQLOK)
+    {
+        vDTrazasError(pszModulo,"En EXEC SQL PREPARE\nCodigo:[%ld]\n[%s]\n",LOG01,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        fprintf(stderr,"Error: En EXEC SQL PREPARE\nCodigo:[%ld]\n[%s]\n", sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return -1;        
+    }
+        
+    EXEC SQL DECLARE curRepCursor CURSOR FOR select_stmt;
+    if(SQLCODE!=SQLOK)
+    {
+        vDTrazasError(pszModulo,"En EXEC SQL DECLARE curRepCursor\nCodigo:[%ld]\n[%s]\n",LOG01,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        fprintf(stderr,"Error: En EXEC SQL DECLARE curRepCursor\nCodigo:[%ld]\n[%s]\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return -1;        
+    }
+        
+    EXEC SQL OPEN curRepCursor;
+    if(SQLCODE!=SQLOK)
+    {
+        vDTrazasError(pszModulo,"En EXEC SQL DECLARE curRepCursor\nCodigo:[%ld]\n[%s]\n",LOG01,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        fprintf(stderr,"Error: En EXEC SQL DECLARE curRepCursor\nCodigo:[%ld]\n[%s]\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);             
+        return -1;        
+    }
+    
+    EXEC SQL WHENEVER NOT FOUND DO break;
+    if(SQLCODE!=SQLOK)
+    {
+        vDTrazasError(pszModulo,"EXEC SQL WHENEVER NOT FOUND\nCodigo:[%ld]\n[%s]\n",LOG01,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        fprintf(stderr,"Error: EXEC SQL WHENEVER NOT FOUND\nCodigo:[%ld]\n[%s]\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return -1;        
+    }
+    
+    /* Crear el primer nodo antes de entrar */
+    pstActual = (TReporte*)malloc(sizeof(TReporte));
+    if(pstActual==NULL)
+    {
+        vDTrazasError(pszModulo,"Asignacion de memoria fallida a pstActual para Creacion de Reporte.\n",LOG01);
+        fprintf(stderr,"Error: Asignacion de memoria fallida para Creacion de Reporte.\n");
+        return -1;             
+    }
+    memset(pstActual,'\0',sizeof(TReporte));
+    pstActual->sgte = NULL;
+    pstLista = pstActual;   /* Inicio de la lista */
+    
+    iPrimeraVez = 1;
+    
+    for(i=1;;i++)
+    {
+        
+        EXEC SQL 
+            FETCH 
+                curRepCursor 
+            INTO
+                :lhNumAbonado,  
+                :lhCodCliente,
+                :lhNumCelular,  
+                :lhCodPeriodo,  
+                :szhCodTrafico,
+                :dhTotImpNeto,  
+                :lhCodTipConce, 
+                :dhImpConsumido,
+                :szhFecVenc;
+        
+        if(SQLCODE!=SQLOK)
+        {
+            vDTrazasError(pszModulo,"En consulta SQL FETCH de reporte.\nCodigo:[%ld]\n[%s]\n"
+                        ,LOG01,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+            fprintf(stderr,"* ERROR(bfnCargarReporte): En consulta SQL FETCH de reporte.\nCodigo:[%ld]\n[%s]\n"
+                        ,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+            return -1;         
+            
+        }
+        
+        /*Si el Abonado Anterior != Actual -> Crear Nuevo Nodo */
+        if(lAboAnt!=lhNumAbonado && iPrimeraVez==0){
+            
+            pstNodo = (TReporte*)malloc(sizeof(TReporte));
+            if(pstNodo==NULL)
+            {
+                vDTrazasError(pszModulo,"Asignacion de memoria fallida a pstNodo para Creacion de Reporte.\n",LOG01);
+                fprintf(stderr,"Error: Asignacion de memoria fallida a pstNodo para Creacion de Reporte.\n");
+                return -1;             
+            }
+            memset(pstNodo,'\0',sizeof(TReporte));
+            pstActual->sgte = pstNodo;
+            pstActual = pstNodo;
+            pstActual->sgte =NULL;
+           
+            /* Reinicializar variables de asignacion de datos */
+            iCelularCargado = 0;
+            iFecEmiCargada  = 0;
+            iFecVenCargada  = 0;
+        
+        }
+        else
+            iPrimeraVez = 0;    
+        
+                
+        /*printf("fetch: [%d]\n",i);*/
+        vDTrazasLog(pszModulo,"NumAbo:[%ld] CodCli:[%ld] Cel:[%ld] Periodo:[%ld] CodTraf:[%s] TotImpNet:[%.0lf] TipCon:[%ld] ImpCons:[%.0lf] "
+               "FeVen:[%s]\n",
+                             LOG05,               
+                             lhNumAbonado,  
+                             lhCodCliente,
+                             lhNumCelular,  
+                             lhCodPeriodo,  
+                             szhCodTrafico, 
+                             dhTotImpNeto,  
+                             lhCodTipConce, 
+                             dhImpConsumido,
+                             szhFecVenc);    
+                       
+        /* Cargar los datos necesarios en la Lista de impresion */ 
+        
+        if(!iCelularCargado) {
+            sprintf(pstActual->szNumServicio,"%ld",lhNumCelular);
+            iCelularCargado = 1;
+        }
+       
+        if(lhCodTipConce==1)
+            pstActual->dFacturadoImpto = dhImpConsumido;    
+            
+        if(lhCodTipConce==4)
+            pstActual->dTotFacturado   = dhImpConsumido + pstActual->dFacturadoImpto;                   
+
+        if(!strcmp(szhCodTrafico,szCarrierLDN))        
+            pstActual->dFacturadoLDN = dhTotImpNeto;
+
+        if(!strcmp(szhCodTrafico,szCarrierLDI))
+            pstActual->dFacturadoLDI = dhTotImpNeto;
+        
+        if(!iFecEmiCargada) {
+            strcpy(pstActual->szFecFacturacion,pszFecEmi);
+            iFecEmiCargada = 1;
+        }
+        
+        if(!iFecVenCargada) {
+            strcpy(pstActual->szFecVencimiento,szhFecVenc);
+            iFecVenCargada = 1;
+        }
+        
+        /* Antes de tomar el siguiente registro, guardar el abonado actual para despues comparar */
+        lAboAnt = lhNumAbonado;
+        
+    }/*for(;;)*/
+    
+    /* Cierre del cursor */
+    EXEC SQL CLOSE curRepCursor;
+    if(SQLCODE!=SQLOK)
+    {
+        vDTrazasError(pszModulo,"En EXEC SQL CLOSE curRepCursor.\nCodigo:[%ld]\n[%s]\n",LOG01,sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        fprintf(stderr,"Error: En EXEC SQL CLOSE curRepCursor.\nCodigo:[%ld]\n[%s]\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+        return -1;        
+    }
+    
+    vDTrazasLog(pszModulo, " Se han procesado [%ld] registros mediante el FETCH\n\n",LOG05, sqlca.sqlerrd[2]);
+    
+    if(sqlca.sqlerrd[2]==0)
+    {
+        vDTrazasLog(pszModulo, " ATENCION: No se han recuperado registros\n\n",LOG05);        
+    }
+    
+    /* Retornar los registros procesados */
+    return sqlca.sqlerrd[2];            
+    
+}
+
+/**
+ * Funcion     : lfnImprimirReporte
+ * Descripcion : Imprimir el reporte a Archivo de reportes.
+ * Retorna     :  > 0       Cantidad de Abonados impresos en el reporte.
+ *               -1         Se ha producido un error en la impresion del reporte.
+ */
+long lfnImprimirReporte(long lCodCiclFact, char *pszCarrier, char *pszDelim)
+{
+    TReporte *pstActual = NULL;
+    char szPath[256] = "";
+    char szArchivoRep[100] = "";
+    char szRuta[512] = "";
+    char szFormatoRep[512] = "";
+    char szFormatoCab[512] = "";
+    char *pathDir = NULL;
+    char *pszModulo = "lfnImprimirReporte";
+    
+    FILE *fpRep=NULL;
+    
+    long lNumRegs=0;
+    
+
+    /* Creacion de la Ruta del archivo de impresion */
+        
+  	pathDir=(char *)malloc(512*sizeof(char));
+	pathDir=szGetEnv("XPF_DAT");
+    sprintf(szPath,"%s/carrier/reporte",pathDir);
+	free(pathDir);
+
+    sprintf(szArchivoRep,"Reporte_%ld_%s.rep", lCodCiclFact, pszCarrier);
+    
+	sprintf(szRuta,"%s/%s",szPath,szArchivoRep); /* facturacion/dat/carrier/reporte/muxxyyzz.rp */
+    if((fpRep = fopen(szRuta,"w")) == (FILE*)NULL )
+    {
+		vDTrazasError(pszModulo,"No se pudo crear el archivo de Reporte %s\n",LOG01,szRuta);
+		fprintf (stderr,"\n\t*Error: No se pudo crear el archivo de Reporte %s \n",szRuta);
+        return -1;
+    }
+    fprintf(stdout,"\tArchivo de Impresion: %s\n",szRuta);
+    
+    /* Determinar si se debe insertar delimitador en el reporte */
+    if(!strcmp(pszDelim,";"))
+    {
+        strcpy(szFormatoCab,"%s;%s;%s;%s;%s;%s;%s\n"); 
+        strcpy(szFormatoRep,"%s;%f;%f;%f;%f;%s;%s\n");
+    }
+    else
+    {
+        strcpy(szFormatoCab,"%-16.16s|%-12.12s|%-12.12s|%-12.12s|%-12.12s|%-11.11s|%-11.11s\n");
+        strcpy(szFormatoRep,"%16.16s|%12.2f|%12.2f|%12.2f|%12.2f|%11.11s|%11.11s\n");    
+    }
+    
+    /* Enviar los datos al archivo de impresion. */
+    
+    fprintf(fpRep,szFormatoCab,"Numero de","Total","Facturado en","Facturado en","Facturacion de","Fecha de","Fecha de");
+    fprintf(fpRep,szFormatoCab,"Servicio","Facturado","LDN","LDI","Impuestos","Facturacion","Vencimiento");
+    
+    /*fprintf(fpRep,"---------------------------------------------------------------------------------------------\n");*/
+
+    pstActual = pstLista;
+    while(pstActual!=NULL)
+    {
+         
+        fprintf(fpRep,szFormatoRep,
+                    pstActual->szNumServicio,
+                    pstActual->dTotFacturado,        
+                    pstActual->dFacturadoLDN,        
+                    pstActual->dFacturadoLDI,        
+                    pstActual->dFacturadoImpto,        
+                    pstActual->szFecFacturacion,            
+                    pstActual->szFecVencimiento);
+        
+        lNumRegs++;
+        pstActual = pstActual->sgte;
+    }        
+    
+    fclose(fpRep);
+    
+    return lNumRegs;
+    
+}  
+
+
+/**
+ * Funcion     : bfnLiberarReporte
+ * Descripcion : Libera la memoria asignada al listado de Reporte.
+ * Retorna     : TRUE       Se ha liberado la memoria con exito.
+ */
+BOOL bfnLiberarReporte(void)
+{
+    TReporte *pstActual=NULL;
+    
+    /* Mostrar los datos por pantalla */
+    pstActual = pstLista;
+    while(pstLista!=NULL) 
+    {
+        pstLista = pstActual->sgte;
+        free(pstActual);
+        pstActual = pstLista;    
+    }
+        
+    return TRUE;
+    
+}
+
+/**
+ * Funcion     : bfnEsNumerico
+ * Descripcion : Indica si una cadena es numerica.
+ * Retorna     : TRUE       La cadena es numerica.
+ *               FALSE      La cadena no es numerica.
+ */
+int ifnEsNumerico(char *pszCad)
+{
+    int iLargoCad=0;
+    int i=0;
+    
+    iLargoCad = strlen(pszCad);
+    if(iLargoCad<=0)
+        return 0;
+    
+    for(i=0;i<iLargoCad;i++)
+    {
+      if(!isdigit(pszCad[i]))
+        return 0;
+    
+    }
+
+    return 1;
+    
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

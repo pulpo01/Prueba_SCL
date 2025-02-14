@@ -1,0 +1,48 @@
+package com.tmmas.cl.scl.spnsclwscommon.commonapp.dto.in;
+
+import java.io.Serializable;
+
+public class WsCierreVentaInDTO implements Serializable{
+	
+	/**
+	 * 
+	 */
+	private static final long serialVersionUID = 1L;
+	private String venta;
+	private String IdentificadorTransaccion;
+	private String usuario;
+	private Float mtoGarantia;
+
+	public Float getMtoGarantia() {
+		return mtoGarantia;
+	}
+
+	public void setMtoGarantia(Float mtoGarantia) {
+		this.mtoGarantia = mtoGarantia;
+	}
+
+	public String getIdentificadorTransaccion() {
+		return IdentificadorTransaccion;
+	}
+
+	public void setIdentificadorTransaccion(String identificadorTransaccion) {
+		IdentificadorTransaccion = identificadorTransaccion;
+	}
+
+	public String getVenta() {
+		return venta;
+	}
+
+	public void setVenta(String venta) {
+		this.venta = venta;
+	}
+
+	public String getUsuario() {
+		return usuario;
+	}
+
+	public void setUsuario(String usuario) {
+		this.usuario = usuario;
+	}
+
+}

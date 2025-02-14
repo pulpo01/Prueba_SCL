@@ -1,0 +1,4 @@
+grant execute on  PV_CONSULTADIRECCION_PG to SISCEL_ADMIN
+/ 
+grant execute on  PV_CONSULTADIRECCION_PG to SISCEL_SELECT
+/

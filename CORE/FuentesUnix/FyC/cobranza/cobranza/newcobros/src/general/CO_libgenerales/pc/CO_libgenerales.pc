@@ -1,0 +1,1156 @@
+/* ============================================================================= 
+ Tipo          :  FUNCIONES GENERALES 
+ Nombre        :  CO_libgenerales.pc
+ Descripcion   :  Rutinas Generales de los procesos y rutinas de newcobros
+ Fecha         :  14-Oct-2004  GAC.
+ Creada 14-10-2004 por Proyecto P-MAS-04037 Mejoras Ejecutor y Excluidor
+ Version 4.0.0 
+ ============================================================================ */
+
+#define _COLIBGENERALES_PC_
+#include <CO_deftypes.h>
+#include <CO_oracle.h>
+#include "CO_stPtoRut.h"
+#include "CO_libgenerales.h"
+
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* szGetTime : Recupera la fecha del sistema en el formato deseado (pudiendo ser */
+/*             fecha y hora) Permite cualquier valor numerico, con las sgtes     */
+/*             restricciones                                                     */
+/*              fmto = 0 : fecha de hoy en fmto por defecto (dd/mm/yyyy)         */
+/*              fmto > 0 : fecha de hoy en fmto definido en el switch (y/u hora) */
+/*              fmto < 0 : fecha pasada en fmto 2(yyyymmdd), vuelve 'fmto' dias  */
+/* ============================================================================= */
+char *szGetTime(int fmto)
+{
+char modulo[]="szGetTime";
+
+static time_t timer;
+static size_t nbytes;
+static char szTime[26]="";
+int iDia = 86400;
+
+	memset(szTime,'\0',26);
+	
+	if (fmto >= 0)
+	{	
+		timer = time((time_t *)0);
+	}
+	else
+	{	
+		timer = time((time_t *)0)+fmto*iDia; 
+		fmto = 2;
+	}
+
+	switch (fmto)
+	{
+		case 1 :
+				nbytes = strftime(szTime, 26, "[%d-%b-%Y] [%H:%M:%S]", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> [04-Feb-2000] [11:22:38] (escritura de log)*/
+		case 2 :
+				nbytes = strftime(szTime, 26, "%Y%m%d", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000->  20000204  (nombre de archivo) */
+		case 3 :
+				nbytes = strftime(szTime, 26, "[%H:%M:%S]", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 11 horas, 22 minutos, 38 segundos ->  [11:22:38] (escritura de log) */
+		case 4 :
+				nbytes = strftime(szTime, 26, "%H%M%S", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 11 horas, 22 minutos, 38 segundos ->  112238 (nombre de archivo) */
+		case 5 :
+				nbytes = strftime(szTime, 26, "%Y%m%d_%H%M%S", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 20000204_112238 (nombre de archivo: 1_3)*/
+		case 6 :
+				nbytes = strftime(szTime, 26, "%j", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 035 (fecha juliana 001-366 )*/
+		case 7 :
+				nbytes = strftime(szTime, 26, "%Y%m%d%H%M%S", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 20000204112238 (tipo Oracle)*/
+		default :
+				nbytes = strftime(szTime, 26, "%d/%m/%Y", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 04/02/2000 (formato comun)*/
+	}
+	
+	return (char *) szTime;
+}
+
+/* ============================================================================= */
+/* szDate : Obtiene la fecha del sistema mas o menos 'n' dias en el fmto deseado */
+/* ============================================================================= */
+char *szDate(int iNDias,char *szFmto)
+{
+static time_t timer;
+static size_t nbytes;
+static char szTime[26]="";
+int UnDia = 86400;
+
+	memset(szTime,'\0',26);
+	timer = time((time_t *)0)+(iNDias*UnDia); 
+   nbytes = strftime(szTime, 26, szFmto, (struct tm *)localtime(&timer));	
+	return (char *) szTime;
+
+}
+
+/* ============================================================================= */
+/* Recibe el formato en el que desea retornar SYSDATE                            */
+/* Asume que se encuentra conectado a Oracle                                     */
+/* ============================================================================= */
+char *szSysDate (char *szFmto)
+{
+static char szDT[32]="";
+int iSqlCode=0;
+    
+EXEC SQL BEGIN DECLARE SECTION;
+    char  szhDateTime [32]; EXEC SQL VAR szhDateTime IS STRING(32);
+    char szCadena[128]="";
+EXEC SQL END DECLARE SECTION;
+
+    memset(szDT,'\0',sizeof(szDT));
+    memset(szhDateTime,'\0',sizeof(szhDateTime));
+    memset(szCadena,'\0',sizeof(szCadena));
+
+    iSqlCode=SQLCODE; /*guarda el estado de oracle antes de entrar*/
+
+    if ( *szFmto == '\0' ) 
+    {
+        sprintf(szDT,"-nullstring-");
+        return (char *)szDT; 
+    }
+
+    sprintf(szCadena,"SELECT TO_CHAR(SYSDATE,'%s') FROM DUAL",szFmto);
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+    EXEC SQL PREPARE SQL_DINAMICO FROM :szCadena;
+    if ( SQLCODE ) 
+    {
+        sprintf(szDT,"prepare:%d",SQLCODE);
+        SQLCODE=iSqlCode;
+        return (char *)  szDT;
+    }
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+    EXEC SQL DECLARE CUR_DINAMICO CURSOR FOR SQL_DINAMICO;
+    if ( SQLCODE ) 
+    {
+        sprintf(szDT,"declare:%d",SQLCODE);
+        SQLCODE=iSqlCode;
+        return (char *)  szDT;
+    }
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+    EXEC SQL OPEN CUR_DINAMICO;
+    if ( SQLCODE ) 
+    {
+        sprintf(szDT,"open:%d",SQLCODE);
+        SQLCODE=iSqlCode;
+        return (char *)  szDT;
+    }
+
+    do
+    {
+    	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+        EXEC SQL FETCH CUR_DINAMICO INTO :szhDateTime;
+        if( SQLCODE == SQLOK ) 
+        {
+            sprintf( szDT, "%s\0", szhDateTime );
+        }
+        else
+        {
+            sprintf( szDT, "Fetch:%d", SQLCODE );
+        }
+    } while ( FALSE );
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+    EXEC SQL CLOSE CUR_DINAMICO;
+    if( SQLCODE ) 
+    {
+        sprintf(szDT,"Close:%d",SQLCODE);
+        SQLCODE=iSqlCode;
+        return (char *)  szDT;
+    }
+
+
+    SQLCODE=iSqlCode; /*vuelve al estado de oracle antes de entrar*/
+    return (char *) szDT;
+}
+
+
+
+/* ============================================================================= */
+/* ifnTrazasLog (char*,char*,int,...)                                            */ 
+/* Parametros: szExeNameApp      Nombre del programa que llama a ifnTrazasLog    */  
+/*             szTxt          Texto a incluir el el fichero de log               */  
+/*             iNivel         Nivel de log                                       */ 
+/* ============================================================================= */
+int ifnTrazasLog (char* szExeNameApp, char* szTxt, int iNivel,...)
+{
+char szMsg[TAMBUFSIZ]="";
+va_list ap;
+int iAux = 0;
+FILE *fh;    /* file handler generico */   
+int iTrLog = 0;
+
+	fh = ( stStatus.LogFile == (FILE *)NULL ) ? stderr : stStatus.LogFile;  
+	/* Si no hay archivo definido, escribe a stderr */
+    
+	memset(szMsg,'\0',sizeof(szMsg));
+	va_start( ap, szTxt );
+	vsprintf (szMsg,szTxt,ap);
+	va_end( ap );  
+
+	/* NUEVO CONCEPTO */
+	if (iNivel == INFALL) /* si es un mensaje para todos los archivos abiertos */
+	{
+		iAux = fprintf (fh,"\n\t%s",szMsg);			/* Log */
+		if (stStatus.ErrFile != (FILE *)NULL) 
+		{
+			fprintf (stStatus.ErrFile,"\n\t%s",szMsg);	/* Errores */
+			fflush (stStatus.ErrFile);
+		}  
+		if (stStatus.EstFile != (FILE *)NULL)
+		{
+			fprintf (stStatus.EstFile,"\n\t%s",szMsg);	/* Estadisticas */
+			fflush (stStatus.EstFile);
+		}
+	}
+
+	if (iNivel == EST00) /* si es un mensaje que va a la estadistica */
+	{
+		iNivel = LOG03 ; /* baja nivel de log, para que tambien vaya al Log */
+		if (stStatus.EstFile != (FILE *)NULL) 
+		{
+			fprintf(stStatus.EstFile,"\n\t%s %s",szGetTime(1),szMsg);
+			fflush (stStatus.EstFile);
+		}
+	}
+	
+	if (iNivel <= stStatus.iLogNivel) 
+	{
+		switch (iNivel) 
+		{
+			case LOG00: iAux = fprintf (fh,"\n\t%s\n\tError Oracle (%s): %s",szGetTime(1),szExeNameApp,szMsg);
+				if (stStatus.ErrFile != (FILE *)NULL) 
+				{
+					fprintf(stStatus.ErrFile,"\n\t%s\n\tError Oracle (%s): %s",szGetTime(1),szExeNameApp,szMsg); 
+					fflush (stStatus.ErrFile);
+				}  
+				break;
+				
+			case LOG01: iAux = fprintf (fh,"\n\t%s\tError (%s): %s",szGetTime(1),szExeNameApp,szMsg);
+				if (stStatus.ErrFile != (FILE *)NULL)
+				{
+					fprintf(stStatus.ErrFile,"\n\t%s\n\tError (%s): %s",szGetTime(1),szExeNameApp,szMsg); 
+					fflush (stStatus.ErrFile);
+				}  
+				break;
+			
+			case LOG02: iAux = fprintf (fh,"\n\tAviso (%s): %s",szExeNameApp,szMsg);
+				break;
+			
+			case LOG03: iAux = fprintf (fh,"\n\t%s",szMsg);
+				break;
+			
+			default:    iAux = fprintf (fh,"\n\t%s",szMsg);
+				break;
+		
+		}/* end switch */
+
+	}/*end if */
+
+	if (iAux < 0) return -1; /* fallo el fprintf del archivo de log */
+    
+	if ( fflush(fh) != 0 )  return -2; /* fallo el fflush */
+    
+	return 0; /* todo salio bien */
+}
+
+/*==================================================================================================*/
+/* Funcion que Quita los espacios en blanco a la derecha de una cadena										 */
+/*==================================================================================================*/
+void rtrim( char *szCadena )
+{
+	char modulo[] = "rtrim";
+	 int i, iLen, iCnt;
+
+    iLen = strlen( szCadena ) - 1;
+    for( iCnt = iLen; iCnt >= 0; iCnt-- ) if( szCadena[iCnt] != ' ' && szCadena[iCnt] != '\0' ) break;
+    szCadena[ iCnt + 1 ] = '\0'; 	/* reemplaza primer ' ' por '\0' produciendo un rtrim */
+    return;
+} /* void rtrim( char *szCadena ) */
+
+/* ============================================================================= 
+   Funcion que Actualiza la co_gestion para un cliente dado.                     
+	Parametros	lCodCliente		Cliente dado.
+					lCodCuenta		Cuenta a la que pertenece el Cliente.
+					szNumIdent		Rut al que pertenece el cliente.
+					szCodTipIdent	
+					szCodEntidad	Entidad de cobranza del cliente.
+					pszRutina		Rutina que llama:
+					               A : Asignacion Transitoria (ACEXT, ASDIC).
+										D : Desasignacion Transitoria (DACEX, DADIC).
+										P : Proceso asignacion definitiva (DICOM, COBEX).
+			   pszCodMovimiento  Codigo de movimiento involucrado: 	
+					               A : Alta (DICOM, COBEX).
+										B : Baja (DICOM, COBEX).
+										R : Reasignado (COBEX).
+										M : Modificado (DICOM, COBEX).
+ ============================================================================= */
+BOOL bfnActualizaCoGestionCliente( long lCodCliente  , long lCodCuenta, char *szNumIdent , char *szCodTipIdent,
+								           char *szCodEntidad, char *pszRutina, char *pszCodMovimiento )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente;
+	long	lhCodCuenta;
+	char	szhNumIdent    [iLENNUMIDENT] = ""; 
+	char	szhCodTipIdent    [3] = "";
+	char	szhCodGestionAct  [5] = "";
+	char	szhCodGestionNew  [5] = "";
+	char	szhCodAlta        [6] = "";
+	char	szhCodBaja        [6] = "";
+	char	szhCodAltaTran    [6] = "";
+	char	szhCodBajaTran    [6] = "";
+	char	szhSql         [1000] = "";
+	char	szhObsGestion    [51] = "";
+	char	szhCodEntidad     [6] = "";
+	char	szhSituacion      [2] = "";
+   int   iCountGest   =0;
+   /*********************/
+   char  szhLetra_X  [2];
+   char  szhLetra_C  [2];
+   char  szhLetra_H  [2];
+   int   ihValor_dos  = 2;
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bfnActualizaCoGestionCliente";
+char	szCodMovimiento[6], szRutina[6];
+BOOL	bInserta = FALSE, bEncon = FALSE;
+int	ilong = 0, rr;
+
+	memset( szhSql, '\0', sizeof( szhSql ) );
+	memset( szRutina, '\0', sizeof( szRutina ) );
+	memset( szCodMovimiento, '\0', sizeof( szCodMovimiento ) );
+	memset( szhCodEntidad, '\0', sizeof( szhCodEntidad ) );
+	memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+	memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+	memset( szhCodGestionNew, '\0', sizeof( szhCodGestionNew ) );
+	memset( szhSituacion, '\0', sizeof( szhSituacion ) );
+
+	lhCodCliente = lCodCliente;
+	lhCodCuenta  = lCodCuenta;
+	strcpy( szRutina, pszRutina );
+	strcpy( szCodMovimiento, pszCodMovimiento );
+	strcpy( szhCodEntidad, szCodEntidad );
+	strcpy( szhCodTipIdent, szCodTipIdent );
+	strcpy( szhNumIdent, szNumIdent );
+	strcpy( szhCodGestionNew, "X" );
+	strcpy( szhSituacion, "X" );
+	strcpy(szhLetra_X,"X");
+	strcpy(szhLetra_C,"C");
+	strcpy(szhLetra_H,"H");
+	
+	ifnTrazasLog( modulo, "(Cliente:%ld) Ingreso %s - szCodEntidad = [%s] - szRutina = [%s].", 
+							LOG05, lhCodCliente, modulo, szCodEntidad, szRutina );  
+	
+	if( strcmp( szhCodEntidad, "DICOM" ) == 0 ) /* si es para DICOM */
+	{
+		strcpy( szhCodAlta, "788\0" );				
+		strcpy( szhCodBaja, "789\0" );				
+		strcpy( szhCodAltaTran, "-788\0" );				
+		strcpy( szhCodBajaTran, "-789\0" );				
+	}
+	else /* es Cobranza Externa */
+	{
+		strcpy( szhCodAlta, "778\0" );				
+		strcpy( szhCodBaja, "779\0" );				
+		strcpy( szhCodAltaTran, "-778\0" );				
+		strcpy( szhCodBajaTran, "-779\0" );				
+	}
+	
+	if( strcmp( szRutina, "A" ) == 0 ) /* acciones de asignacion, dar alta transitoria en la co_gestion */
+	{
+		/* debemos limpiar cualquier valor negativo, anterior */
+		sprintf( szhSql, "DELETE  FROM CO_GESTION "
+						      "WHERE  COD_CLIENTE = :v1 "
+						      "AND    COD_GESTION IN ( :v2, :v3 )");
+
+		ifnTrazasLog( modulo, "[%s]\n", LOG05, szhSql );
+
+		sqlca.sqlcode=0; /* XO-200508280498 rvc */
+		EXEC SQL PREPARE deleteCoGestionTran FROM :szhSql;	
+
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+		{
+			ifnTrazasLog( modulo, "(Cliente:%ld) PREPARE deleteCoGestionTran %s.", LOG00, lhCodCliente, SQLERRM );  
+			return FALSE;
+		}
+
+		sqlca.sqlcode=0; /* XO-200508280498 rvc */
+		EXEC SQL EXECUTE deleteCoGestionTran USING :lhCodCliente, :szhCodAltaTran, :szhCodAltaTran ;
+
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "(Cliente:%ld) EXECUTE deleteCoGestionTran %s.", LOG00, lhCodCliente, SQLERRM );  
+			return FALSE;
+		}
+
+		strcpy( szhCodGestionNew, szhCodAltaTran );
+		bInserta = TRUE;
+	}
+
+	if( strcmp( szRutina, "D" ) == 0 ) /* acciones de desasignacion, dar baja transitoria en la co_gestion */
+	{
+		/* debemos averiguar si tiene un codigo de alta transitoria que aun no se ejecuta */
+		sqlca.sqlcode=0; /* XO-200508280498 rvc */
+		EXEC SQL
+		SELECT NVL( MAX( COD_GESTION ), :szhLetra_X )
+		INTO	 :szhCodGestionAct
+		FROM	 CO_GESTION
+		WHERE	 COD_CLIENTE = :lhCodCliente
+		AND	 FEC_GESTION = ( SELECT MAX( FEC_GESTION )
+								     FROM	CO_GESTION
+								     WHERE	COD_CLIENTE = :lhCodCliente 
+								     AND    COD_GESTION IN( :szhCodAltaTran, :szhCodBajaTran, :szhCodAlta, :szhCodBaja ) )
+		AND    COD_GESTION IN( :szhCodAltaTran, :szhCodBajaTran, :szhCodAlta, :szhCodBaja );
+		
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )	{
+			ifnTrazasLog( modulo, "(Cliente:%ld) SELECT COD_GESTION %s.", LOG00, lhCodCliente, SQLERRM );  
+			return FALSE;
+		} 
+		else if( SQLCODE != SQLNOTFOUND )
+		{
+			ilong = strlen( szhCodGestionAct ) - 1;
+			for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szhCodGestionAct[rr] != ' ') break ;
+			szhCodGestionAct[rr + 1] = '\0';
+
+			ifnTrazasLog( modulo, "(Cliente:%ld) szhCodGestionAct [%s].", LOG05, lhCodCliente, szhCodGestionAct );  
+	
+			if( strcmp( szhCodGestionAct, szhCodAltaTran ) == 0 ) /* si hay alta transitoria */
+			{
+				/* borramos el registro de alta transitoria, el cliente pago, antes del alta definitiva */
+				sprintf( szhSql, "DELETE FROM CO_GESTION "
+								     "WHERE	 COD_CLIENTE = :v1 "
+								     "AND	 FEC_GESTION = ( SELECT MAX( FEC_GESTION ) "
+								     "						     FROM	CO_GESTION "
+								     "						     WHERE	COD_CLIENTE = :v2 "
+								     "						     AND    COD_GESTION = :v3 ) "
+								     "AND    COD_GESTION = :v4 ");
+
+				ifnTrazasLog( modulo, "[%s]\n", LOG05, szhSql );
+
+				sqlca.sqlcode=0; /* XO-200508280498 rvc */
+				EXEC SQL PREPARE deleteCoGestion FROM :szhSql;	
+
+				if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+					ifnTrazasLog( modulo, "(Cliente:%ld) PREPARE deleteCodGestion %s.", LOG00, lhCodCliente, SQLERRM );  
+					return FALSE;
+				}
+
+				sqlca.sqlcode=0; /* XO-200508280498 rvc */
+				EXEC SQL EXECUTE deleteCoGestion USING :lhCodCliente, :lhCodCliente, :szhCodAltaTran, :szhCodAltaTran;
+
+				if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+					ifnTrazasLog( modulo, "(Cliente:%ld) EXECUTE deleteCodGestion %s.", LOG00, lhCodCliente, SQLERRM );  
+					return FALSE;
+				}
+
+				strcpy( szhCodGestionNew, "X" ); /* no se inserta la baja transitoria */
+			} /* if( strcmp( szhCodGestionAct, szhCodAltaTran ) == 0 ) */
+			else
+			{
+				strcpy( szhCodGestionNew, szhCodBajaTran ); /* insertamos la baja transitoria */
+				bInserta = TRUE;
+			}	
+		}
+		else
+		{
+			strcpy( szhCodGestionNew, szhCodBajaTran ); /* insertamos la baja transitoria */
+			bInserta = TRUE;
+		}
+	} /* if( strcmp( szRutina, "D" ) == 0 ) */
+
+	if( strcmp( szRutina, "P" ) == 0 ) /* colas de proceso, dar alta o baja definitiva en la co_gestion o la co_hgestion*/
+	{
+		if( strcmp( szCodMovimiento, "A" ) == 0 ) /* es alta, nunca estara en historia */
+		{
+			strcpy( szhCodGestionNew, szhCodAlta );
+			strcpy( szhCodGestionAct, szhCodAltaTran );
+		}
+		else
+		{
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+			EXEC SQL
+			SELECT COD_GESTION, :szhLetra_C
+			INTO	 :szhCodGestionAct,
+					 :szhSituacion
+			FROM	 CO_GESTION
+			WHERE	 COD_CLIENTE = :lhCodCliente
+			AND    COD_GESTION IN ( :szhCodAltaTran, :szhCodBajaTran )
+			AND	 FEC_GESTION = ( SELECT MAX( FEC_GESTION )
+									     FROM	CO_GESTION
+									     WHERE	COD_CLIENTE = :lhCodCliente 
+									     AND    COD_GESTION IN ( :szhCodAltaTran, :szhCodBajaTran ) )
+			AND     ROWNUM  	<  :ihValor_dos			/* siempre tiene preferencia la baja, ya que en una reasignacion esto	*/
+			ORDER BY COD_GESTION DESC;			/* se debe ejecutar primero, para no limpiar la tabla co_cobexternadoc 	*/
+
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+				ifnTrazasLog( modulo, "(Cliente:%ld) SELECT COD_GESTION FROM CO_GESTION%s.", LOG00, lhCodCliente, SQLERRM );  
+				return FALSE;
+			} 
+
+			if( SQLCODE == SQLNOTFOUND ) /* no esta en la co_gestion, puede estar en la co_hgestion */
+			{
+				sqlca.sqlcode=0; /* XO-200508280498 rvc */
+				EXEC SQL
+				SELECT COD_GESTION, :szhLetra_H
+				INTO	 :szhCodGestionAct,
+						 :szhSituacion
+				FROM	 CO_HGESTION
+				WHERE	 COD_CLIENTE = :lhCodCliente
+				AND    COD_GESTION IN ( :szhCodAltaTran, :szhCodBajaTran )
+				AND	 FEC_GESTION = ( SELECT MAX( FEC_GESTION )
+										     FROM	CO_HGESTION
+										     WHERE	COD_CLIENTE = :lhCodCliente 
+										     AND    COD_GESTION IN ( :szhCodAltaTran, :szhCodBajaTran ) )
+				AND     ROWNUM  	<  :ihValor_dos			/* siempre tiene preferencia la baja, ya que en una reasignacion esto	*/ 		
+				ORDER BY COD_GESTION DESC;			/* se debe ejecutar primero, para no limpiar la tabla co_cobexternadoc 	*/
+	
+				if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+				{
+					ifnTrazasLog( modulo, "(Cliente:%ld) SELECT COD_GESTION FROM CO_HGESTION%s.", LOG00, lhCodCliente, SQLERRM );  
+					return FALSE;
+				} 
+			}			
+			
+			if( strcmp( szhSituacion, "X" ) != 0 ) /* si lo encontramos en alguna de las tablas se procesa */
+			{	
+				if( strcmp( szCodMovimiento, "R" ) == 0 || strcmp( szCodMovimiento, "B" ) == 0 ) /* el rut del cliente fue reasignado, o se da de baja */
+				{
+					strcpy( szhCodGestionNew, szhCodBaja );
+					strcpy( szhCodGestionAct, szhCodBajaTran );
+				}
+	
+				if( strcmp( szCodMovimiento, "M" ) == 0 )
+				{
+					ilong = strlen( szhCodGestionAct ) - 1;
+					for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szhCodGestionAct[rr] != ' ') break ;
+					szhCodGestionAct[rr + 1] = '\0';
+	
+					if( strcmp( szhCodGestionAct, szhCodAltaTran ) == 0 )
+						strcpy( szhCodGestionNew, szhCodAlta );
+					else
+						if( strcmp( szhCodGestionAct, szhCodBajaTran ) == 0 )
+							strcpy( szhCodGestionNew, szhCodBaja );
+				} /* if( strcmp( szCodMovimiento, "M" ) == 0 ) */
+			}
+			else
+			{
+				strcpy( szhCodGestionNew, "X\0" );
+			} /* if( strcmp( szhSituacion, 'X' ) != 0 ) */
+		} /* if( strcmp( szCodMovimiento, "A" ) == 0 ) */
+	} /* if( strcmp( szRutina, "P" ) == 0 ) */	
+	
+	if( bInserta ) /* se inserta al dar alta, baja transitoria o reasignacion */ 
+	{
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	    	EXEC SQL 
+	    	SELECT COUNT(*)
+	    	INTO  :iCountGest
+	    	FROM  CO_GESTION
+	    	WHERE COD_CLIENTE = :lhCodCliente
+	    	AND   COD_GESTION = :szhCodGestionNew;
+	
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+		 ifnTrazasLog( modulo, "(Cliente:%ld)(COD_GESTION:%s) SELECT count(*) FROM CO_GESTION: %s", LOG00, lhCodCliente,szhCodGestionNew, SQLERRM );
+		 return FALSE;
+		}
+
+    	/* Si no existe el cliente + codigo de gestion se inserta*/
+    	if (iCountGest == 0) {
+			sprintf( szhSql,"INSERT INTO CO_GESTION ( "
+						       " COD_CLIENTE , "
+						       " COD_CUENTA  , "
+						       " COD_TIPIDENT, "
+						       " NUM_IDENT   , "
+						       " COD_GESTION , "
+						       " FEC_GESTION , "
+						       " OBS_GESTION , "
+						       " NOM_USUARIO "
+						       " ) VALUES ("
+						       " :v1, :v2, :v3, :v4, :v5, SYSDATE, :v6, USER ) ");
+
+			ifnTrazasLog( modulo, "[%s]\n", LOG05, szhSql );
+	
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+			EXEC SQL PREPARE insertCoGestion FROM :szhSql;	
+	
+			if( SQLCODE ) 
+			{
+				ifnTrazasLog( modulo, "(Cliente:%ld) PREPARE insertCoGestion %s.", LOG00, lhCodCliente, SQLERRM );  
+				return FALSE;
+			}
+	
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+			EXEC SQL EXECUTE insertCoGestion USING :lhCodCliente, :lhCodCuenta, :szhCodTipIdent, :szhNumIdent, :szhCodGestionNew, :szhLetra_X;
+		
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )	{
+				ifnTrazasLog( modulo, "(Cliente:%ld) EXECUTE insertCoGestion %s.", LOG00, lhCodCliente, SQLERRM );  
+				return FALSE;
+			}
+	   }
+      else
+      {
+			/* Si existe el cliente + codigo de gestion se actualiza fecha*/
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+			EXEC SQL 
+			UPDATE CO_GESTION SET   
+			       FEC_GESTION = SYSDATE
+			WHERE  COD_CLIENTE = :lhCodCliente
+			AND    COD_GESTION = :szhCodGestionNew;
+			
+			if( SQLCODE != SQLOK ) 
+			{
+			   ifnTrazasLog( modulo, "(Cliente:%ld) Actualizando CO_GESTION %s.", LOG00, lhCodCliente, SQLERRM );  
+			   return FALSE;
+			}
+      }  /* if iCountGest = 0 */
+	}
+	else /* si hay que dar alta o baja definitiva actualizamos */
+	{
+		if( strcmp( szhCodGestionNew, "X" ) != 0 )	/* si hay que actualizar algo realmente */
+		{
+			sprintf( szhObsGestion, "%s %s", strcmp( szhCodGestionNew, szhCodAlta ) == 0 ? "SE ENVIO A" : "SE DESASIGNO DE", szhCodEntidad );			
+			
+			sprintf( szhSql, "UPDATE %s SET             "
+			                 "       COD_GESTION = :v1, "
+							 "       COD_CUENTA  = :v2, "
+							 "       OBS_GESTION = :v3, "
+                          	 "       FEC_GESTION = SYSDATE "
+							 "WHERE  COD_CLIENTE = :v4 "
+							 "AND    COD_GESTION = :v5",!strcmp( szhSituacion, "C" ) ? "CO_GESTION" : "CO_GESTION");
+
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+			EXEC SQL PREPARE updateCoGestion FROM :szhSql;	
+
+			ifnTrazasLog( modulo, "[%s]\n", LOG05, szhSql );
+
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+				ifnTrazasLog( modulo, "(Cliente:%ld) PREPARE updateCodGestion %s.", LOG00, lhCodCliente, SQLERRM );  
+				return FALSE;
+			}
+
+			sqlca.sqlcode=0; /* XO-200508280498 rvc */
+			EXEC SQL EXECUTE updateCoGestion USING :szhCodGestionNew, :lhCodCuenta, :szhObsGestion, :lhCodCliente, :szhCodGestionAct;
+
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "(Cliente:%ld) EXECUTE updateCodGestion %s.", LOG00, lhCodCliente, SQLERRM );  
+				return FALSE;
+			}
+		} /* if( strcmp( szhCodGestionNew, "X" ) != 0 ) */
+	} /* if( bInsert ) */		
+
+	return TRUE;
+} /* BOOL bfnActualizaCoGestionCliente( long lCodCliente, char *szRutina ) */
+
+
+/* ============================================================================= 
+ Funcion que Actualiza la co_gestion para los clientes de un rut dado
+ sea Dicom o cobranza externa
+ ============================================================================= */
+BOOL bfnActualizaCoGestionRut( char *szNumIdent, char *szCodTipIdent, char *szCodMov, char *szCodEntidad, long lSecProceso )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhNumIdent[iLENNUMIDENT]; 
+	char	szhCodTipIdent[3];
+	char	szhCodGestion[3];
+	char	szCodMovimiento[6];
+	char	szhCodEntidad[6];		
+	long	lhCodCliente[500];
+	long	lhCodCuenta[500];
+	char	szhSql[1000];
+EXEC SQL END DECLARE SECTION;
+
+char	modulo[] = "bfnActualizaCoGestionRut";
+char	szRutina[] = "P";
+int	iError = 0, iTotClientes = 0, i;
+
+	memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+	memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+	memset( szCodMovimiento, '\0', sizeof( szCodMovimiento ) );
+	memset( szhCodEntidad, '\0', sizeof( szhCodEntidad ) );
+
+	strcpy( szhNumIdent, szNumIdent );
+	strcpy( szhCodTipIdent, szCodTipIdent );
+	strcpy( szCodMovimiento, szCodMov );
+	strcpy( szhCodEntidad, szCodEntidad );
+
+	rtrim( szhNumIdent );
+	rtrim( szhCodTipIdent );
+	rtrim( szCodMovimiento );
+	rtrim( szhCodEntidad );
+
+	ifnTrazasLog( modulo, "Entrada %s.\n"
+						  "\t\t   szhNumIdent     => [%s],\n"
+						  "\t\t   szhCodTipIdent  => [%s],\n"
+						  "\t\t   szCodMovimiento => [%s],\n"
+						  "\t\t   szhCodEntidad   => [%s],\n",
+						  	LOG05,
+						  	modulo,
+							szhNumIdent,
+							szhCodTipIdent,
+							szCodMovimiento,
+							szhCodEntidad );
+
+	if( strcmp( szhCodEntidad, "DICOM" ) == 0 ) /* si es para DICOM */
+	{
+		sprintf( szhSql," SELECT	UNIQUE COD_CLIENTE, 	"
+						    " 			COD_CUENTA FROM  	( 	" 
+						    " SELECT UNIQUE COD_CLIENTE	"
+						    " 		 COD_CUENTA				"
+						    " FROM   CO_DICOMDOC			"
+						    " WHERE  NUM_IDENT   = :v1	"
+						    " AND	 COD_TIPIDENT= :v2	"
+						    " AND    NUM_PROCESO = :v3	"
+						    " UNION			  					"
+						    " SELECT UNIQUE COD_CLIENTE	"
+						    " 		 COD_CUENTA				"
+						    " FROM   CO_HDICOMDOC			"
+						    " WHERE  NUM_IDENT   = :v4	"
+						    " AND	 COD_TIPIDENT= :v5	"
+						    " AND    NUM_PROCESO = :v5  )");
+	}					 
+	else /* si es Cobranza Interna */
+	{
+		sprintf( szhSql,"SELECT COD_CLIENTE,\n"
+						    "       COD_CUENTA  \n"
+						    "FROM   GE_CLIENTES \n"
+						    "WHERE  COD_TIPIDENT = :v1 \n"
+						    "AND    NUM_IDENT    = :v2 ");
+	}				 
+
+	ifnTrazasLog( modulo, "Query (%s).", LOG05, szhSql );
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL PREPARE SqlClientes FROM :szhSql;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "(szhNumIdent:%s) PREPARE curClientes %s.", LOG00, szhNumIdent, SQLERRM );
+		return FALSE;
+	}
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL DECLARE curClientes CURSOR FOR SqlClientes;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "(szhNumIdent:%s) DECLARE curClientes %s.", LOG00, szhNumIdent, SQLERRM );
+		return FALSE;
+	}
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	if( strcmp( szhCodEntidad, "DICOM" ) == 0 ) /* si es para DICOM */
+		EXEC SQL OPEN curClientes USING :szhNumIdent, :szhCodTipIdent, :lSecProceso, :szhNumIdent, :szhCodTipIdent, :lSecProceso;
+	else
+		EXEC SQL OPEN curClientes USING :szhCodTipIdent , :szhNumIdent;
+				
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+		ifnTrazasLog( modulo, "(szhNumIdent:%s) OPEN curClientes %s.", LOG00, szhNumIdent, SQLERRM );
+		return FALSE;
+	}
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL FETCH curClientes
+	INTO	:lhCodCliente,
+			:lhCodCuenta;
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )	{
+		ifnTrazasLog( modulo, "(szhNumIdent:%s) FETCH CO_MOROSOS %s.", LOG00, szhNumIdent, SQLERRM );
+		return FALSE;
+	}
+
+	iTotClientes = SQLROWS;
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL CLOSE curClientes;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )	{
+		ifnTrazasLog( modulo, "(szhNumIdent:%s) CLOSE CO_MOROSOS %s.", LOG00, szhNumIdent, SQLERRM );
+		return FALSE;
+	}
+
+	for( i = 0; i < iTotClientes; i++ )
+	{
+		rtrim( szhNumIdent );
+		rtrim( szhCodTipIdent );
+		rtrim( szhCodEntidad );
+		rtrim( szRutina );
+		rtrim( szCodMovimiento );
+
+		if( !bfnActualizaCoGestionCliente( lhCodCliente[i], lhCodCuenta[i], szhNumIdent, 
+										   szhCodTipIdent, szhCodEntidad, szRutina, szCodMovimiento ) )
+		{
+			iError = 1;
+			break;
+		}
+	} /* for( i = 0; i < iTotClientes; i++ ) */
+		
+	if( iError == 1 )
+		return FALSE;
+			
+	return TRUE;	
+} /* BOOL bfnActualizaCoGestionCobExtRut( char *szNumIdent, char *szCodTipIdent, char *szCodMov ) */
+
+
+
+
+
+/* ============================================================================= */
+/* Obtiene el saldo en la cartera de un Cliente dado                             */
+/* ============================================================================= */
+BOOL bfnGetSaldoCliente (long lCliente, double *pdSaldoVenc, double *pdSaldoNoVenc, char *szFecVencimiento  )
+{
+char modulo[]="dfnGetSaldoCliente";
+EXEC SQL BEGIN DECLARE SECTION;
+	long   lhCodCliente = lCliente;
+	int    ihIndFacturado = 1; 
+	double dhSaldoNoVenc = 0.0;
+	double dhSaldoVenc = 0.0;
+	char   szhFecVencimiento[9] = ""; EXEC SQL VAR szhFecVencimiento IS STRING(9); 
+	short  shFecVenc;
+	char   szhFormatoFecha   [9]       ; EXEC SQL VAR szhFormatoFecha   IS STRING(9); 
+	char   szhTablaCoCartera[11]       ; EXEC SQL VAR szhTablaCoCartera IS STRING(11); 
+	char   szhColumnaTipDoc [13]       ; EXEC SQL VAR szhColumnaTipDoc  IS STRING(13); 
+	int    iNumCero;
+	int    iNumDos;
+EXEC SQL END DECLARE SECTION;    
+
+	strcpy(szhFormatoFecha  , "YYYYMMDD");
+	strcpy(szhTablaCoCartera, "CO_CARTERA");
+	strcpy(szhColumnaTipDoc , "COD_TIPDOCUM");
+	iNumCero = 0;
+	iNumDos  = 2;
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL 
+	SELECT TO_CHAR(MIN(FEC_VENCIMIE),:szhFormatoFecha)
+	INTO  :szhFecVencimiento:shFecVenc
+	FROM  CO_CARTERA
+	WHERE COD_CLIENTE   = :lhCodCliente 
+	AND   IND_FACTURADO = :ihIndFacturado
+	AND   FEC_VENCIMIE < TRUNC(SYSDATE)
+	AND   COD_CONCEPTO != :iNumDos 
+	AND   COD_TIPDOCUM NOT IN (SELECT TO_NUMBER(COD_VALOR)
+									    FROM	  CO_CODIGOS
+									    WHERE  NOM_TABLA   = :szhTablaCoCartera
+									    AND	  NOM_COLUMNA = :szhColumnaTipDoc );
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+	    ifnTrazasLog(modulo,"SELECT FROM CO_CARTERA(1) (Cliente:%ld) : %s ",LOG00,lhCodCliente,SQLERRM);  
+	    return FALSE;
+	}
+       
+    sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL 
+	SELECT NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),:iNumCero)
+	INTO :dhSaldoVenc
+	FROM CO_CARTERA
+	WHERE COD_CLIENTE   = :lhCodCliente 
+	AND IND_FACTURADO = :ihIndFacturado
+	AND FEC_VENCIMIE < TRUNC(SYSDATE)
+	AND COD_TIPDOCUM NOT IN (	SELECT	TO_NUMBER(COD_VALOR)
+									FROM	CO_CODIGOS
+									WHERE	NOM_TABLA   = :szhTablaCoCartera
+									AND		NOM_COLUMNA = :szhColumnaTipDoc	); /* jlr_22.01.01 */
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+	    ifnTrazasLog(modulo,"SELECT FROM CO_CARTERA(1) (Cliente:%ld) : %s ",LOG00,lhCodCliente,SQLERRM);  
+	    return FALSE;
+	}
+	
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL 
+	SELECT NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),:iNumCero)
+	INTO :dhSaldoNoVenc
+	FROM CO_CARTERA
+	WHERE COD_CLIENTE   = :lhCodCliente 
+	AND IND_FACTURADO = :ihIndFacturado
+	AND FEC_VENCIMIE >= TRUNC(SYSDATE)
+	AND COD_TIPDOCUM NOT IN (	SELECT	TO_NUMBER(COD_VALOR)
+									FROM	CO_CODIGOS
+									WHERE	NOM_TABLA   = :szhTablaCoCartera
+									AND		NOM_COLUMNA = :szhColumnaTipDoc	); /* jlr_22.01.01 */
+
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        ifnTrazasLog(modulo,"SELECT FROM CO_CARTERA(2) (Cliente:%ld) : %s ",LOG00,lhCodCliente,SQLERRM);  
+        return FALSE;
+    }
+    else
+    {
+        *pdSaldoNoVenc = dhSaldoNoVenc;
+        *pdSaldoVenc = dhSaldoVenc;
+		  strcpy(szFecVencimiento,szhFecVencimiento);
+        return TRUE; 
+    }
+}
+
+
+/*==================================================================================================*/
+/* Funcion que Obtiene el Saldo en la Cta. Cte. de los Clientes que asocia ese rut                  */
+/*==================================================================================================*/
+BOOL bfnGetSaldoPorRut( char *szNumIdent, char *szCodTipIdent,double *dMtoSaldoRut )
+{
+char modulo[]="ifnGetSaldoPorRut";
+int iError=0;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	long   lhCodCliente      = 0  ;
+	double dhMtoSaldo        = 0.0 ;  
+	double dhMtoSaldoParcial = 0.0 ;
+	double dhMtoAux          = 0.0 ;
+	char   szhFecAux      [9]=""             ; EXEC SQL VAR szhFecAux IS STRING(9);
+	char   szhNumIdent    [iLENNUMIDENT] ="" ; EXEC SQL VAR szhNumIdent IS STRING(iLENNUMIDENT);
+	char   szhCodTipIdent [3]=""             ; EXEC SQL VAR szhCodTipIdent IS STRING(3);
+EXEC SQL END DECLARE SECTION;
+
+   strcpy(szhNumIdent,szNumIdent);
+	strcpy(szhCodTipIdent,szCodTipIdent);
+    
+    sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL
+	DECLARE curRuts CURSOR FOR
+	SELECT COD_CLIENTE
+	FROM	 GE_CLIENTES
+	WHERE	 COD_TIPIDENT = :szhCodTipIdent
+	AND	 NUM_IDENT = :szhNumIdent;
+    
+   if (SQLCODE)  {   
+   	ifnTrazasLog(modulo,"Declare curRuts : %s ",LOG00,SQLERRM);  
+      return FALSE; 
+   }
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+   EXEC SQL 
+   OPEN curRuts ;
+   if (SQLCODE)  {   
+      ifnTrazasLog(modulo,"Open curRuts : %s ",LOG00,SQLERRM);  
+      return FALSE;   
+   }
+
+   dhMtoSaldo=0.0;
+   for (;;)  /* Ciclo infinito */
+   {
+   		sqlca.sqlcode=0; /* XO-200508280498 rvc */
+      EXEC SQL 
+      FETCH curRuts   INTO :lhCodCliente;
+       
+      if (SQLCODE == SQLNOTFOUND)  {   
+          iError = 0; 
+          ifnTrazasLog(modulo,"Fetch curRuts : Fin Datos del Cursor ",LOG05);  
+          break;  
+      }  
+      else if (SQLCODE)
+      {   
+          iError = 1;
+          ifnTrazasLog(modulo,"Fetch curRuts : %s ",LOG00,SQLERRM);  
+          break;  
+      } 
+
+      dhMtoSaldoParcial = 0.0;
+      
+      /*-Obtiene el Saldo del Cliente ---*/
+      if ( !bfnGetSaldoCliente (lhCodCliente, &dhMtoSaldoParcial, &dhMtoAux, szhFecAux ) )  {
+    	   iError = 1;
+    	   break;	
+      }
+	   else
+	   {
+	      dhMtoSaldo += dhMtoSaldoParcial;
+	   }
+   }
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+   EXEC SQL
+   CLOSE curRuts ;
+   if (SQLCODE) 	{   
+	   iError = 1;
+      ifnTrazasLog(modulo,"Close curRuts : %s ",LOG00,SQLERRM);  
+   }
+    
+   if (iError == 1) {   
+      return FALSE;   
+   }
+   else  
+   {   
+   	*dMtoSaldoRut=dhMtoSaldo;
+      return TRUE;    
+   }
+}
+
+
+/*==================================================================================================*/
+/* Funcion que Obtiene el saldo vencido de un cliente.                  									 */
+/*==================================================================================================*/
+BOOL bfnGetSaldoVencido( long lCodCliente, double *pdSaldoVenc )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+   long   lhCodCliente;
+	double dhSaldoVenc  = 0.0;
+	char   szhCARTERA    [11];
+	char   szhTIPDOCUM   [13];
+	int    ihValor_uno  = 1  ;
+EXEC SQL END DECLARE SECTION;    
+char modulo[] = "bfnGetSaldoVencido";
+
+ 	ifnTrazasLog( modulo, "Ingreso modulo : [%s].", LOG05, modulo );
+	lhCodCliente = lCodCliente;
+	strcpy(szhCARTERA ,"CO_CARTERA");
+	strcpy(szhTIPDOCUM,"COD_TIPDOCUM");
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL 	
+	SELECT NVL( SUM( IMPORTE_DEBE - IMPORTE_HABER ), 0 )
+	INTO  :dhSaldoVenc
+	FROM  CO_CARTERA
+	WHERE COD_CLIENTE = :lhCodCliente 
+	AND   IND_FACTURADO = :ihValor_uno
+	AND   FEC_VENCIMIE < TRUNC( SYSDATE )
+	AND   COD_TIPDOCUM NOT IN (SELECT	TO_NUMBER(COD_VALOR)
+								      FROM	CO_CODIGOS
+								      WHERE	NOM_TABLA = :szhCARTERA
+								      AND NOM_COLUMNA = :szhTIPDOCUM);
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )  {
+        ifnTrazasLog( modulo, "Cliente => [%ld] Obteniendo Saldo Vencido => [%s].", LOG00, lhCodCliente, SQLERRM );  
+        return FALSE;
+   }
+
+	*pdSaldoVenc = dhSaldoVenc;
+   return TRUE; 
+} /* bfnGetSaldoVencido */
+
+
+/*==================================================================================================*/
+/*==================================================================================================*/
+double fnCnvDouble( double d, int uso )
+{
+	char szTemp[BUFSIZ] = "";
+	sprintf( szTemp, "%.*f", pstParamGener.iNumDecimal, d + 0.0000001 );
+	return( double )atof( szTemp );
+}
+
+
+/*==================================================================================================*/
+/* Funcion que Busca el codigo de Activacion en Central para la actuacion de abonado                */
+/*==================================================================================================*/
+int ifnGetActuacionCentralCelular( char *szActAbo, int iCodProducto, char *szCodModulo, char *szCodTecnologia )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int ihCodActCen   = 0;
+	int ihCodProducto = 0;
+	char szhActAbo    [3];	EXEC SQL VAR szhActAbo IS STRING(3);
+	char szhCodModulo [3];  EXEC SQL VAR szhCodModulo IS STRING(3);
+	char szhCodTecnologia[iLENCODTECNO];	EXEC SQL VAR szhCodTecnologia IS STRING(iLENCODTECNO);
+EXEC SQL END DECLARE SECTION;
+char modulo[] = "ifnGetActuacionCentralCelular";
+
+ 	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+ 	ifnTrazasLog( modulo, 	"Parametros entrada.\n"
+							"\t\t   szhActAbo        => [%s],\n"
+							"\t\t   ihCodProducto    => [%d],\n"
+							"\t\t   szhCodModulo     => [%s],\n"
+							"\t\t   szhCodTecnologia => [%s],\n",
+							LOG05,
+							szActAbo,
+							iCodProducto,
+							szCodModulo,
+							szCodTecnologia );
+
+	memset( szhActAbo, '\0', sizeof( szhActAbo ) );
+	memset( szhCodModulo, '\0', sizeof( szhCodModulo ) );
+	memset( szhCodTecnologia, '\0', sizeof( szhCodTecnologia ) );
+	
+	strcpy( szhActAbo, szActAbo );
+	strcpy( szhCodModulo, szCodModulo );
+	strcpy( szhCodTecnologia, szCodTecnologia );
+	ihCodProducto = iCodProducto;
+	
+	rtrim( szhActAbo );
+	rtrim( szhCodModulo );
+	rtrim( szhCodTecnologia );
+	
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL
+	SELECT COD_ACTCEN
+	INTO  :ihCodActCen
+	FROM  GA_ACTABO
+	WHERE COD_ACTABO = :szhActAbo
+	AND   COD_PRODUCTO = :ihCodProducto
+	AND   COD_MODULO = :szhCodModulo
+	AND   COD_TECNOLOGIA = :szhCodTecnologia;
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {  
+		ifnTrazasLog( modulo, "ACTABO => [%s], TECNOLOGIA => [%s], Recuperando Actuacion Central => [%s].", LOG00, szhActAbo, szhCodTecnologia, SQLERRM );
+		return -1;
+	} 
+
+	if( SQLCODE == SQLNOTFOUND )	 {  
+		ifnTrazasLog( modulo, "ACTABO => [%s], TECNOLOGIA => [%s], No se encuentra definida en Actuaciones Abonado.", LOG01, szhActAbo, szhCodTecnologia );
+		return -1;
+	} 
+
+	ifnTrazasLog( modulo, "ACTABO => [%s], TECNOLOGIA => [%s], Actuacion Central => [%d].", LOG05, szhActAbo, szhCodTecnologia, ihCodActCen );
+	return ihCodActCen;
+} /* int ifnGetActuacionCentralCelular( char *szActAbo ) */
+
+
+		
+/*==================================================================================================*/
+/* Funcion que Obtiene el valor de un parametro.       									 						 */
+/*==================================================================================================*/
+char *szfnRecuperaGedParametro( char *szNomParametro, char *szCodModulo )
+{	
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhValParametro[21];
+	char szhNomParametro[21];
+	char szhCodModulo[iLENCODMODULO];
+	int  ihValor_uno = 1;
+EXEC SQL END DECLARE SECTION;
+char modulo[] = "szfnRecuperaGedParametro";
+	
+ 	memset( szhValParametro, '\0', sizeof( szhValParametro ) );
+	memset( szhNomParametro, '\0', sizeof( szhNomParametro ) );
+	memset( szhCodModulo, '\0', sizeof( szhCodModulo ) );
+	
+	strcpy( szhNomParametro, szNomParametro );
+	strcpy( szhCodModulo, szCodModulo );
+	rtrim( szhCodModulo );
+	rtrim( szhNomParametro );
+
+	sqlca.sqlcode=0; /* XO-200508280498 rvc */
+	EXEC SQL
+	SELECT VAL_PARAMETRO
+	INTO  :szhValParametro
+	FROM  GED_PARAMETROS
+	WHERE NOM_PARAMETRO= :szhNomParametro
+	AND   COD_MODULO   = :szhCodModulo
+	AND   COD_PRODUCTO = :ihValor_uno;
+	
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+	{  
+		ifnTrazasLog( modulo, "Error al recuperar Valor de Parametro ==> [%s][%s].", LOG00, szhNomParametro, SQLERRM );
+		return "ERROR";
+	}  
+
+	if( SQLCODE == SQLNOTFOUND ) 
+	{  
+		ifnTrazasLog( modulo, "Parametro no encontrado para ==> [%s].", LOG00, szhNomParametro );
+		return "ERROR";
+	}  
+
+	rtrim( szhValParametro );
+	return szhValParametro;
+
+} /* szfnRecuperaGedParametro */
+

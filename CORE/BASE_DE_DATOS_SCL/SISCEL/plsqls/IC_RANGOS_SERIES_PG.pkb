@@ -1,0 +1,62 @@
+CREATE OR REPLACE PACKAGE BODY IC_RANGOS_SERIES_PG AS
+
+FUNCTION FN_TMM_seriefin(v_num_mov IN ICC_MOVIMIENTO.NUM_MOVIMIENTO%TYPE) RETURN VARCHAR2
+IS
+	v_serie_final NP_RANGO_SERIES_TO.SERIE_FINAL%TYPE;
+    error_proceso EXCEPTION;
+    v_out STRING(512);
+  BEGIN
+   		v_out := CHR(0);
+
+		SELECT SERIE_FINAL INTO v_serie_final
+		FROM NP_RANGO_SERIES_TO
+		WHERE NUM_MOVIMIENTO = v_num_mov;
+
+		IF SQLCODE <> 0 THEN
+	          RAISE error_proceso;
+	    END IF;
+
+
+	    RETURN v_serie_final;
+
+  EXCEPTION
+    WHEN error_proceso THEN
+      RETURN 'ERROR FN_TMM_seriefin, SQLCODE:' || TO_CHAR(SQLCODE) || ' SLQERRM:' || SQLERRM;
+	WHEN NO_DATA_FOUND THEN
+      RETURN v_out;
+    WHEN OTHERS THEN
+      RETURN 'ERROR OTHER FN_TMM_seriefin, SQLCODE:' || TO_CHAR(SQLCODE) || ' SLQERRM:' || SQLERRM;
+END;
+
+FUNCTION FN_TMM_serieini(V_NUM_MOV IN ICC_MOVIMIENTO.NUM_MOVIMIENTO%TYPE) RETURN VARCHAR2  IS
+
+    error_proceso EXCEPTION;
+	v_serie_inicial NP_RANGO_SERIES_TO.SERIE_INICIAL%TYPE;
+    v_out STRING(512);
+  BEGIN
+   		v_out := CHR(0);
+
+		SELECT SERIE_INICIAL INTO v_serie_inicial
+		FROM NP_RANGO_SERIES_TO
+		WHERE NUM_MOVIMIENTO	= v_num_mov;
+
+		IF SQLCODE <> 0 THEN
+	          RAISE error_proceso;
+	    END IF;
+
+
+	    RETURN v_serie_inicial;
+
+  EXCEPTION
+    WHEN error_proceso THEN
+      RETURN 'ERROR FN_TMM_serieini, SQLCODE:' || TO_CHAR(SQLCODE) || ' SLQERRM:' || SQLERRM;
+	WHEN NO_DATA_FOUND THEN
+      RETURN v_out;
+    WHEN OTHERS THEN
+      RETURN 'ERROR OTHER FN_TMM_serieini, SQLCODE:' || TO_CHAR(SQLCODE) || ' SLQERRM:' || SQLERRM;
+END;
+
+
+END IC_RANGOS_SERIES_PG;
+/
+SHOW ERRORS

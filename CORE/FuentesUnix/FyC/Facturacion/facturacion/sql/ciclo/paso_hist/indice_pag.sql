@@ -1,0 +1,24 @@
+set ver off
+prompt INDEX FA_HSTPG_COD_CLI_IE_&1 ON FA_HISTPAGO_&1
+
+CREATE INDEX FA_HSTPG_COD_CLI_IE_&1 ON FA_HISTPAGO_&1
+(COD_CLIENTE)
+NOLOGGING
+TABLESPACE INSTALL_INDEX
+PCTFREE    5
+INITRANS   16
+MAXTRANS   255
+STORAGE    (
+            INITIAL          2M
+            NEXT             120K
+            MINEXTENTS       1
+            MAXEXTENTS       2147483645
+            PCTINCREASE      0
+            FREELISTS        32
+            FREELIST GROUPS  1
+            BUFFER_POOL      DEFAULT
+           )
+NOPARALLEL;
+/
+
+exit;

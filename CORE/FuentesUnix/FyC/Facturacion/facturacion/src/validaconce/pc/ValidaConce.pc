@@ -1,0 +1,575 @@
+/* ********************************************************************** */
+/* *  Fichero : ValidaConce.pc                                		* */
+/* *  Proceso generador de reportes de validacion de conceptos		* */
+/* *  Autor : Patricio Gonzalez Gomez	                                * */
+/* *  Modif : 								* */
+/* *  Parametros : 							* */
+/* *         -u Usuario/Password                                        * */
+/* *         -l Nivel de Log						* */
+/* ********************************************************************** */
+
+#define _VALIDACONCE_PC_
+
+#include <deftypes.h>
+#include <stdlib.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include "ValidaConce.h"
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+
+char  	modulo[30];
+
+EXEC SQL INCLUDE sqlca;
+
+
+/* DESDE AQUI PGG FUNCIONES NUEVAS */
+void trim (const char *c, char *result)
+{
+   char *l;
+   char *r;
+   for(l=(char *)c;  *l==' '; l++);
+   for(r=(char *)c+strlen(c)-1;  *r==' '; r--);
+
+   strncpy(result, l, (r>=l)?r-l+1:1);
+   result[r-l+1]=0;
+}
+
+/* PGG SOPORTE... CODIGO NUEVO DESDE AQUI */
+
+int iCargaEstructura(REG_ARCH_STRUCT **pstRegStruct, int *iNumRegStruct)
+{
+        int     rc = 0;
+        long    lNumFilas;
+        static  REG_ARCH_STRUCT_HOST pstRegStructHost;
+        REG_ARCH_STRUCT *pstRegStructTemp;
+        long lCont;
+
+        strcpy(modulo,"iCargaEstructura");
+
+        vDTrazasLog(modulo, "\n\t\t* Carga Estructura",   LOG05);
+
+
+        *iNumRegStruct = 0;
+        *pstRegStruct = NULL;
+
+        if (ifnOpenSTRUCT ())
+        	return (FALSE);
+
+	vDTrazasLog(modulo, "\n\t\t* Paso el OPEN Cur_STRUCT",   LOG05);
+
+        while (rc != SQLNOTFOUND)
+        {
+        rc = ifnFetchSTRUCT (&pstRegStructHost,&lNumFilas);
+        vDTrazasLog(modulo, "\n\t\t* Paso el FECTH Cur_STRUCT",   LOG05);
+
+        if (rc != SQLOK  && rc != SQLNOTFOUND)
+        {
+        		vDTrazasLog(modulo, "\n\t\t* Primer return false",   LOG05);
+                        return (FALSE);
+	}
+                if (!lNumFilas)
+                {
+                	vDTrazasLog(modulo, "\n\t\t* Segundo return false",   LOG05);
+                	break;
+		}
+
+                *pstRegStruct =(REG_ARCH_STRUCT*) realloc(*pstRegStruct,(((*iNumRegStruct)+lNumFilas)*sizeof(REG_ARCH_STRUCT)));
+
+                if (!*pstRegStruct)
+                {
+                	vDTrazasLog(modulo, "\n\t\t* Tercer return false",   LOG05);
+                        return (FALSE);
+		}
+
+                pstRegStructTemp = &(*pstRegStruct)[(*iNumRegStruct)];
+                memset(pstRegStructTemp, 0, sizeof(REG_ARCH_STRUCT)*lNumFilas);
+                for (lCont = 0 ; lCont < lNumFilas ; lCont++)
+                {
+                        pstRegStructTemp[lCont].lCod_Cliente		 	= 	pstRegStructHost.lCod_Cliente	[lCont];
+                        pstRegStructTemp[lCont].lNum_Abonado		 	= 	pstRegStructHost.lNum_Abonado	[lCont];
+                        pstRegStructTemp[lCont].lCod_Carg		 	= 	pstRegStructHost.lCod_Carg	[lCont];
+                        pstRegStructTemp[lCont].lCantidad		 	= 	pstRegStructHost.lCantidad	[lCont];
+                }
+                (*iNumRegStruct) += lNumFilas;
+
+        }/* fin while */
+
+
+        vDTrazasLog(modulo, "\n\t\t* Cantidad de Regs. de la Estructura cargados [%d]",   LOG05, *iNumRegStruct);
+
+        rc = ifnCloseSTRUCT();
+        if (rc != SQLOK)
+                return (FALSE);
+
+        vfnPrintSTRUCT (*pstRegStruct, *iNumRegStruct);
+
+        return (TRUE);
+}
+
+static int ifnOpenSTRUCT (void)
+{
+    	strcpy(modulo,"ifnOpenSTRUCT");
+
+
+        EXEC SQL DECLARE Cursor_STRUCT CURSOR FOR
+		SELECT /*+  index (TOL_ACUMOPER_TO AK_TOL_ACUMOPER_TO)  +*/
+		COD_CLIENTE,NUM_ABONADO, COD_CARG, COUNT(1)
+		FROM   TOL_ACUMOPER_TO
+		WHERE  COD_CARG NOT IN ( SELECT COD_CONCORIG FROM FA_CONCEPTRAIMP_TD)
+		GROUP BY COD_CLIENTE,NUM_ABONADO, COD_CARG;
+
+
+    	if(SQLCODE != SQLOK)
+        {
+
+        	vDTrazasLog(modulo, "\n\t\t* DECLARE=> Cursor_STRUCT",   LOG05);
+                return(SQLCODE);
+    	}
+
+        EXEC SQL OPEN Cursor_STRUCT;
+
+    	if(SQLCODE != SQLOK)
+        {
+        	vDTrazasLog(modulo, "\n\t\t* OPEN=> Cursor_STRUCT",   LOG05);
+                return(SQLCODE);
+    	}
+
+    	return (SQLCODE);
+}/***************************** Final ifnOpenSTRUCT  **********************/
+
+
+
+static BOOL ifnFetchSTRUCT (REG_ARCH_STRUCT_HOST *pstHost,long *plNumFilas)
+{
+         EXEC SQL FETCH Cursor_STRUCT
+             INTO	 :pstHost->lCod_Cliente
+			,:pstHost->lNum_Abonado
+			,:pstHost->lCod_Carg
+			,:pstHost->lCantidad	;
+
+
+	vDTrazasLog(modulo, "\n\t\t* SQLCODE EN FETCH	[%ld]\n",   LOG05, sqlca.sqlcode);
+        if (SQLCODE==SQLOK)
+                *plNumFilas = TAM_HOSTS_PEQ;
+        else
+                if (SQLCODE==SQLNOTFOUND)
+                        *plNumFilas = sqlca.sqlerrd[2] % TAM_HOSTS_PEQ;
+
+  return (SQLCODE);
+}/***************************** Final ifnFetchSTRUCT ****************/
+
+int ifnCloseSTRUCT (void)
+{
+	EXEC SQL CLOSE Cursor_STRUCT;
+
+	strcpy(modulo,"ifnCloseSTRUCT");
+	vDTrazasLog(modulo, "\n\t\t* Close=> Cursor_STRUCT",   LOG05);
+
+	return (SQLCODE);
+}/**************************** Final ifnCloseSTRUCT ******************/
+
+
+void vfnPrintSTRUCT (REG_ARCH_STRUCT *pstRegStruct, int iNumRegStruct)
+{
+        int i = 0;
+
+        strcpy(modulo,"vfnPrintSTRUCT");
+
+	vDTrazasLog(modulo,"\n\t\t* Despliegue de la Carga de la Estructura... [%d]", LOG05 ,iNumRegStruct);
+
+        for (i=0;i<iNumRegStruct;i++)
+        {
+               vDTrazasLog(modulo,	"---------------------------------------\n"
+               				"pstRegStruct[%d].lCod_Cliente			[%ld]	\n"
+                                        "pstRegStruct[%d].lNum_Abonado			[%ld]	\n"
+                                        "pstRegStruct[%d].lCod_Carg			[%ld]	\n"
+                                        "pstRegStruct[%d].lCantidad			[%ld]	\n"
+               				, LOG05
+               				, i, pstRegStruct[i].lCod_Cliente
+               				, i, pstRegStruct[i].lNum_Abonado
+               				, i, pstRegStruct[i].lCod_Carg
+               				, i, pstRegStruct[i].lCantidad	);
+        }
+}/*************************** vfnPrintSTRUCT *****************************/
+
+/* PGG SOPORTE... CODIGO NUEVO HASTA AQUI */
+
+BOOL bfnCargaEstructuras()
+{
+	char modulo[]="bfnCargaEstructuras";
+
+	if(!iCargaEstructura(&pstRegStruct.stRegStruct, &pstRegStruct.iCantRegStruct)!= SQLOK)
+	{
+		strcpy(modulo, "bfnCargaEstructuras");
+		vDTrazasLog(modulo, "Error al Cargar el Detalle de la Estructura para el reporte. Proceso se cancela.\n",   LOG05);
+		return(FALSE);
+	}
+
+	return (TRUE);
+}
+
+BOOL bfnGeneraReporte()
+{
+	char modulo[]="bfnGeneraReporte";	
+	int   i;
+	FILE 	*Arch;
+	char 	*pathDir;
+	char 	szPath[128]="";
+	char 	szNombreFile[200];
+	char	szRegistro[4000];
+	char 	szComando[128]="";
+
+	pathDir=(char *)malloc(128);
+	pathDir=szGetEnv("XPF_DAT");
+	sprintf(szPath,"%s/ValidaConce/%s",pathDir,cfnGetTime(2));
+	free(pathDir);
+
+	vDTrazasLog(modulo,"szPath DAT	[%s]\n", LOG03, szPath);
+
+	sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+
+	memset (szNombreFile, '\0', sizeof(szNombreFile));
+
+
+	sprintf (szNombreFile	, "%s/ValidaConce_%s.dat"	, szPath, cfnGetTime(5));
+
+
+
+	if( (Arch=fopen(szNombreFile, "w" ) )==NULL )
+	{
+		vDTrazasLog(modulo,"Error creando archivo de Validacion [%s]\n", LOG03, szNombreFile);
+	}
+
+
+	sprintf (szRegistro,	"-----------------------------------------------------------------------\n"
+        		    	"HORA INICIO  : %s\n"
+        			"-----------------------------------------------------------------------\n"
+        			,cfnGetTime(1));
+
+        fprintf(Arch ,"%s", szRegistro);
+
+	if (pstRegStruct.iCantRegStruct > 0)
+	{
+
+		printf("Archivo  [%s]\n", szNombreFile);
+
+		for (i=0; i < pstRegStruct.iCantRegStruct; i++)
+		{
+			memset(szRegistro, '\0', sizeof(szRegistro));
+
+			sprintf (szRegistro, 	"-----------------------------------------------------------------------\n"
+						"CLIENTE = %ld\n"
+						"ABONADO = %ld\n"
+						"COD_CARG= %ld\n"
+						"CANTIDAD= %ld\n"
+						,pstRegStruct.stRegStruct[i].lCod_Cliente
+						,pstRegStruct.stRegStruct[i].lNum_Abonado
+						,pstRegStruct.stRegStruct[i].lCod_Carg	
+						,pstRegStruct.stRegStruct[i].lCantidad);
+
+			fprintf(Arch ,"%s", szRegistro);
+
+		}
+	}
+
+	sprintf (szRegistro,	"-----------------------------------------------------------------------\n"
+				"-----------------------------------------------------------------------\n"
+				"HORA TÉRMINO  : %s\n"
+				"-----------------------------------------------------------------------\n"
+				,cfnGetTime(1));
+
+	fprintf(Arch ,"%s", szRegistro);
+
+	fclose (Arch);
+
+	return (TRUE);
+}
+
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+    char 	modulo[]="main"		;
+    char 	*szUserid_Aux		;
+    extern	char *optarg        	;
+    char  	opt[]=":u:c:l:" 	;
+    int   	iOpt =0             	;
+    int   	sts			;
+    char  	szHelpString[1024] = " ";    
+    char        szaux[10]  	= "" 	;
+    
+
+    memset(&stLineaComando,0    ,sizeof(LINEACOMANDOPRELIMINAR));
+
+
+    sprintf(szHelpString,"\n Argumentos de entrada de proceso : "
+    				"\n\t -u Usuario/Password                               "
+    				"\n\t -c Codigo de Ciclo de facturacion			"    				
+    				"\n\t -l Nivel de Log				   	\n");
+
+    while ( (iOpt = getopt(argc,argv,opt)) != EOF)
+    {
+        switch(iOpt)
+        {
+		case 'u':
+			strcpy(stLineaComando.szUsuario, optarg);
+			if((szUserid_Aux=(char *)strstr(stLineaComando.szUsuario,"/")) == (char *)NULL)
+			{
+				fprintf(stderr, "\nUsuario Oracle no es valido.\n");
+				return(1);
+			}
+			else
+			{
+				strncpy(stLineaComando.szUser,stLineaComando.szUsuario, szUserid_Aux-stLineaComando.szUsuario);
+				strcpy(stLineaComando.szPass, szUserid_Aux+1);
+				fprintf (stdout," -u?/? ");
+			}
+			break;
+
+
+		case 'c':
+                	if (strlen (optarg))
+                	{
+	                    strcpy(szaux,optarg);
+	                    stLineaComando.lCodCiclo = atol(szaux);
+	                    fprintf (stdout,"-c %ld ", stLineaComando.lCodCiclo);
+	                }
+	                break;
+                
+		case 'l':
+			if (strlen (optarg) )
+			{
+				stStatus.LogNivel =(atoi (optarg) > 0)? atoi (optarg):iLOGNIVEL_DEF ;
+				fprintf (stdout,"-l%d ", stStatus.LogNivel)     ;
+			}
+			break;
+
+        }/*End Switch */
+
+    } /* End While */
+    fprintf (stdout,"\n");
+
+    /* Validacion de Parametros */
+	if (stLineaComando.lCodCiclo == 0)
+	{
+		fprintf (stderr, "\n\t# Faltan Parametros de Entrada:\n%s\n", szHelpString);
+		return 1;
+	}
+
+
+	if (stStatus.LogNivel <= 0) stStatus.LogNivel = iLOGNIVEL_DEF;
+
+	stLineaComando.iNivLog = stStatus.LogNivel;
+
+    	if(!bfnConnectORA(stLineaComando.szUser,stLineaComando.szPass))
+    	{
+        	fprintf(stderr, "\n\tUsuario/Passwd Invalido\n\t\t"
+                		"' <usuario> <passwd> '\n");
+        	return (2);
+    	}
+    	else
+    	{
+        	printf( "\n\t-------------------------------------------------------"
+                	"\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx "
+                	"\n\t-------------------------------------------------------\n",
+	                stLineaComando.szUser);
+    	}
+
+
+
+	
+	
+	/* iCODPROCVALIDACONCE (2999) es cod_proceso del proceso ValidaConce */
+
+	/*if (!bfnValidaTrazaProc(stLineaComando.lCodCiclo, iCODPROCVALIDACONCE, 1 )) */
+	if (!bfnValidaTrazaProc(stLineaComando.lCodCiclo, iCODPROCVALIDACONCE, iIND_FACT_ENPROCESO))
+    	{
+    		printf ("FALLO VALIDATRAZAPROC \n");
+       		return(FALSE);
+	}
+	else
+	{
+		stTrazaProc.lCodCiclFact = stLineaComando.lCodCiclo;
+		sprintf (stTrazaProc.szFecInicio ,"%s000000",  cfnGetTime(2));
+	}
+
+
+
+    	/**************************************************************************************/
+    	/* Crear archivos y directorios de log y errores */
+
+    	sts = ifnAbreArchivosLog();
+
+
+    	if ( sts != 0 ) return sts;
+
+    	/*********************************************************************************************/
+
+    	vDTrazasLog  ( modulo ,"\n\n\t**********************************************"
+                           "\n\n\t****           Log ValidaConce          **"
+                           "\n\n\t**********************************************"
+                           ,LOG03);
+
+    	vDTrazasLog  ( modulo ,"\n\t\t***  Parametro de Entrada ValidaConce  ***"
+                           "\n\t\t=> Usuario               	[%s]"
+                           "\n\t\t=> Mes			[%ld]"
+                           "\n\t\t=> Año			[%ld]"
+                           "\n\t\t=> Niv.Log              	[%d]"
+                           ,LOG03
+                           ,stLineaComando.szUser
+                           ,stLineaComando.lMes
+                           ,stLineaComando.lAno
+                           ,stLineaComando.iNivLog);
+
+    	/************************************************************************************/
+    	/*			Proceso Principal						*/
+    	/************************************************************************************/
+
+    	strcpy(modulo,"ValidaConce");
+
+    	vDTrazasLog(modulo,"\n\t\t***  Inicio Proceso principal  ***", LOG03);
+
+	vDTrazasLog(modulo,"\n\t\t*** Verificacion de Impuestos en Cero***\n", LOG03);
+
+
+    	vDTrazasLog(modulo,"\n\t\t*** Inicio del Cargado de Estructuras***\n", LOG03);
+
+
+	if (!bfnCargaEstructuras())
+	{
+		vDTrazasLog  (modulo,"\n\t*** ATENCION ***\n\t\t\t Error en la carga de las Estructuras***\n", LOG01);
+		vDTrazasError(modulo,"\n\t*** ATENCION ***\n\t\t\t Error en la carga de las Estructuras***\n", LOG01);
+	        return (FALSE);
+	}
+	vDTrazasLog(modulo,"\n\t\t*** Inicio Ejecucion Generacion de Reportes***\n", LOG03);
+
+
+	if (!bfnGeneraReporte())
+	{
+		vDTrazasLog  (modulo,"\n\t*** ATENCION ***\n\t\t\t Error en la ejecucion de la Generacion de reporte***\n", LOG01);
+		vDTrazasError(modulo,"\n\t*** ATENCION ***\n\t\t\t Error en la ejecucion de la Generacion de reporte***\n", LOG01);
+	        return (FALSE);
+	}
+	
+	
+	if (stTrazaProc.lCodCiclFact > 0)
+	{
+		
+		printf ("\tEntro al traza final \n");
+		if (!bfnSelectSysDate(szSysDate))
+			vDTrazasLog(modulo,"\n\t*** Error en bfnSelectSysDate (Main) ***\n",LOG01); 
+		else
+		{
+			stTrazaProc.iCodEstaProc       	= iPROC_EST_OK; /* 3 ; */
+			strcpy(stTrazaProc.szFecTermino	,szSysDate);
+			strcpy(stTrazaProc.szGlsProceso	,"Proceso Validacion de Conceptos Terminado OK");
+			stTrazaProc.lCodCliente        	= 0  ;
+			stTrazaProc.lNumAbonado        	= 0  ;
+			stTrazaProc.lNumRegistros      	= 0  ;
+			stTrazaProc.iCodProceso      	= iCODPROCVALIDACONCE;
+			
+			bPrintTrazaProc(stTrazaProc);
+			if (!bfnUpdateTrazaProc(stTrazaProc))
+				return (FALSE);
+		}
+	}
+
+
+
+
+    	if (!bfnOraCommit ())
+    	{
+        	vDTrazasError(modulo," en Commit", LOG01);
+        	vDTrazasLog  (modulo," en Commit", LOG01);
+        	return FALSE;
+    	}
+    	
+    	
+    	
+    	
+
+	if(!bfnDisconnectORA(0))
+	{
+		vDTrazasLog  ( modulo ,	"\n\t--------------------------------------------"
+					"\n\t ERROR en Desconeccion de  ORACLE  = finaliza"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+		vDTrazasError( modulo ,	"\n\t--------------------------------------------"
+					"\n\t ERROR en Desconeccion de  ORACLE  = finaliza"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+	}
+    	else
+    	{
+		vDTrazasLog  ( modulo,	"\n\t--------------------------------------------"
+					"\n\tDesconectado de  ORACLE"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+		vDTrazasError( modulo, 	"\n\t--------------------------------------------"
+					"\n\tDesconectado de  ORACLE"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+
+	}
+
+
+    return (0);
+}/* ********************* Fin Main * *************************************** */
+
+/* ******************************************************************************** */
+/* ifnAbreArchivosLog : Crea para escritura o appendea archivos de Log y de Errores */
+/* ******************************************************************************** */
+int ifnAbreArchivosLog(void)
+{
+	char modulo[]="ifnAbreArchivosLog";
+
+	char *pathDir;
+	char szArchivo[32]="";
+	char szPath[128]="";
+	char szComando[128]="";
+	char szRechazadosName[32];
+
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	sprintf(szArchivo,"ValidaConce");
+
+	pathDir=(char *)malloc(128);
+	pathDir=szGetEnv("XPF_LOG");
+	sprintf(szPath,"%s/ValidaConce/%s",pathDir,cfnGetTime(2));
+	free(pathDir);
+
+	fprintf(stdout, "\nCrea Directorio Log  : %s\n", szPath);
+	sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+
+	fprintf(stdout, "\nCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+	sprintf(stStatus.ErrName,"%s/%s_%s.err",szPath,szArchivo,cfnGetTime(5));
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"w")) == (FILE*)NULL )
+	{	fprintf(stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		return -7;
+	}
+
+	vDTrazasError(modulo, "%s  << Abre Archivo de Errores >>", LOG04, cfnGetTime(1));
+
+	sprintf(stStatus.LogName,"%s/%s_%s.log",szPath,szArchivo,cfnGetTime(5));
+	if((stStatus.LogFile = fopen(stStatus.LogName,"w")) == (FILE*)NULL )
+	{	fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+		vDTrazasError(modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+		return -8;
+	}
+
+	vDTrazasLog(modulo, "%s << Abre Archivo de Log >>", LOG04, cfnGetTime(1));
+
+
+	vDTrazasLog(modulo, "%s << Inicio de ValidaConce >>" , LOG03, cfnGetTime(1));
+
+	return 0;
+
+
+} /* Fin ifnAbreArchivosLog  */

@@ -1,0 +1,12 @@
+CREATE OR REPLACE TRIGGER GR_BEIN_AUDITORIA
+BEFORE INSERT
+ON GR_AUDITORIA
+FOR EACH ROW
+
+DECLARE
+BEGIN
+:new.fec_emision_dh:=sysdate;
+:new.fec_emision_d:=trunc(sysdate);
+END;
+/
+SHOW ERRORS

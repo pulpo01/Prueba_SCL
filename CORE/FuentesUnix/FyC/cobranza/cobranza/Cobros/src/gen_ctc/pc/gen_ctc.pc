@@ -1,0 +1,425 @@
+/*	
+	Aplicacion : gen_ctc
+  	Funcion    : Genera archivo maestro de Saldo que son enviados a CTC
+  	             conteniendo informacion internet (Datos de Clientes, Saldos, Cantidad Docs)
+  	             1 Registro por Cliente.
+  	             Actualmente se ejecuta 1 vez por semana.
+	Autor	   : Desconocido
+	Revision   : 02-Feb-2000 R.B.R. : Agrega Comentarios explicativos
+				 04-Feb-2000 R.B.R. : Cambia Tip_documen = 2 por tip_movimien=1,2,18,23
+				 07-Feb-2000 R.B.R. : Revision de fallo de ejecucion en Produccion (agrego printf)
+				 07-Jun-2000 R.B.R. : Cambio formato salida del Rut, llenando con 0 en lugar de espacios
+				                      por la izquierda en el campo rut. ( %10s --> %010s )
+*/
+
+/***************************************************************************/
+/* Programa MAESTROS */
+/***************************************************************************/
+#include "gen_ctc.h"
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <GenORA.h>
+/***************************************************************************/
+EXEC SQL INCLUDE sqlca;
+/***************************************************************************/
+
+int main(int argc, char *argv[])
+{
+	int paso;
+	
+	printf( "\n\n\n\n\n\n\n\n"
+			"\n\t\t\t ************************* "
+			"\n\t\t\t *                       * "
+			"\n\t\t\t *  GENERANDO ARCHIVOS   * "
+			"\n\t\t\t *        PLANOS         * "
+			"\n\t\t\t *                       * "
+			"\n\t\t\t ************************* "
+			"\n\n\n\n\n\n\n" );
+	
+	fprintf(stdout,"\n<< Conectandose a la Base de Datos >>\n");
+	
+	if (ifnConnectORA("cobranza","cobranza")) /*rbr*/
+	{
+		fprintf(stdout,"no hay conexion \n");
+	}
+	else
+	{
+		paso=ifnGenerarSaldo();
+	}
+	
+	paso = ifnDisConnORA(); 
+	
+	printf( "\n\n\n\n\n\n\n\n"
+			"\n\t\t\t ************************* "
+			"\n\t\t\t *                       * "
+			"\n\t\t\t *    FIN DEL PROCESO    * "
+			"\n\t\t\t *                       * "
+			"\n\t\t\t *                       * "
+			"\n\t\t\t ************************* "
+			"\n\n\n\n\n\n\n" );
+
+        return 0;
+}
+
+/***************************************************************************/
+/* ifnGenerarSaldo()                                                         */
+/***************************************************************************/
+int ifnGenerarSaldo()
+{
+	 int paso				;
+	 int iDis				;
+	 int iLen				;
+	 int res = 1			;
+	 int res2				;
+	long tot_clientes = 0	;
+	long tot_validos = 0	;
+	char *szTemp			;
+	FILE *salida			;
+	FILE *salida_log		;
+	char g_digito[2]		;
+	
+	 int iAux = 0			; /*rbr*/
+	
+	EXEC SQL BEGIN DECLARE SECTION; 
+		long g_cod_cliente			; 
+		long g_cod_tipdocum			; 
+		char g_num_ident[12]		; EXEC SQL VAR g_num_ident IS STRING(12)		;
+		char g_nombre[36]			; EXEC SQL VAR g_nombre IS STRING(36)			;
+		long g_importe				; 
+		long g_num_celular			; 
+		 int g_cod_ciclo			; 
+		char g_fec_vencimiento[7]	; EXEC SQL VAR g_fec_vencimiento IS STRING(7)	;
+		char g_fec_emision[7]		; EXEC SQL VAR g_fec_emision IS STRING(7)		;
+		long g_num_folio			; 
+		long g_cod_oficina			; 
+		char g_des_oficina[20]		; EXEC SQL VAR g_des_oficina IS STRING(20)		;
+		long g_cod_cuenta			; 
+		char g_des_cuenta[20]		; EXEC SQL VAR g_des_cuenta IS STRING(20)		;
+		char g_tip_cuenta[2]		; EXEC SQL VAR g_tip_cuenta IS STRING(2)		;
+		char g_nom_responsable[20]	; EXEC SQL VAR g_nom_responsable IS STRING(20)	;
+		char g_num_ident_cuenta[12]	; EXEC SQL VAR g_num_ident_cuenta IS STRING(12)	;
+		char g_tel_contacto[13]		; EXEC SQL VAR g_tel_contacto IS STRING(13)		;
+		char g_cod_banco[4]			; EXEC SQL VAR g_cod_banco IS STRING(4)			;
+		long g_cod_direccion		; 
+		char g_des_region[15]		; EXEC SQL VAR g_des_region IS STRING(15)		;
+		char g_des_provincia[15]	; EXEC SQL VAR g_des_provincia IS STRING(15)	;
+		char g_des_ciudad[16]		; EXEC SQL VAR g_des_ciudad IS STRING(16)		;
+		char g_des_comuna[16]		; EXEC SQL VAR g_des_comuna IS STRING(16)		;
+		char g_nom_calle[17]		; EXEC SQL VAR g_nom_calle IS STRING(17)		;
+		char g_num_calle[7]			; EXEC SQL VAR g_num_calle IS STRING(7)			;
+		char g_num_piso[15]			; EXEC SQL VAR g_num_piso IS STRING(15)			;
+		char g_num_casilla[15]		; EXEC SQL VAR g_num_casilla IS STRING(15)		;
+		long g_cod_evento			; 
+		long g_num_abonado			; 
+		long g_cod_comuna			; 
+		long g_cod_ciudad			; 
+		long g_cod_vendedor			; 
+		char g_nom_vendedor[40]		; EXEC SQL VAR g_nom_vendedor IS STRING(40)		;
+		char g_num_contrato[19]		; EXEC SQL VAR g_num_contrato IS STRING(19)		;
+		char g_fec_alta[7]			; EXEC SQL VAR g_fec_alta IS STRING(7)			;
+		char g_fec_actcen[7]		; EXEC SQL VAR g_fec_actcen IS STRING(7)		;
+		 int g_cod_producto			; 
+		char g_num_ctc[12]			; EXEC SQL VAR g_num_ctc IS STRING(12)			;
+		 int g_cantidad				; 
+		long g_num_secuenci			; 
+	  double g_num_ident_aux		; 
+		char g_num_paso[12]			; EXEC SQL VAR g_num_paso IS STRING(12)			;
+		char g_Auxiliar[25]			; EXEC SQL VAR g_Auxiliar IS STRING(25)			; /*rbr*/
+	EXEC SQL END DECLARE SECTION; 
+	
+	fprintf(stdout,"\n<< Preparando archivos de Salida >>\n");
+
+	res=1;
+	
+	if ((salida=fopen("/users1/proyectos/siscel/startel/cobros/unix/log/deudactc.txt","w")) == (FILE *)NULL)
+/*	if ((salida=fopen("deudactc.txt","w")) == (FILE *)NULL)*/
+	{
+		fprintf(stdout,"error abriendo fichero\n");
+		return -1;
+	}
+	
+	if ((salida_log=fopen("/users1/proyectos/siscel/startel/cobros/unix/log/deudactc.log","w")) == (FILE *)NULL) 
+/*	if ((salida_log=fopen("deudactc.log","w")) == (FILE *)NULL)*/
+	{
+		fprintf(stdout,"error abriendo fichero log\n");
+		return -1;
+	}
+	else
+	{
+		fprintf(salida_log,"=============================\n"
+		                   "Resumen Ejecucion Proceso CTC\n"
+		                   "=============================\n"
+		                   "Usuario  : MCAROR            \n"
+		                   "Se inicia proceso de Creacion\n" );
+	}
+	
+	
+	
+	EXEC SQL SELECT TO_CHAR(SYSDATE,'DD/MM/YYYY HH24:MI:SS')
+	           INTO :g_Auxiliar
+	           FROM DUAL;
+	           
+	printf("\n<< Inicio Ejecucion : %s >>\n",g_Auxiliar);
+	fprintf(salida_log, "\n<< Inicio Ejecucion : %s >>\n",g_Auxiliar);
+
+	
+	EXEC SQL DECLARE C_CUENTA CURSOR FOR
+	          SELECT COD_CLIENTE
+	               , sum( IMPORTE_DEBE - IMPORTE_HABER ) 
+	            FROM CO_CARTERA
+	            WHERE FEC_VENCIMIE < SYSDATE
+	        GROUP BY COD_CLIENTE;
+	
+	if (sqlca.sqlcode) /* (SQLCODE) : error al declarar cursor SQLERRM */
+	{
+		fprintf(salida_log, "error: al declarar cursor\n%s ",sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+
+	EXEC SQL OPEN C_CUENTA; 
+	
+	if (sqlca.sqlcode) /* (SQLCODE) : error al abrir cursor SQLERRM */
+	{
+		fprintf(salida_log, "error: al abrir el cursor\n%s ",sqlca.sqlerrm.sqlerrmc);
+		return -1;
+	}
+	
+	while (res ==1)
+	{
+		
+		EXEC SQL FETCH C_CUENTA
+		          INTO :g_cod_cliente
+		             , :g_importe ; 
+		
+		if (sqlca.sqlcode == NOT_FOUND)		/*(SQLCODE == SQLNOTFOUND)*/
+		{
+			fprintf(salida_log, "\nUltimo Cliente: %ld \n", g_cod_cliente);
+			fprintf(salida_log, "sqlca.sqlcode :%d \n",sqlca.sqlcode); 
+			res=0;
+		}	 /* else if (SQLCODE) {}*/
+		else /* SQLCODE == SQLOK */
+		{
+			tot_clientes ++;
+			g_cod_ciclo    = 0;
+			g_num_celular  = 0;
+			strcpy(g_cod_banco, "");
+
+			/*
+			printf("*");
+			if (iAux++ == 79) 
+			{
+				printf("\n");
+				iAux=0;
+			}
+			*/ /* rbr */
+			
+			EXEC SQL SELECT COD_CICLO
+			              , NUM_IDENT
+			              , NOM_CLIENTE||' '||NOM_APECLIEN1||' '||NOM_APECLIEN2
+			              , COD_OFICINA
+			              , COD_CUENTA
+			              , nvl(TEF_CLIENTE1,'00000000')
+			           INTO :g_cod_ciclo
+			              , :g_num_ident
+			              , :g_nombre
+			              , :g_cod_oficina
+			              , :g_cod_cuenta
+			              , :g_tel_contacto
+			           FROM GE_CLIENTES
+			          WHERE COD_CLIENTE = :g_cod_cliente; 
+	          
+	          		
+	          		strcpy(g_tel_contacto, "AGRUPADA");
+	          			          		
+	          		/* Si tiene mas de un celular se pone AGRUPADA */ 
+	          		
+	          		EXEC SQL
+	          		select num_celular  into :g_tel_contacto 
+	          		from ga_abocel a
+			where a.cod_cliente = :g_cod_cliente
+			and    exists (select count(*) from ga_abocel b
+	  	  	                        where a.cod_cliente=b.cod_cliente having count(*)  < 2);
+			
+				          	
+			/* if (SQLCODE) Error en la seleccion */
+		
+			EXEC SQL SELECT COD_DIRECCION
+			           INTO :g_cod_direccion
+			           FROM GA_DIRECCLI
+			          WHERE COD_CLIENTE = :g_cod_cliente
+			            AND COD_TIPDIRECCION = 3;
+			
+			/* if (SQLCODE) Error en la seleccion */
+			
+			EXEC SQL SELECT g2.DES_REGION
+			              , g3.DES_PROVINCIA
+			              , g4.COD_CIUDAD
+			              , g4.DES_CIUDAD
+			              , g5.COD_COMUNA
+			              , ltrim(g5.DES_COMUNA)
+			              , g1.NOM_CALLE
+			              , g1.NUM_CALLE
+			              , g1.NUM_PISO
+			              , g1.NUM_CASILLA 
+			           INTO :g_des_region
+			              , :g_des_provincia
+			              , :g_cod_ciudad
+			              , :g_des_ciudad
+			              , :g_cod_comuna
+			              , :g_des_comuna
+			              , :g_nom_calle
+			              , :g_num_calle
+			              , :g_num_piso
+			              , :g_num_casilla 
+			           FROM GE_DIRECCIONES g1 
+			              , GE_REGIONES g2
+			              , GE_PROVINCIAS g3
+			              , GE_CIUDADES g4
+			              , GE_COMUNAS g5
+			          WHERE g1.COD_DIRECCION = :g_cod_direccion
+			            AND g1.COD_REGION    = g2.COD_REGION 
+			            AND g1.COD_REGION    = g3.COD_REGION
+			            AND g1.COD_PROVINCIA = g3.COD_PROVINCIA 
+			            AND g1.COD_REGION    = g4.COD_REGION 
+			            AND g1.COD_PROVINCIA = g4.COD_PROVINCIA 
+			            AND g1.COD_CIUDAD    = g4.COD_CIUDAD 
+			            AND g1.COD_REGION    = g5.COD_REGION 
+			            AND g1.COD_PROVINCIA = g5.COD_PROVINCIA 
+			            AND g1.COD_COMUNA    = g5.COD_COMUNA;
+	           
+			/* if (SQLCODE) Error en la seleccion */
+
+			res2 = 1;
+			g_cantidad = 0;
+			
+			EXEC SQL DECLARE C_CUENTA2 CURSOR FOR
+			          SELECT NUM_SECUENCI
+			            FROM CO_CARTERA
+			           WHERE COD_TIPDOCUM IN (  /* antes 2 */
+			              						SELECT COD_TIPDOCUM
+												  FROM FA_TIPMOVIMIEN
+												 WHERE COD_TIPMOVIMIEN IN (1,2,18)
+												 UNION
+												SELECT 23
+												  FROM DUAL
+			                                  )
+			             AND COD_CLIENTE  = :g_cod_cliente
+			        GROUP BY NUM_SECUENCI; 
+			
+			/* if (SQLCODE) Error en la declaracion */
+			
+			EXEC SQL OPEN C_CUENTA2; 
+			
+			
+			if (sqlca.sqlcode) /* if (SQLCODE) Error en la apertura */
+			{
+				return -1;
+			}
+			
+			while (res2 ==1)
+			{
+			
+				EXEC SQL FETCH C_CUENTA2
+				          INTO :g_num_secuenci;
+			
+				
+				if (sqlca.sqlcode == NOT_FOUND) /*(SQLCODE == SQLNOTFOUND)*/
+				{
+					res2=0;
+				}/* else if (SQLCODE){}	*/
+				else /* SQLCODE == SQLOK */
+				{
+					g_cantidad++;
+				}
+			
+			} /* endwhile */
+			
+			EXEC SQL CLOSE C_CUENTA2;
+
+			/* if (SQLCODE) Error en cierre */
+						
+	
+					
+			iLen = strlen(g_num_ident);
+			g_digito[0] = g_num_ident[iLen - 1];
+			
+			if (g_num_ident[iLen-2] == '-')
+			{
+				g_num_ident[iLen-2] = '\0';
+			}
+			else
+			{
+				g_num_ident[iLen-1] = '\0';
+			}
+			
+			g_digito[1] = '\0';
+			
+			g_tel_contacto[8] = '\0';
+	
+			if ( g_importe > 0 ) 
+			{
+				if (g_cantidad > 1)
+				{
+					tot_validos ++;
+					fprintf(salida,"%010s%1s%35s%16s%6s%4s%4s%15s%15s%15s%2s%08s%02d%010d%2s%3s\n"
+					              , g_num_ident         , g_digito         , g_nombre             
+					              , g_nom_calle         , g_num_calle      , "    "               
+					              , "    "              , g_des_ciudad     , g_des_comuna         
+					              , "               "   , "00"             , g_tel_contacto 
+					              , g_cantidad          , g_importe        , "00"                 
+					              , "602" ); 
+				    fflush(salida);
+				} 
+			}
+			 
+		} 
+	}/* endwhile */
+
+	EXEC SQL CLOSE C_CUENTA;
+	
+	fprintf(salida_log,"Clientes Tratados: %ld \n"
+	                   "Clientes Validos : %ld \n"
+	                   "==============================\n"
+	                  , tot_clientes, tot_validos);
+
+
+	EXEC SQL SELECT TO_CHAR(SYSDATE,'DD/MM/YYYY HH24:MI:SS')
+	           INTO :g_Auxiliar
+	           FROM DUAL;
+	           
+	printf("\n<< Termino Ejecucion : %s >>\n",g_Auxiliar);
+	fprintf(salida_log, "\n<< Termino Ejecucion : %s >>\n",g_Auxiliar);
+
+
+	fclose(salida);
+	fclose(salida_log);
+	
+	return 0;
+} 
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

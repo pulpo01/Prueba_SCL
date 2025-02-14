@@ -1,0 +1,956 @@
+/*****************************************************************************/
+/* Fichero    :  prebilbaj.pc                                                */ 
+/* Descripcion:  Realiza el prebilling para una solicitud de baja de abonado */
+/* Autor      :  Javier Garcia Paredes                                       */
+/* Fecha      :  22-04-97                                                    */
+/*****************************************************************************/
+#define _PREBILBAJ_PC_
+
+#include <prebilbaj.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/* ------------------------------------------------------------------------- */
+/*    bPreBillingClienteBajaAbo (long,int)                                   */
+/*      Valores Retorno: FALSE - Error                                       */
+/*                       TRUE  - Ningun Error                                */
+/* ------------------------------------------------------------------------- */
+BOOL bfnPreBillingClienteBajaAbo (long  lCodCliente ,
+                                  int   iCodCiclo   ,
+                                  long  lNumAbonado ,
+                                  int   iCodProducto,
+                                  long  lNumAlquiler,
+                                  long  lNumEstaDia ,
+                                  int   iTipoFact)
+{
+   /* Se inicializa la estructura de anomalias */
+   memset (&stAnomProceso,0,sizeof(ANOMPROCESO));
+   vInitEstructuras ()                          ;
+
+   stAnomProceso.lCodCliente = lCodCliente ;
+   stAnomProceso.lNumAbonado = lNumAbonado ;
+   stAnomProceso.iCodProducto= iCodProducto;
+
+
+   if (iTipoFact == FACT_BAJA)
+   {
+       strcpy (stAnomProceso.szDesProceso,"PreBilling Baja");
+
+       vDTrazasLog   (szExeName,"\n\t\t******* FACTURA BAJA *******\n"
+                                "\t\t=> Cliente      [%ld]\n"
+                                "\t\t=> Ciclo        [%d] \n"
+                                "\t\t=> Cod.CiclFact [%ld]\n"
+                                "\t\t=> Num.Abonado  [%ld]\n"
+                                "\t\t=> Cod.Producto [%d] \n",LOG03,
+                                lCodCliente,iCodCiclo,stCiclo.lCodCiclFact,
+                                lNumAbonado,iCodProducto);
+
+       vDTrazasError (szExeName,"\n\t\t******* FACTURA BAJA *******\n"
+                                "\t\t=> Cliente      [%ld]\n"
+                                "\t\t=> Ciclo        [%d] \n"
+                                "\t\t=> Cod.CiclFact [%ld]\n"
+                                "\t\t=> Num.Abonado  [%ld]\n"
+                                "\t\t=> Cod.Producto [%d] \n",LOG03,
+                                lCodCliente,iCodCiclo,stCiclo.lCodCiclFact,
+                                lNumAbonado,iCodProducto);
+   }
+   else if (iTipoFact == FACT_LIQUIDACION)
+   {
+       strcpy (stAnomProceso.szDesProceso,"PreBilling Liquidacion");
+
+       vDTrazasLog   (szExeName,"\n\t\t******* FACTURA LIQUIDACION *******\n"
+                                "\t\t=> Cliente      [%ld]\n"
+                                "\t\t=> Ciclo        [%d] \n"
+                                "\t\t=> Num.Abonado  [%ld]\n"
+                                "\t\t=> Cod.Producto [%d] \n",LOG03,
+                                lCodCliente,iCodCiclo,lNumAbonado,iCodProducto);
+
+       vDTrazasError (szExeName,"\n\t\t******* FACTURA LIQUIDACION *******\n"
+                                "\t\t=> Cliente      [%ld]\n"                  
+                                "\t\t=> Ciclo        [%d] \n"                  
+                                "\t\t=> Num.Abonado  [%ld]\n"                  
+                                "\t\t=> Cod.Producto [%d] \n",LOG03,           
+                                lCodCliente,iCodCiclo,lNumAbonado,iCodProducto);
+   }
+
+   if (iTipoFact == FACT_RENTAPHONE || iTipoFact == FACT_ROAMINGVIS)
+   {
+       if (iTipoFact == FACT_RENTAPHONE)
+       {
+	       strcpy (stAnomProceso.szDesProceso,"PreBilling Renta Phone");
+	
+	       vDTrazasLog   (szExeName,"\n\t\t******* FACTURA RENTA PHONE  *******\n"
+	                                "\t\t=> Cliente      [%ld]\n"
+	                                "\t\t=> Num.Abonado  [%ld]\n"
+	                                "\t\t=> Num.Alquiler [%ld]\n",LOG03,
+	                                lCodCliente,lNumAbonado,lNumAlquiler);
+	       vDTrazasError (szExeName,"\n\t\t******* FACTURA RENTA PHONE  *******\n"
+	                                "\t\t=> Cliente      [%ld]\n"
+	                                "\t\t=> Num.Abonado  [%ld]\n"
+	                                "\t\t=> Num.Alquiler [%ld]\n",LOG03,
+	                                lCodCliente,lNumAbonado,lNumAlquiler);
+           if (!bfnGetInfacRent (lCodCliente ,
+                                 lNumAbonado ,
+                                 lNumAlquiler,
+                                 &stCliente.pAboRent))
+                return FALSE;
+           stCliente.iNumAbonados = 1;
+
+           if (!bfnGetIntaRent  (lCodCliente ,
+                                 stCliente.pAboRent[0].lNumAbonado ,
+                                 stCliente.pAboRent[0].lNumAlquiler,
+                                 &stCliente.lCodPlanCom))
+                return FALSE;
+       }
+       else if (iTipoFact == FACT_ROAMINGVIS)
+       {
+	       vDTrazasLog (szExeName,
+	                    "\n\t\t******* FACTURA ROAMING VISITANTE *******\n"
+	                    "\n\t\t=> Cliente     [%ld]"
+	                    "\n\t\t=> Num.Abonado [%ld]"
+	                    "\n\t\t=> Num.Esta.Dia[%ld]",LOG03,
+	                    lCodCliente,lNumAbonado,lNumEstaDia);
+	       vDTrazasError(szExeName,
+	                    "\n\t\t******* FACTURA ROAMING VISITANTE *******\n"
+	                    "\n\t\t=> Cliente     [%ld]"
+	                    "\n\t\t=> Num.Abonado [%ld]"
+	                    "\n\t\t=> Num.Esta.Dia[%ld]",LOG03,
+	                    lCodCliente,lNumAbonado,lNumEstaDia);
+           if (!bfnGetInfacRoaVis (lCodCliente ,
+                                   lNumAbonado ,
+                                   lNumEstaDia , 
+                                   &stCliente.pAboRoaVis))
+                return FALSE;
+       } 
+   }
+   else
+   {
+       memset (&stAbonoCli,0,sizeof(ABONOCLI));
+       if (!bfnCargaCicloCli (lCodCliente ,iCodCiclo,lNumAbonado,
+                              iCodProducto,iTipoFact))
+            return FALSE;
+       
+       memset (&stFactCli,0,sizeof(FACTCLI));
+
+       if (!bfnGetIndCliente (&stFactCli))
+            return FALSE;
+       if (iTipoFact == FACT_BAJA)
+       {
+           if (!bfnCargaCuotasBaja ())
+                return FALSE;
+       }
+   }
+   /* Carga en memoria datos Modulos */
+   if(!bfnInterfazModulosBaja (lNumAbonado,iCodProducto,iTipoFact)) 
+       return FALSE   ;
+
+   /* Paso a tablas datos Modulos */
+   if(!bfnPreEmisionModulosBaja (iTipoFact)) 
+       return FALSE;
+   if (stPreFactura.iNumRegistros > 0)
+   {
+       /* Calculo de Impuestos */
+       if(!bImptosIvaClienteGeneral(iTipoFact))
+       {
+           vDTrazasError(szExeName,"Procesando Impuestos incompleto\n",LOG01); 
+           vDTrazasLog  (szExeName,"Procesando Impuestos incompleto\n",LOG01);
+           return FALSE;
+       }
+       if (!bfnPasoHistoricos ())
+       {
+            vDTrazasLog   (szExeName,
+                           "Proceso Paso a Historicos Impcompleto\n",LOG01);
+            vDTrazasError (szExeName,
+                           "Proceso Paso a Historicos Impcompleto\n",LOG01);
+            return FALSE;
+       }
+   }
+   return TRUE;
+}/*************************** Final bPreBillingClienteBajaAbo ****************/
+
+/* ------------------------------------------------------------------------- */
+/*    bInterfazModulosBaja (int)                                             */
+/*      Valores Retorno: FALSE - Error                                       */
+/*                       TRUE  - Ningun Error                                */
+/* ------------------------------------------------------------------------- */
+static BOOL bfnInterfazModulosBaja (long lNumAbonado ,
+                                    int  iCodProducto,
+                                    int  iTipoFact)
+{
+  VENTAS       stVenta          ;
+  TRANSCONTADO stTransC         ;
+  long         lNumA        = -1;
+  int          iUltimoAbono =  0;
+  int          iIndActuac   =  0;
+  int          iIndPenaliza =  0;
+
+  memset (&stVenta ,0,sizeof(VENTAS))      ;
+  memset (&stTransC,0,sizeof(TRANSCONTADO));
+
+  if (iTipoFact == FACT_BAJA)
+  {
+      /****************************************************************/
+      /* Se deben ejecutar en Orden : 1. Abonos 2. Trafico            */
+      /****************************************************************/
+      if (!bIFAbonos (stAbonoCli,FACT_BAJA))
+           return FALSE;
+      if (!bfnIFTarificacion (FACT_BAJA))
+           return FALSE;
+      if (!bIFSac (FACT_BAJA, stCliente.iIndFactur,lNumAbonado,iCodProducto))
+           return FALSE;
+      if (!bIFCargos(stVenta,stTransC,lNumAbonado,iCodProducto,FACT_BAJA))
+           return FALSE;
+      if (!bfnUltimoAbono (stCliente.lCodCliente,stCiclo.iCodCiclo,
+                         lNumAbonado,&iUltimoAbono))
+      {
+           return FALSE;
+      }
+      else
+      {
+         if (iUltimoAbono == 0)
+         {
+             /* Penalizaciones a Nivel de Cliente */
+             if (stFactCli.iIndPenaliza == 1 && 
+                 !bIFSac (FACT_BAJA,stCliente.iIndFactur, -1,-1))
+                 return FALSE;
+
+             /* Cargos a Nivel de Cliente */
+             if (stFactCli.iIndCargos && 
+                 !bIFCargos (stVenta,stTransC,-1,-1,FACT_BAJA))
+                 return FALSE;
+
+             /* Pagare's a Nivel de Cliente */
+             if (stFactCli.iIndPagare &&
+                 !bIFPagares(stCliente.lCodCliente,-1,stCliente.iIndFactur,
+                             FACT_BAJA))
+                 return FALSE;
+          }
+       }
+  }
+  else if ( iTipoFact == FACT_LIQUIDACION ||
+      		iTipoFact == FACT_RENTAPHONE  ||
+      		iTipoFact == FACT_ROAMINGVIS) 
+  {
+      if (!bfnIFTarificacion (iTipoFact))
+           return FALSE;
+	  if (iTipoFact == FACT_RENTAPHONE ||
+	      iTipoFact == FACT_ROAMINGVIS)
+	  {
+	      /**********************************************************************/
+	      /* Si el IndActuac == BAJA        => Cargos, Penalizaciones, Trafico  */
+	      /* Si el IndActuac == LIQUIDACION => Trafico                          */
+	      /**********************************************************************/
+	      switch (iTipoFact)
+	      {
+	          case FACT_RENTAPHONE:
+	               lNumA        = stCliente.pAboRent->lNumAbonado ;
+	               iIndActuac   = stCliente.pAboRent->iIndActuac  ; 
+	               iIndPenaliza = stCliente.pAboRent->iIndPenaliza;
+	               break;
+	          case FACT_ROAMINGVIS:
+	               lNumA        = stCliente.pAboRoaVis->lNumAbonado;
+	               iIndActuac   = stCliente.pAboRoaVis->iIndActuac ;
+	               iIndPenaliza = stCliente.pAboRoaVis->iIndPenaliza;
+	               break;
+	      }
+	      if (iIndActuac == BAJA) 
+	      {
+	          if (!bIFCargos (stVenta                  ,
+	                          stTransC                 ,
+	                          lNumA                    ,
+	                          stDatosGener.iProdCelular,
+	                          iTipoFact))
+	               return FALSE;
+	          if (iIndPenaliza == 1)
+	          {
+	              if (!bIFSac (iTipoFact, stCliente.iIndFactur,
+	                           lNumA    , 
+	                           stDatosGener.iProdCelular))
+	                  return FALSE;
+	          }
+	      }
+	  }
+  }
+  return TRUE;
+
+}/*************************** Final bInterfazModulosBaja *********************/
+
+/* ------------------------------------------------------------------------- */
+/*    bPreEmisionModulosBaja (int)                                           */
+/*      Valores Retorno: FALSE - Error                                       */
+/*                       TRUE  - Ningun Error                                */
+/* ------------------------------------------------------------------------- */
+static BOOL bfnPreEmisionModulosBaja (int iTipoFact) 
+{
+   int iIndPenaliza = 0;
+   int iIndActuac   = 0;
+
+   if (iTipoFact == FACT_BAJA)
+   {
+       if (!bEMCargos ())
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Cargos");
+           return FALSE;
+       }
+       if (!bEMSac ())
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Penalizaciones");
+           return FALSE;
+       }
+       if (!bEMAbonos ())
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Abonos");
+           return FALSE;
+       }
+       if (!bEMServicios ())
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Servicios");
+           return FALSE;
+       }
+       if (!bfnEMTarificacion (iTipoFact))
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Consumos");
+           return FALSE;
+       }
+       if (!bEMCuotas ())
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Cuotas");
+           return FALSE;
+       }
+  }
+  else if (iTipoFact == FACT_LIQUIDACION)
+  {
+       /*********************************************************************/
+       /* En Factura de Liquidacion solo puede haber un reg. en Fa_CicloCli */
+       /*********************************************************************/
+       if (!bfnGetDatosGaInfac (&stAbonoCli.pCicloCli[0]))
+            return FALSE;
+       if (!bfnGetDatosGaIntar (stAbonoCli.pCicloCli[0].lCodCliente ,
+                                stAbonoCli.pCicloCli[0].lNumAbonado ,
+                                stAbonoCli.pCicloCli[0].iCodProducto,
+                                &stCliente.lCodPlanCom))
+            return FALSE;
+
+       if (!bfnEMTarificacion (iTipoFact))
+       {
+           iDError (szExeName,ERR034,vInsertarIncidencia,"Consumos");
+           return FALSE;
+       }
+  }
+  else if (iTipoFact == FACT_RENTAPHONE || iTipoFact == FACT_ROAMINGVIS)
+  {
+      iIndActuac   = 
+      (iTipoFact == FACT_RENTAPHONE)?stCliente.pAboRent->iIndActuac:
+                                     stCliente.pAboRoaVis->iIndActuac;
+      iIndPenaliza =
+      (iTipoFact == FACT_RENTAPHONE)?stCliente.pAboRent->iIndPenaliza: 
+                                     stCliente.pAboRoaVis->iIndPenaliza;
+
+      if (iIndActuac == BAJA)
+      {
+          if (!bEMCargos ())
+               return FALSE;
+          if (iIndPenaliza == 1)
+          {
+              if (!bEMSac ())
+                   return FALSE;
+          }
+      }
+      if (!bfnEMTarificacion (iTipoFact))
+           return FALSE;
+  }
+  return TRUE;
+
+}/************************* Final bPreEmisionModuloBaja **********************/
+
+/*****************************************************************************/
+/*                          funcion : bCargaCicloCli                         */
+/*****************************************************************************/
+static BOOL bfnCargaCicloCli (long lCodCliente,int   iCodCiclo   ,
+                              long lNumAbonado,short iCodProducto,
+                              int  iTipoFact)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static char  szhRowid       [19];EXEC SQL VAR szhRowid        IS STRING(19);
+  static char  szhCodCalClien  [3];EXEC SQL VAR szhCodCalClien  IS STRING(3) ;
+  static char  szhNomUsuario  [21];EXEC SQL VAR szhNomUsuario   IS STRING(21);
+  static char  szhNomApellido1[21];EXEC SQL VAR szhNomApellido1 IS STRING(21);
+  static char  szhNomApellido2[21];EXEC SQL VAR szhNomApellido2 IS STRING(21);
+  static int   ihCodCredMor       ;
+  static char  szhIndDebito    [2];
+  static short shIndCambio        ;
+  static short i_shNomApellido2   ;
+  static short i_shCodCredMor     ;
+  static short i_shIndDebito      ;
+  static short i_shIndCambio      ;
+  static char  szFecUltFact   [15];
+  static int   ihNumProc     = 0  ;
+  EXEC SQL END DECLARE SECTION;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros Entrada Fa_CicloCli\n"
+                         "\t\t=> Cliente     [%ld]\n"
+                         "\t\t=> Ciclo       [%d] \n"
+                         "\t\t=> Num.Abonado [%ld]\n"
+                         "\t\t=> Cod.Producto[%d] \n",LOG04,
+                         lCodCliente,iCodCiclo,lNumAbonado,iCodProducto);
+  if (iTipoFact == FACT_BAJA)
+  {
+      EXEC SQL SELECT /*+ index (FA_CICLOCLI PK_FA_CICLOCLI) */
+                      ROWID        ,
+                      COD_CALCLIEN ,
+                      NOM_USUARIO  ,
+                      NOM_APELLIDO1,
+                      NOM_APELLIDO2,
+                      COD_CREDMOR  ,
+                      IND_DEBITO,
+                      NVL(TO_CHAR(FEC_ULTFACT,'YYYYMMDDHH24MISS'), ' ')
+               INTO   :szhRowid                        ,
+                      :szhCodCalClien                  , 
+                      :szhNomUsuario                   ,
+                      :szhNomApellido1                 ,
+                      :szhNomApellido2:i_shNomApellido2,
+                      :ihCodCredMor:i_shCodCredMor     ,
+                      :szhIndDebito:i_shIndDebito,
+                      :szFecUltFact
+               FROM   FA_CICLOCLI
+               WHERE  COD_CLIENTE  = :lCodCliente
+                 AND  COD_CICLO    = :iCodCiclo
+                 AND  COD_PRODUCTO = :iCodProducto
+                 AND  NUM_ABONADO  = :lNumAbonado
+                 AND  NUM_PROCESO  = :ihNumProc;
+  }
+  else if (iTipoFact == FACT_LIQUIDACION)
+  {
+      EXEC SQL SELECT /*+ index (FA_CICLOCLI PK_FA_CICLOCLI) */
+                      ROWID        ,
+                      COD_CALCLIEN ,
+                      NOM_USUARIO  ,
+                      NOM_APELLIDO1,
+                      NOM_APELLIDO2,
+                      COD_CREDMOR  ,
+                      IND_DEBITO,
+                      nvl(TO_CHAR(FEC_ULTFACT,'YYYYMMDDHH24MISS'), ' ')
+               INTO   :szhRowid                        ,
+                      :szhCodCalClien                  ,
+                      :szhNomUsuario                   ,
+                      :szhNomApellido1                 ,
+                      :szhNomApellido2:i_shNomApellido2,
+                      :ihCodCredMor:i_shCodCredMor     ,
+                      :szhIndDebito:i_shIndDebito,
+                      :szFecUltFact
+               FROM   FA_CICLOCLI
+               WHERE  COD_CLIENTE  = :lCodCliente
+                 AND  COD_PRODUCTO = :iCodProducto
+                 AND  NUM_ABONADO  = :lNumAbonado;
+  }
+  if (SQLCODE)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,"Select=>Fa_CicloCli",
+               szfnORAerror());
+      if (SQLCODE == SQLNOTFOUND)
+          vDTrazasLog (szExeName,"\n\t* Cliente Procesado Anteriormente\n",
+                       LOG03);
+      return FALSE;
+  }
+  if ((stAbonoCli.pCicloCli = (CICLOCLI *)malloc (sizeof (CICLOCLI)))
+       == (CICLOCLI *)NULL)
+  {
+       iDError (szExeName,ERR021,vInsertarIncidencia,"stAbonoCli.pCicloCli");
+       return FALSE;
+  }
+  else
+  {
+     stAbonoCli.lNumAbonados = 1;
+     memset (&stAbonoCli.pCicloCli[0], 0, sizeof (CICLOCLI));
+
+     strcpy (stAbonoCli.pCicloCli [0].szRowid,szhRowid ) ;
+     stAbonoCli.pCicloCli [0].lCodCliente  = lCodCliente ;
+     stAbonoCli.pCicloCli [0].iCodCiclo    = iCodCiclo   ;
+     stAbonoCli.pCicloCli [0].iCodProducto = iCodProducto;
+     stAbonoCli.pCicloCli [0].lNumAbonado  = lNumAbonado ; 
+
+     strcpy (stAbonoCli.pCicloCli [0].szCodCalClien ,szhCodCalClien );
+     strcpy (stAbonoCli.pCicloCli [0].szNomUsuario  ,szhNomUsuario  );
+     strcpy (stAbonoCli.pCicloCli [0].szNomApellido1,szhNomApellido1);
+     strcpy (stAbonoCli.pCicloCli [0].szFecUltFact,szFecUltFact);
+
+     if (i_shNomApellido2 == ORA_NULL)
+         strcpy (stAbonoCli.pCicloCli [0].szNomApellido2,"");
+     else
+         strcpy (stAbonoCli.pCicloCli [0].szNomApellido2,szhNomApellido2);
+
+     stAbonoCli.pCicloCli [0].iCodCredMor = 
+                       (i_shCodCredMor == ORA_NULL)?ORA_NULL:ihCodCredMor;
+  
+     if (i_shIndDebito == ORA_NULL)
+         strcpy (stAbonoCli.pCicloCli [0].szIndDebito,"");
+     else
+         strcpy (stAbonoCli.pCicloCli [0].szIndDebito,szhIndDebito);
+   
+  }
+  return TRUE;
+}/**************************** Final bCargaCicloCli **************************/
+
+/*****************************************************************************/
+/*                          funcion : bUltimoAbono                           */
+/*****************************************************************************/
+static BOOL bfnUltimoAbono (long lCodCliente,int  iCodCiclo,
+                            long lNumAbonado,int *iUltimoAbono)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static long lhCodCliente = 0;
+  static int  ihNumProc    = 0;
+  static int  ihRowNum     = 1;
+  EXEC SQL END DECLARE SECTION;
+  
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros de Ultimo Abonado ?\n"
+                         "\t\t=> CodCliente  [%ld]\n"
+                         "\t\t=> CodCiclo    [%d] \n"
+                         "\t\t=> NumAbonado  [%ld]\n",LOG04,
+                         lCodCliente,iCodCiclo,lNumAbonado);
+
+  EXEC SQL SELECT /*+ index (FA_CICLOCLI PK_FA_CICLOCLI) */
+                  COD_CLIENTE
+           INTO   :lhCodCliente 
+           FROM   FA_CICLOCLI
+           WHERE  COD_CLIENTE  = :lCodCliente
+             AND  COD_CICLO    = :iCodCiclo
+             AND  NUM_ABONADO != :lNumAbonado
+             AND  NUM_PROCESO  = :ihNumProc
+             AND  ROWNUM      <= :ihRowNum;
+
+  if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,
+               "Select->Fa_CicloCli",szfnORAerror());
+      return FALSE;
+  }
+  if (SQLCODE == SQLNOTFOUND)
+      *iUltimoAbono = 0;
+  else
+      *iUltimoAbono = 1;
+
+  return TRUE;
+}/************************** bUltimoAbono ************************************/
+
+/*****************************************************************************/
+/*                        funcion : bfnGetDatosGaInfac                       */
+/* -Funcion que recupera datos de las tablas Ga_Infac%                       */
+/*****************************************************************************/
+static BOOL bfnGetDatosGaInfac (CICLOCLI *pCicloCli)
+{
+  char szNomTabla [15] = "";
+  char szFuncion  [25] = "";
+
+  EXEC SQL BEGIN DECLARE SECTION;
+  static short  shIndDetalle   ;
+  static short  shIndSuperTel  ;
+  static char*  szhNumTeleFija ;EXEC SQL VAR szhNumTeleFija IS STRING(16);
+  static char*  szhSysDate     ;EXEC SQL VAR szhSysDate     IS STRING(15);
+  static short  i_shNumTeleFija;
+  static int    ihIndActuac = 4;
+  static int    ihRowNum = 1;
+  EXEC SQL END DECLARE SECTION;
+
+  szhSysDate = szSysDate;
+
+  if (pCicloCli->iCodProducto == stDatosGener.iProdCelular)
+  {
+      strcpy (szNomTabla,"Ga_InfacCel")  ;
+  }
+  else if (pCicloCli->iCodProducto == stDatosGener.iProdBeeper )
+  {
+      strcpy (szNomTabla,"Ga_InfacBeep") ;
+  }
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada en %s \n"
+                         "\t\t=> Cod.Cliente   [%ld]\n"
+                         "\t\t=> Num.Abonado   [%ld]\n"
+                         "\t\t=> Cod.Producto  [%ld]\n"
+                         "\t\t=> Fecha         [%s] \n",LOG04,szNomTabla,
+                         pCicloCli->lCodCliente ,
+                         pCicloCli->lNumAbonado ,
+                         pCicloCli->iCodProducto,
+                         szSysDate);
+
+  if (stDatosGener.iProdCelular == pCicloCli->iCodProducto)
+  {
+      szhNumTeleFija = pCicloCli->szNumTeleFija;
+
+      EXEC SQL SELECT /*+ index_desc (GA_INFACCEL PK_GA_INFACCEL) */
+                      IND_DETALLE ,
+                      IND_SUPERTEL,
+                      NUM_TELEFIJA
+               INTO   :shIndDetalle ,
+                      :shIndSuperTel,
+                      :szhNumTeleFija:i_shNumTeleFija
+               FROM   GA_INFACCEL
+               WHERE  COD_CLIENTE = :pCicloCli->lCodCliente  
+                 AND  NUM_ABONADO = :pCicloCli->lNumAbonado
+                 AND  FEC_BAJA   <= TO_DATE (:szhSysDate,'YYYYMMDDHH24MISS')
+                 AND  IND_ACTUAC  = :ihIndActuac /* Liquidacion */
+                 AND  ROWNUM      = :ihRowNum
+              ORDER BY FEC_BAJA DESC; 
+  }
+  else if (stDatosGener.iProdBeeper == pCicloCli->iCodProducto)
+  {
+      EXEC SQL SELECT /*+ index_desc (GA_INFACBEEP PK_GA_INFACBEEP) */
+                      IND_DETALLE 
+               INTO   :shIndDetalle 
+               FROM   GA_INFACBEEP
+               WHERE  COD_CLIENTE = :pCicloCli->lCodCliente
+                 AND  NUM_ABONADO = :pCicloCli->lNumAbonado
+                 AND  FEC_BAJA   <= TO_DATE (:szhSysDate,'YYYYMMDDHH24MISS')
+                 AND  IND_ACTUAC  = :ihIndActuac  /* Liquidacion */
+                 AND  ROWNUM      = :ihRowNum 
+              ORDER BY FEC_BAJA DESC; 
+  }
+  if (SQLCODE)
+  {
+      strcpy (szFuncion,"Select->");
+      strcat (szFuncion,szNomTabla);
+      iDError (szExeName,ERR000,vInsertarIncidencia,szFuncion,
+               szfnORAerror())     ;
+      return FALSE                 ;
+  }
+  if (SQLCODE == SQLOK)
+  {
+      pCicloCli->iIndDetalle = shIndDetalle ;
+      if (stDatosGener.iProdCelular == pCicloCli->iCodProducto)
+              pCicloCli->iIndSuperTel= shIndSuperTel;
+      else 
+              pCicloCli->iIndSuperTel= 0;
+
+      if (i_shNumTeleFija == ORA_NULL)
+          strcpy (pCicloCli->szNumTeleFija,"");
+  }
+  return TRUE;
+}/************************ Final bfnGetDatosGaInfac **************************/
+
+/*****************************************************************************/
+/*                         funcion : bfnGetDatosGaIntar                      */
+/*****************************************************************************/
+static BOOL bfnGetDatosGaIntar (long  lCodCliente ,
+                                long  lNumAbonado ,
+                                int   iCodProducto,
+                                long *lCodPlanCom)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static int  ihRowNum     = 1;
+  EXEC SQL END DECLARE SECTION;
+
+  char  szNomTabla [15] = ""    ;
+  char  szFuncion  [25] = ""    ;
+  short iIndNumero   = NO_PLEXIS;
+  long  lhCodPlanCom = 0        ;
+
+  if (iCodProducto == stDatosGener.iProdCelular)
+      strcpy (szNomTabla,"Ga_IntarCel")  ;
+  else if (iCodProducto == stDatosGener.iProdBeeper)
+      strcpy (szNomTabla,"Ga_IntarBeep") ;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros Entra a %s\n"
+                         "\t\t=> Cod.Cliente  [%ld]\n"
+                         "\t\t=> Num.Abonado  [%ld]\n"
+                         "\t\t=> Cod.Producto [%d] \n",LOG04,szNomTabla,
+                         lCodCliente,lNumAbonado,iCodProducto); 
+  if (iCodProducto == stDatosGener.iProdCelular)
+  {
+      EXEC SQL SELECT /*+ index_desc (GA_INTARCEL PK_GA_INTARCEL) */
+                      COD_PLANCOM
+               INTO   :lhCodPlanCom
+               FROM   GA_INTARCEL
+               WHERE  COD_CLIENTE = :lCodCliente
+                 AND  NUM_ABONADO = :lNumAbonado
+                 AND  IND_NUMERO  = :iIndNumero
+                 AND  ROWNUM      = :ihRowNum
+               ORDER BY FEC_HASTA DESC;
+  }
+  else if (iCodProducto == stDatosGener.iProdBeeper)
+  {
+      EXEC SQL SELECT /*+ index_desc (GA_INTARBEEP PK_GA_INTARBEEP) */
+                      COD_PLANCOM
+               INTO   :lhCodPlanCom
+               FROM   GA_INTARBEEP
+               WHERE  COD_CLIENTE = :lCodCliente
+                 AND  NUM_ABONADO = :lNumAbonado
+                 AND  ROWNUM      = :ihRowNum
+               ORDER BY FEC_HASTA DESC;
+  }
+  if (SQLCODE)
+  {
+      sprintf (szFuncion,"Select->%s",szNomTabla);
+      iDError (szExeName,ERR000,vInsertarIncidencia,szFuncion,szfnORAerror());
+      return FALSE;
+  }
+  if (SQLCODE == SQLOK)
+      *lCodPlanCom = lhCodPlanCom;
+
+  return TRUE;
+}/************************ Final bfnGetDatosGaIntar *************************/
+
+/*****************************************************************************/
+/*                         funcion : bfnCargaCuotasBaja                      */
+/*****************************************************************************/
+static BOOL bfnCargaCuotasBaja (void)
+{
+  int  i     = 0    ;
+  int  rc    = 0    ;
+  BOOL bRes  = FALSE;
+  NUM_CUOTAS = 0    ;
+
+  for (i=0;i<NUM_CABCUOTAS;i++)
+  {
+       vDTrazasLog (szExeName,"\n\t\t* Cargando Cuotas Baja"
+                              "\n\t\t=>Seq.Cuotas : [%ld]  ",LOG05,
+                              pstCabCuotas[i].lSeqCuotas);
+
+       if (!bCargaCuotas (pstCuotas,&NUM_CUOTAS,FACT_BAJA,
+                          pstCabCuotas[i].lSeqCuotas))
+            return FALSE;
+  }/* fin for i ... */
+
+  return TRUE;
+}/************************ Final bfnCargaCuotasBaja **************************/
+
+/*****************************************************************************/
+/*                            funcion : bfnGetInfacRent                      */
+/* -Funcion que recuepera la informacion de Ga_InfacRent para el Cliente , el*/
+/*  Abonado y el Periodo (marcado por el NumAlquiler) del Rent Phone.        */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnGetInfacRent (long      lCodCliente ,
+                             long      lNumAbonado ,
+                             long      lNumAlquiler,
+                             ABORENT **pAboRent)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static long  lhCodCliente     ;
+  static long  lhNumAbonado     ;
+  static long  lhNumAlquiler    ;
+  static char  szhFecAlta   [15]; EXEC SQL VAR szhFecAlta    IS STRING(15);
+  static char  szhFecBaja   [15]; EXEC SQL VAR szhFecBaja    IS STRING(15);
+  static long  lhNumCelular     ;
+  static short shIndActuac      ;
+  static short shIndFactur      ;
+  static short shIndDetalle     ;
+  static short shIndPenaliza    ;
+  EXEC SQL END DECLARE SECTION;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros Entrada Ga_InfacRent\n"
+                         "\t\t=> Cod.Cliente   [%ld]\n"
+                         "\t\t=> Num.Abonado   [%ld]\n"
+                         "\t\t=> Num.Alquiler  [%ld]\n",LOG04,
+                         lCodCliente,lNumAbonado,lNumAlquiler);
+
+  lhCodCliente = lCodCliente ;
+  lhNumAbonado = lNumAbonado ;
+  lhNumAlquiler= lNumAlquiler;
+  shIndFactur  = FACTURABLE  ;
+
+  EXEC SQL SELECT /*+ index (GA_INFACRENT PK_GA_INFACRENT) */
+                  TO_CHAR (FEC_ALTA,'YYYYMMDDHH24MISS'),
+                  TO_CHAR (FEC_BAJA,'YYYYMMDDHH24MISS'),
+                  NUM_CELULAR                          ,
+                  IND_ACTUAC                           ,
+                  IND_DETALLE                          ,
+                  IND_PENALIZA
+           INTO   :szhFecAlta   ,
+                  :szhFecBaja   ,
+                  :lhNumCelular ,
+                  :shIndActuac  ,
+                  :shIndDetalle ,
+                  :shIndPenaliza
+           FROM   GA_INFACRENT
+           WHERE  COD_CLIENTE  = :lhCodCliente
+             AND  NUM_ABONADO  = :lhNumAbonado
+             AND  NUM_ALQUILER = :lhNumAlquiler
+             AND  IND_FACTUR   = :shIndFactur;
+  if (SQLCODE)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,"Select=>Ga_InfacRent",
+               szfnORAerror());
+      return FALSE            ;
+  }
+  if (SQLCODE == SQLOK)
+  {
+      if ((*pAboRent =
+          (ABORENT *)malloc (sizeof(ABORENT)))==(ABORENT *)NULL)
+      {
+           iDError (szExeName,ERR005,vInsertarIncidencia,"stCliente.pAboRent");
+           return  FALSE                                                      ;
+      }
+      else
+      {
+           (*pAboRent)->lNumAbonado = lNumAbonado     ;
+           (*pAboRent)->lNumAlquiler= lNumAlquiler    ;
+           (*pAboRent)->iIndActuac  = shIndActuac     ;
+
+           strcpy ((*pAboRent)->szFecAlta, szhFecAlta);
+           strcpy ((*pAboRent)->szFecBaja, szhFecBaja);
+
+           (*pAboRent)->lNumCelular = lhNumCelular    ;
+           (*pAboRent)->iIndDetalle = shIndDetalle    ;
+           (*pAboRent)->iIndPenaliza= shIndPenaliza   ;
+           (*pAboRent)->iNumConcTar = 0               ;
+           (*pAboRent)->pConcTar    = NULL            ;
+      }
+  }
+  return TRUE;
+}/************************** Final bfnGetInfacRent ***************************/
+
+/*****************************************************************************/
+/*                         funcion : vfnFreeAboRent                          */
+/*****************************************************************************/
+void vfnFreeAboRent (void)
+{
+  if (stCliente.pAboRent != (ABORENT *)NULL)
+  {
+      if (stCliente.pAboRent->pConcTar != (CONCTAR *)NULL)
+      {
+          free (stCliente.pAboRent->pConcTar)           ;
+          stCliente.pAboRent->pConcTar = (CONCTAR *)NULL;
+      }
+      stCliente.pAboRent->iNumConcTar = 0 ;
+      free (stCliente.pAboRent)           ;
+      stCliente.pAboRent = (ABORENT *)NULL;
+  }
+}/************************* Final vfnFreeAboRent *****************************/
+
+/*****************************************************************************/
+/*                         funcion : vfnFreeAboRoaVis                        */
+/*****************************************************************************/
+void vfnFreeAboRoaVis (void)
+{
+  if (stCliente.pAboRoaVis != (ABOROAVIS *)NULL)
+  {
+      if (stCliente.pAboRoaVis->pConcTar != (CONCTAR *)NULL)
+      {
+          free (stCliente.pAboRoaVis->pConcTar)           ;
+          stCliente.pAboRoaVis->pConcTar = (CONCTAR *)NULL;
+      }
+      stCliente.pAboRoaVis->iNumConcTar = 0   ;
+      free (stCliente.pAboRoaVis)             ;
+      stCliente.pAboRoaVis = (ABOROAVIS *)NULL;
+  }
+}/************************* Final vfnFreeAboRoaVis **************************/
+
+/*****************************************************************************/
+/*                        funcion : bfnGetIntaRent                           */
+/*****************************************************************************/
+static BOOL bfnGetIntaRent (long  lCodCliente ,
+                            long  lNumAbonado ,
+                            long  lNumAlquiler,
+                            long *lCodPlanCom)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static long  lhCodPlanCom ;
+  static long  lhNumAlquiler;
+  static short shIndNumero  ;
+  static int   ihRowNum     = 1;
+  EXEC SQL END DECLARE SECTION;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada a Ga_IntaRent"
+                         "\n\t\t=> Cod.Cliente   [%ld]"
+                         "\n\t\t=> Num.Abonado   [%ld]"
+                         "\n\t\t=> Num.Alquiler  [%ld]",LOG04,
+                         lCodCliente,lNumAbonado,lNumAlquiler);
+
+  shIndNumero = NO_PLEXIS;
+
+  EXEC SQL SELECT /*+ index_desc (GA_INTARENT PK_GA_INTARENT) */
+                  COD_PLANCOM
+           INTO   :lhCodPlanCom
+           FROM   GA_INTARENT
+           WHERE  COD_CLIENTE = :lCodCliente
+             AND  NUM_ABONADO = :lNumAbonado
+             AND  IND_NUMERO  = :shIndNumero
+             AND  NUM_ALQUILER= :lNumAlquiler
+             AND  ROWNUM      = :ihRowNum
+          ORDER BY FEC_DESDE DESC;
+
+  if (SQLCODE)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,"Select=>Ga_IntaRent",
+               szfnORAerror());
+      return  FALSE           ;
+  }
+  if (SQLCODE == SQLOK)
+      *lCodPlanCom = lhCodPlanCom;
+
+  return TRUE;
+}/************************ Final bfnGetIntaRent ******************************/
+
+/*****************************************************************************/
+/*                         funcion : bfnGetInfacRoaVis                       */
+/*****************************************************************************/
+static BOOL bfnGetInfacRoaVis (long        lCodCliente,
+                               long        lNumAbonado,
+                               long        lNumEstaDia,
+                               ABOROAVIS **pAboRoaVis)
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+  static char  szhFecAlta  [15]; EXEC SQL VAR szhFecAlta IS STRING(15);
+  static char  szhFecBaja  [15]; EXEC SQL VAR szhFecBaja IS STRING(15);
+  static long  lhNumCelular    ;
+  static long  lhNumCelularOrig;
+  static short shIndActuac     ;
+  static short shIndFactur     ;
+  static short shIndCargos     ;
+  static short shIndPenaliza   ;
+  EXEC SQL END DECLARE SECTION;
+
+  vDTrazasLog (szExeName,"\n\t\t* Parametros Entrada en Ga_InfacRoaVis\n"
+                         "\n\t\t=> Cod.Cliente   [%ld]"
+                         "\n\t\t=> Num.Abonado   [%ld]"
+                         "\n\t\t=> Num.Esta.Dia  [%ld]",LOG04,
+                         lCodCliente,lNumAbonado,lNumEstaDia); 
+                        
+  shIndFactur = FACTURABLE;
+ 
+  EXEC SQL SELECT /*+ index (GA_INFACROAVIS PK_GA_INFACROAVIS) */
+                  TO_CHAR (FEC_ALTA,'YYYYMMDDHH24MISS'),
+                  TO_CHAR (FEC_BAJA,'YYYYMMDDHH24MISS'),
+                  NUM_CELULAR                          ,
+                  NUM_CELULARORIG                      ,
+                  IND_ACTUAC                           ,
+                  IND_CARGOS                           ,
+                  IND_PENALIZA
+            INTO  :szhFecAlta      ,
+                  :szhFecBaja      ,
+                  :lhNumCelular    ,
+                  :lhNumCelularOrig,
+                  :shIndActuac     ,
+                  :shIndCargos     ,
+                  :shIndPenaliza
+            FROM  GA_INFACROAVIS
+            WHERE COD_CLIENTE = :lCodCliente
+              AND NUM_ABONADO = :lNumAbonado
+              AND NUM_ESTADIA = :lNumEstaDia
+              AND IND_FACTUR  = :shIndFactur;
+  if (SQLCODE)
+  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,"Select->Ga_InfacRoaVis",
+               szfnORAerror());
+  }
+  if (SQLCODE == SQLOK)
+  { 
+      if ((*pAboRoaVis = 
+          (ABOROAVIS *)malloc (sizeof(ABOROAVIS))) == (ABOROAVIS *)NULL)
+      {
+           iDError (szExeName,ERR021,vInsertarIncidencia,"pAboRoaVis");
+           return  FALSE                                              ;
+      }
+      (*pAboRoaVis)->lNumAbonado     = lNumAbonado     ;
+      (*pAboRoaVis)->lNumEstaDia     = lNumEstaDia     ;
+      strcpy ((*pAboRoaVis)->szFecAlta,szhFecAlta)     ;
+      strcpy ((*pAboRoaVis)->szFecBaja,szhFecBaja)     ;
+      (*pAboRoaVis)->lNumCelular     = lhNumCelular    ;
+      (*pAboRoaVis)->lNumCelularOrig = lhNumCelularOrig;
+      (*pAboRoaVis)->iIndActuac      = shIndActuac     ;
+      (*pAboRoaVis)->iIndCargos      = shIndCargos     ;
+      (*pAboRoaVis)->iIndPenaliza    = shIndPenaliza   ;
+  }
+  return (SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************ Final bfnGetInfacRoaVis ***************************/

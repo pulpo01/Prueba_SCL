@@ -1,0 +1,72 @@
+CREATE OR REPLACE PROCEDURE        P_ALTA_INFACROAVIS(
+  VP_CLIENTE IN NUMBER ,
+  VP_ABONADO IN NUMBER ,
+  VP_ESTADIA IN NUMBER ,
+  VP_FECALTA IN DATE ,
+  VP_FECBAJA IN DATE ,
+  VP_CELULAR IN NUMBER ,
+  VP_CELUORIG IN NUMBER ,
+  VP_PROC IN OUT VARCHAR2 ,
+  VP_TABLA IN OUT VARCHAR2 ,
+  VP_ACT IN OUT VARCHAR2 ,
+  VP_SQLCODE IN OUT VARCHAR2 ,
+  VP_SQLERRM IN OUT VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento que inserta datos de abonados roaming en la tabla de interfase
+-- Abonados/Facturacion para el procesamiento de estos.
+--
+--            Los posibles retornos del procedimiento son :
+--                - '0' Actualizaciones realizadas correctamente
+--                - '4' Error en el proceso
+--
+  V_CARGOS NUMBER;
+  VAR1 GA_ABOCEL.NUM_ABONADO%TYPE;
+  ERROR_PROCESO EXCEPTION;
+BEGIN
+    VP_PROC := 'P_ALTA_INFACROAVIS';
+    BEGIN
+      VP_TABLA := 'GE_CARGOS';
+      VP_ACT := 'S';
+      SELECT NUM_ABONADO
+        INTO VAR1
+        FROM GE_CARGOS
+       WHERE COD_CLIENTE = VP_CLIENTE
+         AND NUM_ABONADO = VP_ABONADO;
+      V_CARGOS := 1;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+    V_CARGOS := 0;
+      WHEN TOO_MANY_ROWS THEN
+    V_CARGOS := 1;
+      WHEN OTHERS THEN
+    VP_ERROR := '4';
+    RAISE ERROR_PROCESO;
+    END;
+    VP_TABLA := 'GA_INFACROAVIS';
+    VP_ACT := 'S';
+    INSERT INTO GA_INFACROAVIS
+           (COD_CLIENTE,NUM_ABONADO,NUM_ESTADIA,
+     FEC_ALTA,FEC_BAJA,NUM_CELULAR,
+     NUM_CELULARORIG,IND_ACTUAC,IND_FACTUR,
+     IND_CARGOS,IND_PENALIZA)
+    VALUES (VP_CLIENTE,VP_ABONADO,VP_ESTADIA,
+     VP_FECALTA,VP_FECBAJA,VP_CELULAR,
+     VP_CELUORIG,1,1,
+     V_CARGOS,0);
+       dbms_output.put_line ('todo va debuti en insert infacroavis');
+EXCEPTION
+   WHEN ERROR_PROCESO THEN
+ IF VP_SQLCODE IS NULL THEN
+    VP_SQLCODE := SQLCODE;
+    VP_SQLERRM := SQLERRM;
+        END IF;
+ VP_ERROR := '4';
+   WHEN OTHERS THEN
+ VP_SQLCODE := SQLCODE;
+ VP_SQLERRM := SQLERRM;
+        VP_ERROR := '4';
+END;
+/
+SHOW ERRORS

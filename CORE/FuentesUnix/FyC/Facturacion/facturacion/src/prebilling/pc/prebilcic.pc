@@ -1,0 +1,427 @@
+/*****************************************************************************/
+/* Fichero    : prebilcic.pc                                                 */
+/* Descripcion: PreBilling de Ciclo                                          */
+/* Autor      : Javier Garcia Paredes                                        */
+/* Fecha      : 21-03-1997                                                   */
+/*****************************************************************************/
+
+#define _PREBILCIC_PC_
+
+#include <prebilcic.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/* -------------------------------------------------------------------------- */
+/*    bPreBillingClienteCiclo (long,int)                                      */
+/*      Valores Retorno: FALSE - Error                                        */
+/*                       TRUE  - Ningun Error                                 */
+/* -------------------------------------------------------------------------- */
+BOOL bPreBillingClienteCiclo (long lNumProceso,int iTipoFact)
+{
+  BOOL bRes = TRUE;
+  int  i    =  0  ;
+
+  /* Se inicializa la estructura de anomalias */
+  vInitAnomProceso (&stAnomProceso);
+  stAnomProceso.lCodCiclFact = stCiclo.lCodCiclFact;
+
+  vInitEstructuras ();
+
+  /***********************************************************************/
+  /* # Eliminado de una manera perentoria, hasta que existan cuotas      */
+  /*              if (!bfnGetIndCliente (&stFactCli))                    */
+  /*                   bRes = FALSE;                                     */
+  /***********************************************************************/
+ 
+  memset (&stFactCli, 1, sizeof (FACTCLI));
+
+  if (bRes && !bInterfazModulos (iTipoFact)) 
+      bRes = FALSE;
+  
+  
+  if (bRes && !bPreEmisionModulos (FACT_CICLO)) 
+      bRes = FALSE;
+      
+  
+  vDTrazasLog(szExeName,"\t\t* Procesando Monto Minimo Facturable *",LOG03); 
+  
+  if (!bfnMontoMin_Fact(stCliente.lCodCliente) )
+  {
+     vDTrazasError(szExeName,"\t\tProcesando Monto Minimo Facturable.",LOG01); 
+     bRes = FALSE;
+  }
+
+ 
+  if (stPreFactura.iNumRegistros >= 0)
+  {      /* Calculo de Descuentos */
+
+      /* RAO if(bRes && stCliente.iIndFactur && !bfnDescuentos(stCliente.lCodCliente, FACT_CICLO,stCiclo.szFecEmision)) */
+
+      if(bRes && stCliente.iIndFactur )
+      {
+       	if (!bfnDescuentos(stCliente.lCodCliente, stCiclo.szFecEmision))
+	      {
+	         vDTrazasLog(szExeName,"\t\tProcesando Descuentos Nuevos.",LOG01); 
+	         bRes = FALSE                                             ;
+	      }
+
+	  }
+      if(bRes && !bImptosIvaClienteGeneral(FACT_CICLO))
+      {
+         vDTrazasLog(szExeName,"\t\tProcesando Impuestos Iva.\n",LOG01);
+         bRes = FALSE                                                  ;
+      }
+      if (bRes && !bfnPasoHistoricos ())
+      {
+          vDTrazasLog (szExeName,"\t\tProcesando Paso a Historicos\n",LOG01);
+          bRes = FALSE                                                      ;
+      }
+  }
+  return bRes;
+}/************************* Final bPreBillingClienteCiclo ********************/
+
+
+/* -------------------------------------------------------------------------- */
+/*   vAnotarError (void)                                                      */
+/* -------------------------------------------------------------------------- */
+static void vAnotarError(void)
+{
+/*
+   stEstTotTar.iNumErrores++;
+   stEstTotSac.iNumErrores++;
+   stEstTotSer.iNumErrores++;
+   stEstTotAbo.iNumErrores++;
+   stEstTotCar.iNumErrores++;
+   stEstTotCob.iNumErrores++;
+*/
+}
+
+/* ------------------------------------------------------------------------- */
+/*    bInterfazModulos (int iTipFact)                                        */
+/*      Valores Entrada: iTipFact - Tipo de Facturacion                      */
+/*                       FACT_CICLO  2                                       */
+/*      Valores Retorno: FALSE - Error                                       */
+/*                       TRUE  - Ningun Error                                */
+/* ------------------------------------------------------------------------- */
+BOOL bInterfazModulos (int iTipoFact)
+{
+  long         lNumAbonado;
+  VENTAS       stVenta    ;
+  TRANSCONTADO stTransC   ;
+
+  memset (&stVenta,0,sizeof(VENTAS))       ;
+  memset (&stTransC,0,sizeof(TRANSCONTADO));
+
+  switch (iTipoFact)
+  {
+      case FACT_CICLO:
+           /*******************************************************/
+           /* Interface ABONOS y Servicios                        */
+           /* Observ: Engloba a su vez Interface con SAC y CARGOS */
+           /*******************************************************/
+           if (!bIFAbonos (stAbonoCli,FACT_CICLO))
+           {
+                vDTrazasError(szExeName,"Interface Abonos",LOG01);
+                return FALSE;
+           }
+           /**************************/
+           /* Interface TARIFICACION */
+           /**************************/
+           if (!bfnIFTarificacion (FACT_CICLO))
+           {
+                vDTrazasError(szExeName,"Interface Tarificacion",LOG01);
+                return FALSE;
+           }
+           /*************************/
+           /* Interface SAC         */
+           /*************************/
+/*
+           if (stFactCli.iIndPenaliza == 1)
+           {
+               if (!bIFSac (FACT_CICLO,stCliente.iIndFactur, -1,-1))
+               {
+                    vDTrazasError(szExeName,"Interface SAC",LOG01);
+                    return FALSE;
+               }
+           }
+*/
+           /************************/
+           /* Interface CARGOS     */
+           /************************/
+	   vDTrazasLog(szExeName, "Interface de Cargos", LOG05);
+       /*    if (stFactCli.iIndCargos == 1)
+           {*/
+	       vDTrazasLog(szExeName, "\t\t*Entro a Interface de Cargos", LOG05);
+               if (!bIFCargos (stVenta,stTransC,-1,-1,FACT_CICLO))
+               {
+                    vDTrazasError(szExeName,"Interface Cargos",LOG01);
+                    return FALSE;
+               }
+      /*     } */
+           /*************************************************/
+           /* Interface COBROS engloba el Paso a PreFactura */
+           /* Si es debito Automatico no hay interface      */
+           /*************************************************/
+           if (strcmp (stCliente.szIndDebito,"A"))
+           {
+/*
+               if (!bIFCobros (FACT_CICLO))
+               {
+                    vDTrazasError (szExeName,"Interface Cobros",LOG01);
+                    return FALSE;
+               }
+*/
+               if (stFactCli.iIndPagare == 1)
+               {
+                   lNumAbonado = ORA_NULL;
+/*
+                   if (!bIFPagares (stCliente.lCodCliente,lNumAbonado,
+                                    stCliente.iIndFactur ,iTipoFact))
+                   {
+                        vDTrazasError(szExeName,"Interface Pagares",LOG01);
+                        return FALSE;
+                   }
+*/
+               }
+           }
+           else
+           {
+              vDTrazasLog (szExeName,
+                           "\n\t\t* Cliente [%ld] con DEBITO AUTOMATICO\n",
+                           LOG03,stCliente.lCodCliente);
+           } 
+           break;
+      default:
+           return FALSE;
+           
+  }
+  return TRUE;
+}/************************ Final bInterfazModulos ****************************/
+
+/* -------------------------------------------------------------------------- */
+/*    bPreEmisionModulos (void)                                               */
+/*      Valores Retorno: FALSE - Error                                        */
+/*                       TRUE  - Ningun Error                                 */
+/* -------------------------------------------------------------------------- */
+BOOL bPreEmisionModulos (int iTipoFact) 
+{
+  int i = 0;
+
+  vDTrazasLog (szExeName,"\n\t\t* Inicio bPreEmisionModulos\n"
+           				,LOG03);
+  switch (iTipoFact)
+  {
+      case FACT_CICLO :
+           vDTrazasLog (szExeName,"\n\t\t* PreEmision para Cliente [%ld]\n",
+                        LOG03,stCliente.lCodCliente);
+/* TOL  */
+           if(stCiclo.iInd_Tasacion==TIPO_TASA_ON_LINE)
+           {
+                if( !bfn_EMTOLTarificacion(iTipoFact) )
+                {
+                    iDError(szExeName, ERR034, vInsertarIncidencia, "bfnEMTOL_Tarificacion");
+                    return(FALSE);
+                }
+           }
+/* TAS  */
+           else
+           {
+                if( !bfnEMTarificacion (iTipoFact) )
+                {
+                    iDError (szExeName,ERR034,vInsertarIncidencia,"Consumos");
+                    return(FALSE);
+                }
+           }
+
+           if (!bEMAbonos ())
+           {
+                iDError (szExeName,ERR034,vInsertarIncidencia,"Abonos");
+                return FALSE;
+           }
+           if (!bEMServicios ())
+           {
+                iDError (szExeName,ERR034,vInsertarIncidencia,"Servicios");
+                return FALSE;
+           }
+           if (!bEMCargos ())
+           {
+               iDError (szExeName,ERR034,vInsertarIncidencia,"Cargos");
+               return FALSE;
+           }
+           if (!bEMSac ())
+           {
+                iDError (szExeName,ERR034,vInsertarIncidencia,"Penalizaciones");
+                return FALSE;
+           }
+           if (!bEMCuotas ())
+           {
+                iDError (szExeName,ERR034,vInsertarIncidencia,"Cuotas");
+                return FALSE;
+           }
+           
+           if (!bEMCargosRecurrentes ())
+           {
+                iDError (szExeName,ERR034,vInsertarIncidencia,"CargosRecurrentes");
+                return FALSE;
+           }
+           break;
+      default : 
+           break;
+  }
+  vDTrazasLog (szExeName,"\n\t\t* NUMERO de Conceptos [%d]", LOG05,
+               stPreFactura.iNumRegistros);
+
+  return TRUE;
+
+}/************************** bPreEmisionModulos ******************************/ 
+
+
+/*****************************************************************************/
+/*                          funcion : vFreeFactCli                           */
+/*****************************************************************************/
+void vFreeFactCli (void)
+{
+   stFactCli.iIndPenaliza = 0;
+   stFactCli.iIndPagare   = 0;
+   stFactCli.iIndCargos   = 0;
+}/************************** Final vFreeFactCli ******************************/
+
+/*****************************************************************************/
+/*                          funcion : bUpdateCicloCli                        */
+/*****************************************************************************/
+BOOL bfnUpdateCicloCli (ABONOCLI stAbonoCli, 
+                        long     lNumReg   ,
+                        long     lNumProceso)
+{
+ long lInd, lCont = 0; 
+ int  bUpdate     = 0;
+ static HA_CICLOCLI stHA ;
+ char  szFecAux [15] = "";
+ 
+  
+  vDTrazasLog (szExeName,
+               "\n\t\t* Entrada Update Fa_CicloCli (Num_Proceso)"
+               "\n\t\t=>Num.Abonados [%ld]"
+               "\n\t\t=>Num.Reg      [%ld]",LOG05,
+               stAbonoCli.lNumAbonados, lNumReg);
+               
+
+  if (stProceso.iCodTipDocum == stDatosGener.iCodCiclo)
+  {
+      for (lInd=0;lInd<stAbonoCli.lNumAbonados;lInd++) 
+      {
+           strcpy (stHA.szRowid [lCont],
+                   stAbonoCli.pCicloCli [lInd].szRowid);
+                   
+           strcpy (stHA.szFecUltFact [lCont],
+                    stCiclo.szFecEmision);        
+                   
+           stHA.lNumProceso [lCont] = lNumProceso      ; 
+
+           stHA.iCodCicloNue[lCont] =
+                  (stAbonoCli.pCicloCli [lInd].iIndCambio   == 1 &&
+                   stAbonoCli.pCicloCli [lInd].iCodCicloNue >  0)?
+                   stAbonoCli.pCicloCli [lInd].iCodCicloNue :
+                   stAbonoCli.pCicloCli [lInd].iCodCiclo    ;
+
+           vDTrazasLog (szExeName,"\n\t\t=> Rowid       [%s]"
+                                  "\n\t\t=> Ciclo Nuevo [%d]"
+                                  "\n\t\t=> Num.Proceso [%d]", LOG06, 
+                        stHA.szRowid [lCont]    , 
+                        stHA.iCodCicloNue[lCont],
+                        lNumProceso); 
+           lCont++;
+      }
+      
+      vDTrazasLog (szExeName,"\n\t\t=> lCont      [%d]"
+                             "\n\t\t=> lNumReg    [%d]"
+                             "\n\t\t               NCH", LOG06, 
+                      		lCont , 
+                      		lNumReg);
+      
+      if (lCont == lNumReg && lNumReg > 0)
+      {
+          bUpdate = 1;
+
+	 
+	  
+	  vDTrazasLog (szExeName,
+               "\n\t\t* Update Fa_CicloCli (Num_Proceso)"
+               "\n\t\t=>Num.Proceso [%ld]"
+               "\n\t\t=>Fec Ult Fact[%s]",LOG05,
+               lNumProceso,stCiclo.szFecEmision);
+
+          EXEC SQL FOR :lCont 
+                   UPDATE /*+ Rowid (FA_CICLOCLI) */
+                          FA_CICLOCLI
+                      SET NUM_PROCESO = :stHA.lNumProceso,
+                      	  FEC_ULTFACT = TO_DATE(:stHA.szFecUltFact,'YYYYMMDDHH24MISS')
+                    WHERE ROWID       = :stHA.szRowid;
+                    
+           
+                     
+/************************************************************************/
+/*          No debe Actualizar el cod_ciclonue en ningun caso           */
+/*          ya que este cambio lo realiza el cierre de Facturacion      */
+/*                          COD_CICLONUE= :stHA.iCodCicloNue            */
+/************************************************************************/
+
+		
+
+          lCont = 0; 
+      }
+  }
+  else /* Factura Baja */
+  {
+       bUpdate = 1; 
+      
+       stCiclo.szFecEmision[14] = '\0';
+
+       EXEC SQL UPDATE 
+                       FA_CICLOCLI
+                   SET NUM_PROCESO = :lNumProceso,
+                       FEC_ULTFACT = TO_DATE(:stCiclo.szFecEmision,'YYYYMMDDHH24MISS')
+                 WHERE ROWID = :stAbonoCli.pCicloCli [0].szRowid;
+                 
+      
+                    
+  }
+
+  
+
+  if (bUpdate)
+  {
+      if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+      {
+          iDError (szExeName,ERR000,vInsertarIncidencia,
+                   "Update->Fa_CicloCli",szfnORAerror());
+          return FALSE;
+      }
+  }
+  return TRUE;
+}/************************** Final bfnUpdateCicloCli *************************/
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

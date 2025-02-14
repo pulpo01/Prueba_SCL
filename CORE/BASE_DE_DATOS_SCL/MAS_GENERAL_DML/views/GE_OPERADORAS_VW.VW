@@ -1,0 +1,11 @@
+CREATE OR REPLACE FORCE VIEW GE_OPERADORAS_VW(
+   COD_OPERADORA
+ , DES_OPERADORA
+ ) AS 
+SELECT
+cod_operadora
+,des_operadora
+FROM
+ge_operadoras_td
+/
+SHOW ERRORS

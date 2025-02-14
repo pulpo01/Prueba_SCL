@@ -1,0 +1,905 @@
+/* ********************************************************************** */
+/* *  Fichero : FaPasoHistCarrier.pc                                   	* */
+/* *  Proceso encargado de llevar a historico el contenido de la	* */
+/* *  FA_DETFORTAS y eliminar registros relacionados en las tablas	* */
+/* *  FA_ACUMFORTAS, FA_CABFORTAS, FA_DETFORLIQ, FA_ACUMFORLIQ		* */
+/* *  Autor : Patricio Gonzalez Gomez	                                * */
+/* *  Modif : 								* */
+/* *  Parametros : 							* */
+/* *         -u Usuario/Password                                        * */
+/* *         -c Ciclo de Facturacion	                                * */
+/* *         -d Cod_Carrier						* */
+/* *         -l Nivel de Log						* */
+/* ********************************************************************** */
+
+#define _FA_PASOHISTCARRIER_PC_
+
+#include <deftypes.h>
+#include <stdlib.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include "FaPasoHistCarrier.h"
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+
+char  modulo[30];
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	long		lhNumProceso ;
+	long		lhCodCiclFact;
+	long		lhCodOperador;
+EXEC SQL END DECLARE SECTION;
+
+
+
+/* DESDE AQUI PGG FUNCIONES NUEVAS */
+void trim (const char *c, char *result)
+{
+   char *l;
+   char *r;
+   for(l=(char *)c;  *l==' '; l++);
+   for(r=(char *)c+strlen(c)-1;  *r==' '; r--);
+
+   strncpy(result, l, (r>=l)?r-l+1:1);
+   result[r-l+1]=0;
+}
+
+
+
+/* --------Estructura ACUMFORTAS Desde Aqui */
+
+static int ifnOpenFaAcumFortas (void)
+{
+
+    	strcpy(modulo,"ifnOpenFaAcumFortas");
+
+	
+	vDTrazasLog(modulo, "\n\t\t* lhNumProceso	[%ld]\n",   LOG05, lhNumProceso);
+	vDTrazasLog(modulo, "\n\t\t* lhCodOperador	[%ld]\n",   LOG05, lhCodOperador);
+		
+        EXEC SQL DECLARE Cursor_FaAcumFortas CURSOR FOR
+		SELECT 	DISTINCT 
+			num_abonado, cod_cliente , 
+			cod_periodo, cod_operador
+		FROM fa_acumfortas
+		WHERE num_proceso  = :lhNumProceso
+		  AND cod_operador = :lhCodOperador;
+    	if(SQLCODE != SQLOK)
+        {
+        	vDTrazasLog(modulo, "\n\t\t* DECLARE=> FA_ACUMFORTAS\n",   LOG05);
+                return(SQLCODE);
+    	}
+
+        EXEC SQL OPEN Cursor_FaAcumFortas;
+
+    	if(SQLCODE != SQLOK)
+        {
+        	vDTrazasLog(modulo, "\n\t\t* OPEN=> FA_ACUMFORTAS\n",   LOG05);
+                return(SQLCODE);
+    	}
+
+    	return (SQLCODE);
+}/***************************** Final ifnOpenFaAcumFortas  **********************/
+
+static BOOL ifnFetchFaAcumFortas (REG_FA_ACUMFORTAS_HOST *pstHost,long *plNumFilas)
+{
+
+         EXEC SQL FETCH Cursor_FaAcumFortas
+             INTO	 :pstHost->lNumAbonado
+			,:pstHost->lCodCliente	
+			,:pstHost->lCodPeriodo	
+			,:pstHost->lCodOperador;
+
+        if (SQLCODE==SQLOK)
+                *plNumFilas = TAM_HOSTS_PEQ;
+        else
+                if (SQLCODE==SQLNOTFOUND)
+                        *plNumFilas = sqlca.sqlerrd[2] % TAM_HOSTS_PEQ;
+
+  	return (SQLCODE);
+}/***************************** Final ifnFetchFaAcumFortas ****************/
+
+int ifnCloseFaAcumFortas (void)
+{
+
+	EXEC SQL CLOSE Cursor_FaAcumFortas;
+
+	strcpy(modulo,"ifnCloseFaAcumFortas");
+	vDTrazasLog(modulo, "\n\t\t* Close=> CURSOR FA_ACUMFORTAS\n",   LOG05);
+
+	return (SQLCODE);
+}/**************************** Final ifnCloseFaAcumFortas ******************/
+
+void vfnPrintFaAcumFortas (REG_FA_ACUMFORTAS *pstAcumFortas, int iNumAcumFortas)
+{
+        int i = 0;
+
+        strcpy(modulo,"vfnPrintFaAcumFortas");
+
+	vDTrazasLog(modulo,"\n\t\t* Despliegue de la Carga de la FA_ACUMFORTAS... [%d]", LOG05 ,iNumAcumFortas);
+
+        for (i=0;i<iNumAcumFortas;i++)
+        {
+               vDTrazasLog(modulo,	"---------------------------------------\n"
+					"pstAcumFortas[%d].lCodCliente	[%ld]\n"
+					"pstAcumFortas[%d].lNumAbonado	[%ld]\n"
+					"pstAcumFortas[%d].lCodPeriodo	[%ld]\n"
+					"pstAcumFortas[%d].lCodOperador	[%ld]\n"
+						,LOG05
+						,i , pstAcumFortas[i].lCodCliente	
+						,i , pstAcumFortas[i].lNumAbonado	
+						,i , pstAcumFortas[i].lCodPeriodo	
+						,i , pstAcumFortas[i].lCodOperador);
+
+        }
+}/*************************** vfnPrintFaAcumFortas *****************************/
+
+int iCargaFaAcumFortas(REG_FA_ACUMFORTAS **pstAcumFortas, int *iNumAcumFortas)
+{
+        int     rc = 0;
+        long    lNumFilas;
+        static  REG_FA_ACUMFORTAS_HOST pstAcumFortasHost;
+        REG_FA_ACUMFORTAS *pstAcumFortasTemp;
+        long lCont;
+
+        strcpy(modulo,"iCargaFaAcumFortas");
+        vDTrazasLog(modulo, "\n\t\t* Carga Estructura FA_ACUMFORTAS\n",   LOG05);
+
+
+
+        *iNumAcumFortas = 0;
+        *pstAcumFortas = NULL;
+
+        if (ifnOpenFaAcumFortas ())
+        	return (FALSE);
+
+        while (rc != SQLNOTFOUND)
+        {
+        rc = ifnFetchFaAcumFortas (&pstAcumFortasHost,&lNumFilas);
+        if (rc != SQLOK  && rc != SQLNOTFOUND)
+                        return (FALSE);
+
+                if (!lNumFilas)
+                	break;
+
+                *pstAcumFortas =(REG_FA_ACUMFORTAS*) realloc(*pstAcumFortas,(((*iNumAcumFortas)+lNumFilas)*sizeof(REG_FA_ACUMFORTAS)));
+
+                if (!*pstAcumFortas)
+                        return (FALSE);
+
+                pstAcumFortasTemp = &(*pstAcumFortas)[(*iNumAcumFortas)];
+                memset(pstAcumFortasTemp, 0, sizeof(REG_FA_ACUMFORTAS)*lNumFilas);
+                for (lCont = 0 ; lCont < lNumFilas ; lCont++)
+                {
+                	pstAcumFortasTemp[lCont].lCodCliente 	= pstAcumFortasHost.lCodCliente	[lCont];
+                	pstAcumFortasTemp[lCont].lNumAbonado 	= pstAcumFortasHost.lNumAbonado	[lCont];
+                	pstAcumFortasTemp[lCont].lCodPeriodo 	= pstAcumFortasHost.lCodPeriodo	[lCont];
+                	pstAcumFortasTemp[lCont].lCodOperador	= pstAcumFortasHost.lCodOperador[lCont];
+                }
+                (*iNumAcumFortas) += lNumFilas;
+
+        }/* fin while */
+
+        vDTrazasLog(modulo,  "\n\t\t* REGISTROS DE LA FA_ACUMFORTAS CARGADOS [%d]\n",   LOG05, *iNumAcumFortas);
+
+        rc = ifnCloseFaAcumFortas();
+        if (rc != SQLOK)
+                return (FALSE);
+
+        vfnPrintFaAcumFortas (*pstAcumFortas, *iNumAcumFortas);
+
+        return (TRUE);
+}/*************************** iCargaFaAcumFortas *****************************/
+
+
+/* --------Estructura ACUMFORTAS Hasta Aqui */
+
+
+
+BOOL bfnCargaEstructuras()
+{
+	
+	
+	
+	lhCodCiclFact	= stLineaComando.lCodCiclo;
+        lhCodOperador   = stLineaComando.lCodCarrier;
+        
+        EXEC SQL SELECT num_proceso   
+        	INTO :lhNumProceso
+        	FROM FA_PROCESOS     
+        	WHERE cod_ciclfact = :lhCodCiclFact;
+	
+	if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+
+        	vDTrazasLog(modulo, "\n\t\t* ERROR EN SELECT FROM FA_PROCESOS\n",   LOG05);
+                return(SQLCODE);
+    	}
+    	if(SQLCODE == SQLNOTFOUND)
+        {
+
+        	vDTrazasLog(modulo, "\n\t\t* NUM_PROCESO INEXISTENTE EN FA_PROCESOS\n",   LOG05);
+                return(SQLCODE);
+    	}    	
+    	
+	
+	if(!iCargaFaAcumFortas(&pstAcumFortas.stAcumFortas, &pstAcumFortas.iCantRegs)!= SQLOK)
+	{
+		strcpy(modulo, "bfnCargaEstructuras");
+		vDTrazasLog(modulo, "Error al Cargar FA_ACUMFORTAS. Proceso se cancela.\n",   LOG05);
+		return(FALSE);
+	}
+	
+	return(TRUE);
+}
+
+BOOL bfnBorraInfCarrier()
+{
+	int i=0;
+	
+	EXEC SQL BEGIN DECLARE SECTION;   
+		long	lhNumAbonado  	;   
+		long	lhCodCliente  	;   
+		long	lhCodCiclo    	;   
+		long	lhCodOperadora	;   
+		long 	lhInd_Orden	;
+		long	lhCantidadRegs	;
+	EXEC SQL END DECLARE SECTION;     
+
+
+	for (i=0;i<pstAcumFortas.iCantRegs;i++)
+        {
+        	lhNumAbonado 	= pstAcumFortas.stAcumFortas[i].lNumAbonado	;
+		lhCodCliente 	= pstAcumFortas.stAcumFortas[i].lCodCliente	;
+		lhCodCiclo   	= pstAcumFortas.stAcumFortas[i].lCodPeriodo	;
+		lhCodOperadora	= pstAcumFortas.stAcumFortas[i].lCodOperador    ;
+		
+		EXEC SQL 
+			DELETE fa_detfortas
+			WHERE cod_cliente  = :lhCodCliente
+			  AND num_abonado  = :lhNumAbonado
+			  AND cod_periodo  = :lhCodCiclo
+			  AND cod_operador = :lhCodOperadora;
+		
+			
+			
+		vDTrazasLog(modulo, "DELETE FA_DETFORTAS 	\n"
+					"WHERE COD_CLIENTE= %ld \n"
+					"AND NUM_ABONADO  = %ld \n"
+					"AND COD_PERIODO  = %ld \n"
+					"AND COD_OPERADOR = %ld ;\n"
+					"-----------------------------------------\n"
+					, LOG05
+					, lhCodCliente   
+					, lhNumAbonado   
+					, lhCodCiclo     
+					, lhCodOperadora);
+		
+		
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DELETE A LA FA_DETFORTAS.	SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+	    	if(SQLCODE == SQLNOTFOUND)
+	    	{
+	    		vDTrazasLog(modulo, "\n\t\t* NO BORRA NADA DE LA FA_DETFORTAS... NOTFOUND.\n",   LOG05);
+	    	}
+		
+		
+		EXEC SQL 
+			DELETE fa_acumfortas
+			WHERE cod_cliente  = :lhCodCliente
+			  AND num_abonado  = :lhNumAbonado
+			  AND cod_periodo  = :lhCodCiclo  
+/* Modificado por RMA Desde aqui 17-05-2005  */
+			  AND cod_operador = :lhCodOperadora
+/* Modificado por RMA Hasta aqui 17-05-2005  */
+			  AND num_proceso  = :lhNumProceso;
+		
+			
+		vDTrazasLog(modulo, "DELETE FA_ACUMFORTAS         \n"   
+					"WHERE COD_CLIENTE	= %ld \n" 
+					"AND NUM_ABONADO	= %ld \n" 
+					"AND COD_OPERADOR	= %ld \n" 
+					"AND COD_PERIODO	= %ld \n" 
+					"AND NUM_PROCESO  	= %ld ;\n"
+					"-----------------------------------------\n"
+					, LOG05
+					, lhCodCliente
+					, lhNumAbonado
+					, lhCodOperadora  
+					, lhCodCiclo  
+					, lhNumProceso);
+			
+			
+			
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DELETE A LA FA_ACUMFORTAS. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+	    	if(SQLCODE == SQLNOTFOUND)
+	    	{
+	    		vDTrazasLog(modulo, "\n\t\t* NO BORRA NADA DE LA FA_ACUMFORTAS... NOTFOUND.\n",   LOG05);
+	    	}			
+
+/* Incorporado por RM Desde aqui 17-05-2005 */
+		EXEC SQL
+			DELETE fa_subfortas_to
+			WHERE cod_cliente  = :lhCodCliente
+			  AND num_abonado  = :lhNumAbonado
+			  AND cod_periodo  = :lhCodCiclo  
+			  AND cod_operador = :lhCodOperadora;
+		
+			
+		vDTrazasLog(modulo, "DELETE FA_SUBFORTAS_TO        \n"   
+					"WHERE COD_CLIENTE	= %ld \n" 
+					"AND NUM_ABONADO	= %ld \n" 
+					"AND COD_PERIODO	= %ld \n" 
+					"AND COD_OPERADOR  	= %ld ;\n"
+					"-----------------------------------------\n"
+					, LOG05
+					, lhCodCliente
+					, lhNumAbonado
+					, lhCodCiclo  
+					, lhCodOperadora);
+			
+			
+			
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DELETE A LA FA_SUBFORTAS_TO. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+	    	if(SQLCODE == SQLNOTFOUND)
+	    	{
+	    		vDTrazasLog(modulo, "\n\t\t* NO BORRA NADA DE LA FA_SUBFORTAS_TO... NOTFOUND.\n",   LOG05);
+	    	}	
+/* Incorporado por RM Hasta aqui 17-05-2005 */
+		
+		EXEC SQL
+			DELETE fa_detforliq
+			WHERE cod_cliente  = :lhCodCliente   
+			  AND num_abonado  = :lhNumAbonado   
+			  AND cod_periodo  = :lhCodCiclo     
+			  AND cod_operador = :lhCodOperadora;
+
+			
+		vDTrazasLog(modulo, "DELETE FA_DETFORLIQ   	\n"            			
+					"WHERE COD_CLIENTE	= %ld  \n"
+					"AND NUM_ABONADO	= %ld  \n"
+					"AND COD_PERIODO  	= %ld  \n"
+					"AND COD_OPERADOR 	= %ld  ;\n"
+					"-----------------------------------------\n"
+					, LOG05
+					, lhCodCliente   	
+					, lhNumAbonado   	
+					, lhCodCiclo     	
+					, lhCodOperadora);
+			
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DELETE A LA FA_DETFORLIQ. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+	    	if(SQLCODE == SQLNOTFOUND)
+	    	{
+	    		vDTrazasLog(modulo, "\n\t\t* NO BORRA NADA DE LA FA_DETFORLIQ... NOTFOUND.\n",   LOG05);
+	    	}		
+		
+		EXEC SQL
+			DELETE fa_acumforliq
+			WHERE cod_cliente  = :lhCodCliente  
+			  AND num_abonado  = :lhNumAbonado  
+			  AND cod_periodo  = :lhCodCiclo    
+			  AND cod_operador = :lhCodOperadora
+			  AND num_proceso  = :lhNumProceso; 
+
+
+			vDTrazasLog(modulo, "DELETE FA_ACUMFORLIQ         \n"     
+						"WHERE COD_CLIENTE	= %ld \n"
+						"AND NUM_ABONADO	= %ld \n"
+						"AND COD_PERIODO  	= %ld \n"
+						"AND COD_OPERADOR 	= %ld \n"
+						"AND NUM_PROCESO  	= %ld ;\n"
+						"-----------------------------------------\n"
+						, LOG05
+						, lhCodCliente   
+						, lhNumAbonado   
+                        			, lhCodCiclo     
+                        			, lhCodOperadora 
+                        			, lhNumProceso );
+
+
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DELETE A LA FA_ACUMFORLIQ. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+	    	if(SQLCODE == SQLNOTFOUND)
+	    	{
+	    		vDTrazasLog(modulo, "\n\t\t* NO BORRA NADA DE LA FA_ACUMFORLIQ... NOTFOUND.\n",   LOG05);
+	    	}
+	    	
+	}
+	
+	
+	EXEC SQL 
+		DECLARE Cur_Ind_Orden CURSOR FOR
+		SELECT	DISTINCT 
+			ind_orden
+		FROM fa_detfortas_th
+		WHERE num_proceso  = :lhNumProceso
+		  AND cod_operador = :lhCodOperador;
+		
+	if(SQLCODE != SQLOK)
+        {
+
+        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DECLARE CURSOR FA_DETFORTAS_TH. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+                return(SQLCODE);
+    	}
+	
+		
+	EXEC SQL OPEN Cur_Ind_Orden;
+	
+	if(SQLCODE != SQLOK)
+        {
+
+        	vDTrazasLog(modulo, "\n\t\t* ERROR EN OPEN CURSOR FA_DETFORTAS_TH. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+                return(SQLCODE);
+    	}
+    			
+	while(1)
+	{
+		EXEC SQL FETCH Cur_Ind_Orden
+			INTO :lhInd_Orden;
+					
+		if (SQLCODE == SQLNOTFOUND)
+			break;
+		
+		EXEC SQL
+			SELECT COUNT(1)
+			INTO :lhCantidadRegs
+			FROM fa_detfortas
+			WHERE ind_orden = :lhInd_Orden;
+		
+		
+		vDTrazasLog(modulo, "\n\t\t* SELECT COUNT(1)	= [%ld] lhInd_Orden [%ld]\n",   LOG05, lhCantidadRegs, lhInd_Orden);
+		
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN SELECT COUNT(1) FA_DETFORTAS. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+		if (lhCantidadRegs == 0)
+		{
+			EXEC SQL
+				DELETE fa_cabfortas
+				WHERE ind_orden = :lhInd_Orden;
+			
+			if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+		        {
+		
+		        	vDTrazasLog(modulo, "\n\t\t* ERROR EN DELETE A LA FA_CABFORTAS. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+		                return(SQLCODE);
+		    	}
+		    	
+		    	if(SQLCODE == SQLNOTFOUND)
+		    	{
+		    		vDTrazasLog(modulo, "\n\t\t* NO BORRA NADA DE LA FA_CABFORTAS... NOTFOUND.\n",   LOG05);
+		    	}
+
+		
+		}	
+	}
+	
+	EXEC SQL CLOSE Cur_Ind_Orden;
+	
+	if(SQLCODE != SQLOK)
+        {
+
+        	vDTrazasLog(modulo, "\n\t\t* ERROR EN CLOSE CURSOR FA_DETFORTAS_TH. SQLCODE[%ld]\n",   LOG05, SQLCODE);
+                return(SQLCODE);
+    	}
+	
+	
+
+	
+	return(TRUE);
+
+}
+
+
+BOOL bfnCopiaAHistoricos()
+{   	
+    	int i=0;
+    	
+    	EXEC SQL BEGIN DECLARE SECTION;
+    		long	lhNumAbonado  ;
+    		long	lhCodCliente  ;
+    		long	lhCodCiclo    ;
+    		long	lhCodOperadora;
+    	EXEC SQL END DECLARE SECTION;
+    	
+    	vDTrazasLog(modulo, "\t\t* bfnCopiaAHistoricos - lhNumProceso 	[%ld]\n", LOG05, lhNumProceso );
+    	vDTrazasLog(modulo, "\t\t* bfnCopiaAHistoricos - lhCodCiclFact	[%ld]\n", LOG05, lhCodCiclFact);
+    	vDTrazasLog(modulo, "\t\t* bfnCopiaAHistoricos - lhCodOperador	[%ld]\n", LOG05, lhCodOperador);
+
+	vDTrazasLog(modulo, "\n\t\t* SQLNOTFOUND = [%ld].\n",   LOG05, SQLNOTFOUND);
+
+ 	for (i=0;i<pstAcumFortas.iCantRegs;i++)
+        {
+/*		
+		vDTrazasLog(modulo,	"---------------------------------------\n"
+					"pstAcumFortas.stAcumFortas[%d].lCodCliente	[%ld]\n"
+					"pstAcumFortas.stAcumFortas[%d].lNumAbonado	[%ld]\n"
+					"pstAcumFortas.stAcumFortas[%d].lCodPeriodo	[%ld]\n"
+					"pstAcumFortas.stAcumFortas[%d].lCodOperador	[%ld]\n"
+						,LOG05
+						,i , pstAcumFortas.stAcumFortas[i].lCodCliente	
+						,i , pstAcumFortas.stAcumFortas[i].lNumAbonado	
+						,i , pstAcumFortas.stAcumFortas[i].lCodPeriodo	
+						,i , pstAcumFortas.stAcumFortas[i].lCodOperador);
+*/
+
+        	lhNumAbonado 	= pstAcumFortas.stAcumFortas[i].lNumAbonado	;
+		lhCodCliente 	= pstAcumFortas.stAcumFortas[i].lCodCliente	;
+		lhCodCiclo   	= pstAcumFortas.stAcumFortas[i].lCodPeriodo	;
+		lhCodOperadora	= pstAcumFortas.stAcumFortas[i].lCodOperador    ;  
+		
+/* Modificado por RMA Desde aqui 17-05-2005  - Agregó columnas en el INSERT*/
+		EXEC SQL
+			INSERT INTO fa_detfortas_th(
+				ind_orden	, cod_periodo	, num_terminal	, fec_call	, 
+				hora_call	, tip_reg	, ind_alquiler	, ind_salida	, 
+				ind_entrada	, des_entrada	, mod_call	, clave_call	, 
+				minutos_tasado	, dur_call	, cod_servicio	, acum_netollam	, 
+				acum_iva	, tot_pagar	, cod_trafico	, ind_refactura	, 
+				lote		, num_abonado	, cod_cliente	, cod_operador	, 
+				seq_forfac	,num_proceso)
+			SELECT 	ind_orden	, cod_periodo	, num_terminal	, fec_call	, 
+				hora_call	, tip_reg	, ind_alquiler	, ind_salida	, 
+				ind_entrada	, des_entrada	, mod_call	, clave_call	, 
+				minutos_tasado	, dur_call	, cod_servicio	, acum_netollam	, 
+				acum_iva	, tot_pagar	, cod_trafico	, ind_refactura	, 
+				lote		, num_abonado	, cod_cliente	, cod_operador	, 
+				seq_forfac	, :lhNumProceso
+			FROM fa_detfortas
+			WHERE cod_periodo  = :lhCodCiclo
+			  AND cod_operador = :lhCodOperadora
+			  AND num_abonado  = :lhNumAbonado
+			  AND cod_cliente  = :lhCodCliente;
+/* Modificado por RMA Hasta aqui 17-05-2005  */
+		
+		if(SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+	        {
+	
+	        	vDTrazasLog(modulo, "\n\t\t* ERROR EN INSERT A LA FA_DETFORTAS_TH.	SQLCODE[%ld]\n",   LOG05, SQLCODE);
+	                return(SQLCODE);
+	    	}
+	    	
+	    	if(SQLCODE == SQLNOTFOUND)
+	    	{
+	    		vDTrazasLog(modulo, "\n\t\t* INSERT A LA FA_DETFORTAS_TH... NOTFOUND.\n",   LOG05);
+	    	}
+	}
+	/*
+	--- Eliminacion del data se hace en la proxima funcion ... por tal motivo las variables bind 
+	--- deberian ser globales y no estar declaradas en esta funcion, si no al comienzo del programa. By PGG ---
+	*/
+	
+	return (TRUE);
+}
+
+
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+
+int main(int argc, char *argv[])
+{
+    char modulo[]="main"		;
+    char *szUserid_Aux			;
+    extern	char *optarg        	;
+    char  	opt[]=":u:c:d:l:" 	;
+    int   	iOpt =0             	;
+    int   	sts			;
+    char  	szHelpString[1024] = " ";
+    char  	szLineaComando2[25]= ""	;
+
+    memset(&stLineaComando,0    ,sizeof(LINEACOMANDOCARRIER));
+
+
+    sprintf(szHelpString,"\n Argumentos de entrada de proceso : "
+                         "\n\t  -u Usuario/Password          "  
+                         "\n\t  -c Ciclo de Facturacion	     "
+                         "\n\t  -d Cod_Carrier		     "   
+                         "\n\t  -l Nivel de Log		     \n");
+
+    while ( (iOpt = getopt(argc,argv,opt)) != EOF)
+    {
+        switch(iOpt)
+        {
+		case 'u':
+			strcpy(stLineaComando.szUsuario, optarg);
+			if((szUserid_Aux=(char *)strstr(stLineaComando.szUsuario,"/")) == (char *)NULL)
+			{
+				fprintf(stderr, "\nUsuario Oracle no es valido.\n");
+				return(1);
+			}
+			else
+			{
+				strncpy(stLineaComando.szUser,stLineaComando.szUsuario, szUserid_Aux-stLineaComando.szUsuario);
+				strcpy(stLineaComando.szPass, szUserid_Aux+1);
+				fprintf (stdout," -u?/? ");
+			}
+			break;
+		case 'd':
+			if (strlen (optarg) )
+			{
+				stLineaComando.lCodCarrier = atoi (optarg);
+				fprintf (stdout,"-d%d ", stLineaComando.lCodCarrier);
+			}
+			else
+			{
+				fprintf (stderr,"\n\t<< Error : Falta parámetro Codigo de Carrier.\n");
+				return (1);
+			}
+			break;
+
+		case 'c':
+	                if (strlen (optarg) )
+			{
+				stLineaComando.lCodCiclo = atoi (optarg);
+				fprintf (stdout,"-d%d ", stLineaComando.lCodCiclo);
+			}
+			else
+			{
+				fprintf (stderr,"\n\t<< Error : Falta parámetro Codigo de Ciclo.\n");
+				return (1);
+			}
+			break;
+		case 'l':
+			if (strlen (optarg) )
+			{
+				stStatus.LogNivel =(atoi (optarg) > 0)? atoi (optarg):iLOGNIVEL_DEF ;
+				fprintf (stdout,"-l%d ", stStatus.LogNivel)     ;
+			}
+			break;
+
+        }/*End Switch */
+
+    } /* End While */
+    fprintf (stdout,"\n");
+
+    /* Validacion de Parametros */
+    	if (strcmp(stLineaComando.szUsuario, "")==0)
+    	{
+		fprintf(stderr, "\n\tUsuario/Password no ingresado\n");
+		fprintf(stderr,"%s",szHelpString);
+		return (1);
+    	}
+    
+
+ 	if (stStatus.LogNivel <= 0) stStatus.LogNivel = iLOGNIVEL_DEF;
+
+	stLineaComando.iNivLog = stStatus.LogNivel;
+
+
+    	if(!bfnConnectORA(stLineaComando.szUser,stLineaComando.szPass))
+    	{
+        	fprintf(stderr, "\n\tUsuario/Passwd Invalido\n\t\t"
+                		"'sptel  <usuario> <passwd> '\n");
+        	return (2);
+    	}
+    	else
+    	{
+        	printf( "\n\t-------------------------------------------------------"
+                	"\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx "
+                	"\n\t-------------------------------------------------------\n",
+	                stLineaComando.szUser);
+    	}
+
+
+
+
+
+    	/**************************************************************************************/
+    	/* Crear archivos y directorios de log y errores */
+
+    	sts = ifnAbreArchivosLog();
+
+
+    	if ( sts != 0 ) return sts;
+
+    	/*********************************************************************************************/
+
+    	vDTrazasLog  ( modulo ,	"\n\n\t**********************************************"
+                           	"\n\n\t****         Log FaPasoHistCarrier          **"
+                           	"\n\n\t**********************************************"
+                           ,LOG03);
+
+    	vDTrazasLog  ( modulo ,"\n\t\t***  Parametro de Entrada FaPasoHistCarrier  ***"
+                           "\n\t\t=> Usuario/Password             [%s]"
+                           "\n\t\t=> Ciclo de Facturacion	  [%ld]"
+                           "\n\t\t=> Cod_Carrier		  [%ld]"
+                           "\n\t\t=> Nivel de Log		  [%ld]"
+                           ,LOG03
+                           ,stLineaComando.szUser
+                           ,stLineaComando.lCodCiclo
+                           ,stLineaComando.lCodCarrier
+                           ,stLineaComando.iNivLog);
+
+    	/************************************************************************************/
+    	/*			Proceso Principal						*/
+    	/************************************************************************************/
+
+    	strcpy(modulo,"FaPasoHistCarrier");
+
+
+
+
+	
+
+    	vDTrazasLog(modulo,"\n\t\t***  Inicio Proceso principal  ***", LOG03);
+    	vDTrazasLog(modulo,"\n\t\t*** Carga de datos en estructuras ***\n", LOG03);
+	if (!bfnCargaEstructuras())
+	{
+		vDTrazasLog  (modulo,"\n\t*** ATENCION ***\n\t\t\t Error en funcion bfnCargaEstructuras ***\n", LOG01);
+		vDTrazasError(modulo,"\n\t*** ATENCION ***\n\t\t\t Error en funcion bfnCargaEstructuras ***\n", LOG01);
+	        return (FALSE);
+	}
+
+    	vDTrazasLog(modulo,"\n\t\t*** Copiado de datos de la tabla FA_DETFORTAS a FA_DETFORTAS_TH (Historica)***\n", LOG03);
+	if (!bfnCopiaAHistoricos())
+	{
+		vDTrazasLog  (modulo,"\n\t*** ATENCION ***\n\t\t\t Error en funcion bfnCopiaAHistoricos ***\n", LOG01);
+		vDTrazasError(modulo,"\n\t*** ATENCION ***\n\t\t\t Error en funcion bfnCopiaAHistoricos ***\n", LOG01);
+	        return (FALSE);
+	}
+
+	EXEC SQL COMMIT;
+
+	vDTrazasLog(modulo,"\n\t\t*** Eliminacion de datos de carrier ya procesados luego del respaldo en tabla historica FA_DETFORTAS_TH ***\n", LOG03);
+	if (!bfnBorraInfCarrier())
+	{
+		vDTrazasLog  (modulo,"\n\t*** ATENCION ***\n\t\t\t Error en funcion bfnBorraInfCarrier ***\n", LOG01);
+		vDTrazasError(modulo,"\n\t*** ATENCION ***\n\t\t\t Error en funcion bfnBorraInfCarrier ***\n", LOG01);
+	        return (FALSE);
+	}
+
+
+	EXEC SQL ROLLBACK;
+	
+/*
+    	if (!bfnOraCommit ())
+    	{
+        	vDTrazasError(modulo," en Commit", LOG01);
+        	vDTrazasLog  (modulo," en Commit", LOG01);
+        	return FALSE;
+    	}
+*/    	
+
+	
+
+	if(!bfnDisconnectORA(0))
+	{
+		vDTrazasLog  ( modulo ,	"\n\t--------------------------------------------"
+					"\n\t ERROR en Desconeccion de  ORACLE  = finaliza"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+		vDTrazasError( modulo ,	"\n\t--------------------------------------------"
+					"\n\t ERROR en Desconeccion de  ORACLE  = finaliza"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+	}
+    	else
+    	{
+		vDTrazasLog  ( modulo,	"\n\t--------------------------------------------"
+					"\n\tDesconectado de  ORACLE"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+		vDTrazasError( modulo, 	"\n\t--------------------------------------------"
+					"\n\tDesconectado de  ORACLE"
+					"\n\t--------------------------------------------\n"
+					,LOG03);
+
+	}
+
+
+    return (0);
+}/* ********************* Fin Main * *************************************** */
+
+/* ******************************************************************************** */
+/* ifnAbreArchivosLog : Crea para escritura o appendea archivos de Log y de Errores */
+/* ******************************************************************************** */
+int ifnAbreArchivosLog(void)
+{
+	char modulo[]="ifnAbreArchivosLog";
+
+	char *pathDir;
+	char szArchivo[32]="";
+	char szPath[128]="";
+	char szComando[128]="";
+	char szRechazadosName[32];
+
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	sprintf(szArchivo,"FaPasoHistCarrier");
+
+	pathDir=(char *)malloc(128);
+	pathDir=szGetEnv("XPF_LOG");
+	sprintf(szPath,"%s/FaPasoHistCarrier/%s",pathDir,cfnGetTime(2));
+	free(pathDir);
+
+	fprintf(stdout, "\nCrea Directorio Log  : %s\n", szPath);
+	sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+
+	fprintf(stdout, "\nCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+	sprintf(stStatus.ErrName,"%s/%s_%s.err",szPath,szArchivo,cfnGetTime(5));
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"w")) == (FILE*)NULL )
+	{	fprintf(stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		return -7;
+	}
+
+	vDTrazasError(modulo, "%s  << Abre Archivo de Errores >>", LOG04, cfnGetTime(1));
+
+	sprintf(stStatus.LogName,"%s/%s_%s.log",szPath,szArchivo,cfnGetTime(5));
+	if((stStatus.LogFile = fopen(stStatus.LogName,"w")) == (FILE*)NULL )
+	{	fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+		vDTrazasError(modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+		return -8;
+	}
+
+	vDTrazasLog(modulo, "%s << Abre Archivo de Log >>", LOG04, cfnGetTime(1));
+
+
+	vDTrazasLog(modulo, "%s << Inicio de FaPasoHistCarrier >>" , LOG03, cfnGetTime(1));
+
+	return 0;
+
+
+} /* Fin ifnAbreArchivosLog  */
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

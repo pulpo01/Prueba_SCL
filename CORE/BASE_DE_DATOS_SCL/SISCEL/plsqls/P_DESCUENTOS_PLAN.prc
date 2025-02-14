@@ -1,0 +1,145 @@
+CREATE OR REPLACE PROCEDURE        P_DESCUENTOS_PLAN(
+  VP_TRANSAC IN VARCHAR2 ,
+  VP_PRODUCTO IN VARCHAR2 ,
+  VP_PLANCOM IN VARCHAR2 ,
+  VP_CONCEPTO IN VARCHAR2 ,
+  VP_IMPORTE IN VARCHAR2 ,
+  VP_VOLUMEN IN VARCHAR2 )
+IS
+--
+-- Procedimiento de recuperacion de descuentos asociados
+-- al plan comercial del cliente en funcion del concepto
+--
+-- Los valores del codigo de retorno seran los siguientes :
+--         - "0" ; Descuento Localizado
+--         - "1" ; No Existe Descuento Asociado
+--         - "4" ; Error en el proceso
+--
+   V_ERROR CHAR(1) := '0';
+   V_TIPDTO VE_CTOPLAN.COD_TIPODTO%TYPE;
+   V_VALDTO VE_CTOPLAN.IMP_DESCUENTO%TYPE;
+   V_CTOPLAN VE_CTOPLAN.COD_CTOPLAN%TYPE;
+   V_CUAD VE_CTOPLAN.IND_CUADRANTE%TYPE;
+   V_TIPCUAD VE_CTOPLAN.COD_TIPOCUAD%TYPE;
+   V_IMPORTE VE_CTOPLAN.IMP_DESCUENTO%TYPE;
+   V_VOLUMEN NUMBER(5);
+   V_CADENA GA_TRANSACABO.DES_CADENA%TYPE := NULL;
+   V_CONCEPTO FA_CONCEPTOS.COD_CONCEPTO%TYPE;
+   V_CONCEDTO FA_CONCEPTOS.COD_CONCEPTO%TYPE;
+   V_PRODUCTO FA_CONCEPTOS.COD_PRODUCTO%TYPE;
+   V_PLANCOM VE_CABPLANCOM.COD_PLANCOM%TYPE;
+   V_DESDE VE_CTOPLAN.IMP_UMBDESDE%TYPE;
+   V_HASTA VE_CTOPLAN.IMP_UMBHASTA%TYPE;
+   ERROR_PROCESO EXCEPTION;
+BEGIN
+    V_CONCEPTO := TO_NUMBER(VP_CONCEPTO);
+    V_IMPORTE := TO_NUMBER(VP_IMPORTE);
+    V_VOLUMEN := TO_NUMBER(VP_VOLUMEN);
+    V_PRODUCTO := TO_NUMBER(VP_PRODUCTO);
+    V_PLANCOM := TO_NUMBER(VP_PLANCOM);
+    BEGIN
+       SELECT COD_CONCEPTO
+         INTO V_CONCEDTO
+         FROM FA_CONCEPTOS
+        WHERE COD_CONCORIG = V_CONCEPTO
+          AND COD_TIPCONCE = 2;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+             V_ERROR := '1';
+             RAISE ERROR_PROCESO;
+        WHEN OTHERS THEN
+             V_ERROR := '4';
+             RAISE ERROR_PROCESO;
+    END;
+    BEGIN
+       SELECT COD_CTOPLAN
+         INTO V_CTOPLAN
+         FROM VE_PLAN_CTOPLAN
+        WHERE COD_PRODUCTO = V_PRODUCTO
+          AND COD_PLANCOM  = V_PLANCOM
+          AND COD_CTOFAC   = V_CONCEDTO
+          AND SYSDATE BETWEEN FEC_EFECTIVIDAD
+                          AND NVL(FEC_FINEFECTIVIDAD,SYSDATE);
+    EXCEPTION
+       WHEN NO_DATA_FOUND THEN
+            V_ERROR := '1';
+            RAISE ERROR_PROCESO;
+       WHEN OTHERS THEN
+            V_ERROR := '4';
+            RAISE ERROR_PROCESO;
+    END;
+    BEGIN
+       SELECT COD_TIPODTO,IMP_DESCUENTO,IND_CUADRANTE,COD_TIPOCUAD,
+       IMP_UMBDESDE,IMP_UMBHASTA
+         INTO V_TIPDTO,V_VALDTO,V_CUAD,V_TIPCUAD,V_DESDE,V_HASTA
+         FROM VE_CTOPLAN
+        WHERE COD_CTOPLAN = V_CTOPLAN
+          AND COD_PRODUCTO = V_PRODUCTO;
+    EXCEPTION
+       WHEN OTHERS THEN
+            V_ERROR := '4';
+            RAISE ERROR_PROCESO;
+    END;
+    IF V_CUAD = 1 THEN
+       BEGIN
+          IF V_TIPCUAD = 0 THEN
+             SELECT IMP_DESCUENTO,COD_TIPODTO
+               INTO V_VALDTO,V_TIPDTO
+               FROM VE_CUADCTOPLAN
+              WHERE COD_CTOPLAN = V_CTOPLAN
+                AND V_IMPORTE BETWEEN IMP_UMBDESDE
+                                  AND IMP_UMBHASTA;
+          ELSE
+             SELECT IMP_DESCUENTO,COD_TIPODTO
+               INTO V_VALDTO,V_TIPDTO
+               FROM VE_CUADCTOPLAN
+              WHERE COD_CTOPLAN = V_CTOPLAN
+                AND V_VOLUMEN BETWEEN IMP_UMBDESDE
+                                  AND IMP_UMBHASTA;
+          END IF;
+       EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+               V_ERROR := '1';
+               RAISE ERROR_PROCESO;
+          WHEN OTHERS THEN
+               V_ERROR := '4';
+               RAISE ERROR_PROCESO;
+       END;
+   ELSE
+      IF V_TIPCUAD = 0 THEN
+         IF V_IMPORTE > V_HASTA OR V_IMPORTE < V_DESDE THEN
+     V_TIPDTO := NULL;
+     V_VALDTO := NULL;
+     V_CONCEDTO := NULL;
+            V_ERROR := '1';
+            RAISE ERROR_PROCESO;
+         END IF;
+      ELSE
+         IF V_VOLUMEN > V_HASTA OR V_VOLUMEN < V_DESDE THEN
+     V_TIPDTO := NULL;
+     V_VALDTO := NULL;
+     V_CONCEDTO := NULL;
+            V_ERROR := '1';
+            RAISE ERROR_PROCESO;
+         END IF;
+      END IF;
+   END IF;
+   V_ERROR := '0';
+   V_CADENA := '/'||TO_CHAR(V_TIPDTO)||
+               '/'||TO_CHAR(V_VALDTO)||
+               '/'||TO_CHAR(V_CONCEDTO);
+   RAISE ERROR_PROCESO;
+EXCEPTION
+   WHEN ERROR_PROCESO THEN
+        INSERT INTO GA_TRANSACABO
+                  (NUM_TRANSACCION,
+                   COD_RETORNO,
+                   DES_CADENA)
+           VALUES (VP_TRANSAC,
+                   V_ERROR,
+                   V_CADENA);
+   WHEN OTHERS THEN
+        RAISE ERROR_PROCESO;
+END;
+/
+SHOW ERRORS

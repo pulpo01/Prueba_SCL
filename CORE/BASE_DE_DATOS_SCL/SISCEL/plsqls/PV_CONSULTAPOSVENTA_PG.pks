@@ -1,0 +1,23 @@
+CREATE OR REPLACE PACKAGE PV_CONSULTAPOSVENTA_PG
+AS
+PROCEDURE PV_AFCAMBIOPLAN_PR(v_nnum_abonado IN NUMBER,
+		  					 v_dfec_desdellam OUT GA_INTARCEL.FEC_DESDE%TYPE,
+							 v_vcod_plantarif OUT GA_INTARCEL.COD_PLANTARIF%TYPE,
+							 v_dfec_cumplan OUT GA_ABOCEL.FEC_CUMPLAN%TYPE,
+							 v_nimp_cargobasico OUT TA_CARGOSBASICO.COD_CARGOBASICO%TYPE,
+							 v_nCodCliente IN GE_CLIENTES.COD_CLIENTE%TYPE);
+
+PROCEDURE PV_AFCAMBIOSERIE_PR(v_nnum_abonado IN NUMBER,
+		  					 v_vdes_articulo OUT AL_ARTICULOS.DES_ARTICULO%TYPE,
+							 v_vcod_tecnologia OUT GA_ABOCEL.COD_TECNOLOGIA%TYPE,
+							 v_nimp_cargo_s OUT GE_CARGOS.IMP_CARGO%TYPE);
+
+PROCEDURE PV_NAMIGARCIONPREPAGO_PR(v_nnum_abonado IN NUMBER,
+		  						   v_dfec_baja OUT GA_ABOCEL.FEC_BAJA%TYPE,
+								   v_nnum_abonado_c OUT GA_ABOCEL.NUM_ABONADO%TYPE,
+								   v_dfec_bajacen_c OUT GA_ABOCEL.FEC_BAJACEN%TYPE,
+								   v_dfec_alta_c OUT GE_CARGOS.FEC_ALTA%TYPE,
+								   v_nimp_cargo_c OUT GE_CARGOS.IMP_CARGO%TYPE);
+END PV_CONSULTAPOSVENTA_PG;
+/
+SHOW ERRORS

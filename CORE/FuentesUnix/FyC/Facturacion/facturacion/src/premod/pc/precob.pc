@@ -1,0 +1,184 @@
+/****************************************************************************/
+/* Fichero    : precob.pc                                                   */
+/* Descripcion: Funciones para Interface con el modulo de Cobros            */
+/* Autor      : Javier Garcia Paredes                                       */
+/* Fecha      : 6-05-1997                                                   */
+/****************************************************************************/
+
+#define _PRECOB_PC_
+
+#include <precob.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                              funcion : bIFCobros                          */
+/*****************************************************************************/
+BOOL bIFCobros (void)
+{
+   static CONCEPTO stConcepto      ;
+   static int  iInd            = 0 ;
+   static int  iCodCredito     = 0 ;
+   static char szFecCobros [9] = "";
+   double dImpConceptoAux          ;
+
+   memset (&stConcepto,0,sizeof(CONCEPTO));
+
+   strcpy (stAnomProceso.szDesProceso,"PreBilling Cobros");
+
+   vDTrazasLog (szExeName,"\n\t\t* Obtencion de Recargos",LOG03);
+
+   if (stArrRec.iCont == 0)
+   {
+       iDError (szExeName,ERR038,vInsertarIncidencia,"Recargos");
+       return FALSE;
+   }
+   if (stArrCan.iCont == 0)
+   {
+       iDError (szExeName,ERR038,vInsertarIncidencia,"Cantidades");
+       return FALSE;
+   }
+   if (stArrPor.iCont == 0)
+   {
+       iDError (szExeName,ERR038,vInsertarIncidencia,"Porcentaje");
+       return FALSE;
+   }
+
+   if (!bfnDBObtConCre (&iCodCredito))
+   {
+        iDError (szExeName,ERR000,vInsertarIncidencia,
+                 "Select->Obtencion CodCredito",szfnORAerror());
+        return FALSE;
+   }
+   strncpy (szFecCobros,szSysDate,8);
+   szFecCobros [8] = '\0'           ;
+
+   vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada para Recargos"
+                          "\n\t\t=>Cod.Cliente  [%ld]"
+                          "\n\t\t=>Fecha        [%s] "
+                          "\n\t\t=>Cod.CalClien [%s] "
+                          "\n\t\t=>Cod.Credito  [%d] ",LOG04,
+                          stCliente.lCodCliente  ,
+                          szFecCobros            ,
+                          stCliente.szCodCalClien,
+                          iCodCredito);
+
+   if (!bFindConcepto (stDatosGener.iCodRecargo,&stConcepto))
+   {
+        iDError (szExeName,ERR021,vInsertarIncidencia,"pstConceptos");
+        return FALSE;
+   }
+
+   if (stCliente.dImpRecargo >= 0.01)
+   {
+       iInd = stPreFactura.iNumRegistros;
+       stPreFactura.A_PFactura[iInd].lNumProceso  = stStatus.IdPro          ;
+       stPreFactura.A_PFactura[iInd].lCodCliente  = stCliente.lCodCliente   ;
+       stPreFactura.A_PFactura[iInd].iCodConcepto = stDatosGener.iCodRecargo;
+
+       strcpy (stPreFactura.A_PFactura[iInd].szDesConcepto,
+               stConcepto.szDesConcepto)                                    ;
+
+       if (!bGetMaxColPreFa (stPreFactura.A_PFactura[iInd].iCodConcepto ,
+                             &stPreFactura.A_PFactura[iInd].lColumna    ))
+            return FALSE;
+
+       stPreFactura.A_PFactura[iInd].iCodProducto =stConcepto.iCodProducto;
+       strcpy (stPreFactura.A_PFactura[iInd].szFecValor       ,stCiclo.szFecEmision) ;
+       strcpy (stPreFactura.A_PFactura[iInd].szFecEfectividad ,szSysDate) ;
+
+       stPreFactura.A_PFactura[iInd].dImpConcepto  =stCliente.dImpRecargo ;
+       stPreFactura.A_PFactura[iInd].dImpFacturable=stCliente.dImpRecargo ;
+       
+       dImpConceptoAux = stPreFactura.A_PFactura[iInd].dImpFacturable;
+
+       if (!bConversionMoneda (stCliente.lCodCliente                       ,
+                               stConcepto.szCodMoneda                      ,
+                               stDatosGener.szCodMoneFact                  ,
+                               stCiclo.szFecEmision                        ,
+                              &stPreFactura.A_PFactura[iInd].dImpFacturable))
+            return FALSE; /* P-MIX-09003 4 */  
+
+       stPreFactura.A_PFactura[iInd].dImpFacturable =
+                    fnCnvDouble( stPreFactura.A_PFactura[iInd].dImpFacturable,0);                                                       
+       
+       if (stPreFactura.A_PFactura[iInd].dImpFacturable == 0) /* P-MIX-09003 134206 */
+       {
+           stPreFactura.A_PFactura[iInd].dImpMontoBase = 0;
+       }
+       else
+       {
+           if (dImpConceptoAux != stPreFactura.A_PFactura[iInd].dImpFacturable)
+           {
+               stPreFactura.A_PFactura[iInd].dImpMontoBase = fnCnvDouble( stPreFactura.A_PFactura[iInd].dImpFacturable,0) / 
+                                                                     fnCnvDouble(dImpConceptoAux, 0);
+           }
+           else
+           {
+               stPreFactura.A_PFactura[iInd].dImpMontoBase = 0;
+           }
+       } /* P-MIX-09003 134206 */       
+                                                                                                                                    
+       strcpy (stPreFactura.A_PFactura[iInd].szCodMoneda ,
+               stConcepto.szCodMoneda)  ;
+       strcpy (stPreFactura.A_PFactura[iInd].szCodRegion,
+               stCliente.szCodRegion)   ;
+       strcpy (stPreFactura.A_PFactura[iInd].szCodProvincia,
+               stCliente.szCodProvincia);
+       strcpy (stPreFactura.A_PFactura[iInd].szCodCiudad,
+               stCliente.szCodCiudad)   ;
+
+       strcpy (stPreFactura.A_PFactura[iInd].szCodModulo,
+               stConcepto.szCodMoneda);
+
+       stPreFactura.A_PFactura[iInd].lCodPlanCom = stCliente.lCodPlanCom  ;
+       stPreFactura.A_PFactura[iInd].iIndFactur  = FACTURABLE             ;
+       stPreFactura.A_PFactura[iInd].iCodCatImpos= stCliente.iCodCatImpos ;
+       stPreFactura.A_PFactura[iInd].iCodPortador= 0                      ;
+       stPreFactura.A_PFactura[iInd].iIndEstado  = EST_NORMAL             ;
+       stPreFactura.A_PFactura[iInd].iCodTipConce= stConcepto.iCodTipConce;
+       stPreFactura.A_PFactura[iInd].lNumUnidades= 1                      ;
+       stPreFactura.A_PFactura[iInd].lCodCiclFact= stCiclo.lCodCiclFact   ;
+       stPreFactura.A_PFactura[iInd].iCodConceRel= 0                      ;
+       stPreFactura.A_PFactura[iInd].lColumnaRel = 0                      ;
+       stPreFactura.A_PFactura[iInd].lNumAbonado = 0                      ;
+
+       stPreFactura.A_PFactura[iInd].szNumTerminal[0] = 0;
+       stPreFactura.A_PFactura[iInd].lCapCode         = 0;
+       stPreFactura.A_PFactura[iInd].szNumSerieMec[0] = 0;
+       stPreFactura.A_PFactura[iInd].szNumSerieLe [0] = 0;
+
+       stPreFactura.A_PFactura[iInd].iFlagImpues  = 0  ;
+       stPreFactura.A_PFactura[iInd].iFlagDto     = 0  ;
+       stPreFactura.A_PFactura[iInd].fPrcImpuesto = 0  ;
+       stPreFactura.A_PFactura[iInd].dValDto      = 0.0;
+
+       stPreFactura.A_PFactura[iInd].iTipDto         = 0;
+       stPreFactura.A_PFactura[iInd].lNumVenta       = 0;
+       stPreFactura.A_PFactura[iInd].lNumTransaccion = 0;
+       stPreFactura.A_PFactura[iInd].iMesGarantia    = 0;
+       stPreFactura.A_PFactura[iInd].iIndAlta        = 0;
+       stPreFactura.A_PFactura[iInd].iIndSuperTel    = 0;
+       stPreFactura.A_PFactura[iInd].iNumPaquete     = 0;
+       stPreFactura.A_PFactura[iInd].iIndCuota       = 0;
+       stPreFactura.A_PFactura[iInd].iNumCuotas      = 0;
+       stPreFactura.A_PFactura[iInd].iOrdCuota       = 0;
+
+       vDTrazasLog (szExeName,"\t\t=> Importe de Recargo (Pesos) : [%f]",LOG03,
+                    stPreFactura.A_PFactura[iInd].dImpFacturable); 
+
+       if(bfnIncrementarIndicePreFactura()==FALSE)
+       {
+	   vDTrazasLog  (szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+	   vDTrazasError(szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+	   return FALSE;
+       }
+   }
+   if (!bfnDBUpdImpRecargo (stCliente.lCodCliente))
+   {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Update->Co_Cartera",
+                 szfnORAerror());
+        return FALSE;
+   }
+   return TRUE; 
+}/****************************** Final bIFCobros *****************************/

@@ -1,0 +1,131 @@
+/******************************************************************************************/
+/*    Programa    : Ejecucion de notas de ajustes "on line".                              */
+/*    Modulo      : COBROS.                                                               */
+/*    Fichero     : NotdebOL.pc                                                           */
+/*    Descripcion : Programa para ejecutar notas de ajustes                               */ 
+/*    Programador : Julia Serrano                                                         */
+/*    Fecha       : 18-03-1997                                                            */
+/******************************************************************************************/
+/*    Modificado 11-01-2004 por Proyecto MAS_03043 Mejoras Cancelacion de Credito - GAC   */
+/******************************************************************************************/
+#include <notdeb.h>
+
+EXEC SQL INCLUDE sqlca;
+
+int main(int argc, char *argv[])
+{
+int	iRet,iDis;
+BOOL	bResul;
+char	lLog[256];
+char szComando [255]= "";
+	
+	if( argc != 15 )
+	{
+		fprintf( stdout, "numero de parametros no valido\n");
+		fprintf( stdout, "Cliente    ,   importe     ,     Fecha\n");  
+		fprintf( stdout, "TipdocFac  ,   CodAgenFac  ,     LetraFac\n");
+		fprintf( stdout, "centremiFac,   NumSecuFac  ,     Credito\n");
+		fprintf( stdout, "concepto   ,   iNC         ,     FechaVenci\n");
+		fprintf( stdout, "Usuario    ,   Password\n");
+	
+		return ERR_PARAME;
+	}
+	
+	fprintf(stdout,"antes de conectarme\n");	
+	if( ifnConnectORA( argv[13], argv[14]) )
+	{	
+		fprintf(stdout,"error en conexion\n");
+		return ERR_CONEXION;
+	}
+	
+	fprintf(stdout,"nos hemos conectado\n");
+	
+	/*obtenemos los datos generales*/
+	bResul = bfnDBObtDatGen();
+	if (!bResul)
+		return ERR_DATGEN;
+	
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )
+	{
+	    fprintf( TiG.lFile, "Error al realizar carga de bGetParamDecimales()." );
+	    return -1;
+	}
+
+	fprintf( stdout, "Path Log commit => [%s]\n", TiG.szPathLog );
+	
+	/*sprintf(lLog,"%s/NOTDEB.LOG",TiG.szPathLog);*/
+	/* 11-01-2004 Homolog. a CH-1793  GAC */
+	sprintf(lLog,"%s/NOTDEB_%s_%s.LOG",TiG.szPathLog,argv[1],argv[8]); 
+
+	/*abrimos fichero de log*/
+	if ((TiG.lFile=fopen(lLog,"a")) == (FILE *)NULL)
+	{
+		fprintf(stdout,"error abriendo fichero log\n");
+		return ERR_ABRIRFICH;
+	}
+	
+	fprintf(stdout,"llamar a cancelacion del pago\n");
+	/* Cliente     , importe      , Fecha        */  
+	iRet = ifnCanNotas(atol(argv[1]), atof(argv[2]), argv[3]      ,
+	/* TipdocFac   , CodAgenFac   , LetraFac     */
+	atoi(argv[4])  , atol(argv[5]), argv[6]      ,
+	/* centremiFac , NumSecuFac   , Credito      */ 
+	atoi(argv[7])  , atol(argv[8]), atoi(argv[9]),
+	/* concepto    , iNC          , FechaVenci   */
+	atoi(argv[10]) , atoi(argv[11]),argv[12]);
+	
+	/* Realizamos commit o rollback en funcion de resultado */
+	if (OK == iRet)
+		EXEC SQL COMMIT;
+	else	
+		EXEC SQL ROLLBACK;
+	
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stdout,"iRet commit %d\n",ERR_COMMIT);
+		return ERR_COMMIT;
+	}
+	
+	/* Desconexion de la Base de Datos. */
+	iDis = ifnDisConnORA();
+	
+	if (iDis == -1)
+	{
+		fprintf(stdout,"iRet desconexion %d\n",ERR_DESCONEXION);
+		return ERR_DESCONEXION ;
+	}
+	
+	fclose(TiG.lFile);
+	
+	/*Devolvemos el retorno para informar al cliente */
+	fprintf(stdout,"iRet fin main %d\n",iRet);
+	return iRet;
+
+} /* Fin main() */
+/****************************************************************************/
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

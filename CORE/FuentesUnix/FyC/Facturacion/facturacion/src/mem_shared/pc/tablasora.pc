@@ -1,0 +1,4062 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sqlca.h>
+#include <sqlcpr.h>
+
+#include "GenORA.h"
+#include "tipos.h"
+#include "tablas.h"
+
+/******************************************************************************
+Funcion         :       ifnInitORATh
+*******************************************************************************/
+
+int ifnInitORATh (char * szUser,char * szPass,int *iCodCiclo,int iFactura, char *szFecSysDate, char *szFecEmision)
+{
+  	struct sqlca sqlca;
+  	EXEC SQL BEGIN DECLARE SECTION;
+		int icod_ciclo=0;
+		int icod_factura=0;
+		static char* szhSysDate           ; EXEC SQL VAR szhSysDate       IS STRING(15);
+		static char* szhFecEmi            ; EXEC SQL VAR szhFecEmi        IS STRING(15);
+    	EXEC SQL END DECLARE SECTION;
+
+  	char szConnect[255];
+  	memset(szConnect,0x00,sizeof(szConnect));
+	fprintf(stdout,"\n (ifnInitORATh ).\n");
+	fprintf(stdout,"\n (ifnInitORATh ) szUser==>[%s] \n",szUser);
+	fprintf(stdout,"\n (ifnInitORATh ) szPass==>[%s] \n",szPass);
+
+  	sprintf(szConnect,"%s/%s", szUser, szPass);
+
+	szhSysDate=szFecSysDate;
+	szhFecEmi =szFecEmision;
+
+    	icod_factura=iFactura;
+  	EXEC SQL CONNECT :szConnect;
+	if(sqlca.sqlcode)
+	{
+		icod_ciclo=-1;
+                *iCodCiclo=icod_ciclo;
+		return sqlca.sqlcode;
+	}
+
+	fprintf(stdout,"\n[CARGA INICIAL] - COD_CICLFACT ==>[%d] ).\n",icod_factura);
+
+  	EXEC SQL 
+  		SELECT COD_CICLO, TO_CHAR(FEC_EMISION,'YYYYMMDDHH24MISS')  
+  			 INTO :icod_ciclo,
+  			 	  :szhFecEmi
+  		FROM FA_CICLFACT 
+  		WHERE COD_CICLFACT=:icod_factura;
+  			 
+ 	fprintf(stdout,"\n[CARGA INICIAL] - COD_CICLO   ==>[%d] ).\n",icod_ciclo);
+ 	fprintf(stdout,"\n[CARGA INICIAL] - FEC_EMISION ==>[%s] ).\n",szhFecEmi);
+ 	fprintf(stdout,"\n sqlca.sqlcode 2 ==>[%d] \n",sqlca.sqlcode);
+    if(sqlca.sqlcode)
+	{
+		icod_ciclo=-1;
+                *iCodCiclo=icod_ciclo;
+		return sqlca.sqlcode;
+	}
+  	*iCodCiclo=icod_ciclo;
+
+	EXEC SQL SELECT TO_CHAR(SYSDATE,'YYYYMMDDHH24MISS') INTO :szhSysDate FROM FA_DATOSGENER;
+	if(sqlca.sqlcode)
+	{
+		icod_ciclo=-1;
+                *iCodCiclo=icod_ciclo;
+		return sqlca.sqlcode;
+	}
+
+  	EXEC SQL ENABLE THREADS;
+
+  	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnCommitReleaseTh
+*******************************************************************************/
+
+int ifnCommitReleaseTh(sql_context ctx)
+{
+  	struct sqlca sqlca;
+
+  	EXEC SQL CONTEXT USE :ctx;
+
+  	EXEC SQL COMMIT RELEASE;
+
+  	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnConnectORATh
+*******************************************************************************/
+
+int ifnConnectORATh(char * szUser,char * szPass,sql_context *ctx)
+{
+	sql_context p;
+  	struct sqlca sqlca;
+  	char szConnect[255];
+  	memset(szConnect,0x00,sizeof(szConnect));
+  	sprintf(szConnect,"%s/%s", szUser, szPass);
+
+  	EXEC SQL CONTEXT ALLOCATE :p;
+
+  	if(sqlca.sqlcode)
+    	return sqlca.sqlcode;
+
+  	EXEC SQL CONTEXT USE :p;
+
+  	EXEC SQL CONNECT :szConnect;
+
+  	if (sqlca.sqlcode)
+    		return sqlca.sqlcode;
+
+    	EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT = 'YYYYMMDDHH24MISS';
+
+  	vfnActivateRoleTh(szUser,&p);
+
+  	*ctx = p;
+  	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       vfnActivateRoleTh
+*******************************************************************************/
+void vfnActivateRoleTh (char *szUser,sql_context ctx)
+{
+  	struct sqlca sqlca;
+  	EXEC SQL CONTEXT USE :ctx;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+
+        char szhCad[20]         ; EXEC SQL VAR szhCad           IS STRING(20) ;
+        char szhStm[512]        ; EXEC SQL VAR szhStm           IS STRING(255);
+        char *szhUser           ; EXEC SQL VAR szhUser          IS STRING(31) ;
+        char szhRA[512]         ; EXEC SQL VAR szhRA            IS STRING(512);
+        char szhGrantedRole[31] ; EXEC SQL VAR szhGrantedRole   IS STRING(31);
+
+    EXEC SQL END DECLARE SECTION;
+
+    char szPass[10] = "";
+    char szRolesActivos[502];
+
+    szhUser = szUser;
+
+    EXEC SQL DECLARE C_RA CURSOR FOR
+        SELECT ROLE
+          FROM SESSION_ROLES;
+
+    EXEC SQL OPEN C_RA;
+
+    if (sqlca.sqlcode)
+    {
+        return;
+    }
+
+    strcpy(szRolesActivos,"");
+
+    while (1)
+    {
+        EXEC SQL FETCH C_RA
+                 INTO :szhRA;
+        if (sqlca.sqlcode == NOT_FOUND)
+            break;
+
+        if (sqlca.sqlcode <0)
+        {
+            fprintf(stderr,"* Error FETCH C_RA %s\n",szfnORAerror());
+            strcpy(szRolesActivos,"");
+            return;
+        }
+
+        sprintf(szRolesActivos,"%s %s,",szRolesActivos,szhRA);
+
+    }
+
+    EXEC SQL CLOSE C_RA;
+
+    if (sqlca.sqlcode)
+    {
+        fprintf(stderr,"vfnActivateRole() Close Code:%s\n", szfnORAerror());
+        return;
+    }
+
+    if ((char*) strstr(szRolesActivos,"TCP_IUD") != (char*) NULL)
+    {
+        return;
+    }
+
+    strcpy (szhCad,"TCP_IUD");
+    EXEC SQL
+    SELECT GRANTED_ROLE
+      INTO :szhGrantedRole
+      FROM USER_ROLE_PRIVS
+      WHERE GRANTED_ROLE = :szhCad
+        AND USERNAME     = UPPER(:szhUser);
+
+    if (sqlca.sqlcode == NOT_FOUND)
+    {
+        return;
+    }
+
+    if (sqlca.sqlcode)
+    {
+        fprintf(stderr,"* Error G_RO %s\n",szfnORAerror());
+        return;
+    }
+
+    szPass[0] = szhCad[0];
+    szPass[1] = szhCad[4];
+    szPass[2] = szhCad[2];
+    szPass[3] = szhCad[5];
+    szPass[4] = szhCad[1];
+    szPass[5] = szhCad[3];
+    szPass[6] = '6';
+    szPass[7] = 'C';
+    szPass[8] = '\0';
+
+    sprintf(szhStm,"SET ROLE %s TCP_IUD IDENTIFIED BY %s\n",szRolesActivos,szPass);
+
+    EXEC SQL EXECUTE IMMEDIATE :szhStm;
+
+    return;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararFacClientes
+*******************************************************************************/
+
+int ifnOraDeclararFacClientes(sql_context ctx, int iCodCiclo, long ci, long cf, char *szFecEmision)
+{
+    struct sqlca sqlca;
+    EXEC SQL CONTEXT USE :ctx;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+	 static int  ihCodCiclo  ;
+	 static long  lhClieIni  ;
+	 static long  lhClieFin  ;
+ 	 static int  ihCero  ;
+	 static int  ihUno  ;
+	 int	iExist;
+	 static char szCadenaSQL[2200];
+	 static char* szhFecEmision   ; EXEC SQL VAR szhFecEmision   IS STRING(15);
+         char szhFmtFecha[17] ; EXEC SQL VAR szhFmtFecha   IS STRING(17);
+    EXEC SQL END DECLARE SECTION  ;
+
+    ihCodCiclo = iCodCiclo  ;
+    lhClieIni=ci;
+    lhClieFin=cf;
+    szhFecEmision=szFecEmision;
+
+    ihCero = 0 ;
+    ihUno  = 1 ;
+    iExist = 0 ;
+	
+    sprintf (szhFmtFecha, "YYYYMMDDHH24MISS");
+
+    EXEC SQL
+	 SELECT COUNT(1)
+	 INTO   :iExist
+	 FROM   ALL_TABLES
+	 WHERE  TABLE_NAME = 'GA_VALOR_CLI';
+	
+    if (sqlca.sqlcode)  
+    {
+        fprintf(stdout,"\n[CARGA INICIAL] - Error en ejecucion de la validacion de la tabla GA_VALOR_CLI [%d]\n",sqlca.sqlcode);
+        return(sqlca.sqlcode);
+    }
+	
+	
+    if(lhClieFin!=0)
+    {
+       sprintf(szCadenaSQL, " SELECT DISTINCT :ihCero , \n"
+      			    " CLI.COD_CLIENTE         , \n"
+			    " CLI.NOM_CLIENTE         , \n"
+			    " CLI.NOM_APECLIEN1       , \n"
+			    " CLI.NOM_APECLIEN2       , \n"
+			    " CLI.TEF_CLIENTE1        , \n"
+			    " CLI.TEF_CLIENTE2        , \n"
+			    " CLI.COD_PAIS            , \n"
+			    " CLI.IND_DEBITO          , \n"
+			    " CLI.IMP_STOPDEBIT       , \n"
+			    " CLI.COD_BANCO           , \n"
+			    " CLI.COD_SUCURSAL        , \n"
+			    " CLI.IND_TIPCUENTA       , \n"
+			    " CLI.COD_TIPTARJETA      , \n"
+			    " CLI.NUM_CTACORR         , \n"
+			    " CLI.NUM_TARJETA         , \n"
+			    " TO_CHAR (CLI.FEC_VENCITARJ,:szhFmtFecha), \n"
+			    " CLI.COD_BANCOTARJ       , \n"
+			    " CLI.COD_TIPIDTRIB       , \n"
+			    " CLI.NUM_IDENT           , \n"
+			    " CLI.COD_ACTIVIDAD       , \n"
+			    " CLI.COD_OFICINA         , \n"
+			    " CLI.IND_FACTUR          , \n"
+			    " CLI.NUM_FAX             , \n"
+			    " TO_CHAR (CLI.FEC_ALTA,:szhFmtFecha), \n"
+			    " CLI.COD_CUENTA          , \n"
+			    " CLI.COD_IDIOMA          , \n"
+			    " CLI.COD_OPERADORA       , \n"
+			    " NVL(FCT.COD_DESPACHO,'FISIC') , \n"
+			    " NVL(FCT.NOM_EMAIL,NVL(CLI.NOM_EMAIL,'SIN INFORMACION')), \n"
+			    " NVL(GTI.COD_TIPIDENTDIAN,'01'), \n"
+                            " DECODE(NVL(CLILOC.COD_CLIENTE, 0),CLILOC.COD_CLIENTE,1,0,0), \n");
+       if (iExist == 0)
+       {
+	   fprintf(stdout,"\n[CARGA INICIAL] - La Tabla GA_VALOR_CLI NO existe por lo tanto todos los clientes tendra codigo de segmencacion igual a 0\n");
+			   	
+           sprintf(szCadenaSQL,"%s 0 \n"
+		               " FROM GE_CLIENTES CLI, FA_CICLOCLI AL1, GE_CLILOCPADREHIJO_TO CLILOC, \n"
+		   	       "      (SELECT COD_CLIENTE, FEC_DESDE, FEC_HASTA,\n"
+		   	       "              NOM_EMAIL, COD_DESPACHO \n"
+		   	       "       FROM   FA_CLIENTE_TO \n"
+		   	       "       WHERE  COD_CLIENTE >= :lhClieIni \n"
+			       "       AND    COD_CLIENTE <= :lhClieFin  \n"		   								
+	                       "       AND  ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                               "       AND    NVL(FEC_HASTA,TO_DATE(:szhFecEmision,:szhFmtFecha)) >= TO_DATE(:szhFecEmision,:szhFmtFecha)) \n"
+                               "       OR   ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                               "       AND    FEC_HASTA IS NULL)))) FCT,\n"										
+			       "      GE_TIPIDENT GTI \n"
+			       " WHERE CLI.COD_CLIENTE = AL1.COD_CLIENTE \n"
+			       " AND AL1.COD_CICLO     = :ihCodCiclo \n"
+			       " AND AL1.NUM_PROCESO   = :ihCero \n"
+			       " AND AL1.IND_MASCARA   = :ihUno \n"
+			       " AND AL1.COD_CLIENTE  >= :lhClieIni \n"
+			       " AND AL1.COD_CLIENTE  <= :lhClieFin  \n"
+                               " AND CLI.COD_CLIENTE   = CLILOC.COD_CLIENTE(+) \n"
+			       " AND CLI.COD_TIPIDTRIB = GTI.COD_TIPIDENT (+)  \n"
+			       " AND FCT.COD_CLIENTE(+)= AL1.COD_CLIENTE \n"			       
+			      ,szCadenaSQL);
+	}
+	else
+	{
+	    sprintf(szCadenaSQL,"%s NVL(GVC.COD_VALOR,0) \n"
+			        "FROM GE_CLIENTES CLI, FA_CICLOCLI AL1, GA_VALOR_CLI GVC, GE_CLILOCPADREHIJO_TO CLILOC, \n"
+		   		"      (SELECT COD_CLIENTE, FEC_DESDE, FEC_HASTA,\n"
+		   		"              NOM_EMAIL, COD_DESPACHO \n"
+		   		"       FROM   FA_CLIENTE_TO \n"
+		   		"       WHERE  COD_CLIENTE >= :lhClieIni \n"
+                                "       AND    COD_CLIENTE <= :lhClieFin \n"
+	                        "       AND  ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                                "       AND    NVL(FEC_HASTA,TO_DATE(:szhFecEmision,:szhFmtFecha)) >= TO_DATE(:szhFecEmision,:szhFmtFecha)) \n"
+                                "       OR   ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                                "       AND    FEC_HASTA IS NULL)))) FCT,\n"
+		   		"      GE_TIPIDENT GTI \n"
+				" WHERE CLI.COD_CLIENTE  = AL1.COD_CLIENTE \n"
+				" AND AL1.COD_CICLO      = :ihCodCiclo \n"
+				" AND AL1.NUM_PROCESO    = :ihCero \n"
+				" AND AL1.IND_MASCARA    = :ihUno \n"
+				" AND AL1.COD_CLIENTE   >= :lhClieIni \n"
+				" AND AL1.COD_CLIENTE   <= :lhClieFin \n"
+                                " AND CLI.COD_CLIENTE    = CLILOC.COD_CLIENTE(+) \n"				
+				" AND GVC.COD_CLIENTE(+) = AL1.COD_CLIENTE \n"
+				" AND CLI.COD_TIPIDTRIB  = GTI.COD_TIPIDENT (+) \n"
+				" AND FCT.COD_CLIENTE(+) = AL1.COD_CLIENTE \n"
+		   	       ,szCadenaSQL);
+           }
+		   		
+	   EXEC SQL PREPARE sql_FacClientes_R FROM :szCadenaSQL;
+	   if (sqlca.sqlcode)  
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - PREPARE sql_FacClientes_R [%d][%s]\n",sqlca.sqlcode,szCadenaSQL);
+	       return(sqlca.sqlcode);
+	   }
+		        
+	   EXEC SQL DECLARE CFacClientesR CURSOR FOR sql_FacClientes_R;
+	   if (sqlca.sqlcode)  
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - DECLARE CFacClientesR [%d]\n",sqlca.sqlcode);
+	       return(sqlca.sqlcode);
+	   }
+
+	   EXEC SQL OPEN CFacClientesR USING :ihCero, :szhFmtFecha,:szhFmtFecha,
+	                                     :lhClieIni,:lhClieFin,
+				             :szhFecEmision,:szhFmtFecha,
+				             :szhFecEmision,:szhFmtFecha,
+				             :szhFecEmision,:szhFmtFecha,
+				             :szhFecEmision,:szhFmtFecha,
+				             :szhFecEmision,:szhFmtFecha,
+				             :szhFecEmision,:szhFmtFecha,
+				             :ihCodCiclo,:ihCero,:ihUno,:lhClieIni,:lhClieFin;
+	   if (sqlca.sqlcode)  
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - OPEN CFacClientesR [%d]\n",sqlca.sqlcode);
+	       return(sqlca.sqlcode);
+	   }
+	}
+	else
+	{
+	   sprintf(szCadenaSQL, " SELECT DISTINCT             \n"
+       			        " :ihCero                   , \n"
+       			  	" CLI.COD_CLIENTE           , \n"
+				" CLI.NOM_CLIENTE           , \n"
+				" CLI.NOM_APECLIEN1         , \n"
+				" CLI.NOM_APECLIEN2         , \n"
+				" CLI.TEF_CLIENTE1          , \n"
+				" CLI.TEF_CLIENTE2          , \n"
+				" CLI.COD_PAIS              , \n"
+				" CLI.IND_DEBITO            , \n"
+				" CLI.IMP_STOPDEBIT         , \n"
+				" CLI.COD_BANCO             , \n"
+				" CLI.COD_SUCURSAL          , \n"
+				" CLI.IND_TIPCUENTA         , \n"
+				" CLI.COD_TIPTARJETA        , \n"
+				" CLI.NUM_CTACORR           , \n"
+				" CLI.NUM_TARJETA           , \n"
+				" TO_CHAR (CLI.FEC_VENCITARJ,:szhFmtFecha), \n"
+				" CLI.COD_BANCOTARJ         , \n"
+				" CLI.COD_TIPIDTRIB         , \n"
+			        " CLI.NUM_IDENT             , \n"
+				" CLI.COD_ACTIVIDAD         , \n"
+				" CLI.COD_OFICINA           , \n"
+				" CLI.IND_FACTUR            , \n"
+				" CLI.NUM_FAX               , \n"
+				" TO_CHAR (CLI.FEC_ALTA,:szhFmtFecha), \n"
+				" CLI.COD_CUENTA            , \n"
+				" CLI.COD_IDIOMA            , \n"
+				" CLI.COD_OPERADORA         , \n"
+				" NVL(FCT.COD_DESPACHO,'FISIC')      , \n"
+				" NVL(FCT.NOM_EMAIL,NVL(CLI.NOM_EMAIL,'SIN INFORMACION')), \n"
+				" NVL(GTI.COD_TIPIDENTDIAN,'01'), \n"
+                                " DECODE(NVL(CLILOC.COD_CLIENTE, 0),CLILOC.COD_CLIENTE,1,0,0), \n");
+	   if (iExist == 0)
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - La Tabla GA_VALOR_CLI NO existe por lo tanto todos los clientes tendra codigo de segmencacion igual a 0\n");
+	
+	       sprintf(szCadenaSQL,"%s 0 \n"
+				   " FROM GE_CLIENTES CLI, FA_CICLOCLI AL1, GE_CLILOCPADREHIJO_TO CLILOC, \n"
+		   		   "      (SELECT COD_CLIENTE, FEC_DESDE, FEC_HASTA,\n"
+		   		   "              NOM_EMAIL, COD_DESPACHO \n"
+		   		   "       FROM   FA_CLIENTE_TO \n"
+		   		   "       WHERE  COD_CLIENTE <= :lhClieIni \n"
+	                           "       AND  ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                                   "       AND    NVL(FEC_HASTA,TO_DATE(:szhFecEmision,:szhFmtFecha)) >= TO_DATE(:szhFecEmision,:szhFmtFecha)) \n"
+                                   "       OR   ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                                   "       AND    FEC_HASTA IS NULL)))) FCT,\n"				
+                                   "      GE_TIPIDENT GTI \n"
+				   " WHERE CLI.COD_CLIENTE  = AL1.COD_CLIENTE \n"
+				   " AND AL1.COD_CICLO      = :ihCodCiclo \n"
+				   " AND AL1.NUM_PROCESO    = :ihCero \n"
+				   " AND AL1.IND_MASCARA    = :ihUno \n"
+				   " AND AL1.COD_CLIENTE   <= :lhClieIni  \n"
+                                   " AND CLI.COD_CLIENTE    =  CLILOC.COD_CLIENTE(+) \n"
+				   " AND CLI.COD_TIPIDTRIB  = GTI.COD_TIPIDENT (+)  \n"
+				   " AND FCT.COD_CLIENTE(+) = AL1.COD_CLIENTE \n"
+				  ,szCadenaSQL);
+	   }
+	   else
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - La Tabla GA_VALOR_CLI existe por lo tanto todos los clientes tendra codigo de segmentacion \n");	   	
+	   	
+	       sprintf(szCadenaSQL,"%s NVL(GVC.COD_VALOR,0) \n"
+		                   " FROM GE_CLIENTES CLI, FA_CICLOCLI AL1, GA_VALOR_CLI GVC, GE_CLILOCPADREHIJO_TO CLILOC, \n"
+		   		   "      (SELECT COD_CLIENTE, FEC_DESDE, FEC_HASTA,\n"
+		   		   "              NOM_EMAIL, COD_DESPACHO \n"
+		   		   "       FROM   FA_CLIENTE_TO \n"
+		   		   "       WHERE  COD_CLIENTE >= :lhClieIni \n"
+	                           "       AND  ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                                   "       AND    NVL(FEC_HASTA,TO_DATE(:szhFecEmision,:szhFmtFecha)) >= TO_DATE(:szhFecEmision,:szhFmtFecha)) \n"
+                                   "       OR   ((NVL(FEC_DESDE,TO_DATE(:szhFecEmision,:szhFmtFecha)) <= TO_DATE(:szhFecEmision,:szhFmtFecha) \n"
+                                   "       AND    FEC_HASTA IS NULL)))) FCT,\n"		   									
+		   		   "      GE_TIPIDENT GTI \n"
+    		                   " WHERE CLI.COD_CLIENTE  = AL1.COD_CLIENTE  \n"
+				   " AND AL1.COD_CICLO      = :ihCodCiclo  \n"
+				   " AND AL1.NUM_PROCESO    = :ihCero  \n"
+				   " AND AL1.IND_MASCARA    = :ihUno  \n"
+				   " AND AL1.COD_CLIENTE   >= :lhClieIni  \n"
+                                   " AND CLI.COD_CLIENTE    =  CLILOC.COD_CLIENTE(+) \n"				   
+				   " AND GVC.COD_CLIENTE(+) = AL1.COD_CLIENTE  \n"
+				   " AND CLI.COD_TIPIDTRIB  = GTI.COD_TIPIDENT (+)  \n"
+				   " AND FCT.COD_CLIENTE(+) = AL1.COD_CLIENTE \n"
+		   		  ,szCadenaSQL);
+		   		  
+	       fprintf(stdout,"\n[CARGA INICIAL] - Query [%s]\n",szCadenaSQL);
+		   		  
+	   }
+		   		
+	   EXEC SQL PREPARE sql_FacClientes FROM :szCadenaSQL;
+	   if (sqlca.sqlcode)  
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - PREPARE sql_FacClientes [%d][%s]\n",sqlca.sqlcode,szCadenaSQL);
+	       return(sqlca.sqlcode);
+	   }
+		        
+	   EXEC SQL DECLARE CFacClientes CURSOR FOR sql_FacClientes;
+	   if (sqlca.sqlcode)  
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - DECLARE CFacClientesR [%d]\n",sqlca.sqlcode);
+	       return(sqlca.sqlcode);
+	   }
+
+	   EXEC SQL OPEN CFacClientes USING :ihCero, :szhFmtFecha,:szhFmtFecha,:lhClieIni,
+                                            :szhFecEmision,:szhFmtFecha,
+                                            :szhFecEmision,:szhFmtFecha,
+                                            :szhFecEmision,:szhFmtFecha,
+                                            :szhFecEmision,:szhFmtFecha,
+                                            :szhFecEmision,:szhFmtFecha,
+                                            :szhFecEmision,:szhFmtFecha,				
+				            :ihCodCiclo,:ihCero,:ihUno,:lhClieIni;
+				                                 
+	   if (sqlca.sqlcode)  
+	   {
+	       fprintf(stdout,"\n[CARGA INICIAL] - OPEN CFacClientesR [%d]\n",sqlca.sqlcode);
+	       return(sqlca.sqlcode);
+	   }
+	}
+
+    return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararFacCiclo
+*******************************************************************************/
+
+int ifnOraDeclararFacCiclo(sql_context ctx, int iCodCiclo, long ci, long cf)
+{
+        struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		static int  ihCodCiclo  ;
+		static long  lhClieIni  ;
+		static long  lhClieFin  ;
+	EXEC SQL END DECLARE SECTION  ;
+
+	ihCodCiclo = iCodCiclo  ;
+	lhClieIni=ci;
+	lhClieFin=cf;
+
+	if(lhClieFin!=0)
+	{
+	  	EXEC SQL DECLARE CFacCicloR CURSOR FOR
+			SELECT
+				ROWID        ,
+			        COD_CLIENTE  ,
+			        COD_PRODUCTO ,
+			        NUM_ABONADO  ,
+			        COD_CALCLIEN ,
+			        IND_CAMBIO   ,
+			        NOM_USUARIO  ,
+			        NOM_APELLIDO1,
+			        NOM_APELLIDO2,
+			        COD_CREDMOR  ,
+			        IND_DEBITO   ,
+			        COD_CICLONUE ,
+			        TO_CHAR (FEC_ALTA, 'YYYYMMDDHH24MISS'),
+			        nvl(TO_CHAR (FEC_ULTFACT, 'YYYYMMDDHH24MISS'), ' ')
+			FROM FA_CICLOCLI
+			      	WHERE COD_CICLO    = :ihCodCiclo
+			        AND NUM_PROCESO  = 0
+			    	AND IND_MASCARA  = 1
+			    	AND COD_CLIENTE >= :lhClieIni
+			    	AND COD_CLIENTE <= :lhClieFin
+			ORDER BY COD_CLIENTE,FEC_ALTA; /* P-MIX-09003 */
+		EXEC SQL OPEN CFacCicloR;
+	}
+	else
+	{
+			EXEC SQL DECLARE CFacCiclo CURSOR FOR
+			SELECT
+				ROWID        ,
+			        COD_CLIENTE  ,
+			        COD_PRODUCTO ,
+			        NUM_ABONADO  ,
+			        COD_CALCLIEN ,
+			        IND_CAMBIO   ,
+			        NOM_USUARIO  ,
+			        NOM_APELLIDO1,
+			        NOM_APELLIDO2,
+			        COD_CREDMOR  ,
+			        IND_DEBITO   ,
+			        COD_CICLONUE ,
+			        TO_CHAR (FEC_ALTA, 'YYYYMMDDHH24MISS'),
+			        nvl(TO_CHAR (FEC_ULTFACT, 'YYYYMMDDHH24MISS'), ' ')
+			FROM FA_CICLOCLI
+			      	WHERE COD_CICLO    = :ihCodCiclo
+			        AND NUM_PROCESO  = 0
+			    	AND IND_MASCARA  = 1
+			    	AND COD_CLIENTE >= :lhClieIni
+			ORDER BY COD_CLIENTE, FEC_ALTA; /* P-MIX-09003 */
+		EXEC SQL OPEN CFacCiclo;
+	}
+
+        return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCargos
+*******************************************************************************/
+
+int ifnOraDeclararGeCargos (sql_context ctx, long ciclo, long ci, long cf)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		static int  lCodCiclo  ;
+		static long  lhClieIni  ;
+		static long  lhClieFin  ;
+	EXEC SQL END DECLARE SECTION  ;
+
+        lCodCiclo=ciclo;
+	lhClieIni=ci;
+	lhClieFin=cf;
+
+	if(lhClieFin!=0)
+	{
+		EXEC SQL DECLARE CGeCargosR CURSOR FOR
+		SELECT /* + index (A,  AK_GE_CARGOS_CODCLIENTE) */
+			A.ROWID                                ,
+			A.NUM_CARGO                            ,
+			A.COD_CLIENTE                          ,
+			A.COD_PRODUCTO                         ,
+			A.COD_CONCEPTO                         ,
+			TO_CHAR (A.FEC_ALTA,'YYYYMMDDHH24MISS'),
+			A.IMP_CARGO                            ,
+			A.COD_MONEDA                           ,
+			A.COD_PLANCOM                          ,
+			A.NUM_UNIDADES                         ,
+			A.NUM_ABONADO                          ,
+			A.NUM_TERMINAL                         ,
+			A.COD_CICLFACT                         ,
+			A.NUM_SERIE                            ,
+			A.NUM_SERIEMEC                         ,
+			A.CAP_CODE                             ,
+			A.MES_GARANTIA                         ,
+                        DECODE(TRIM(A.NUM_PREGUIA),'',NULL,A.NUM_PREGUIA),
+                        DECODE(TRIM(A.NUM_GUIA),'',NULL,A.NUM_GUIA),			
+			A.NUM_TRANSACCION                      ,
+			A.NUM_VENTA                            ,
+			A.NUM_FACTURA                          ,
+			A.COD_CONCEPTO_DTO                     ,
+			A.VAL_DTO                              ,
+			A.TIP_DTO                              ,
+			A.IND_CUOTA                            ,
+			A.NUM_PAQUETE                          ,
+			A.IND_FACTUR                           ,
+			A.IND_SUPERTEL
+		FROM   GE_CARGOS A, FA_CICLFACT B, (select distinct cod_cliente from fa_ciclocli where num_proceso=0 and ind_mascara=1 and cod_ciclo=:lCodCiclo AND COD_CLIENTE >=  :lhClieIni	AND COD_CLIENTE <= :lhClieFin) CLI
+		WHERE  A.COD_CLIENTE     = CLI.COD_CLIENTE
+		  AND  A.NUM_FACTURA     = 0
+		  AND  A.NUM_TRANSACCION = 0
+		  AND  A.IMP_CARGO      != 0
+		  AND  A.COD_CICLFACT = B.COD_CICLFACT
+		  AND B.IND_FACTURACION IN (1,2);
+
+		EXEC SQL OPEN CGeCargosR;
+	}
+	else
+	{
+        			EXEC SQL DECLARE CGeCargos CURSOR FOR
+		SELECT /* + index (A,  AK_GE_CARGOS_CODCLIENTE) */
+			A.ROWID                                ,
+			A.NUM_CARGO                            ,
+			A.COD_CLIENTE                          ,
+			A.COD_PRODUCTO                         ,
+			A.COD_CONCEPTO                         ,
+			TO_CHAR (A.FEC_ALTA,'YYYYMMDDHH24MISS'),
+			A.IMP_CARGO                            ,
+			A.COD_MONEDA                           ,
+			A.COD_PLANCOM                          ,
+			A.NUM_UNIDADES                         ,
+			A.NUM_ABONADO                          ,
+			A.NUM_TERMINAL                         ,
+			A.COD_CICLFACT                         ,
+			A.NUM_SERIE                            ,
+			A.NUM_SERIEMEC                         ,
+			A.CAP_CODE                             ,
+			A.MES_GARANTIA                         ,
+                        DECODE(TRIM(A.NUM_PREGUIA),'',NULL,A.NUM_PREGUIA),			
+                        DECODE(TRIM(A.NUM_GUIA),'',NULL,A.NUM_GUIA),			
+			A.NUM_TRANSACCION                      ,
+			A.NUM_VENTA                            ,
+			A.NUM_FACTURA                          ,
+			A.COD_CONCEPTO_DTO                     ,
+			A.VAL_DTO                              ,
+			A.TIP_DTO                              ,
+			A.IND_CUOTA                            ,
+			A.NUM_PAQUETE                          ,
+			A.IND_FACTUR                           ,
+			A.IND_SUPERTEL
+		FROM  GE_CARGOS A, FA_CICLFACT B, (SELECT DISTINCT COD_CLIENTE FROM FA_CICLOCLI WHERE NUM_PROCESO=0 AND IND_MASCARA=1 AND COD_CICLO=:lCodCiclo AND COD_CLIENTE >= :lhClieIni) CLI
+		WHERE A.COD_CLIENTE      = CLI.COD_CLIENTE 
+		  AND A.NUM_FACTURA      = 0
+		  AND A.NUM_TRANSACCION  = 0
+		  AND A.IMP_CARGO       != 0
+		  AND A.COD_CICLFACT     = B.COD_CICLFACT
+		  AND B.IND_FACTURACION IN (1,2);
+
+		EXEC SQL OPEN CGeCargos;
+	}
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCabCuotas
+*******************************************************************************/
+
+int ifnOraDeclararGeCabCuotas (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeCabCuotas CURSOR FOR
+	SELECT
+		ROWID
+		,SEQ_CUOTAS
+		,COD_CLIENTE
+		,COD_CONCEPTO
+		,COD_MONEDA
+		,COD_PRODUCTO
+		,NUM_CUOTAS
+		,IMP_TOTAL
+		,IND_PAGADA
+		,NUM_ABONADO
+		,COD_CUOTA
+		,NUM_PAGARE
+	FROM
+	FA_CABCUOTAS;
+
+	EXEC SQL OPEN CGeCabCuotas;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCargosRecurrentes
+*******************************************************************************/
+
+int ifnOraDeclararGeCargosRecurrentes (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeCargosRecurrentes CURSOR FOR
+       SELECT 
+	   COD_CARGO,
+	   MONTO_IMPORTE,
+	   COD_MONEDA
+	FROM 
+	PF_CARGOS_PRODUCTOS_TD
+	ORDER BY COD_CARGO;
+
+	EXEC SQL OPEN CGeCargosRecurrentes;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeTaConcepFact
+*******************************************************************************/
+
+int ifnOraDeclararGeTaConcepFact (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeTaConcepFact CURSOR FOR
+	SELECT
+		COD_PRODUCTO
+		,COD_FACTURACION
+		,IND_TABLA
+		,IND_ENTSAL
+		,IND_DESTINO
+		,COD_TARIFICACION
+		,COD_SERVICIO
+	FROM
+	TA_CONCEPFACT;
+
+	EXEC SQL OPEN CGeTaConcepFact;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeConceptos
+*******************************************************************************/
+
+int ifnOraDeclararGeConceptos (sql_context ctx, long lCodCiclFact)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+        static long lhCodCiclFact  ;
+        static char szCodModulo[3];
+		static int  iCodParametro;
+    EXEC SQL END DECLARE SECTION  ;
+
+    lhCodCiclFact = lCodCiclFact;
+    strcpy(szCodModulo,"FA");
+	iCodParametro = 12;
+
+	EXEC SQL DECLARE CGeConceptos CURSOR FOR
+	SELECT /* + FULL(FA_CONCEPTOS) */
+                 A.COD_CONCEPTO,
+                 A.COD_PRODUCTO,
+                 A.DES_CONCEPTO,
+                 A.COD_TIPCONCE,
+                 A.COD_MODULO  ,
+                 A.COD_MONEDA  ,
+                 A.IND_ACTIVO  ,
+                 A.COD_CONCORIG,
+                 A.COD_TIPDESCU,
+		 		 B.COD_CONCCOBR,
+				 C.DESCRIPCION_VALOR,
+				 GRUP.COD_GRPSERVI
+          FROM   FA_CONCEPTOS A, FA_FACTCOBR B, FA_GRPSERCONC GRUP, FA_CICLFACT   CICL,
+          	(SELECT FIC.COD_CONCEPTO, FFTN.DESCRIPCION_VALOR 
+	 		   FROM FAD_IMPCONCEPTOS FIC, FAD_IMPSUBGRUPOS FIS, FAD_IMPGRUPOS FIG, FAD_PARAMETROS FP,
+			   		FA_FACTOR_TIPO_UNIDAD_VW FFTN
+			  WHERE FIC.COD_SUBGRUPO = FIS.COD_SUBGRUPO
+			    AND FIS.COD_GRUPO = FIG.COD_GRUPO
+			 	AND FP.VAL_NUMERICO = FIG.COD_FORMULARIO
+				AND FP.COD_MODULO = :szCodModulo
+				AND FP.COD_PARAMETRO = :iCodParametro
+				AND FIG.TIP_UNIDAD = FFTN.VALOR) C
+	  WHERE  A.COD_CONCEPTO = B.COD_CONCFACT
+	  AND    A.COD_CONCEPTO = C.COD_CONCEPTO (+)
+	  AND    GRUP.COD_CONCEPTO = A.COD_CONCEPTO
+      AND    GRUP.FEC_DESDE   <= CICL.FEC_EMISION
+      AND    GRUP.FEC_HASTA   >= CICL.FEC_EMISION
+      AND    CICL.COD_CICLFACT = :lhCodCiclFact
+          ORDER BY A.COD_CONCEPTO;
+
+	EXEC SQL OPEN CGeConceptos;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeConceptos_Mi
+*******************************************************************************/
+
+int ifnOraDeclararGeConceptos_Mi (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeConceptos_Mi CURSOR FOR
+
+	SELECT /* + FULL(GE_MULTIIDIOMA) */
+              	 to_number(COD_CONCEPTO),
+                 COD_IDIOMA  ,
+                 DES_CONCEPTO
+          FROM   GE_MULTIIDIOMA
+          WHERE   NOM_TABLA = 'FA_CONCEPTOS'
+            AND   NOM_CAMPO = 'COD_CONCEPTO'
+            ORDER  BY to_number(COD_CONCEPTO);
+
+	EXEC SQL OPEN CGeConceptos_Mi;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeRangoTabla
+*******************************************************************************/
+
+int ifnOraDeclararGeRangoTabla (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeRangoTabla CURSOR FOR
+	SELECT
+		 COD_CICLFACT
+		,RANGO_INI
+		,RANGO_FIN
+		,COD_PRODUCTO
+		,NOM_TABLA
+	FROM
+	FA_RANGO_TABLA;
+
+	EXEC SQL OPEN CGeRangoTabla;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeLimCreditos
+*******************************************************************************/
+
+int ifnOraDeclararGeLimCreditos (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeLimCreditos CURSOR FOR
+	SELECT COD_CREDMOR
+		  ,COD_PRODUCTO
+		  ,COD_CALCLIEN
+		  ,IMP_MOROSIDAD
+	FROM CO_LIMCREDITOS;
+
+	EXEC SQL OPEN CGeLimCreditos;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeActividades
+*******************************************************************************/
+
+int ifnOraDeclararGeActividades (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeActividades CURSOR FOR
+	SELECT COD_Actividad
+		  ,DES_Actividad
+	  FROM GE_ACTIVIDADES;
+
+	EXEC SQL OPEN CGeActividades;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeProvincias
+*******************************************************************************/
+
+int ifnOraDeclararGeProvincias (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeProvincias CURSOR FOR
+	SELECT COD_REGION
+		  ,COD_PROVINCIA
+		  ,DES_PROVINCIA
+	FROM GE_PROVINCIAS;
+
+	EXEC SQL OPEN CGeProvincias;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeRegiones
+*******************************************************************************/
+
+int ifnOraDeclararGeRegiones (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeRegiones CURSOR FOR
+	SELECT COD_REGION
+		  ,DES_REGION
+	FROM GE_REGIONES;
+
+	EXEC SQL OPEN CGeRegiones;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCatImpositiva
+*******************************************************************************/
+
+int ifnOraDeclararGeCatImpositiva (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeCatImpositiva CURSOR FOR
+	SELECT COD_CATIMPOS
+		  ,DES_CATIMPOS
+	FROM GE_CATIMPOSITIVA;
+
+	EXEC SQL OPEN CGeCatImpositiva;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeZonaCiudad
+*******************************************************************************/
+
+int ifnOraDeclararGeZonaCiudad (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeZonaCiudad CURSOR FOR
+	SELECT COD_REGION
+		,COD_PROVINCIA
+		,COD_CIUDAD
+		,TO_CHAR (FEC_DESDE,'YYYYMMDDHH24MISS')
+		,TO_CHAR (FEC_HASTA,'YYYYMMDDHH24MISS')
+		,COD_ZONAIMPO
+	FROM
+	GE_ZONACIUDAD;
+
+	EXEC SQL OPEN CGeZonaCiudad;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeZonaImpositiva
+*******************************************************************************/
+
+int ifnOraDeclararGeZonaImpositiva (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeZonaImpositiva CURSOR FOR
+	SELECT COD_ZONAIMPO
+		  ,DES_ZONAIMPO
+	FROM
+	GE_ZONAIMPOSITIVA;
+
+	EXEC SQL OPEN CGeZonaImpositiva;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeImpuestos
+*******************************************************************************/
+
+int ifnOraDeclararGeImpuestos (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeImpuestos CURSOR FOR
+	SELECT I.COD_CATIMPOS
+		,I.COD_ZONAIMPO
+		,I.COD_ZONAABON
+		,I.COD_TIPIMPUES
+		,I.COD_GRPSERVI
+		,TO_CHAR (I.FEC_DESDE,'YYYYMMDD')||'000000'
+		,I.COD_CONCGENE
+		,TO_CHAR (I.FEC_HASTA,'YYYYMMDD')||'235959'
+		,I.PRC_IMPUESTO
+		,T.TIP_MONTO
+		,T.IMP_UMBRAL
+        ,T.IMP_MAXIMO
+	FROM
+	GE_IMPUESTOS I,GE_TIPIMPUES T
+	WHERE I.COD_TIPIMPUES=T.COD_TIPIMPUE;
+
+	EXEC SQL OPEN CGeImpuestos;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeTipImpues
+*******************************************************************************/
+/*
+int ifnOraDeclararGeTipImpues (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeTipImpues CURSOR FOR
+	SELECT COD_TIPIMPUE
+		  ,IMP_UMBRAL
+		  ,TIP_MONTO
+		  ,COD_CATEIMP
+	FROM GE_TIPIMPUES;
+
+	EXEC SQL OPEN CGeTipImpues;
+
+	return sqlca.sqlcode;
+}
+*/
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeGrpSerConc
+*******************************************************************************/
+
+int ifnOraDeclararGeGrpSerConc (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeGrpSerConc CURSOR FOR
+	SELECT COD_CONCEPTO
+		  ,TO_CHAR (FEC_DESDE,'YYYYMMDDHH24MISS')
+		  ,COD_GRPSERVI
+		  ,TO_CHAR (FEC_HASTA,'YYYYMMDDHH24MISS')
+	FROM
+	FA_GRPSERCONC;
+
+	EXEC SQL OPEN CGeGrpSerConc;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeConversion
+*******************************************************************************/
+
+int ifnOraDeclararGeConversion (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeConversion CURSOR FOR
+	SELECT COD_MONEDA
+		  ,TO_CHAR (FEC_DESDE,'YYYYMMDDHH24MISS')
+		  ,TO_CHAR (FEC_HASTA,'YYYYMMDDHH24MISS')
+		  ,CAMBIO
+	FROM GE_CONVERSION;
+
+	EXEC SQL OPEN CGeConversion;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeDocumSucursal
+*******************************************************************************/
+
+int ifnOraDeclararGeDocumSucursal (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeDocumSucursal CURSOR FOR
+	SELECT COD_OFICINA
+		,COD_TIPDOCUM
+		,COD_CENTREMI
+	FROM
+	AL_DOCUM_SUCURSAL;
+
+	EXEC SQL OPEN CGeDocumSucursal;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeLetras
+*******************************************************************************/
+
+int ifnOraDeclararGeLetras (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeLetras CURSOR FOR
+	SELECT COD_TIPDOCUM
+		  ,COD_CATIMPOS
+		  ,LETRA
+	FROM GE_LETRAS;
+
+	EXEC SQL OPEN CGeLetras;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeGrupoCob
+*******************************************************************************/
+
+int ifnOraDeclararGeGrupoCob (sql_context ctx, int iCodCiclo)
+{
+    struct sqlca sqlca;
+    EXEC SQL CONTEXT USE :ctx;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         static int    ihCodCiclo   ;
+    EXEC SQL END DECLARE SECTION  ;
+
+    ihCodCiclo = iCodCiclo;
+
+/* P-MIX-09003 */	
+
+    EXEC SQL DECLARE CGeGrupoCob CURSOR FOR             
+             SELECT A.COD_GRUPO
+                   ,A.COD_PRODUCTO
+                   ,A.COD_CONCEPTO
+                   ,A.COD_CICLO
+                   ,NVL(B.TIP_COBRO,0)
+                   ,A.FEC_DESDE
+                   ,A.FEC_HASTA
+             FROM  FA_GRUPOCOB A, 
+                   (SELECT COD_CONCEPTO, MAX(TIP_COBRO) TIP_COBRO 
+                    FROM   (SELECT COD_CONCEPTO, MAX(DECODE(NVL(TIP_COBRO,0),'A',1,0)) TIP_COBRO
+                            FROM   PF_CONCEPTOS_PROD_TD
+                            GROUP BY COD_CONCEPTO                    
+                    UNION
+                    SELECT COD_CONCEPTO, MAX(DECODE(NVL(B.TIP_COBRO,0),'A',1,0)) TIP_COBRO
+                    FROM   GA_SERVSUPL B, GA_ACTUASERV C 
+                    WHERE  B.COD_SERVICIO = C.COD_SERVICIO GROUP BY COD_CONCEPTO)                                  
+                    GROUP BY COD_CONCEPTO) B
+             WHERE A.COD_CICLO = :ihCodCiclo
+             AND   A.COD_CONCEPTO = B.COD_CONCEPTO (+)
+             ORDER BY A.COD_GRUPO, A.COD_CONCEPTO, A.COD_PRODUCTO, A.COD_CICLO;             
+             
+/* P-MIX-09003 */             
+
+    EXEC SQL OPEN CGeGrupoCob;
+
+    return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeTarifas
+*******************************************************************************/
+
+int ifnOraDeclararGeTarifas (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeTarifas CURSOR FOR
+	SELECT  COD_TIPSERV
+		   ,COD_SERVICIO
+		   ,COD_PLANSERV
+		   ,TO_CHAR(FEC_DESDE,'YYYYMMDDHH24MISS')
+		   ,IMP_TARIFA
+		   ,COD_MONEDA
+		   ,IND_PERIODICO
+		   ,TO_CHAR(FEC_HASTA,'YYYYMMDDHH24MISS')
+	 FROM GA_TARIFAS
+    WHERE COD_PRODUCTO= 1
+      AND COD_ACTABO  = 'FA';
+
+	EXEC SQL OPEN CGeTarifas;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeActuaServ
+*******************************************************************************/
+
+int ifnOraDeclararGeActuaServ (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeActuaServ CURSOR FOR
+	SELECT COD_TIPSERV
+		  ,COD_SERVICIO
+		  ,COD_CONCEPTO
+	FROM GA_ACTUASERV;
+
+	EXEC SQL OPEN CGeActuaServ;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCuotas
+*******************************************************************************/
+
+int ifnOraDeclararGeCuotas (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeCuotas CURSOR FOR
+	SELECT
+		ROWID
+		,SEQ_CUOTAS
+		,ORD_CUOTA
+		,TO_CHAR (FEC_EMISION,'YYYYMMDDHH24MISS')
+		,IMP_CUOTA
+		,IND_FACTURADO
+		,IND_PAGADO
+	FROM
+	FA_CUOTAS;
+
+	EXEC SQL OPEN CGeCuotas;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeFactCarriers
+*******************************************************************************/
+
+int ifnOraDeclararGeFactCarriers (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeFactCarriers CURSOR FOR
+       SELECT /* + full (FA_FACTCARRIERS) */
+              A.COD_CONCFACT,
+              A.COD_CONCCARRIER,
+              B.COD_TIPCONCE
+       FROM   FA_FACTCARRIERS A,
+       		  FA_CONCEPTOS B
+       WHERE  B.COD_CONCEPTO = A.COD_CONCFACT;
+
+	EXEC SQL OPEN CGeFactCarriers;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCuadCtoPlan
+*******************************************************************************/
+
+int ifnOraDeclararGeCuadCtoPlan (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeCuadCtoPlan CURSOR FOR
+	SELECT COD_CTOPLAN
+		,IMP_UMBDESDE
+		,IMP_UMBHASTA
+		,IMP_DESCUENTO
+		,COD_TIPODTO
+	FROM
+	VE_CUADCTOPLAN;
+
+	EXEC SQL OPEN CGeCuadCtoPlan;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCtoPlan
+*******************************************************************************/
+
+int ifnOraDeclararGeCtoPlan (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeCtoPlan CURSOR FOR
+	SELECT COD_CTOPLAN
+		,COD_PRODUCTO
+		,COD_TIPCTOPLAN
+		,COD_MONEDA
+		,COD_CTOFAC
+		,IMP_DESCUENTO
+		,COD_TIPODTO
+		,IND_CUADRANTE
+		,COD_TIPOCUAD
+		,IMP_UMBDESDE
+		,IMP_UMBHASTA
+		,NUM_DIAS
+	FROM
+	VE_CTOPLAN;
+
+	EXEC SQL OPEN CGeCtoPlan;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGePlanCtoPlan
+*******************************************************************************/
+
+int ifnOraDeclararGePlanCtoPlan (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGePlanCtoPlan CURSOR FOR
+	SELECT COD_PLANCOM
+		,COD_PRODUCTO
+		,COD_CTOPLAN
+		,TO_CHAR (FEC_EFECTIVIDAD,'YYYYMMDDHH24MISS')
+		,TO_CHAR (FEC_FINEFECTIVIDAD,'YYYYMMDDHH24MISS')
+	FROM
+	VE_PLAN_CTOPLAN;
+
+	EXEC SQL OPEN CGePlanCtoPlan;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeArriendo
+*******************************************************************************/
+
+int ifnOraDeclararGeArriendo (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeArriendo CURSOR FOR
+	SELECT
+		ROWID
+		,COD_CLIENTE
+		,NUM_ABONADO
+		,TO_CHAR (FEC_DESDE,'YYYYMMDDHH24MISS')
+		,TO_CHAR (FEC_HASTA,'YYYYMMDDHH24MISS')
+		,COD_PRODUCTO
+		,COD_CONCEPTO
+		,COD_ARTICULO
+		,PRECIO_MES
+		,COD_MONEDA
+	FROM
+	FA_ARRIENDO;
+
+	EXEC SQL OPEN CGeArriendo;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCargosBasico
+*******************************************************************************/
+
+int ifnOraDeclararGeCargosBasico (sql_context ctx, char *pszFecEmision)
+{
+	struct sqlca sqlca;
+	EXEC SQL CONTEXT USE :ctx;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        static char szhFecEmision[15];
+    EXEC SQL END DECLARE SECTION  ;
+
+	strcpy (szhFecEmision, pszFecEmision);
+	
+	EXEC SQL DECLARE CGeCargosBasico CURSOR FOR
+	SELECT COD_CARGOBASICO
+		  ,IMP_CARGOBASICO
+		  ,COD_MONEDA
+	 FROM TA_CARGOSBASICO
+	WHERE TO_DATE (:szhFecEmision, 'YYYYMMDDHH24MISS') >= FEC_DESDE
+	  AND TO_DATE (:szhFecEmision, 'YYYYMMDDHH24MISS') <= NVL(FEC_HASTA, TO_DATE ('30000101000000', 'YYYYMMDDHH24MISS'))
+	  AND COD_PRODUCTO = 1;
+
+	EXEC SQL OPEN CGeCargosBasico;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeOptimo
+*******************************************************************************/
+
+int ifnOraDeclararGeOptimo (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeOptimo CURSOR FOR
+	SELECT
+		COD_PLANTARIF
+		,MIN_DESDE
+		,MIN_HASTA
+		,PRC_ABONO
+		,PRC_NORMAL
+		,PRC_BAJO
+	FROM
+	FA_OPTIMO;
+
+	EXEC SQL OPEN CGeOptimo;
+
+	return sqlca.sqlcode;
+}
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeFeriados
+*******************************************************************************/
+
+int ifnOraDeclararGeFeriados (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeFeriados CURSOR FOR
+	SELECT
+		TO_CHAR(FEC_DIAFEST,'YYYYMMDDHH24MISS')
+	FROM
+	TA_DIASFEST;
+
+	EXEC SQL OPEN CGeFeriados;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGePlanTarif
+*******************************************************************************/
+
+int ifnOraDeclararGePlanTarif (sql_context ctx,char *pszFecEmision)
+{
+    struct sqlca sqlca;
+    EXEC SQL CONTEXT USE :ctx;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         static char szhFecEmision[15];
+    EXEC SQL END DECLARE SECTION  ;
+
+    strcpy (szhFecEmision, pszFecEmision);
+
+    EXEC SQL DECLARE CGePlanTarif CURSOR FOR
+	 SELECT /* + full (TA_PLANTARIF) */
+		    COD_PLANTARIF,
+		    TIP_TERMINAL,
+		    COD_LIMCONSUMO,
+		    COD_CARGOBASICO,
+		    TIP_PLANTARIF,
+		    TIP_UNIDADES,
+		    NUM_UNIDADES,
+		    IND_ARRASTRE,
+		    NUM_DIAS,
+		    NUM_ABONADOS,
+		    IND_FRANCONS,
+		    FLG_RANGO,
+		    TO_CHAR(NVL(IND_COMPARTIDO,0)),     /* P-MIX-09003 */
+		    DECODE(NVL(TIP_COBRO,'V'),'A',1,0)  /* P-MIX-09003 */		    
+         FROM TA_PLANTARIF
+	 WHERE COD_PRODUCTO = 1;
+
+    EXEC SQL OPEN CGePlanTarif;
+
+    return sqlca.sqlcode;
+}
+/******************************************************************************
+Funcion         :       ifnOraDeclararGePenalizaciones
+*******************************************************************************/
+
+int ifnOraDeclararGePenalizaciones (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGePenalizaciones CURSOR FOR
+	SELECT
+		ROWID
+		,COD_CLIENTE
+		,TIP_INCIDENCIA
+		,TO_CHAR (FEC_EFECTIVIDAD,'YYYYMMDDHH24MISS')
+		,COD_MONEDA
+		,IMP_PENALIZ
+		,COD_CICLFACT
+		,COD_CONCEPTO
+		,COD_PRODUCTO
+		,NUM_ABONADO
+		,NUM_PROCESO
+	FROM
+	CA_PENALIZACIONES;
+
+	EXEC SQL OPEN CGePenalizaciones;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeCatImpClientes
+*******************************************************************************/
+
+int ifnOraDeclararGeCatImpClientes (sql_context ctx,char *szFecha,long ciclo, long ci, long cf)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+ 	static char* szhFecha   ; EXEC SQL VAR szhFecha         IS STRING(15);
+ 	static long  lCodCiclo  ;
+	static long  lhClieIni  ;
+	static long  lhClieFin  ;
+ 	EXEC SQL END DECLARE SECTION;
+
+        szhFecha        = szFecha       ;
+        lCodCiclo	= ciclo		;
+        lhClieIni	= ci		;
+        lhClieFin	= cf		;
+
+        if (lhClieFin!=0)
+        {
+			EXEC SQL DECLARE CGeCatImpClientesR CURSOR FOR
+			SELECT /* + index (GE_CATIMPCLIENTES PK_GE_CATIMPCLIENTES) */
+		      	  A.COD_CLIENTE   ,
+	          	  A.COD_CATIMPOS  ,
+	          	  TO_CHAR (FA_SEQ_IND_ORDENTOTAL.NEXTVAL)
+	         FROM GE_CATIMPCLIENTES A, (SELECT DISTINCT COD_CLIENTE FROM FA_CICLOCLI WHERE NUM_PROCESO=0 AND IND_MASCARA=1 AND COD_CICLO=:lCodCiclo AND COD_CLIENTE >=:lhClieIni AND COD_CLIENTE <= :lhClieFin) CLI
+	        WHERE A.COD_CLIENTE = CLI.COD_CLIENTE 
+	          AND A.FEC_DESDE <= TO_DATE (:szhFecha,'YYYYMMDDHH24MISS')
+	          AND A.FEC_HASTA >= TO_DATE (:szhFecha,'YYYYMMDDHH24MISS');
+
+		EXEC SQL OPEN CGeCatImpClientesR;
+	}
+	else
+	{
+		EXEC SQL DECLARE CGeCatImpClientes CURSOR FOR
+		SELECT /* + index (GE_CATIMPCLIENTES PK_GE_CATIMPCLIENTES) */
+	        	A.COD_CLIENTE   ,
+	                A.COD_CATIMPOS  ,
+	                TO_CHAR (FA_SEQ_IND_ORDENTOTAL.NEXTVAL)
+	         FROM GE_CATIMPCLIENTES A, (select distinct cod_cliente from fa_ciclocli where num_proceso=0 and ind_mascara=1 and cod_ciclo=:lCodCiclo) CLI
+	        WHERE A.COD_CLIENTE = CLI.COD_CLIENTE
+	          AND A.FEC_DESDE <= TO_DATE (:szhFecha,'YYYYMMDDHH24MISS')
+	          AND A.FEC_HASTA >= TO_DATE (:szhFecha,'YYYYMMDDHH24MISS');
+
+		EXEC SQL OPEN CGeCatImpClientes;
+	}
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraDeclararGeDirecciones
+*******************************************************************************/
+
+int ifnOraDeclararGeDirecciones (sql_context ctx,int iTipDireccion,long ciclo, long ci, long cf)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+	static short ihCodTipDireccion;
+	static long  lCodCiclo  ;
+	static long  lhClieIni  ;
+	static long  lhClieFin  ;
+	EXEC SQL END DECLARE SECTION  ;
+
+        lCodCiclo	= ciclo		;
+        lhClieIni	= ci		;
+        lhClieFin	= cf		;
+	ihCodTipDireccion  = iTipDireccion;
+
+        if (lhClieFin!=0)
+        {
+		EXEC SQL DECLARE CGeDireccionesR CURSOR FOR
+	        SELECT /* + index (GA_DIRECCLI PK_GA_DIRECCLI) */
+	        DISTINCT 
+	               B.COD_CLIENTE  ,
+	               A.COD_REGION   ,
+	               A.COD_PROVINCIA,
+	               A.COD_CIUDAD   ,
+	               A.COD_COMUNA   ,
+	               A.NOM_CALLE    ,
+	               A.NUM_CALLE    ,
+	               A.NUM_PISO
+	        FROM  GE_DIRECCIONES A, GA_DIRECCLI B, FA_CICLOCLI C 
+	        WHERE B.COD_TIPDIRECCION = :ihCodTipDireccion
+	        AND   B.COD_DIRECCION    = A.COD_DIRECCION
+	        AND   C.COD_CLIENTE 	  = B.COD_CLIENTE 
+		AND   C.num_proceso	  = 0 
+		AND   C.ind_mascara	  = 1 
+		AND   C.cod_ciclo 	  = :lCodCiclo 
+		AND   C.COD_CLIENTE 	 >= :lhClieIni 
+		AND   C.COD_CLIENTE 	 <= :lhClieFin;
+
+	        EXEC SQL OPEN CGeDireccionesR;
+	}
+	else
+	{
+		EXEC SQL DECLARE CGeDirecciones CURSOR FOR
+	        SELECT /* + index (GA_DIRECCLI PK_GA_DIRECCLI) */
+	        DISTINCT 
+	               B.COD_CLIENTE  ,
+	               A.COD_REGION   ,
+	               A.COD_PROVINCIA,
+	               A.COD_CIUDAD   ,
+	               A.COD_COMUNA   ,
+	               A.NOM_CALLE    ,
+	               A.NUM_CALLE    ,
+	               A.NUM_PISO
+	        FROM   GE_DIRECCIONES A, GA_DIRECCLI B, FA_CICLOCLI C
+	        WHERE  B.COD_CLIENTE = C.COD_CLIENTE 
+	          AND  C.NUM_PROCESO=0 
+	          AND  C.IND_MASCARA=1 
+	          AND  C.COD_CICLO=:lCodCiclo
+	          AND  B.COD_TIPDIRECCION = :ihCodTipDireccion
+	          AND  B.COD_DIRECCION    = A.COD_DIRECCION;
+
+		EXEC SQL OPEN CGeDirecciones;
+	}
+	return sqlca.sqlcode;
+
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraDeclararGeCoUnipac
+*******************************************************************************/
+
+int ifnOraDeclararGeCoUnipac (sql_context ctx,long ciclo, long ci, long cf)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+	static long  lCodCiclo  ;
+	static long  lhClieIni  ;
+	static long  lhClieFin  ;
+	EXEC SQL END DECLARE SECTION  ;
+
+	lCodCiclo	= ciclo		;
+	lhClieIni	= ci		;
+	lhClieFin	= cf		;
+	
+	if (lhClieFin!=0)
+	{
+		EXEC SQL DECLARE CGeCoUnipacR CURSOR FOR
+		SELECT DISTINCT 
+			PAC.COD_CLIENTE,
+			PAC.COD_BANCO
+          	FROM CO_UNIPAC PAC, FA_CICLOCLI CLI
+         	WHERE PAC.COD_CLIENTE = CLI.COD_CLIENTE 
+		   AND CLI.NUM_PROCESO = 0 
+		   AND CLI.IND_MASCARA = 1 
+		   AND CLI.COD_CICLO   = :lCodCiclo 
+		   AND CLI.COD_CLIENTE>= :lhClieIni AND CLI.COD_CLIENTE<=:lhClieFin;
+
+         	EXEC SQL OPEN CGeCoUnipacR;
+	}
+	else
+	{
+		EXEC SQL DECLARE CGeCoUnipac CURSOR FOR
+		SELECT DISTINCT 
+			PAC.COD_CLIENTE,
+			PAC.COD_BANCO
+          	FROM CO_UNIPAC PAC,  FA_CICLOCLI CLI
+         	WHERE PAC.COD_CLIENTE = CLI.COD_CLIENTE 
+		   AND CLI.NUM_PROCESO = 0 
+		   AND CLI.IND_MASCARA = 1 
+		   AND CLI.COD_CICLO   = :lCodCiclo;
+
+         	EXEC SQL OPEN CGeCoUnipac;
+	}
+	return sqlca.sqlcode;
+
+}
+
+/********************************************************
+	INICIO NUEVAS ESTRUCTURAS HOMOLOGADO
+********************************************************/
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeOficina
+*******************************************************************************/
+
+int ifnOraDeclararGeOficina (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeOficina CURSOR FOR
+     /*inc 37160 PPV 27/01/2006 se cambia query a peticion de la operadora*/
+     
+     /*   SELECT /*+ FULL (GE_OFICINAS) 
+	   	A.COD_OFICINA,
+	   	B.COD_REGION,
+	   	B.COD_PROVINCIA,
+	   	B.COD_CIUDAD,
+	   	C.COD_PLAZA
+        FROM
+        GE_OFICINAS    A,
+        GE_DIRECCIONES B,
+        GE_CIUDADES    C
+             WHERE A.COD_DIRECCION  = B.COD_DIRECCION
+               AND B.COD_REGION     = C.COD_REGION
+               AND B.COD_PROVINCIA  = C.COD_PROVINCIA
+               AND B.COD_CIUDAD     = C.COD_CIUDAD; */
+               
+        SELECT /* + ORDERED */
+	   	A.COD_OFICINA,
+	   	B.COD_REGION,
+	   	B.COD_PROVINCIA,
+	   	B.COD_CIUDAD,
+	   	C.COD_PLAZA
+        FROM
+        GE_OFICINAS    A,
+        GE_DIRECCIONES B,
+        GE_CIUDADES    C
+             WHERE A.COD_DIRECCION  = B.COD_DIRECCION
+               AND B.COD_REGION     = C.COD_REGION
+               AND B.COD_PROVINCIA  = C.COD_PROVINCIA
+               AND B.COD_CIUDAD     = C.COD_CIUDAD;                
+
+    	EXEC SQL OPEN CGeOficina;
+
+	return sqlca.sqlcode;
+}
+
+
+/******************************************************************************
+Funcion         :       ifnOraDeclararGeFactCobr
+*******************************************************************************/
+
+int ifnOraDeclararGeFactCobr (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL DECLARE CGeFactCobr CURSOR FOR
+
+        SELECT
+        	COD_CONCFACT, COD_CONCCOBR
+        FROM
+        FA_FACTCOBR;
+
+    	EXEC SQL OPEN CGeFactCobr;
+
+	return sqlca.sqlcode;
+}
+/******************************************************************************
+Funcion         :       ifnOraDeclararDetPlanDesc
+*******************************************************************************/
+
+int ifnOraDeclararDetPlanDesc (sql_context ctx, long plCodCiclfact)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+    	char  szhFmtFecha    [17];EXEC SQL VAR szhFmtFecha IS STRING(17);
+    	long  lhCodCiclFact  = 0L;
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy (szhFmtFecha, "yyyymmddhh24miss");
+	lhCodCiclFact = plCodCiclfact;
+
+	EXEC SQL DECLARE Cur_DetPlanDesc CURSOR FOR
+		SELECT B.COD_PLANDESC	  ,
+			   B.DES_PLANDESC     ,
+			   TO_CHAR(B.FEC_DESDE,:szhFmtFecha),
+			   TO_CHAR(B.FEC_HASTA,:szhFmtFecha),
+			   B.IND_RESTRICCION  ,
+			   TO_CHAR(C.FEC_DESDE,:szhFmtFecha),
+			   TO_CHAR(C.FEC_HASTA,:szhFmtFecha),
+			   C.COD_TIPEVAL      ,
+			   C.COD_TIPAPLI      ,
+			   C.COD_GRUPOEVAL    ,
+			   C.COD_GRUPOAPLI    ,
+			   C.NUM_CUADRANTE    ,
+			   C.TIP_UNIDAD       ,
+			   C.COD_CONCDESC     ,
+			   C.MTO_MINFACT
+		  FROM FAD_PLANDESC B,  FAD_DETPLANDESC C, FA_CICLFACT A
+		 WHERE B.COD_PLANDESC = C.COD_PLANDESC
+		   AND A.COD_CICLFACT = :lhCodCiclFact
+		   AND A.FEC_EMISION BETWEEN C.FEC_DESDE AND C.FEC_HASTA;
+
+    	EXEC SQL OPEN Cur_DetPlanDesc;
+
+	return sqlca.sqlcode;
+}
+/********************************************************
+	FIN NUEVAS ESTRUCTURAS HOMOLOGADO
+********************************************************/
+
+/******************************************************************************
+Funcion		:     	vfnImpErrorORACLE
+*******************************************************************************/
+
+void vfnImpErrorORACLE(sql_context ctx)
+{
+
+  	fprintf(stderr,"\n\t%s\n", sqlca.sqlerrm.sqlerrmc);
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerFacClientes
+*******************************************************************************/
+
+int ifnOraLeerFacClientes(FAC_CLIENTES_HOST *pstHost,long *plNumFilas,
+        		  sql_context ctx,long clieini,long cliefin,FAC_CLIENTES_HOST_NULL *pstHostNull)
+{
+        struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+        EXEC SQL VAR pstHost->szNomCliente 	IS STRING (51);
+        EXEC SQL VAR pstHost->szNomApeClien1 	IS STRING (21);
+        EXEC SQL VAR pstHost->szNomApeClien2 	IS STRING (21);
+        EXEC SQL VAR pstHost->szTefCliente1 	IS STRING (16);
+        EXEC SQL VAR pstHost->szTefCliente2 	IS STRING (16);
+        EXEC SQL VAR pstHost->szCodPais 	IS STRING (4);
+        EXEC SQL VAR pstHost->szIndDebito 	IS STRING (2);
+        EXEC SQL VAR pstHost->szCodBanco 	IS STRING (16);
+        EXEC SQL VAR pstHost->szCodSucursal 	IS STRING (5);
+        EXEC SQL VAR pstHost->szIndTipCuenta 	IS STRING (2);
+        EXEC SQL VAR pstHost->szCodTipTarjeta 	IS STRING (4);
+        EXEC SQL VAR pstHost->szNumCtaCorr 	IS STRING (19);
+        EXEC SQL VAR pstHost->szNumTarjeta 	IS STRING (19);
+        EXEC SQL VAR pstHost->szFecVenciTarj 	IS STRING (15);
+        EXEC SQL VAR pstHost->szCodBancoTarj 	IS STRING (16);
+        EXEC SQL VAR pstHost->szCodTipIdTrib 	IS STRING (3);
+        EXEC SQL VAR pstHost->szNumIdentTrib 	IS STRING (21);
+        EXEC SQL VAR pstHost->szCodOficina 	IS STRING (3);
+        EXEC SQL VAR pstHost->szNumFax 		IS STRING (16);
+        EXEC SQL VAR pstHost->szFecAlta 	IS STRING (15);
+        EXEC SQL VAR pstHost->szCodIdioma 	IS STRING (6);
+        EXEC SQL VAR pstHost->szCodOperadora 	IS STRING (6);
+        EXEC SQL VAR pstHost->szCodSegmentacion IS STRING (6);
+        EXEC SQL VAR pstHost->szCodDespacho 	IS STRING (6);
+        EXEC SQL VAR pstHost->szNomEmail        IS STRING (71);
+        EXEC SQL VAR pstHost->szCodIdTipDian    IS STRING (3);
+
+	if(cliefin!=0)
+	{
+		EXEC SQL FETCH CFacClientesR
+	 	       	INTO
+				:pstHost->lRowNum					,
+		                :pstHost->lCodCliente					,
+		                :pstHost->szNomCliente       				,
+		                :pstHost->szNomApeClien1:pstHostNull->sszNomApeClien1   ,
+		                :pstHost->szNomApeClien2:pstHostNull->sszNomApeClien2   ,
+		                :pstHost->szTefCliente1:pstHostNull->sszTefCliente1     ,
+		                :pstHost->szTefCliente2:pstHostNull->sszTefCliente2     ,
+		                :pstHost->szCodPais:pstHostNull->sszCodPais             ,
+		                :pstHost->szIndDebito:pstHostNull->sszIndDebito         ,
+		                :pstHost->dImpStopDebit:pstHostNull->sdImpStopDebit     ,
+		                :pstHost->szCodBanco:pstHostNull->sszCodBanco           ,
+		                :pstHost->szCodSucursal:pstHostNull->sszCodSucursal     ,
+		                :pstHost->szIndTipCuenta:pstHostNull->sszIndTipCuenta   ,
+		                :pstHost->szCodTipTarjeta:pstHostNull->sszCodTipTarjeta ,
+		                :pstHost->szNumCtaCorr:pstHostNull->sszNumCtaCorr       ,
+		                :pstHost->szNumTarjeta:pstHostNull->sszNumTarjeta       ,
+		                :pstHost->szFecVenciTarj:pstHostNull->sszFecVenciTarj   ,
+		                :pstHost->szCodBancoTarj:pstHostNull->sszCodBancoTarj   ,
+		                :pstHost->szCodTipIdTrib:pstHostNull->sszCodTipIdTrib   ,
+		                :pstHost->szNumIdentTrib:pstHostNull->sszNumIdentTrib   ,
+		                :pstHost->iCodActividad:pstHostNull->siCodActividad     ,
+		                :pstHost->szCodOficina:pstHostNull->sszCodOficina       ,
+		                :pstHost->iIndFactur                         		,
+		                :pstHost->szNumFax:pstHostNull->sszNumFax               ,
+		                :pstHost->szFecAlta                          		,
+		                :pstHost->lCodCuenta                         		,
+		                :pstHost->szCodIdioma                        		,
+		                :pstHost->szCodOperadora:pstHostNull->sszCodOperadora   ,
+		                :pstHost->szCodDespacho:pstHostNull->sszCodDespacho     ,
+		                :pstHost->szNomEmail:pstHostNull->sszNomEmail           ,
+		                :pstHost->szCodIdTipDian                                ,
+		                :pstHost->iIndClieLoc                                   ,
+		                :pstHost->szCodSegmentacion;
+
+	}
+	else
+	{
+		EXEC SQL FETCH CFacClientes
+	 	       	INTO
+				:pstHost->lRowNum					,
+		                :pstHost->lCodCliente					,
+		                :pstHost->szNomCliente       				,
+		                :pstHost->szNomApeClien1:pstHostNull->sszNomApeClien1   ,
+		                :pstHost->szNomApeClien2:pstHostNull->sszNomApeClien2   ,
+		                :pstHost->szTefCliente1:pstHostNull->sszTefCliente1     ,
+		                :pstHost->szTefCliente2:pstHostNull->sszTefCliente2     ,
+		                :pstHost->szCodPais:pstHostNull->sszCodPais             ,
+		                :pstHost->szIndDebito:pstHostNull->sszIndDebito         ,
+		                :pstHost->dImpStopDebit:pstHostNull->sdImpStopDebit     ,
+		                :pstHost->szCodBanco:pstHostNull->sszCodBanco           ,
+		                :pstHost->szCodSucursal:pstHostNull->sszCodSucursal     ,
+		                :pstHost->szIndTipCuenta:pstHostNull->sszIndTipCuenta   ,
+		                :pstHost->szCodTipTarjeta:pstHostNull->sszCodTipTarjeta ,
+		                :pstHost->szNumCtaCorr:pstHostNull->sszNumCtaCorr       ,
+		                :pstHost->szNumTarjeta:pstHostNull->sszNumTarjeta       ,
+		                :pstHost->szFecVenciTarj:pstHostNull->sszFecVenciTarj   ,
+		                :pstHost->szCodBancoTarj:pstHostNull->sszCodBancoTarj   ,
+		                :pstHost->szCodTipIdTrib:pstHostNull->sszCodTipIdTrib   ,
+		                :pstHost->szNumIdentTrib:pstHostNull->sszNumIdentTrib   ,
+		                :pstHost->iCodActividad:pstHostNull->siCodActividad     ,
+		                :pstHost->szCodOficina:pstHostNull->sszCodOficina       ,
+		                :pstHost->iIndFactur                         		,
+		                :pstHost->szNumFax:pstHostNull->sszNumFax               ,
+		                :pstHost->szFecAlta                          		,
+		                :pstHost->lCodCuenta                         		,
+		                :pstHost->szCodIdioma                        		,
+		                :pstHost->szCodOperadora:pstHostNull->sszCodOperadora   ,
+		                :pstHost->szCodDespacho:pstHostNull->sszCodDespacho     ,
+		                :pstHost->szNomEmail:pstHostNull->sszNomEmail           ,
+		                :pstHost->szCodIdTipDian                                ,
+		                :pstHost->iIndClieLoc                                   ,		                
+		                :pstHost->szCodSegmentacion;
+	}
+
+	if (sqlca.sqlcode==SQL_OK)
+                *plNumFilas = TAM_HOST;
+        else
+                if (sqlca.sqlcode==NOT_FOUND)
+                        *plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+        return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerFacCiclo
+*******************************************************************************/
+
+int ifnOraLeerFacCiclo(CICLOCLI_HOST *pstHostCiclo,CICLOCLI_HOST_NULL *pstHostCicloNull,
+        	       long *plNumFilasCiclo,sql_context ctx,long clieini,long cliefin)
+{
+        struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+        EXEC SQL VAR pstHostCiclo->szRowid IS STRING(19);
+        EXEC SQL VAR pstHostCiclo->szCodCalClien IS STRING(3);
+        EXEC SQL VAR pstHostCiclo->szNomUsuario IS STRING(21);
+        EXEC SQL VAR pstHostCiclo->szNomApellido1 IS STRING(21);
+        EXEC SQL VAR pstHostCiclo->szNomApellido2 IS STRING(21);
+        EXEC SQL VAR pstHostCiclo->szIndDebito IS STRING(2);
+        EXEC SQL VAR pstHostCiclo->szFecAlta IS STRING(15);
+        EXEC SQL VAR pstHostCiclo->szFecUltFact IS STRING(15);
+
+	if(cliefin!=0)
+	{
+		EXEC SQL FETCH CFacCicloR
+			INTO
+		        	:pstHostCiclo->szRowid,
+		                :pstHostCiclo->lCodCliente,
+				:pstHostCiclo->iCodProducto,
+		    		:pstHostCiclo->lNumAbonado,
+				:pstHostCiclo->szCodCalClien,
+				:pstHostCiclo->iIndCambio,
+				:pstHostCiclo->szNomUsuario,
+				:pstHostCiclo->szNomApellido1,
+				:pstHostCiclo->szNomApellido2:pstHostCicloNull->sszNomApellido2,
+				:pstHostCiclo->iCodCredMor:pstHostCicloNull->siCodCredMor,
+				:pstHostCiclo->szIndDebito:pstHostCicloNull->sszIndDebito,
+				:pstHostCiclo->iCodCicloNue:pstHostCicloNull->siCodCicloNue,
+				:pstHostCiclo->szFecAlta,
+				:pstHostCiclo->szFecUltFact;
+	}
+	else
+	{
+		EXEC SQL FETCH CFacCiclo
+			INTO
+		        	:pstHostCiclo->szRowid,
+		                :pstHostCiclo->lCodCliente,
+				:pstHostCiclo->iCodProducto,
+		    		:pstHostCiclo->lNumAbonado,
+				:pstHostCiclo->szCodCalClien,
+				:pstHostCiclo->iIndCambio,
+				:pstHostCiclo->szNomUsuario,
+				:pstHostCiclo->szNomApellido1,
+				:pstHostCiclo->szNomApellido2:pstHostCicloNull->sszNomApellido2,
+				:pstHostCiclo->iCodCredMor:pstHostCicloNull->siCodCredMor,
+				:pstHostCiclo->szIndDebito:pstHostCicloNull->sszIndDebito,
+				:pstHostCiclo->iCodCicloNue:pstHostCicloNull->siCodCicloNue,
+				:pstHostCiclo->szFecAlta,
+				:pstHostCiclo->szFecUltFact;
+	}
+
+        if (sqlca.sqlcode==SQL_OK)
+                *plNumFilasCiclo = TAM_HOST;
+        else
+                if (sqlca.sqlcode==NOT_FOUND)
+                        *plNumFilasCiclo = sqlca.sqlerrd[2] % TAM_HOST;
+
+        return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCargos
+*******************************************************************************/
+
+int  ifnOraLeerGeCargos(CARGOS_HOST *pstHost,CARGOS_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx,long ci, long cf)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szRowid 		IS STRING(19);
+	EXEC SQL VAR pstHost->szDesConcepto 	IS STRING(61);
+	EXEC SQL VAR pstHost->szFecAlta 	IS STRING(15);
+	EXEC SQL VAR pstHost->szCodMoneda 	IS STRING(4);
+	EXEC SQL VAR pstHost->szNumTerminal  IS STRING(16);
+	EXEC SQL VAR pstHost->szNumSerie     IS STRING(26);
+	EXEC SQL VAR pstHost->szNumSerieMec  IS STRING(26);
+	EXEC SQL VAR pstHost->szNumPreGuia   IS STRING(11);
+	EXEC SQL VAR pstHost->szNumGuia      IS STRING(11);
+	EXEC SQL VAR pstHost->szCodRegion 	IS STRING(4);
+	EXEC SQL VAR pstHost->szCodProvincia 	IS STRING(6);
+	EXEC SQL VAR pstHost->szCodCiudad 	IS STRING(6);
+	EXEC SQL VAR pstHost->szCodCuota 	IS STRING(3);
+	EXEC SQL VAR pstHost->szCodModulo 	IS STRING(3);
+
+	if(cf!=0)
+	{
+		EXEC SQL FETCH CGeCargosR
+			INTO
+			:pstHost->szRowid                      ,
+			:pstHost->lNumCargo                    ,
+			:pstHost->lCodCliente                  ,
+			:pstHost->iCodProducto                 ,
+			:pstHost->iCodConcepto                 ,
+			:pstHost->szFecAlta                    ,
+			:pstHost->dImpCargo                    ,
+			:pstHost->szCodMoneda                  ,
+			:pstHost->lCodPlanCom                  ,
+			:pstHost->lNumUnidades                 ,
+			:pstHost->lNumAbonado:pstHostNull->slNumAbonado	,
+			:pstHost->szNumTerminal:pstHostNull->sszNumTerminal	,
+			:pstHost->lCodCiclFact:pstHostNull->slCodCiclFact    ,
+			:pstHost->szNumSerie:pstHostNull->sszNumSerie	,
+			:pstHost->szNumSerieMec:pstHostNull->sszNumSerieMec ,
+			:pstHost->lCapCode:pstHostNull->slCapCode          	,
+			:pstHost->iMesGarantia:pstHostNull->siMesGarantia		,
+			:pstHost->szNumPreGuia:pstHostNull->sszNumPreGuia		,
+			:pstHost->szNumGuia:pstHostNull->sszNumGuia        		,
+			:pstHost->lNumTransaccion:pstHostNull->slNumTransaccion		,
+			:pstHost->lNumVenta:pstHostNull->slNumTransaccion            	,
+			:pstHost->lNumFactura:pstHostNull->slNumTransaccion       		,
+			:pstHost->iCodConceptoDto:pstHostNull->siCodConceptoDto	,
+			:pstHost->dValDto:pstHostNull->sdValDto             	,
+			:pstHost->iTipDto:pstHostNull->siTipDto               	,
+			:pstHost->iIndCuota:pstHostNull->siIndCuota            	,
+			:pstHost->iNumPaquete:pstHostNull->siNumPaquete     		,
+			:pstHost->iIndFactur                   ,
+			:pstHost->iIndSuperTel:pstHostNull->siIndSuperTel		;
+	}
+	else
+	{
+		EXEC SQL FETCH CGeCargos
+			INTO
+			:pstHost->szRowid                      ,
+			:pstHost->lNumCargo                    ,
+			:pstHost->lCodCliente                  ,
+			:pstHost->iCodProducto                 ,
+			:pstHost->iCodConcepto                 ,
+			:pstHost->szFecAlta                    ,
+			:pstHost->dImpCargo                    ,
+			:pstHost->szCodMoneda                  ,
+			:pstHost->lCodPlanCom                  ,
+			:pstHost->lNumUnidades                 ,
+			:pstHost->lNumAbonado:pstHostNull->slNumAbonado	,
+			:pstHost->szNumTerminal:pstHostNull->sszNumTerminal	,
+			:pstHost->lCodCiclFact:pstHostNull->slCodCiclFact    ,
+			:pstHost->szNumSerie:pstHostNull->sszNumSerie	,
+			:pstHost->szNumSerieMec:pstHostNull->sszNumSerieMec ,
+			:pstHost->lCapCode:pstHostNull->slCapCode          	,
+			:pstHost->iMesGarantia:pstHostNull->siMesGarantia		,
+			:pstHost->szNumPreGuia:pstHostNull->sszNumPreGuia		,
+			:pstHost->szNumGuia:pstHostNull->sszNumGuia        		,
+			:pstHost->lNumTransaccion:pstHostNull->slNumTransaccion		,
+			:pstHost->lNumVenta:pstHostNull->slNumTransaccion            	,
+			:pstHost->lNumFactura:pstHostNull->slNumTransaccion       		,
+			:pstHost->iCodConceptoDto:pstHostNull->siCodConceptoDto	,
+			:pstHost->dValDto:pstHostNull->sdValDto             	,
+			:pstHost->iTipDto:pstHostNull->siTipDto               	,
+			:pstHost->iIndCuota:pstHostNull->siIndCuota            	,
+			:pstHost->iNumPaquete:pstHostNull->siNumPaquete     		,
+			:pstHost->iIndFactur                   ,
+			:pstHost->iIndSuperTel:pstHostNull->siIndSuperTel		;
+	}
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCabCuotas
+*******************************************************************************/
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCargosRecurrentes
+*******************************************************************************/
+
+int  ifnOraLeerGeCargosRecurrentes(CARGOSRECURRENTES_HOST *pstHost,
+                                   CARGOSRECURRENTES_HOST_NULL *pstHostNull,
+                                   long *plNumFilas,
+                                   sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodMoneda 	IS STRING(11);
+	
+	EXEC SQL FETCH CGeCargosRecurrentes
+		INTO
+		:pstHost->lCodCargo     ,
+        :pstHost->dMontoImporte ,
+        :pstHost->szCodMoneda   ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+int  ifnOraLeerGeCabCuotas(CABCUOTAS_HOST *pstHost,CABCUOTAS_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szRowid 		IS STRING(19);
+	EXEC SQL VAR pstHost->szDesConcepto 	IS STRING(61);
+	EXEC SQL VAR pstHost->szCodMoneda 	IS STRING(4);
+	EXEC SQL VAR pstHost->szCodCuota 	IS STRING(3);
+	EXEC SQL VAR pstHost->szCodModulo 	IS STRING(3);
+
+
+	EXEC SQL FETCH CGeCabCuotas
+		INTO
+		:pstHost->szRowid                   ,
+		:pstHost->lSeqCuotas                ,
+                :pstHost->lCodCliente               ,
+                :pstHost->iCodConcepto              ,
+                :pstHost->szCodMoneda               ,
+                :pstHost->iCodProducto              ,
+                :pstHost->iNumCuotas                ,
+                :pstHost->dImpTotal                 ,
+                :pstHost->iIndPagada                ,
+                :pstHost->lNumAbonado		    ,
+                :pstHost->szCodCuota:pstHostNull->sszCodCuota	    ,
+                :pstHost->lNumPagare;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeTaConcepFact
+*******************************************************************************/
+
+int  ifnOraLeerGeTaConcepFact(TACONCEPFACT_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodServicio 	IS STRING(6);
+
+	EXEC SQL FETCH CGeTaConcepFact
+		INTO
+		:pstHost->iCodProducto    ,
+                :pstHost->iCodFacturacion ,
+                :pstHost->iIndTabla       ,
+                :pstHost->iIndEntSal      ,
+                :pstHost->iIndDestino     ,
+                :pstHost->iCodTarificacion,
+                :pstHost->szCodServicio    ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeConceptos
+*******************************************************************************/
+
+int  ifnOraLeerGeConceptos(CONCEPTO_HOST *pstHost,CONCEPTO_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szDesConcepto IS STRING(61);
+	EXEC SQL VAR pstHost->szCodModulo 	IS STRING(3);
+	EXEC SQL VAR pstHost->szCodMoneda 	IS STRING(4);
+	EXEC SQL VAR pstHost->szCodTipDescu IS STRING(2);
+
+
+	EXEC SQL FETCH CGeConceptos
+		INTO  :pstHost->iCodConcepto,
+              :pstHost->iCodProducto,
+              :pstHost->szDesConcepto,
+              :pstHost->iCodTipConce,
+              :pstHost->szCodModulo,
+              :pstHost->szCodMoneda,
+              :pstHost->iIndActivo,
+              :pstHost->iCodConcOrig:pstHostNull->siCodConcOrig,
+              :pstHost->szCodTipDescu:pstHostNull->sszCodTipDescu,
+              :pstHost->iCodConCobr,
+              :pstHost->lFactor:pstHostNull->slFactor,
+              :pstHost->iCodGrpServi;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeConceptos_Mi
+*******************************************************************************/
+
+int  ifnOraLeerGeConceptos_Mi(CONCEPTO_MI_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+/*	EXEC SQL VAR pstHost->szCodConcepto 	IS STRING(12);	*/
+	EXEC SQL VAR pstHost->szCodIdioma 	IS STRING(6);
+	EXEC SQL VAR pstHost->szDesConcepto 	IS STRING(61);
+
+
+	EXEC SQL FETCH CGeConceptos_Mi
+		INTO
+		 :pstHost->iCodConcepto,
+		 :pstHost->szCodIdioma,
+		 :pstHost->szDesConcepto;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeRangoTabla
+*******************************************************************************/
+
+int  ifnOraLeerGeRangoTabla(RANGOTABLA_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szNomTabla 	IS STRING(21);
+
+
+	EXEC SQL FETCH CGeRangoTabla
+		INTO
+		 :pstHost->lCodCiclFact,
+		 :pstHost->lRangoIni   ,
+                 :pstHost->lRangoFin   ,
+                 :pstHost->iCodProducto,
+                 :pstHost->szNomTabla;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeLimCreditos
+*******************************************************************************/
+
+int  ifnOraLeerGeLimCreditos(LIMCREDITOS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodCalClien IS STRING(3) ;
+
+
+	EXEC SQL FETCH CGeLimCreditos
+		INTO :pstHost->iCodCredMor  ,
+             :pstHost->iCodProducto ,
+             :pstHost->szCodCalClien,
+             :pstHost->dImpMorosidad;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeActividades
+*******************************************************************************/
+
+int  ifnOraLeerGeActividades(ACTIVIDADES_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szDesActividad IS STRING(41);
+
+
+	EXEC SQL FETCH CGeActividades
+		INTO :pstHost->iCodActividad,
+             :pstHost->szDesActividad;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeProvincias
+*******************************************************************************/
+
+int  ifnOraLeerGeProvincias(PROVINCIAS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodRegion IS STRING(4);
+	EXEC SQL VAR pstHost->szCodProvincia IS STRING(6);
+
+	EXEC SQL FETCH CGeProvincias
+		INTO :pstHost->szCodRegion   ,
+             :pstHost->szCodProvincia;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeRegiones
+*******************************************************************************/
+
+int  ifnOraLeerGeRegiones(REGIONES_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodRegion IS STRING(4);
+	EXEC SQL VAR pstHost->szDesRegion IS STRING(31);
+
+	EXEC SQL FETCH CGeRegiones
+		INTO    :pstHost->szCodRegion   ,
+                :pstHost->szDesRegion;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCatImpositiva
+*******************************************************************************/
+
+int  ifnOraLeerGeCatImpositiva(CATIMPOSITIVA_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szDesCatImpos IS STRING(41);
+
+	EXEC SQL FETCH CGeCatImpositiva
+		INTO :pstHost->iCodCatImpos   ,
+             :pstHost->szDesCatImpos  ;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeZonaCiudad
+*******************************************************************************/
+
+int  ifnOraLeerGeZonaCiudad(ZONACIUDAD_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodRegion     IS STRING(4) ;
+	EXEC SQL VAR pstHost->szCodProvincia  IS STRING(6) ;
+	EXEC SQL VAR pstHost->szCodCiudad     IS STRING(6) ;
+	EXEC SQL VAR pstHost->szFecDesde      IS STRING(15);
+	EXEC SQL VAR pstHost->szFecHasta      IS STRING(15);
+
+	EXEC SQL FETCH CGeZonaCiudad
+		INTO :pstHost->szCodRegion   ,
+                :pstHost->szCodProvincia,
+                :pstHost->szCodCiudad   ,
+                :pstHost->szFecDesde    ,
+                :pstHost->szFecHasta    ,
+                :pstHost->iCodZonaImpo  ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeZonaImpositiva
+*******************************************************************************/
+
+int  ifnOraLeerGeZonaImpositiva(ZONAIMPOSITIVA_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szDesZonaImpo     IS STRING(41) ;
+
+	EXEC SQL FETCH CGeZonaImpositiva
+		INTO :pstHost->iCodZonaImpo ,
+             :pstHost->szDesZonaImpo;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeImpuestos
+*******************************************************************************/
+
+int  ifnOraLeerGeImpuestos(IMPUESTOS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szFecDesde     IS STRING(15) ;
+	EXEC SQL VAR pstHost->szFecHasta     IS STRING(15) ;
+
+	EXEC SQL FETCH CGeImpuestos
+		INTO :pstHost->iCodCatImpos ,
+             :pstHost->iCodZonaImpo ,
+             :pstHost->iCodZonaAbon ,
+             :pstHost->iCodTipImpues,
+             :pstHost->iCodGrpServi ,
+             :pstHost->szFecDesde   ,
+             :pstHost->iCodConcGene ,
+             :pstHost->szFecHasta   ,
+             :pstHost->fPrcImpuesto ,
+             :pstHost->iTipMonto    ,
+             :pstHost->dImpUmbral   ,
+             :pstHost->dImpMaximo   ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeTipImpues
+*******************************************************************************/
+/*
+int  ifnOraLeerGeTipImpues(TIPIMPUES_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+
+	EXEC SQL FETCH CGeTipImpues
+		INTO  :pstHost->iCodTipImpue ,
+              :pstHost->dImpUmbral   ,
+              :pstHost->iTipMonto    ,
+              :pstHost->iCodCateImp  ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+*/
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeGrpSerConc
+*******************************************************************************/
+
+int  ifnOraLeerGeGrpSerConc(GRPSERCONC_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szFecDesde    IS STRING(15) ;
+	EXEC SQL VAR pstHost->szFecHasta    IS STRING(15) ;
+
+	EXEC SQL FETCH CGeGrpSerConc
+		INTO :pstHost->iCodConcepto,
+             :pstHost->szFecDesde  ,
+             :pstHost->iCodGrpServi,
+             :pstHost->szFecHasta  ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeConversion
+*******************************************************************************/
+
+int  ifnOraLeerGeConversion(CONVERSION_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodMoneda   IS STRING(4);
+	EXEC SQL VAR pstHost->szFecDesde    IS STRING(15) ;
+	EXEC SQL VAR pstHost->szFecHasta    IS STRING(15) ;
+
+	EXEC SQL FETCH CGeConversion
+		INTO :pstHost->szCodMoneda,
+             :pstHost->szFecDesde  ,
+             :pstHost->szFecHasta ,
+             :pstHost->dCambio;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeDocumSucursal
+*******************************************************************************/
+
+int  ifnOraLeerGeDocumSucursal(DOCUMSUCURSAL_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodOficina  IS STRING(3);
+
+	EXEC SQL FETCH CGeDocumSucursal
+		INTO :pstHost->szCodOficina,
+             :pstHost->iCodTipDocum  ,
+             :pstHost->iCodCentrEmi;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeLetras
+*******************************************************************************/
+
+int  ifnOraLeerGeLetras(LETRAS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szLetra  IS STRING(2);
+
+	EXEC SQL FETCH CGeLetras
+		INTO :pstHost->iCodTipDocum,
+             :pstHost->iCodCatImpos  ,
+             :pstHost->szLetra;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeGrupoCob
+*******************************************************************************/
+
+int  ifnOraLeerGeGrupoCob(GRUPOCOB_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodGrupo  IS STRING(3);
+	EXEC SQL VAR pstHost->szFecDesde  IS STRING(15) ;
+	EXEC SQL VAR pstHost->szFecHasta  IS STRING(15) ;
+
+	EXEC SQL FETCH CGeGrupoCob
+		INTO :pstHost->szCodGrupo,
+		 	 :pstHost->iCodProducto  ,
+  		 	 :pstHost->iCodConcepto  ,
+		 	 :pstHost->iCodCiclo  ,
+             :pstHost->iTipCobro  ,
+             :pstHost->szFecDesde  ,
+             :pstHost->szFecHasta  ;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeTarifas
+*******************************************************************************/
+
+int  ifnOraLeerGeTarifas(TARIFAS_HOST *pstHost,TARIFAS_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodTipServ   IS STRING(2) ;
+	EXEC SQL VAR pstHost->szCodServicio  IS STRING(4) ;
+	EXEC SQL VAR pstHost->szCodPlanServ  IS STRING(4) ;
+	EXEC SQL VAR pstHost->szFecDesde    IS STRING(15) ;
+	EXEC SQL VAR pstHost->szCodMoneda    IS STRING(4) ;
+	EXEC SQL VAR pstHost->szIndPeriodico IS STRING(2) ;
+	EXEC SQL VAR pstHost->szFecHasta     IS STRING(15);
+
+	EXEC SQL FETCH CGeTarifas
+		INTO :pstHost->szCodTipServ  ,
+		 	 :pstHost->szCodServicio  ,
+             :pstHost->szCodPlanServ  ,
+             :pstHost->szFecDesde  ,
+             :pstHost->dImpTarifa  ,
+             :pstHost->szCodMoneda  ,
+             :pstHost->szIndPeriodico  ,
+             :pstHost->szFecHasta:pstHostNull->sszFecHasta;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeActuaServ
+*******************************************************************************/
+
+int  ifnOraLeerGeActuaServ(ACTUASERV_HOST *pstHost,ACTUASERV_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodTipServ   IS STRING(2) ;
+	EXEC SQL VAR pstHost->szCodServicio  IS STRING(4) ;
+
+	EXEC SQL FETCH CGeActuaServ
+		INTO :pstHost->szCodTipServ  ,
+		 	 :pstHost->szCodServicio,
+         	 :pstHost->iCodConcepto:pstHostNull->siCodConcepto;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCuotas
+*******************************************************************************/
+
+int  ifnOraLeerGeCuotas(CUOTAS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szRowid  IS STRING(19);
+	EXEC SQL VAR pstHost->szFecEmision    IS STRING(15) ;
+
+	EXEC SQL FETCH CGeCuotas
+		INTO
+		 :pstHost->szRowid     ,
+                 :pstHost->lSeqCuotas,
+		 :pstHost->iOrdCuota  ,
+  		 :pstHost->szFecEmision  ,
+		 :pstHost->dImpCuota,
+                 :pstHost->iIndFacturado,
+               	 :pstHost->iIndPagado;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeFactCarriers
+*******************************************************************************/
+
+int  ifnOraLeerGeFactCarriers(FACTCARRIERS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL FETCH CGeFactCarriers
+		INTO
+		 :pstHost->iCodConcFact   ,
+         :pstHost->iCodConcCarrier,
+         :pstHost->iCodTipConce;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCuadCtoPlan
+*******************************************************************************/
+
+int  ifnOraLeerGeCuadCtoPlan(CUADCTOPLAN_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL FETCH CGeCuadCtoPlan
+		INTO :pstHost->lCodCtoPlan	,	
+		 	 :pstHost->dImpUmbDesde ,
+             :pstHost->dImpUmbHasta	,
+		 	 :pstHost->dImpDescuento,
+             :pstHost->iCodTipoDto  ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCtoPlan
+*******************************************************************************/
+
+int  ifnOraLeerGeCtoPlan(CTOPLAN_HOST *pstHost,CTOPLAN_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodTipCtoPlan IS STRING (2) ;
+	EXEC SQL VAR pstHost->szCodMoneda     IS STRING (4) ;
+
+	EXEC SQL FETCH CGeCtoPlan
+		INTO :pstHost->lCodCtoPlan,
+		     :pstHost->iCodProducto   ,
+             :pstHost->szCodTipCtoPlan,
+		     :pstHost->szCodMoneda   ,
+             :pstHost->iCodCtoFac   ,
+             :pstHost->dImpDescuento,
+		     :pstHost->iCodTipoDto   ,
+             :pstHost->iIndCuadrante,
+		     :pstHost->iCodTipoCuad   ,
+             :pstHost->dImpUmbDesde:pstHostNull->sdImpUmbDesde,
+             :pstHost->dImpUmbHasta:pstHostNull->sdImpUmbHasta,
+             :pstHost->iNumDias:pstHostNull->siNumDias;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGePlanCtoPlan
+*******************************************************************************/
+
+int  ifnOraLeerGePlanCtoPlan(PLANCTOPLAN_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szFecEfectividad IS STRING (15) ;
+	EXEC SQL VAR pstHost->szFecFinEfectividad IS STRING (15) ;
+
+	EXEC SQL FETCH CGePlanCtoPlan
+		INTO :pstHost->lCodPlanCom,
+		 	 :pstHost->iCodProducto   ,
+             :pstHost->lCodCtoPlan,
+		 	 :pstHost->szFecEfectividad   ,
+             :pstHost->szFecFinEfectividad;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeArriendo
+*******************************************************************************/
+
+int  ifnOraLeerGeArriendo(ARRIENDO_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szRowid  IS STRING(19);
+	EXEC SQL VAR pstHost->szFecDesde IS STRING (15) ;
+	EXEC SQL VAR pstHost->szFecHasta IS STRING (15) ;
+	EXEC SQL VAR pstHost->szCodMoneda IS STRING (4) ;
+
+
+	EXEC SQL FETCH CGeArriendo
+		INTO
+		 :pstHost->szRowid   ,
+                 :pstHost->lCodCliente,
+		 :pstHost->lNumAbonado   ,
+                 :pstHost->szFecDesde,
+		 :pstHost->szFecHasta  ,
+                 :pstHost->iCodProducto   ,
+                 :pstHost->iCodConcepto   ,
+                 :pstHost->lCodArticulo   ,
+                 :pstHost->dPrecioMes   ,
+                 :pstHost->szCodMoneda;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCargosBasico
+*******************************************************************************/
+
+int  ifnOraLeerGeCargosBasico(CARGOSBASICO_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodCargoBasico IS STRING(4) ;
+	EXEC SQL VAR pstHost->szCodMoneda      IS STRING(4) ;
+
+	EXEC SQL FETCH CGeCargosBasico
+	INTO :pstHost->szCodCargoBasico ,
+		 :pstHost->dImpCargoBasico  ,
+		 :pstHost->szCodMoneda		;
+		 
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeOptimo
+*******************************************************************************/
+
+int  ifnOraLeerGeOptimo(OPTIMO_HOST *pstHost,OPTIMO_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodPlanTarif  IS STRING(4);
+
+	EXEC SQL FETCH CGeOptimo
+		INTO
+		 :pstHost->szCodPlanTarif   ,
+         :pstHost->lMinDesde,
+		 :pstHost->lMinHasta:pstHostNull->slMinHasta   ,
+         :pstHost->fPrcAbono,
+		 :pstHost->fPrcNormal  ,
+         :pstHost->fPrcBajo ;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeFeriados
+*******************************************************************************/
+
+int  ifnOraLeerGeFeriados(FERIADOS_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szFecFeriado  IS STRING(15);
+
+	EXEC SQL FETCH CGeFeriados
+		INTO
+		 :pstHost->szFecFeriado;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGePlanTarif
+*******************************************************************************/
+
+int  ifnOraLeerGePlanTarif(PLANTARIF_HOST *pstHost,PLANTARIF_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodPlanTarif   IS STRING(4)  ;
+	EXEC SQL VAR pstHost->szTipTerminal    IS STRING(2)  ;
+	EXEC SQL VAR pstHost->szCodLimConsumo  IS STRING(4)  ;
+	EXEC SQL VAR pstHost->szCodCargoBasico IS STRING(4)  ; 
+	EXEC SQL VAR pstHost->szTipPlanTarif   IS STRING(2)  ;
+	EXEC SQL VAR pstHost->szTipUnidades    IS STRING(2)  ;
+	EXEC SQL VAR pstHost->szInd_Francons   IS STRING(3)  ;
+	EXEC SQL VAR pstHost->szIndCompartido  IS STRING(1+1);	/* P-MIX-09003 */
+
+	EXEC SQL FETCH CGePlanTarif
+		 INTO  :pstHost->szCodPlanTarif,
+        	       :pstHost->szTipTerminal:pstHostNull->sszTipTerminal,
+		       :pstHost->szCodLimConsumo,
+		       :pstHost->szCodCargoBasico,
+	               :pstHost->szTipPlanTarif,
+                       :pstHost->szTipUnidades,
+                       :pstHost->lNumUnidades,
+                       :pstHost->iIndArrastre,
+                       :pstHost->iNumDias,
+                       :pstHost->lNumAbonados:pstHostNull->slNumAbonados,
+                       :pstHost->szInd_Francons,
+                       :pstHost->iFlgRango,
+                       :pstHost->szIndCompartido, /* P-MIX-09003 */
+                       :pstHost->iTipCobro;       /* P-MIX-09003 */
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGePenalizaciones
+*******************************************************************************/
+
+int  ifnOraLeerGePenalizaciones(PENALIZA_HOST *pstHost,PENALIZA_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szRowid  IS STRING(19);
+	EXEC SQL VAR pstHost->szFecEfectividad  IS STRING(15);
+	EXEC SQL VAR pstHost->szCodMoneda  IS STRING(4);
+
+	EXEC SQL FETCH CGePenalizaciones
+		INTO
+		 :pstHost->szRowid,
+                 :pstHost->lCodCliente,
+                 :pstHost->iTipIncidencia,
+                 :pstHost->szFecEfectividad,
+                 :pstHost->szCodMoneda,
+                 :pstHost->dImpPenaliz,
+                 :pstHost->lCodCiclFact:pstHostNull->slCodCiclFact,
+                 :pstHost->iCodConcepto,
+                 :pstHost->iCodProducto,
+                 :pstHost->lNumAbonado:pstHostNull->slNumAbonado,
+                 :pstHost->lNumProceso;
+
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCatImpClientes
+*******************************************************************************/
+
+int  ifnOraLeerGeCatImpClientes(CAT_IMPCLIENTES_HOST *pstHost,long *plNumFilas,sql_context ctx,long clieini,long cliefin)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szIndOrdenTotal IS STRING(13);
+
+	if (cliefin !=0)
+	{
+		EXEC SQL FETCH CGeCatImpClientesR
+		INTO
+			 :pstHost->lCodCliente,
+			 :pstHost->iCodCatImpos,
+	                 :pstHost->szIndOrdenTotal;
+        }
+        else
+        {
+        	EXEC SQL FETCH CGeCatImpClientes
+		INTO
+			 :pstHost->lCodCliente,
+			 :pstHost->iCodCatImpos,
+                         :pstHost->szIndOrdenTotal;
+        }
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeDirecciones
+*******************************************************************************/
+
+int  ifnOraLeerGeDirecciones(DIRECCIONES_HOST *pstHost,DIRECCIONES_HOST_NULL *pstHostNull,long *plNumFilas,sql_context ctx,
+			    long clieini,long cliefin)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodRegion IS STRING(4);
+	EXEC SQL VAR pstHost->szCodProvincia IS STRING(6);
+	EXEC SQL VAR pstHost->szCodCiudad IS STRING(6);
+	EXEC SQL VAR pstHost->szCodComuna IS STRING(6);
+	EXEC SQL VAR pstHost->szNomCalle IS STRING(51);
+	EXEC SQL VAR pstHost->szNumCalle IS STRING(11);
+	EXEC SQL VAR pstHost->szNumPiso IS STRING(11);
+
+        if (cliefin !=0)
+	{
+		EXEC SQL FETCH CGeDireccionesR
+		INTO
+		 	:pstHost->lCodCliente,
+			:pstHost->szCodRegion    :pstHostNull->sszCodRegion,
+			:pstHost->szCodProvincia :pstHostNull->sszCodProvincia,
+			:pstHost->szCodCiudad    :pstHostNull->sszCodCiudad,
+			:pstHost->szCodComuna    :pstHostNull->sszCodComuna,
+			:pstHost->szNomCalle     :pstHostNull->sszNomCalle,
+			:pstHost->szNumCalle     :pstHostNull->sszNumCalle,
+			:pstHost->szNumPiso      :pstHostNull->sszNumPiso;
+        }
+        else
+        {
+		EXEC SQL FETCH CGeDirecciones
+		INTO
+		 	:pstHost->lCodCliente,
+			:pstHost->szCodRegion     :pstHostNull->sszCodRegion,    
+			:pstHost->szCodProvincia  :pstHostNull->sszCodProvincia, 
+			:pstHost->szCodCiudad     :pstHostNull->sszCodCiudad,    
+			:pstHost->szCodComuna     :pstHostNull->sszCodComuna,    
+			:pstHost->szNomCalle      :pstHostNull->sszNomCalle,
+			:pstHost->szNumCalle      :pstHostNull->sszNumCalle,
+			:pstHost->szNumPiso       :pstHostNull->sszNumPiso;
+        }
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeDirecciones2
+*******************************************************************************/
+
+int  ifnOraLeerGeDirecciones2(DIRECCIONES_HOST2 *pstHost,DIRECCIONES_HOST_NULL2 *pstHostNull,long *plNumFilas,sql_context ctx,
+			    long clieini,long cliefin)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodRegion IS STRING(4);
+	EXEC SQL VAR pstHost->szCodProvincia IS STRING(6);
+	EXEC SQL VAR pstHost->szCodCiudad IS STRING(6);
+	EXEC SQL VAR pstHost->szCodComuna IS STRING(6);
+	EXEC SQL VAR pstHost->szNomCalle IS STRING(51);
+	EXEC SQL VAR pstHost->szNumCalle IS STRING(11);
+	EXEC SQL VAR pstHost->szNumPiso IS STRING(11);
+
+        if (cliefin !=0)
+	{
+		EXEC SQL FETCH CGeDireccionesR
+		INTO
+		 	        :pstHost->lCodCliente,
+			        :pstHost->szCodRegion     :pstHostNull->sszCodRegion,    
+                  	:pstHost->szCodProvincia  :pstHostNull->sszCodProvincia, 
+                  	:pstHost->szCodCiudad     :pstHostNull->sszCodCiudad,    
+                  	:pstHost->szCodComuna     :pstHostNull->sszCodComuna,    
+                  	:pstHost->szNomCalle      :pstHostNull->sszNomCalle,
+                  	:pstHost->szNumCalle      :pstHostNull->sszNumCalle,
+                  	:pstHost->szNumPiso       :pstHostNull->sszNumPiso;
+        }
+        else
+        {
+		EXEC SQL FETCH CGeDirecciones
+		INTO
+		 	        :pstHost->lCodCliente,
+			        :pstHost->szCodRegion     :pstHostNull->sszCodRegion,    
+                  	:pstHost->szCodProvincia  :pstHostNull->sszCodProvincia, 
+                  	:pstHost->szCodCiudad     :pstHostNull->sszCodCiudad,    
+                  	:pstHost->szCodComuna     :pstHostNull->sszCodComuna,    
+                  	:pstHost->szNomCalle      :pstHostNull->sszNomCalle,
+                  	:pstHost->szNumCalle      :pstHostNull->sszNumCalle,
+                  	:pstHost->szNumPiso       :pstHostNull->sszNumPiso;
+        }
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeCoUnipac
+*******************************************************************************/
+
+int  ifnOraLeerGeCoUnipac(UNIPAC_HOST *pstHost,long *plNumFilas,sql_context ctx,long clieini,long cliefin)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if (cliefin !=0)
+	{
+		EXEC SQL FETCH CGeCoUnipacR
+		INTO
+			:pstHost->lCodCliente,
+			:pstHost->szCodBanco;
+        }
+        else
+        {
+		EXEC SQL FETCH CGeCoUnipac
+		INTO
+			:pstHost->lCodCliente,
+			:pstHost->szCodBanco;
+        }
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/********************************************************
+	INICIO NUEVAS ESTRUCTURAS HOMOLOGADO
+********************************************************/
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeOficina
+*******************************************************************************/
+
+int  ifnOraLeerGeOficina(OFICINA_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodOficina  	IS STRING (3) ;
+	EXEC SQL VAR pstHost->szCodRegion 	IS STRING (4) ;
+	EXEC SQL VAR pstHost->szCodProvincia 	IS STRING (6) ;
+	EXEC SQL VAR pstHost->szCodCiudad     	IS STRING (6) ;
+	EXEC SQL VAR pstHost->szCodPlaza     	IS STRING (6) ;
+
+	EXEC SQL FETCH CGeOficina
+		INTO
+		:pstHost->szCodOficina	,
+		:pstHost->szCodRegion	,
+		:pstHost->szCodProvincia,
+		:pstHost->szCodCiudad 	,
+		:pstHost->szCodPlaza	;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraLeerGeFactCobr
+*******************************************************************************/
+
+int  ifnOraLeerGeFactCobr(FACTCOBR_HOST *pstHost,long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL FETCH CGeFactCobr
+  		INTO
+  		:pstHost->iCodConcFact,
+		:pstHost->iCodConCobr;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+/******************************************************************************
+Funcion		:     	ifnOraLeerDetPlanDesc
+*******************************************************************************/
+
+int  ifnOraLeerDetPlanDesc(DETPLANDESC_HOST *pstHost,DETPLANDESC_HOST_NULL *pstHostNull, long *plNumFilas,sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL VAR pstHost->szCodPlan 			IS STRING (6) ;
+	EXEC SQL VAR pstHost->szDesPlandesc     	IS STRING (31);
+    EXEC SQL VAR pstHost->szFecDesdePlandesc	IS STRING (15);
+    EXEC SQL VAR pstHost->szFecHastaPlandesc	IS STRING (15);
+    EXEC SQL VAR pstHost->szIndRestriccion  	IS STRING (2) ;
+    EXEC SQL VAR pstHost->szFecDesdeDetplan 	IS STRING (15);
+    EXEC SQL VAR pstHost->szFecHastaDetplan 	IS STRING (15);
+    EXEC SQL VAR pstHost->szCodTipeval      	IS STRING (2) ;
+    EXEC SQL VAR pstHost->szCodTipapli      	IS STRING (2) ;
+    EXEC SQL VAR pstHost->szTipUnidad      		IS STRING (3) ;
+
+  	EXEC SQL FETCH Cur_DetPlanDesc
+  			  INTO :pstHost->szCodPlan ,
+				   :pstHost->szDesPlandesc     	,
+    			   :pstHost->szFecDesdePlandesc	,
+    			   :pstHost->szFecHastaPlandesc	,
+    			   :pstHost->szIndRestriccion  	,
+    			   :pstHost->szFecDesdeDetplan 	,
+    			   :pstHost->szFecHastaDetplan 	,
+    			   :pstHost->szCodTipeval      	,
+    			   :pstHost->szCodTipapli      	,
+    			   :pstHost->iCodGrupoeval :pstHostNull->i_shCodGrupoeval ,
+    			   :pstHost->iCodGrupoapli :pstHostNull->i_shCodGrupoapli  ,
+    			   :pstHost->iNumCuadrante :pstHostNull->i_shNumCuadrante ,
+    			   :pstHost->szTipUnidad   		,
+    			   :pstHost->iCodConcdesc 	:pstHostNull->i_shCodConcdesc ,
+    			   :pstHost->dMtoMinfact  	:pstHostNull->i_shMtoMinfact ;
+
+	if (sqlca.sqlcode==SQL_OK)
+		*plNumFilas = TAM_HOST;
+	else
+		if (sqlca.sqlcode==NOT_FOUND)
+			*plNumFilas = sqlca.sqlerrd[2] % TAM_HOST;
+
+	return sqlca.sqlcode;
+}
+
+/********************************************************
+	FIN NUEVAS ESTRUCTURAS HOMOLOGADO
+********************************************************/
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarFacClientes
+*******************************************************************************/
+
+int ifnOraCerrarFacClientes(sql_context ctx, long clieini, long cliefin)
+{
+        struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if(cliefin!=0)
+	{
+		EXEC SQL CLOSE CFacClientesR;
+	}
+	else
+	{
+		EXEC SQL CLOSE CFacClientes;
+	}
+
+        return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarFacCiclo
+*******************************************************************************/
+
+int ifnOraCerrarFacCiclo(sql_context ctx, long clieini, long cliefin)
+{
+        struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if(cliefin!=0)
+	{
+		EXEC SQL CLOSE CFacCicloR;
+	}
+	else
+	{
+		EXEC SQL CLOSE CFacCiclo;
+	}
+
+        return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCargos
+*******************************************************************************/
+
+int ifnOraCerrarGeCargos(sql_context ctx,long ci,long cf)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if(cf!=0)
+	{
+		EXEC SQL CLOSE CGeCargosR;
+	}
+	else
+	{
+		EXEC SQL CLOSE CGeCargos;
+	}
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCargosRecurrentes
+*******************************************************************************/
+
+int ifnOraCerrarGeCargosRecurrentes(sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+		EXEC SQL CLOSE CGeCargosRecurrentes;
+	
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCabCuotas
+*******************************************************************************/
+
+int ifnOraCerrarGeCabCuotas (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeCabCuotas;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeTaConcepFact
+*******************************************************************************/
+
+int ifnOraCerrarGeTaConcepFact (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeTaConcepFact;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeConceptos
+*******************************************************************************/
+
+int ifnOraCerrarGeConceptos (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeConceptos;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeConceptos_Mi
+*******************************************************************************/
+
+int ifnOraCerrarGeConceptos_Mi (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeConceptos_Mi;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeRangoTabla
+*******************************************************************************/
+
+int ifnOraCerrarGeRangoTabla (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeRangoTabla;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeLimCreditos
+*******************************************************************************/
+
+int ifnOraCerrarGeLimCreditos (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeLimCreditos;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeActividades
+*******************************************************************************/
+
+int ifnOraCerrarGeActividades (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeActividades;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeProvincias
+*******************************************************************************/
+
+int ifnOraCerrarGeProvincias (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeProvincias;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeRegiones
+*******************************************************************************/
+
+int ifnOraCerrarGeRegiones (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeRegiones;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCatImpositiva
+*******************************************************************************/
+
+int ifnOraCerrarGeCatImpositiva (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeCatImpositiva;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeZonaCiudad
+*******************************************************************************/
+
+int ifnOraCerrarGeZonaCiudad (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeZonaCiudad;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeZonaImpositiva
+*******************************************************************************/
+
+int ifnOraCerrarGeZonaImpositiva (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeZonaImpositiva;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeImpuestos
+*******************************************************************************/
+
+int ifnOraCerrarGeImpuestos (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeImpuestos;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeTipImpues
+*******************************************************************************/
+/*
+int ifnOraCerrarGeTipImpues (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeTipImpues;
+
+	return sqlca.sqlcode;
+}
+*/
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeGrpSerConc
+*******************************************************************************/
+
+int ifnOraCerrarGeGrpSerConc (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeGrpSerConc;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeConversion
+*******************************************************************************/
+
+int ifnOraCerrarGeConversion (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeConversion;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeDocumSucursal
+*******************************************************************************/
+
+int ifnOraCerrarGeDocumSucursal (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeDocumSucursal;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeLetras
+*******************************************************************************/
+
+int ifnOraCerrarGeLetras (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeLetras;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeGrupoCob
+*******************************************************************************/
+
+int ifnOraCerrarGeGrupoCob (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeGrupoCob;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeTarifas
+*******************************************************************************/
+
+int ifnOraCerrarGeTarifas (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeTarifas;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeActuaServ
+*******************************************************************************/
+
+int ifnOraCerrarGeActuaServ (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeActuaServ;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCuotas
+*******************************************************************************/
+
+int ifnOraCerrarGeCuotas (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeCuotas;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeFactCarriers
+*******************************************************************************/
+
+int ifnOraCerrarGeFactCarriers (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeFactCarriers;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCuadCtoPlan
+*******************************************************************************/
+
+int ifnOraCerrarGeCuadCtoPlan (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeCuadCtoPlan;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCtoPlan
+*******************************************************************************/
+
+int ifnOraCerrarGeCtoPlan (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeCtoPlan;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGePlanCtoPlan
+*******************************************************************************/
+
+int ifnOraCerrarGePlanCtoPlan (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGePlanCtoPlan;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeArriendo
+*******************************************************************************/
+
+int ifnOraCerrarGeArriendo (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeArriendo;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCargosBasico
+*******************************************************************************/
+
+int ifnOraCerrarGeCargosBasico (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeCargosBasico;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeOptimo
+*******************************************************************************/
+
+int ifnOraCerrarGeOptimo (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeOptimo;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeFeriados
+*******************************************************************************/
+
+int ifnOraCerrarGeFeriados (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeFeriados;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGePlanTarif
+*******************************************************************************/
+
+int ifnOraCerrarGePlanTarif (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGePlanTarif;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGePenalizaciones
+*******************************************************************************/
+
+int ifnOraCerrarGePenalizaciones (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGePenalizaciones;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCatImpClientes
+*******************************************************************************/
+
+int  ifnOraCerrarGeCatImpClientes(sql_context ctx,long clieini,long cliefin)
+
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if(cliefin!=0)
+	{
+		EXEC SQL CLOSE CGeCatImpClientesR;
+	}
+	else
+	{
+		EXEC SQL CLOSE CGeCatImpClientes;
+	}
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeDirecciones
+*******************************************************************************/
+
+int ifnOraCerrarGeDirecciones (sql_context ctx,long clieini,long cliefin)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if(cliefin!=0)
+	{
+		EXEC SQL CLOSE CGeDireccionesR;
+	}
+	else
+	{
+		EXEC SQL CLOSE CGeDirecciones;
+	}
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeCoUnipac
+*******************************************************************************/
+
+int ifnOraCerrarGeCoUnipac (sql_context ctx,long clieini,long cliefin)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	if(cliefin!=0)
+	{
+		EXEC SQL CLOSE CGeCoUnipacR;
+	}
+	else
+	{
+		EXEC SQL CLOSE CGeCoUnipac;
+	}
+
+	return sqlca.sqlcode;
+}
+
+/********************************************************
+	INICIO NUEVAS ESTRUCTURAS HOMOLOGADO
+********************************************************/
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeOficina
+*******************************************************************************/
+
+int ifnOraCerrarGeOficina (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeOficina;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarGeFactCobr
+*******************************************************************************/
+
+int ifnOraCerrarGeFactCobr (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE CGeFactCobr;
+
+	return sqlca.sqlcode;
+}
+
+/******************************************************************************
+Funcion		:     	ifnOraCerrarDetPlanDesc
+*******************************************************************************/
+
+int ifnOraCerrarDetPlanDesc (sql_context ctx)
+{
+	struct sqlca sqlca;
+        EXEC SQL CONTEXT USE :ctx;
+
+	EXEC SQL CLOSE Cur_DetPlanDesc;
+
+	return sqlca.sqlcode;
+}
+/********************************************************
+	FIN NUEVAS ESTRUCTURAS HOMOLOGADO
+********************************************************/
+
+

@@ -1,0 +1,1 @@
+start /wait /b "C:\Archivos de programa\Internet Explorer\IEXPLORE.EXE" http:\\arica:19016\PortalVentasWeb

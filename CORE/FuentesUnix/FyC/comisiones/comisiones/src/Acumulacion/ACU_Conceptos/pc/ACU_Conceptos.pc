@@ -1,0 +1,1135 @@
+/*---------------------------------------------------------------------------*/
+/* Programa encargado de ejecutar la valoración estándard mensual.           */
+/*                                                                           */
+/*---------------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                                  */
+/* Inicio: Lunes 26 de Noviembre del 2001.                                   */
+/* Fin:                                                                      */
+/* Autor : Fabian Aedo Ramirez                                               */
+/*---------------------------------------------------------------------------*/
+/* Recibira entre sus parametros un COD_PERIODO, con el que cruzara las      */
+/*  tablas de Valoracion (CMT_VALORIZADOS) y la de periodos, (CMD_PERIODOS), */
+/*  para todos aquellos periodos cuyo indicador de periodo sea mensual.      */
+/*---------------------------------------------------------------------------*/
+/* Inclusion de librería para definiciones generales del programa.           */
+/*---------------------------------------------------------------------------*/
+#include "ACU_Conceptos.h"
+#include "GEN_biblioteca.h"
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+EXEC SQL WHENEVER SQLERROR DO vSqlError();
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+char    szhUser[30]="";
+char    szhPass[30]="";
+char    szhSysDate [17]="";
+char    szFechaYYYYMMDD[9]="";
+EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------*/
+/* Recupera % de Apoyo por Coparticipacion (COAP), desde parametros generales*/
+/*---------------------------------------------------------------------------*/
+void vRecuperaValCoap()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+            int     ihValCoap;
+    EXEC SQL END DECLARE SECTION;
+    
+    EXEC SQL SELECT VAL_PARAMETRO1 INTO :ihValCoap
+            FROM CMD_PARAMETROS
+            WHERE COD_TIPCODIGO = 9 
+              AND COD_CODIGO = 4 
+              AND COD_PARAMETRO = 1;
+    iValCoap  = ihValCoap;
+    fprintf(stderr, "[vRecuperaValCoap]Porcentaje de Aporte Coparticipación:[%d%%]\n",iValCoap);
+    fprintf(pfLog , "[vRecuperaValCoap]Porcentaje de Aporte Coparticipación:[%d%%]\n",iValCoap);
+}
+/*---------------------------------------------------------------------------*/
+/* Recupera N° Meses vigencia del fondo COAP.                                */
+/*---------------------------------------------------------------------------*/
+void vRecuperaMesesCoap()
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+            int     ihMesesCoap;
+    EXEC SQL END DECLARE SECTION;
+        
+    EXEC SQL SELECT VAL_PARAMETRO1 INTO :ihMesesCoap
+            FROM CMD_PARAMETROS
+            WHERE COD_TIPCODIGO = 9 
+              AND COD_CODIGO    = 3
+              AND COD_PARAMETRO = 1;
+    iMesesCoap  = ihMesesCoap;
+    fprintf(stderr,"[vRecuperaMesesCoap]N° Meses de Vigencia del Fondo COAP:[%d]\n",iMesesCoap);
+    fprintf(pfLog ,"[vRecuperaMesesCoap]N° Meses de Vigencia del Fondo COAP:[%d]\n",iMesesCoap);
+}
+/*---------------------------------------------------------------------------*/
+/* Se extrae el universo inicial de registros a considerar para Comisiones.  */
+/*---------------------------------------------------------------------------*/
+void vCreaUniverso()
+{
+	stConceptos * paux;
+	long		lCantReg=0;
+	int         i;
+	short       iLastRows    = 0;
+	int         iFetchedRows = MAXFETCH;
+	int         iRetrievRows = MAXFETCH;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+	    long    lMaxFetch;
+	    char    szhIdPeriodo[11];
+
+	    int 	ihCodConcepto[MAXFETCH];
+		char	szhNomConcepto[MAXFETCH][61];
+	    char    szhCodUniverso[MAXFETCH][7];
+		char	szhCodTecnologia[MAXFETCH][8];
+		char	szhCodForma[MAXFETCH][11];
+		char	szhTipCalculo[MAXFETCH][2];
+		int		ihCodTipoRed[MAXFETCH];
+	    char    szhCodTipComis[MAXFETCH][3];
+	    long	lhCodComisionista[MAXFETCH];
+	    double	dhImpConcepto[MAXFETCH];
+	    long    lhCantRegistros[MAXFETCH];
+	    char	szhCodPlanComis[MAXFETCH][7];
+	EXEC SQL END DECLARE SECTION;
+
+    lMaxFetch = MAXFETCH;
+    strcpy(szhIdPeriodo	, stCiclo.szIdCiclComis);
+	fprintf(pfLog ,"\n\n[vCreaUniverso]Carga de Registros para Acumulación de Conceptos.\n");
+	fprintf(stderr,"\n\n[vCreaUniverso]Carga de Registros para Acumulación de Conceptos.\n");
+    EXEC SQL DECLARE CUR_UNIVERSO CURSOR FOR SELECT  
+        A.COD_CONCEPTO,
+        B.NOM_CONCEPTO,
+    	A.COD_UNIVERSO,
+    	B.COD_TECNOLOGIA,
+    	B.COD_FORMA,
+    	B.TIP_CALCULO,
+    	A.COD_TIPORED,
+        A.COD_TIPCOMIS,
+        A.COD_COMISIONISTA,
+        C.COD_PLANCOMIS,
+        SUM(A.IMP_CONCEPTO),
+        COUNT(*)
+        FROM	CMT_VALORIZADOS A,
+        		CMD_CONCEPTOS B,
+        		CM_CONCEPTOSTIPORED_TD C
+        WHERE A.ID_PERIODO   = :szhIdPeriodo
+          AND A.COD_CONCEPTO = B.COD_CONCEPTO
+          AND A.COD_TIPORED  = C.COD_TIPORED
+          AND A.COD_CONCEPTO = C.COD_CONCEPTO
+        GROUP BY 	A.COD_CONCEPTO,B.NOM_CONCEPTO,A.COD_UNIVERSO,
+			    	B.COD_TECNOLOGIA,B.COD_FORMA,B.TIP_CALCULO,
+			    	A.COD_TIPORED, A.COD_TIPCOMIS, A.COD_COMISIONISTA,
+			    	C.COD_PLANCOMIS; 
+
+    EXEC SQL OPEN CUR_UNIVERSO;
+    while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL for :lMaxFetch FETCH CUR_UNIVERSO INTO 
+			:ihCodConcepto, :szhNomConcepto, :szhCodUniverso,
+			:szhCodTecnologia, :szhCodForma, :szhTipCalculo, 
+			:ihCodTipoRed, :szhCodTipComis, :lhCodComisionista, 
+			:szhCodPlanComis, :dhImpConcepto, :lhCantRegistros;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+            paux = (stConceptos *) malloc(sizeof(stConceptos));
+            paux->iCodConcepto            	= ihCodConcepto[i];
+            strcpy(paux->szNomConcepto    	, szfnTrim(szhNomConcepto[i]));
+            strcpy(paux->szCodUniverso    	, szfnTrim(szhCodUniverso[i]));
+            strcpy(paux->szCodTecnologia  	, szfnTrim(szhCodTecnologia[i]));
+            strcpy(paux->szCodForma    		, szfnTrim(szhCodForma[i]));
+            strcpy(paux->szCodPlanComis    	, szfnTrim(szhCodPlanComis[i]));
+			strcpy(paux->szTipCalculo		, szfnTrim(szhTipCalculo[i]));
+            paux->iCodTipoRed        		= ihCodTipoRed[i];
+            strcpy(paux->szCodTipComis    	, szfnTrim(szhCodTipComis[i]));
+            paux->lCodComisionista        	= lhCodComisionista[i];
+            strcpy(paux->szIdPeriodo      	, szhIdPeriodo);
+            paux->dImpConcepto            	= dhImpConcepto[i];
+            paux->lCantRegistros          	= lhCantRegistros[i];
+            paux->sgte 						= lstConceptos;
+            lstConceptos 					= paux;
+            lCantReg++;
+		}
+    }
+    EXEC SQL CLOSE CUR_UNIVERSO;
+	fprintf(pfLog ,"[vCreaUniverso]Cantidad de Registros leídos:[%ld].\n",lCantReg);
+	fprintf(stderr,"[vCreaUniverso]Cantidad de Registros leídos:[%ld].\n",lCantReg);
+}
+/*---------------------------------------------------------------------------*/
+/* Recupera listado de facturas para calcular monto requerido por Bono Coap. */
+/*---------------------------------------------------------------------------*/
+void vRecuperaFacturasCoap()
+{
+    stFacturas	* paux;
+    long        lCantReg=0;
+    int         i;
+    long        iLastRows    = 0;
+    int         iFetchedRows = MAXFETCH;
+    int         iRetrievRows = MAXFETCH;
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lMaxFetch;
+        int     ihValCoap;
+        char	szhCodEstadoING[4];
+        char    szhRowId[MAXFETCH][19];
+        char    szhIdPeriodo[11];
+
+        int		ihCodTipoRed[MAXFETCH];
+        char	szhCodPlanComis[MAXFETCH][7];
+        int 	ihCodConcepto[MAXFETCH];
+        char    szhCodTipComis[MAXFETCH][3];
+        int     ihCodComisionista[MAXFETCH];
+        double  dhImpNeto[MAXFETCH];
+        double  dhImpTotal[MAXFETCH];
+        double  dhImpAutorizado[MAXFETCH];
+        double	dhImpPonderado[MAXFETCH];
+    EXEC SQL END DECLARE SECTION;
+
+    fprintf(stderr,"[vRecuperaFacturasCoap]Inicia recuperación de Facturas COAP periodo:[%d]\n",stCiclo.lCodCiclComis);         /* Incorporado Por PGonzaleg 2-1-2003. Modificacion de Periodos. */
+    fprintf(pfLog ,"[vRecuperaFacturasCoap]Inicia recuperación de Facturas COAP periodo:[%d]\n",stCiclo.lCodCiclComis);         /* Incorporado Por PGonzaleg 2-1-2003. Modificacion de Periodos. */
+
+	strcpy(szhCodEstadoING 	, "ING");
+    ihValCoap 				= iValCoap;
+	strcpy(szhIdPeriodo 	, stCiclo.szIdCiclComis);
+    lMaxFetch 				= MAXFETCH;
+
+    EXEC SQL DECLARE CUR_FACTURAS CURSOR FOR SELECT  
+		A.ROWID,
+		A.COD_TIPORED,
+		A.COD_PLANCOMIS,
+		A.COD_CONCEPTO,
+		A.COD_TIPCOMIS,
+        A.COD_COMISIONISTA,
+        SUM(A.IMP_NETO),
+        SUM(A.IMP_TOTAL),
+        SUM(A.IMP_AUTORIZADO),
+        SUM(TRUNC(A.IMP_AUTORIZADO * :ihValCoap/100))
+        FROM  CMT_FACTURAS_COAP A
+        WHERE A.ID_PERIODO  = :szhIdPeriodo
+          AND A.COD_ESTADO   = :szhCodEstadoING
+        GROUP BY A.ROWID, A.COD_TIPORED, A.COD_PLANCOMIS, A.COD_CONCEPTO, A.COD_TIPCOMIS, A.COD_COMISIONISTA;
+
+    EXEC SQL OPEN CUR_FACTURAS;
+    while(iFetchedRows == iRetrievRows)
+    {
+        EXEC SQL for :lMaxFetch FETCH CUR_FACTURAS INTO
+			:szhRowId, :ihCodTipoRed, :szhCodPlanComis, :ihCodConcepto, 
+			:szhCodTipComis, :ihCodComisionista, :dhImpNeto, :dhImpTotal, 
+			:dhImpAutorizado, :dhImpPonderado;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+            paux = (stFacturas *) malloc(sizeof(stFacturas));
+            
+            strcpy(paux->szRowId		, szfnTrim(szhRowId[i]));
+            paux->iCodTipoRed			= ihCodTipoRed[i];
+            strcpy(paux->szCodPlanComis	, szfnTrim(szhCodPlanComis[i]));
+            paux->iCodConcepto			= ihCodConcepto[i];
+            strcpy(paux->szCodTipComis	, szfnTrim(szhCodTipComis[i]));
+            paux->lCodComisionista      = ihCodComisionista[i];
+            paux->dImpNeto              = dhImpNeto[i];
+            paux->dImpTotal             = dhImpTotal[i];
+            paux->dImpAutorizado        = dhImpAutorizado[i];
+            paux->lCodPeriodo           = stCiclo.lCodCiclComis;
+            paux->dImpPonderado         = dhImpPonderado[i];
+                    
+            paux->sgte 					= lstFacturas;
+            lstFacturas 				= paux;
+            lCantReg++;
+	    }
+    }
+    fprintf(stderr,"[vRecuperaFacturasCoap]Facturas Coap Recuperadas Para el Periodo:[%d]\n",lCantReg);
+    fprintf(pfLog ,"[vRecuperaFacturasCoap]Facturas Coap Recuperadas Para el Periodo:[%d]\n",lCantReg);
+    EXEC SQL CLOSE CUR_FACTURAS;    
+}
+/*---------------------------------------------------------------------------*/
+/* Recupera listado de fondos diponibles para aportes COAP.                  */
+/*---------------------------------------------------------------------------*/
+void vRecuperaDetalleFondosCoap()
+{
+    stFondosComis * paux;
+    stFondos      * qaux;
+    int             i;
+    long			lCantRegs 	= 0;	
+    short           iLastRows    = 0;
+    int             iFetchedRows = MAXFETCH;
+    int             iRetrievRows = MAXFETCH;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lMaxFetch;
+        long    lhCodPeriodo;
+        int     ihMesesCoap;
+        char    szhCodTipComis[3];
+        int     ihCodComisionista;
+        int		ihCodTipoRed;
+        char	szhCodPlanComis[7];
+        int		ihCodConcepto;
+        long    lhCodPeriodoIng[MAXFETCH];
+        int     ihNumPeriodo[MAXFETCH];
+        double  dhImpUsado[MAXFETCH];
+        double  dhImpInicial[MAXFETCH];
+    EXEC SQL END DECLARE SECTION;
+    ihMesesCoap  = iMesesCoap;
+    lhCodPeriodo = stCiclo.lCodCiclComis;
+    fprintf(pfLog, "[vRecuperaDetalleFondosCoap]Inicio de Carga de Consumos COAP, para determinar disponibles.\n");
+    fprintf(stderr,"[vRecuperaDetalleFondosCoap]Inicio de Carga de Consumos COAP, para determinar disponibles.\n");
+
+    for (paux=lstFondosComis; paux!=NULL; paux=paux->sgte)
+    {
+        strcpy(szhCodTipComis   , paux->szCodTipComis);
+        ihCodComisionista       = paux->lCodComisionista;
+		ihCodTipoRed			= paux->iCodTipoRed;
+        strcpy(szhCodPlanComis  , paux->szCodPlanComis);
+        ihCodConcepto			= paux->iCodConcepto;
+		
+        lMaxFetch    = MAXFETCH;
+        iLastRows    = 0;
+        iFetchedRows = MAXFETCH;
+        iRetrievRows = MAXFETCH;
+
+        EXEC SQL DECLARE CUR_DETALLECOAP_NEW CURSOR for SELECT
+        	A.COD_PERIODO,
+            A.NUM_PERIODO,
+            SUM(A.IMP_FONDO),
+            SUM(NVL(B.IMP_CONSUMO,0))
+            FROM    CMT_FONDOS_COAP A,CMT_CONSUMOS_COAP B
+            WHERE   MONTHS_BETWEEN(TO_DATE(:lhCodPeriodo,'YYYYMMDD'),TO_DATE(A.COD_PERIODO,'YYYYMMDD')) BETWEEN 1 AND :ihMesesCoap
+            AND 	A.COD_TIPORED		= :ihCodTipoRed
+            AND 	A.COD_PLANCOMIS 	= :szhCodPlanComis
+            AND		A.COD_CONCEPTO		= :ihCodConcepto
+            AND     A.COD_TIPCOMIS     	= :szhCodTipComis
+            AND     A.COD_COMISIONISTA 	= :ihCodComisionista
+            AND     A.COD_TIPCOMIS     	= B.COD_TIPCOMIS(+)
+            AND     A.COD_COMISIONISTA 	= B.COD_COMISIONISTA(+)
+            AND     A.NUM_PERIODO      	= B.NUM_PERIODO(+)
+            GROUP   BY A.COD_TIPORED, A.COD_TIPCOMIS, A.COD_COMISIONISTA, A.COD_PERIODO, A.NUM_PERIODO
+            ORDER BY A.NUM_PERIODO DESC;
+
+		EXEC SQL OPEN CUR_DETALLECOAP_NEW;
+        while(iFetchedRows == iRetrievRows)
+        {
+            EXEC SQL for :lMaxFetch FETCH CUR_DETALLECOAP_NEW INTO 
+            	:lhCodPeriodoIng, :ihNumPeriodo, :dhImpInicial, :dhImpUsado;
+
+            iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+            iLastRows = sqlca.sqlerrd[2];
+            for (i=0; i < iRetrievRows; i++)
+            {
+                qaux = (stFondos *) malloc(sizeof(stFondos));
+                qaux->lCodPeriodo       = lhCodPeriodoIng[i];
+                qaux->iNumPeriodo       = ihNumPeriodo[i];
+                qaux->lImpInicial       = dhImpInicial[i];
+                qaux->lImpUsado         = dhImpUsado[i];
+                qaux->lImpDisponible    = dhImpInicial[i] - dhImpUsado[i];
+                qaux->sgte              = paux->sgte_fondo;
+                paux->sgte_fondo        = qaux;
+                paux->lImpDisponible    += qaux->lImpDisponible;
+                lCantRegs++;
+            }               
+        }
+        EXEC SQL CLOSE CUR_DETALLECOAP_NEW;
+    }
+	fprintf(pfLog , "[vRecuperaDetalleFondosCoap]Cantidad de Registros Leidos:[%ld].\n",lCantRegs);
+	fprintf(stderr, "[vRecuperaDetalleFondosCoap]Cantidad de Registros Leidos:[%ld].\n",lCantRegs);
+}
+/*---------------------------------------------------------------------------*/
+/* Recupera listado de fondos diponibles para aportes COAP.                  */
+/*---------------------------------------------------------------------------*/
+void vRecuperaFondosCoap()
+{
+    stFondosComis * paux;
+    long            lCantVentas=0;
+    int             i;
+    short           iLastRows    = 0;
+    int             iFetchedRows = MAXFETCH;
+    int             iRetrievRows = MAXFETCH;
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lMaxFetch;
+        long    lhCodPeriodo;
+
+        int		ihCodTipoRed[MAXFETCH];
+	    char	szhCodPlanComis[MAXFETCH][7];
+	    int		ihCodConcepto[MAXFETCH];
+        char    szhCodTipComis[MAXFETCH][3];
+        int     ihCodComisionista[MAXFETCH];
+    EXEC SQL END DECLARE SECTION;
+
+	fprintf(pfLog ,"\n\n[vRecuperaFondosCoap]Inicia recuperación de Fondos Coap de Distribuidores\n");
+	fprintf(stderr,"\n\n[vRecuperaFondosCoap]Inicia recuperación de Fondos Coap de Distribuidores\n");
+
+    lMaxFetch    = MAXFETCH;
+    EXEC SQL DECLARE CUR_FONDOSCOAP CURSOR FOR SELECT  DISTINCT 
+    	COD_TIPORED,
+    	COD_PLANCOMIS,
+    	COD_CONCEPTO,
+    	COD_TIPCOMIS,
+        COD_COMISIONISTA
+        FROM CMT_FONDOS_COAP;
+
+	EXEC SQL OPEN CUR_FONDOSCOAP;
+	while(iFetchedRows == iRetrievRows)
+	{
+        EXEC SQL for :lMaxFetch FETCH CUR_FONDOSCOAP INTO
+        	:ihCodTipoRed, :szhCodPlanComis, :ihCodConcepto, :szhCodTipComis, :ihCodComisionista;
+	
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+        iLastRows = sqlca.sqlerrd[2];
+        for (i=0; i < iRetrievRows; i++)
+        {
+	        paux = (stFondosComis *) malloc(sizeof(stFondosComis));
+	
+	        paux->iCodTipoRed			= ihCodTipoRed[i];
+	        strcpy(paux->szCodPlanComis	, szfnTrim(szhCodPlanComis[i]));
+	        paux->iCodConcepto			= ihCodConcepto[i];
+	        strcpy(paux->szCodTipComis	, szfnTrim(szhCodTipComis[i]));
+	        paux->lCodComisionista      = ihCodComisionista[i];
+	        paux->lImpDisponible        = 0;
+	        paux->sgte_fondo            = NULL;
+	        lCantVentas++;
+	        paux->sgte 					= lstFondosComis;
+	        lstFondosComis 				= paux;
+        }
+	}
+	EXEC SQL CLOSE CUR_FONDOSCOAP;  
+	fprintf(stderr,"[vRecuperaFondosCoap]Cantidad de Registros de Fondo Coap:[%d]\n",lCantVentas);
+	fprintf(pfLog ,"[vRecuperaFondosCoap]Cantidad de Registros de Fondo Coap:[%d]\n",lCantVentas);
+}
+
+/*---------------------------------------------------------------------------*/
+/* FUNCION QUE RETORNA EL IMPORTE AUTORIZADO PARA COAP PARA UN COMISIONISTA. */
+/*---------------------------------------------------------------------------*/
+long lGetFondoSolicitado(int iCodTipoRed, char * pszPlanComis, int plConcepto, int  plCodComisionista)
+{
+    stFacturas      * paux;
+    long            lValFondo = 0;
+    
+    paux = lstFacturas;
+    while ((paux != NULL)&&((paux->lCodComisionista != plCodComisionista)||(paux->iCodTipoRed != iCodTipoRed)||(paux->iCodConcepto != plConcepto)||strcmp(paux->szCodPlanComis,pszPlanComis)!=0))
+        paux = paux->sgte;
+
+    if (paux!=NULL)
+        lValFondo = paux->dImpPonderado;
+    return(lValFondo);
+}
+/*---------------------------------------------------------------------------*/
+/* FUNCION QUE RETORNA EL FONDO DISPONIBLE DE UN COMISIONISTA (COAP).        */
+/*---------------------------------------------------------------------------*/
+long lGetFondoDisponible(int iCodTipoRed, char * pszPlanComis, int plConcepto,int  plCodComisionista)
+{
+    stFondosComis   * paux;
+    long            lValFondo = 0;
+    paux = lstFondosComis;
+    while ((paux != NULL)&&((paux->lCodComisionista != plCodComisionista)||(paux->iCodTipoRed != iCodTipoRed)||(paux->iCodConcepto != plConcepto)||strcmp(paux->szCodPlanComis,pszPlanComis)!=0))
+        paux = paux->sgte;
+
+    if (paux != NULL)
+        lValFondo = paux->lImpDisponible;
+    return(lValFondo);
+}
+/*---------------------------------------------------------------------------*/
+/* RUTINA QUE INSERTA UN REGISTRO EN LA TABLA DE FONDOS COAP.              */
+/*---------------------------------------------------------------------------*/
+void vInsertaFondoCoap(int iCodTipoRed, char * szCodPlanComis, int lCodConcepto, char * pszCanal, int piComis, long plFondo)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lhCodPeriodo;
+        char    szhCodTipComis[3];
+        int     ihCodComisionista;
+        long    lhImpFondo;
+        int     ihNumPeriodo;
+        int 	ihCodTipoRed;
+        char	szhCodPlanComis[7];
+        int 	ihCodConcepto;
+        char	szhIdPeriodo[11];
+    EXEC SQL END DECLARE SECTION;
+    
+    strcpy(szhCodTipComis   , pszCanal);
+    ihCodComisionista       = piComis;
+    lhImpFondo              = plFondo;
+    ihCodTipoRed			= iCodTipoRed;
+    strcpy(szhCodPlanComis	, szCodPlanComis);
+    ihCodConcepto			= lCodConcepto;
+
+    lhCodPeriodo            = stCiclo.lCodCiclComis;
+	strcpy(szhIdPeriodo		, stCiclo.szIdCiclComis);
+
+    EXEC SQL SELECT NVL(MAX(NUM_PERIODO),0) 
+        INTO :ihNumPeriodo 
+        FROM CMT_FONDOS_COAP
+        WHERE COD_TIPORED 	   = :ihCodTipoRed
+          AND COD_PLANCOMIS	   = :szhCodPlanComis
+          AND COD_CONCEPTO     = :ihCodConcepto
+          AND COD_TIPCOMIS     = :szhCodTipComis
+          AND COD_COMISIONISTA = :ihCodComisionista;
+
+    ihNumPeriodo+=1;
+
+    EXEC SQL INSERT INTO CMT_FONDOS_COAP 
+        (COD_TIPORED, COD_PLANCOMIS, COD_CONCEPTO, COD_PERIODO,
+         COD_TIPCOMIS,COD_COMISIONISTA,IMP_FONDO,NUM_PERIODO, ID_PERIODO) VALUES 
+        (:ihCodTipoRed, :szhCodPlanComis, :ihCodConcepto, :lhCodPeriodo, 
+         :szhCodTipComis, :ihCodComisionista, :lhImpFondo, :ihNumPeriodo, :szhIdPeriodo);
+	
+	stStatusProc.lCantFondos++;
+}
+/*---------------------------------------------------------------------------*/
+/* RUTINA QUE INSERTA UN REGISTRO EN LA TABLA DE CONSUMOS COAP.              */
+/*---------------------------------------------------------------------------*/
+void vInsertaConsumoCoap(int iCodTipoRed, char * szCodPlanComis, long lCodConcepto, char * pszCanal, int piComis, long plCargo, int piPeriodo)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        long    lhCodPeriodo;
+        char    szhCodTipComis[3];
+        int     ihCodComisionista;
+        long    lhImpConsumo;
+        int     ihNumPeriodo;
+        int		ihCodTipoRed;
+        int		ihCodConcepto;
+        char	szhCodPlanComis[7];
+        char	szhIdPeriodo[11];
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhCodTipComis   , pszCanal);
+    ihCodComisionista       = piComis;
+    lhImpConsumo            = plCargo;
+    ihNumPeriodo            = piPeriodo;
+	ihCodTipoRed			= iCodTipoRed;
+	ihCodConcepto			= lCodConcepto;
+	strcpy(szhCodPlanComis	, szCodPlanComis);
+	
+    lhCodPeriodo            = stCiclo.lCodCiclComis;
+	strcpy(szhIdPeriodo		, stCiclo.szIdCiclComis);
+	
+    EXEC SQL INSERT INTO CMT_CONSUMOS_COAP 
+        (COD_TIPORED, COD_PLANCOMIS,COD_CONCEPTO,COD_PERIODO,COD_TIPCOMIS,
+         COD_COMISIONISTA,IMP_CONSUMO,NUM_PERIODO, ID_PERIODO) VALUES 
+        (:ihCodTipoRed, :szhCodPlanComis, :ihCodConcepto, :lhCodPeriodo, :szhCodTipComis, 
+         :ihCodComisionista, :lhImpConsumo, :ihNumPeriodo, :szhIdPeriodo);
+	stStatusProc.lCantConsumos++;
+}
+/*---------------------------------------------------------------------------*/
+/* RUTINA QUE INSERTA EL REGISTRO FINAL EN LA TABLA DE ACUMULADOS.           */
+/*---------------------------------------------------------------------------*/
+void vInsertaAcumulados(int iCodTipoRed, int  piConcepto,  char * pszCanal, int piComis, long plLogro, double plImporte, long plCant)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        int     ihCodConcepto;
+        long    lhCodPeriodo;
+        char    szhIdPeriodo[11];
+        char    szhCodTipComis[3];
+        int     ihCodComisionista;
+        double  dhNumLogro;
+        double  dhImpConcepto;
+        long    lhNumRegistros;
+        int		ihCodTipoRed;
+    EXEC SQL END DECLARE SECTION;   
+        
+    ihCodConcepto           = piConcepto;
+    strcpy(szhCodTipComis   , pszCanal);
+    ihCodComisionista       = piComis;
+    dhNumLogro              = plLogro;
+    dhImpConcepto           = plImporte;
+    lhNumRegistros          = plCant;
+    ihCodTipoRed			= iCodTipoRed;
+
+    lhCodPeriodo            = stCiclo.lCodCiclComis;
+    strcpy(szhIdPeriodo     , stCiclo.szIdCiclComis);
+
+    EXEC SQL INSERT INTO CMT_ACUMULADOS 
+        (COD_TIPORED, COD_CONCEPTO, COD_PERIODO, ID_PERIODO, COD_TIPCOMIS,COD_COMISIONISTA,NUM_LOGRO,IMP_CONCEPTO,NUM_REGISTROS)
+        VALUES (:ihCodTipoRed, :ihCodConcepto,:lhCodPeriodo,:szhIdPeriodo,:szhCodTipComis,:ihCodComisionista,:dhNumLogro,:dhImpConcepto,:lhNumRegistros);
+	stStatusProc.lCantAcumulados++;
+}
+/*---------------------------------------------------------------------------*/
+/* RUTINA QUE INSERTA EL REGISTRO FINAL EN LA TABLA DE ACUMULADOS.           */
+/*---------------------------------------------------------------------------*/
+void vRecuperaLogroMetas(int iCodTipoRed, int piConcepto,  char * pszCanal, int piComis)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        int     ihCodConcepto;
+        long    lhCodPeriodo;
+        char    szhIdPeriodo[11];
+        char    szhCodTipComis[3];
+        int     ihCodComisionista;
+        double  dhNumLogro;
+        double  lhImpConcepto;
+        long    lhNumRegistros;
+        int		ihCodTipoRed;
+        int		ihCantidad;
+    EXEC SQL END DECLARE SECTION;   
+    
+    ihCodConcepto           = piConcepto;
+    strcpy(szhCodTipComis   , pszCanal);
+    ihCodComisionista       = piComis;
+    ihCodTipoRed			= iCodTipoRed;
+
+    lhCodPeriodo            = stCiclo.lCodCiclComis;
+    strcpy(szhIdPeriodo     , stCiclo.szIdCiclComis);
+
+	fprintf(stderr, "\n[vRecuperaLogroMetas] Procesa TR:[%d] Conc:[%d] TC:[%s] Comis:[%ld]\n",ihCodTipoRed, ihCodConcepto, szhCodTipComis, ihCodComisionista);
+
+    EXEC SQL SELECT COUNT(*)
+        INTO :ihCantidad
+        FROM CMT_LOGRO_METAS
+        WHERE COD_TIPORED 		= :ihCodTipoRed
+          AND ID_PERIODO 		= :szhIdPeriodo
+          AND COD_CONCEPTO     	= :ihCodConcepto
+          AND COD_COMISIONISTA 	= :ihCodComisionista;
+    
+    if (ihCantidad > 0)
+    {
+	    EXEC SQL SELECT NUM_REGISTROS,VAL_LOGRO,IMP_CONCEPTO
+	        INTO :lhNumRegistros, :dhNumLogro, :lhImpConcepto
+	        FROM CMT_LOGRO_METAS
+	        WHERE COD_TIPORED 		= :ihCodTipoRed
+	          AND ID_PERIODO 		= :szhIdPeriodo
+	          AND COD_CONCEPTO     	= :ihCodConcepto
+	          AND COD_COMISIONISTA 	= :ihCodComisionista;
+	}
+	else
+	{
+		lhNumRegistros 	= 0;
+		dhNumLogro 		= 0;
+		lhImpConcepto	= 0.00;
+	}
+
+    EXEC SQL INSERT INTO CMT_ACUMULADOS 
+        (COD_TIPORED, COD_CONCEPTO, COD_PERIODO, ID_PERIODO, 
+        COD_TIPCOMIS,COD_COMISIONISTA,NUM_LOGRO,
+        IMP_CONCEPTO,NUM_REGISTROS)
+        VALUES (:ihCodTipoRed, :ihCodConcepto, :lhCodPeriodo,
+        :szhIdPeriodo, :szhCodTipComis, :ihCodComisionista, :dhNumLogro,
+        :lhImpConcepto, :lhNumRegistros);
+}
+/*---------------------------------------------------------------------------*/
+/* RUTINA ENCARGADA DE DESCONTAR, DESDE EL FONDO COAP, EL VALOR QUE SE APLICA*/
+/*---------------------------------------------------------------------------*/
+void vDescuentaCoap(int iCodTipoRed, char * szCodPlanComis, int lCodConcepto,int plCodComisionista,long plMontoApli)
+{
+    stFondosComis   * paux;
+    stFondos        * raux;
+    double          lSaldo=0;
+    
+    char            szCodTipComis[3];
+    int             lCodComisionista;
+    
+    paux = lstFondosComis;
+    while((paux->lCodComisionista != plCodComisionista)||(paux->iCodTipoRed != iCodTipoRed)||(paux->iCodConcepto!=lCodConcepto)||strcmp(paux->szCodPlanComis,szCodPlanComis)!=0)
+        paux = paux->sgte;
+
+    lCodComisionista        = paux->lCodComisionista;
+    strcpy(szCodTipComis    , paux->szCodTipComis);
+    
+    raux                    = paux->sgte_fondo;
+    lSaldo                  = plMontoApli;
+    while((raux!=NULL)&&(lSaldo > 0))
+    {
+        if (lSaldo >= raux->lImpDisponible)
+        {
+            vInsertaConsumoCoap(iCodTipoRed, szCodPlanComis, lCodConcepto, szCodTipComis, lCodComisionista,raux->lImpDisponible,raux->iNumPeriodo);
+            lSaldo               -= raux->lImpDisponible;
+            raux->lImpUsado       = raux->lImpInicial;
+            raux->lImpDisponible  = 0;
+        }
+        else
+        {
+            vInsertaConsumoCoap(iCodTipoRed,  szCodPlanComis, lCodConcepto, szCodTipComis,lCodComisionista,lSaldo,raux->iNumPeriodo);                     /* Incorporado Por PGonzaleg 2-1-2003. Modificacion de Periodos. */
+            raux->lImpUsado      += lSaldo;
+            raux->lImpDisponible -= lSaldo;
+            lSaldo                = 0;                      
+        }
+        raux = raux->sgte;
+    }
+}
+/*---------------------------------------------------------------------------*/
+/* Recupera el monto autorizados para facturas y comprobantes de arriendo.   */
+/*  Concepto 3. Bono por Presencia.                                          */
+/*---------------------------------------------------------------------------*/
+long lGetMtoArriendo(int iCodTipoRed, char * szCodPlanComis, int lCodConcepto,int piComis)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        int     ihCodComisionista;
+        char	szhIdPeriodo[11];
+        long    lhImpArriendo;
+        int		ihCodTipoRed;
+        char 	szhCodPlanComis[7];
+        int		ihCodConcepto;
+    EXEC SQL END DECLARE SECTION;
+    strcpy(szhIdPeriodo		, stCiclo.szIdCiclComis);
+
+	ihCodTipoRed			= iCodTipoRed;
+	strcpy(szhCodPlanComis	, szCodPlanComis);
+	ihCodConcepto			= lCodConcepto;
+    lhImpArriendo           = 0;
+    ihCodComisionista       = piComis;
+    EXEC SQL SELECT NVL(SUM(A.IMP_ARRIENDO),0) 
+    	INTO 	:lhImpArriendo
+        FROM 	CMT_ARRIENDOS_COMPROB A,
+        		CMD_LOCALES_AUTORIZADOS B
+       WHERE 	A.COD_TIPORED 		= :ihCodTipoRed
+        AND		A.COD_PLANCOMIS		= :szhCodPlanComis
+        AND 	A.COD_CONCEPTO		= :ihCodConcepto
+        AND 	A.COD_COMISIONISTA 	= :ihCodComisionista
+        AND 	A.ID_PERIODO      	= :szhIdPeriodo
+        AND 	A.NUM_LOCAL 		= B.NUM_LOCAL;
+        
+    if (sqlca.sqlcode==0)
+		return(lhImpArriendo);
+    else
+		return(0);
+}
+/*---------------------------------------------------------------------------*/
+/* Determina, en función de la forma comisional y del tipo de cálculo, la    */
+/* forma de acumulación que se debe aplica al concepto.                      */
+/*---------------------------------------------------------------------------*/
+int iGetTipoConcepto(char * pszCodForma, char * pszTipCalculo)
+{
+	/* formas de comsision que comprenden manejo de metas.... */
+	if ((strcmp(pszCodForma,"ALTACONTRA")==0)||(strcmp(pszCodForma,"ALTAPREPAG")==0))
+		if (strcmp(pszTipCalculo, "M")==0)
+			return CONCEPTO_META;
+		else
+			return CONCEPTO_NORMAL;
+	/* formas de comision con tratamiento de fondo coap */
+	if (strcmp(pszCodForma,"FONDOSCOAP")==0)
+		return CONCEPTO_BONO;
+
+	/* formas de comision con tratamiento bonificacion de arriendos */
+	if (strcmp(pszCodForma,"PRESENCIA")==0)
+		return CONCEPTO_ARRIENDO;
+	
+	/* sino, es normal.... */
+	return CONCEPTO_NORMAL;
+}
+/*---------------------------------------------------------------------------*/
+/* Procesa Acumulacion de Conceptos. (incluye tratamiento de COAP).          */
+/*---------------------------------------------------------------------------*/
+void vProcesaAcumulacion()
+{
+	stConceptos     * lst_conc;
+	
+	long    lMontoCoapDisp = 0;
+	long    lMontoCoapSoli = 0;
+	long    lMontoCoapApli = 0;
+	int     iCodConcepto;
+	long    lCodPeriodo;
+	char    szIdPeriodo[11];
+	char    szCodTipComis[3];
+	long    lCodComisionista;
+	double  dhImpConcepto;
+	long    lCantRegistros;
+	long    lImpArriendo;
+	int		iTipConcepto;
+	int		iCodTipoRed;
+	char	szCodPlanComis[7];
+	int		lCodConcepto;
+        
+	lCodPeriodo	= stCiclo.lCodCiclComis;
+        
+    for(lst_conc = lstConceptos; lst_conc!=NULL; lst_conc=lst_conc->sgte)
+    {
+		strcpy(szIdPeriodo		, lst_conc->szIdPeriodo);
+        lCodComisionista     	= lst_conc->lCodComisionista;
+        strcpy(szCodTipComis 	, lst_conc->szCodTipComis);
+        dhImpConcepto         	= lst_conc->dImpConcepto;
+        lCantRegistros       	= lst_conc->lCantRegistros;
+        iCodTipoRed				= lst_conc->iCodTipoRed; 
+        strcpy(szCodPlanComis	, lst_conc->szCodPlanComis);
+        lCodConcepto			= lst_conc->iCodConcepto;
+        
+		iTipConcepto = iGetTipoConcepto(lst_conc->szCodForma, lst_conc->szTipCalculo);
+        switch (iTipConcepto)
+        {
+        	case CONCEPTO_BONO:
+                lMontoCoapSoli = 0;
+                lMontoCoapDisp = 0;
+                lMontoCoapApli = 0;
+                fflush(stderr);
+                lMontoCoapSoli = lGetFondoSolicitado(iCodTipoRed, szCodPlanComis, lCodConcepto, lCodComisionista);
+                if (lMontoCoapSoli > 0)
+                {
+                    lMontoCoapDisp = lGetFondoDisponible(iCodTipoRed, szCodPlanComis, lCodConcepto,lCodComisionista);
+                    if (lMontoCoapDisp > 0)
+                    {
+                        if (lMontoCoapDisp >= lMontoCoapSoli)
+                            lMontoCoapApli = lMontoCoapSoli;
+                        else
+                            lMontoCoapApli = lMontoCoapDisp;
+
+                        vDescuentaCoap(iCodTipoRed, szCodPlanComis, lCodConcepto,lCodComisionista,lMontoCoapApli);
+                        vInsertaAcumulados(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista,0,lMontoCoapApli,0);
+                    }
+                    else
+                        vInsertaAcumulados(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista,0,0,0);
+                }
+                else
+                    vInsertaAcumulados(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista,0,0,0);
+                /* Finalmente, para el concepto COAP se debe almacenar el producto de la "acumulacion" */
+                /* en la tabla de fondos COAP.                                                         */
+                vInsertaFondoCoap(iCodTipoRed, szCodPlanComis, lCodConcepto,szCodTipComis,lCodComisionista,lst_conc->dImpConcepto);
+                break;          
+            case CONCEPTO_META:/* Ahora le toca a los conceptos con pre-acumulacion. Metas PYME e INDIVIDUAL*/
+                vRecuperaLogroMetas(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista);
+                break;
+            case CONCEPTO_ARRIENDO: /* Bono por Presencia */
+                /* Recupera los montos de arriendo */
+                lImpArriendo = lGetMtoArriendo(iCodTipoRed, szCodPlanComis, lCodConcepto, lCodComisionista);
+                if (lImpArriendo > dhImpConcepto)
+                    vInsertaAcumulados(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista,0,dhImpConcepto,lCantRegistros);
+                else
+                    vInsertaAcumulados(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista,0,lImpArriendo,lCantRegistros);
+                break;
+            default:
+                vInsertaAcumulados(iCodTipoRed, lCodConcepto,szCodTipComis,lCodComisionista,0,dhImpConcepto,lCantRegistros);
+        }
+    }
+}
+/*---------------------------------------------------------------------------*/
+/* Muestra el contenido de la lista de facturas por comisionista.            */
+/*---------------------------------------------------------------------------*/
+void vMuestraFacturas()
+{
+        stFacturas * paux;
+        fprintf(stderr,"\n\nTIPO RED; PERIODO; PLANCOMIS; CONCEPTO; TIPO COMIS.; COMISIONISTA; ACUM. NETO; ACUM. TOTAL; ACUM. AUTORIZADO; APORTE SOLICITADO\n");
+        fprintf(stderr,"==============================================================================================================\n");
+        for (paux = lstFacturas; paux != NULL; paux = paux->sgte)
+        {
+                fprintf(stderr,"%d;%d;%s;%d;%d;%d;%d;%d\n",paux->iCodTipoRed,paux->szCodPlanComis, paux->iCodConcepto, paux->lCodPeriodo,
+                paux->szCodTipComis,paux->lCodComisionista,paux->dImpNeto,paux->dImpTotal,paux->dImpAutorizado,paux->dImpPonderado);
+        }
+}
+/*---------------------------------------------------------------------------*/
+/* Muestra el contenido de la lista de fondos COAP.                          */
+/*---------------------------------------------------------------------------*/
+void vMuestraFondosCoap()
+{
+        stFondosComis * paux;
+        stFondos      * qaux;
+        
+        for (paux = lstFondosComis; paux!=NULL; paux=paux->sgte)
+        {
+                fprintf(stderr,"TIPO RED:[%d] PLANCOMIS:[%s] CONCEPTO:[%ld] TIPO COMISIONISTA:[%s]  COMISIONISTA:[%d] MONTO DISPONIBLE:[%d]\n",
+                paux->iCodTipoRed, paux->szCodPlanComis, paux->iCodConcepto, paux->szCodTipComis, paux->lCodComisionista, paux->lImpDisponible);
+        }
+        fflush(stderr);
+}
+/*---------------------------------------------------------------------------*/
+/* Liberar Memoria Usada para Conceptos.                                     */
+/*---------------------------------------------------------------------------*/
+void vLiberaUniverso(stConceptos * paux)
+{
+        if (paux == NULL)
+                return;
+        vLiberaUniverso(paux->sgte);
+        free(paux);
+}
+/*---------------------------------------------------------------------------*/
+/* Liberar Memoria Usada para Conceptos.                                     */
+/*---------------------------------------------------------------------------*/
+void vLiberaFacturas(stFacturas * paux)
+{
+        if (paux == NULL)
+                return;
+        vLiberaFacturas(paux->sgte);
+        free(paux);
+}
+/*---------------------------------------------------------------------------*/
+/* Liberar Memoria Usada para Fondos.                                        */
+/*---------------------------------------------------------------------------*/
+void vLiberaFondos(stFondos * qaux)
+{
+        if (qaux == NULL)
+                return;
+        vLiberaFondos(qaux->sgte);
+        free(qaux);
+}
+/*---------------------------------------------------------------------------*/
+/* Liberar Memoria Usada para Conceptos.                                     */
+/*---------------------------------------------------------------------------*/
+void vLiberaFondosComis(stFondosComis * paux)
+{
+        if (paux == NULL)
+                return;
+        vLiberaFondosComis(paux->sgte);
+        vLiberaFondos(paux->sgte_fondo);
+        free(paux);
+}
+/*---------------------------------------------------------------------------*/
+/* Marca facturas COAP como liquidadas                                       */
+/*---------------------------------------------------------------------------*/
+void vMarcaFacturasCOAP()
+{
+    stFacturas * paux;
+    EXEC SQL BEGIN DECLARE SECTION;
+        char	szhRowID[19];
+    EXEC SQL END DECLARE SECTION;
+    
+    for ( paux = lstFacturas;paux!=NULL; paux = paux->sgte)  
+    {
+        strcpy(szhRowID	, paux->szRowId);   
+        EXEC SQL UPDATE CMT_FACTURAS_COAP A
+             SET A.COD_ESTADO = 'LIQ'
+             WHERE 	A.ROWID 		= :szhRowID;
+    }    
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina principal.                                                         */
+/*---------------------------------------------------------------------------*/
+int main (int argc, char *argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+        memset(&stArgs, 0, sizeof(rg_argumentos));
+        memset(&stCiclo, 0, sizeof(reg_ciclo));
+        memset(&stStatusProc, 0, sizeof(rg_estadistica));
+        memset(&proceso, 0, sizeof(proceso));
+
+        stStatusProc.lCantAcumulados = 0;
+        stStatusProc.lCantConsumos = 0;
+        stStatusProc.lCantFondos = 0;
+
+        stArgs.bFlagUser     = FALSE;
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+        vManejaArgs(argc, argv);
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+    strcpy(szhUser, stArgs.szUser);
+    strcpy(szhPass, stArgs.szPass);
+    if(fnOraConnect(szhUser, szhPass) == FALSE)
+    {
+            fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+            exit(EXIT_205);
+    }
+    else
+    {
+            fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");
+            fprintf(stderr, "Username: %s\n\n", szhUser);
+    }
+/*---------------------------------------------------------------------------*/
+/* Inicia estructura de proceso y bloques.                                   */
+/*---------------------------------------------------------------------------*/
+    vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);
+    ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);
+    if (ibiblio)
+    {
+        fprintf(stderr, "Error al Abrir Traza");
+        fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);
+        exit(ibiblio);
+    }
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+    if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+    {
+            setlocale(LC_TIME, LC_TIME_SPANISH);
+    }
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");
+    if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)
+    {
+            exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));
+    }
+    fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);
+/*---------------------------------------------------------------------------*/
+/* Generacion del nombre y creacion del archivo de log.                      */
+/*---------------------------------------------------------------------------*/
+	strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+        strncpy(szhSysDate, pszGetDateLog(),16);
+	strcpy(stArgsLog.szProceso,LOGNAME);
+	strncpy(stArgsLog.szSysDate,szhSysDate,16);
+	sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);
+	if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)
+	{
+		fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", szLogName);
+		fprintf(stderr, "Revise su existencia.\n");
+		fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+		fprintf(stderr, "Proceso finalizado con error.\n");
+		exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_301,"ARCHIVO DE LOG NO PUDO SER ABIERTO.",0,0));
+	}
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+    lSegIni=lGetTimer();
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    
+    fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+
+    fprintf(pfLog, "Identificador de Proceso		<%s>\n", stArgs.szProceso);
+    fprintf(pfLog, "Identificador de Bloque			<%s>\n", stArgs.szBloque);
+    fprintf(pfLog, "Secuencia de Ejecucion			<%d>\n", stArgs.izSecuencia);
+
+	fprintf(pfLog, "Base de datos : %s\n\n", (strcmp(getenv((const char *)"TWO_TASK"), "")!=0?getenv((const char *)"TWO_TASK"):getenv((const char *)"ORACLE_SID")));
+    fprintf(pfLog, "\nUsuario ORACLE      :[ %s ]\n",(char * )sysGetUserName()); 
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+    EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';
+/*---------------------------------------------------------------------------*/
+/* Procesamiento principal.                                                  */
+/*---------------------------------------------------------------------------*/
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Inicio procesamiento principal ...\n\n");
+/*--------------------------------------------------------------------------*/
+/* Carga Fechas de periodo a procesar                                       */
+/*--------------------------------------------------------------------------*/
+    vFechaHora();                                                                                   
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());                      
+    fprintf(pfLog, "Carga fechas que definen el periodo actual...\n\n");  
+    fprintf(stderr, "Carga fechas que definen el periodo actual...\n\n");  
+    if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    {
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	exit(EXIT_101);
+    }
+/*---------------------------------------------------------------------------*/
+/*    - Crea una lista de universos con la acumulación previa de conceptos.  */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Crea lista de universos acumulación previa de conceptos...\n\n");
+    fprintf(stderr, "Crea lista de universos de acumulacion previa...\n\n");
+    vCreaUniverso();
+/*---------------------------------------------------------------------------*/
+/*    - Recupera % de apoyo por concepto de COAP.                            */
+/*---------------------------------------------------------------------------*/
+	vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+	fprintf(pfLog, "Recupera valor de apoyo (%%) para concepto COAP...\n\n");
+	fprintf(stderr, "Recupera valor de apoyo (%%) para concepto COAP...\n\n");
+	vRecuperaValCoap();
+/*---------------------------------------------------------------------------*/
+/*    - Recupera N°Meses de Vigencia de los Fondos COAP.                     */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Recupera N° Meses vigencia fondos COAP...\n\n");
+    fprintf(stderr, "Recupera N° Meses vigencia fondos COAP...\n\n");
+    vRecuperaMesesCoap();
+/*---------------------------------------------------------------------------*/
+/*    - Carga las facturas para COAP.                                        */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Carga facturas para calculo de apoyo por concepto COAP...\n\n");
+    fprintf(stderr, "Carga facturas para calculo de apoyo por concepto COAP...\n\n");
+    vRecuperaFacturasCoap();
+/*---------------------------------------------------------------------------*/
+/*    - Muestra en Pantalla resumen de facturas de COAP.                     */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Muestra solicitud de aporte por comisionista, por concepto COAP...\n\n");
+    fprintf(stderr, "Muestra solicitud de aporte por comisionista, por concepto COAP...\n\n");
+    vMuestraFacturas(); 
+/*---------------------------------------------------------------------------*/
+/*    - Carga el estado de los fondos COAP.                                  */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Carga fondos disponibles para concepto COAP...\n\n");
+    fprintf(stderr,"Carga fondos disponibles para concepto COAP...\n\n");
+    vRecuperaFondosCoap();
+/*---------------------------------------------------------------------------*/
+/*    - Carga el detalle de los fondos COAP.                                 */
+/*---------------------------------------------------------------------------*/
+	vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+	fprintf(pfLog, "Carga detalle de fondos disponibles para concepto COAP...\n\n");
+	fprintf(stderr,"Carga detalle de fondos disponibles para concepto COAP...\n\n");
+	vRecuperaDetalleFondosCoap();
+/*---------------------------------------------------------------------------*/
+/*    - Muestra en Pantalla estado de fondos de COAP.                        */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Muestra nivel de aporte por comisionista, por concepto COAP...\n\n");
+    fprintf(stderr,"Muestra nivel de aporte por comisionista, por concepto COAP...\n\n");
+    vMuestraFondosCoap(); 
+/*---------------------------------------------------------------------------*/
+/*    - Inicia proceso de acumulacion, con tratamiento de fondos COAP.       */
+/*---------------------------------------------------------------------------*/
+	vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+	fprintf(pfLog, "Inicia proceso de acumulacion, con tratamiento de fondos COAP.\n\n");
+	fprintf(stderr, "Inicia proceso de acumulacion, con tratamiento de fondos COAP.\n\n");
+	vProcesaAcumulacion();
+
+/*---------------------------------------------------------------------------*/
+/*    - Marca como liquidadas las facturas COAP                      .       */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Marca como liquidadas las facturas COAP.\n\n");
+    fprintf(stderr, "Marca como liquidadas las facturas COAP.\n\n");
+    vMarcaFacturasCOAP();
+/*---------------------------------------------------------------------------*/
+/*    - Libera memoria utilizada por listas de abonados y universsos.        */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "Libera memoria utilizada por listas de abonados y universsos...\n\n");
+    fprintf(stderr, "Libera memoria utilizada por listas de conceptos...\n\n");
+    vLiberaUniverso(lstConceptos);
+    fprintf(stderr, "Libera memoria utilizada por listas de Facturas...\n\n");
+    vLiberaFacturas(lstFacturas);
+    fprintf(stderr, "Libera memoria utilizada por listas de Fondos Coap...\n\n");
+    vLiberaFondosComis(lstFondosComis);
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+    lSegFin=lGetTimer();
+    stStatusProc.lSegProceso = lSegFin - lSegIni;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+    fprintf(pfLog, "\nEstadistica del proceso\n");
+    fprintf(pfLog, "------------------------\n");
+    fprintf(pfLog, "Segundos reales utilizados                     : [%ld]\n", stStatusProc.lSegProceso);
+    fprintf(pfLog, "Registros Insertados (ACUMULADOS):             : [%ld]\n", stStatusProc.lCantAcumulados);
+    fprintf(pfLog, "Registros Insertados (CONSUMOS COAP):          : [%ld]\n", stStatusProc.lCantConsumos);
+    fprintf(pfLog, "Registros Insertados (FONDOS COAP):            : [%ld]\n", stStatusProc.lCantFondos);
+
+    ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,EXIT_0,"",stStatusProc.lSegProceso,stStatusProc.lCantAcumulados);
+    if (ibiblio)
+            exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));
+    EXEC SQL COMMIT WORK RELEASE; 
+
+    fprintf(pfLog , "\n\nProceso [%s] finalizado ok.\n", basename(argv[0]));
+    fprintf(stderr, "\n\nProceso [%s] finalizado ok.\n", basename(argv[0]));
+
+    fclose(pfLog);
+    return(EXIT_0);
+}
+
+

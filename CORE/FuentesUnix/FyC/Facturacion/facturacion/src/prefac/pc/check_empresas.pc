@@ -1,0 +1,991 @@
+/*************************************************************************/
+/* Programa para controlar consistencia de los clientes de tipo empresa  */
+/* a nivel de tablas de interfaz y de abonados.                          */
+/*                                                                       */
+/* Por William Sepúlveda V.                                              */
+/*-----------------------------------------------------------------------*/
+/* Version 1 - Revision 00                                               */
+/* Martes 15 de Junio de 1999.                                           */
+/*-----------------------------------------------------------------------*/
+/* Version 1 - Revision 01                                               */
+/* Viernes 03 de septiembre de 1999.                                     */
+/*                                                                       */
+/* - Se incluye modificacion para que valide la fecha de baja en la      */
+/*   determinacion de los abonados activos (nuevo tratamiento de bajas a */
+/*   partir del 04 de agosto de 1999).                                   */
+/* - Se aumenta el tamano de ciertos arreglos.                           */
+/*************************************************************************/
+/* SAAM-20030725 Se cambia logica de manejo de arreglos por TDA          */
+/*************************************************************************/
+
+#include "prefac.h"
+
+#define PROG_VERSION    "1.01"
+#define MAX_EMP     	60000
+#define MAX_ABON_EMP	21000
+#define NOENCONTADO		-1
+#define RET_EMP			0
+#define EMPRESA			"E"
+#define HOLDING			"H"
+#define GRAVE			3
+#define WARNING			2
+#define FAILURE			-1
+
+EXEC SQL INCLUDE sqlca;
+
+/* Variables globales definidas en base a campos de las tablas de la base de datos */
+
+rg_ga_empresa	*pstga_empresa_primero;
+rg_ga_empresa	*pstga_empresa_ultimo;
+rg_ga_empresa	*pstga_empresa_posicion_aux=NULL;
+
+rg_fa_ciclocli	*pstfa_ciclocli_primero;
+rg_fa_ciclocli  *pstfa_ciclocli_ultimo;
+
+
+rg_emp_aso      empresa_asociada;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	int	cod_ciclo;
+	char	fec_desde[15];
+	char	fec_hasta[15];
+EXEC SQL END DECLARE SECTION;
+
+
+/* -------------------------- */
+/* Variables globales         */
+/* -------------------------- */
+char	file_emp[PATH];
+char	file_anom_grave[PATH];
+char	file_anom_leve[PATH];
+int	iMemInd=0;
+int	anom80=0, anom81=0, anom82=0, anom83=0, anom84=0, anom85=0, anom86=0;
+int	anom87=0, anom88=0, anom89=0;
+
+void 	vSqlError ()
+{
+		EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+		vFechaHora();
+		fprintf(stderr,"Error en ORACLE: \n%s\n"
+					   "Proceso finalizado con error.\n", sqlca.sqlerrm.sqlerrmc);
+
+		EXEC SQL ROLLBACK WORK RELEASE;
+		exit(1);
+}
+
+void 	Config_Ambiente ()
+{
+		char *path_dir;
+		char dat_dir[1000];
+
+		if((path_dir=getenv("DAT")) == NULL)
+		{
+			fprintf(stderr, "\nVariable de ambiente [DAT] no esta definida. Se cancela.\n");
+			exit(2);
+		}
+
+		sprintf(dat_dir, "%s/%d", path_dir, cod_ciclfact);
+		sprintf(file_emp, "%s/universo_empresas_%d.dat", dat_dir, cod_ciclfact);
+		sprintf(file_anom_grave, "%s/anom_empresas_grave_%d.dat", dat_dir, cod_ciclfact);
+		sprintf(file_anom_leve, "%s/anom_empresas_leve_%d.dat", dat_dir, cod_ciclfact);
+
+		if(mkdir(dat_dir, S_IRWXU|S_IRWXG|S_IRWXO) == FAILURE)
+		{
+			if(errno != EEXIST)
+			{
+				fprintf(stderr, "Fallo la creacion del directorio [%s].\n"
+   								"Error Numero: %d     %s\n"
+   								"Proceso finalizado con error.\n"
+   								, dat_dir, errno, strerror(errno));
+   				exit(2);
+			}
+		}
+}
+
+
+FILE 	*Abre_Arch (char *ptr, char *modo)
+{
+		FILE *fp;
+
+		if((fp=fopen(ptr, modo)) == NULL)
+		{
+	   		fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n"
+					   		"Revise su existencia.\n"
+					   		"Error Numero: %d     %s\n"
+					   		"Proceso finalizado con error.\n", ptr, errno, strerror(errno));
+	   		exit(2);
+		}
+
+		return(fp);
+}
+
+
+void	Busca_FaCiclFact ()
+{
+		EXEC SQL SELECT COD_CICLO, FEC_DESDELLAM, FEC_HASTALLAM
+		INTO :cod_ciclo, :fec_desde, :fec_hasta
+		FROM FA_CICLFACT
+		WHERE COD_CICLFACT = :cod_ciclfact;
+
+		if(sqlca.sqlcode < SQLOK)
+		{
+  			vSqlError();
+		}
+		if(sqlca.sqlcode == SQLNOTFOUND)
+		{
+  			fprintf(stderr, "No se ha encontrado informacion para el periodo [%d], en tabla FA_CICLFACT.\n"
+  							"Proceso se cancela.\n");
+  			exit(3);
+		}
+}
+
+int	Busca_FaCicloCli ()
+{
+
+	rg_fa_ciclocli  *pstfa_ciclocli_nuevo;
+
+
+        int  i;
+        long lLastRows    = 0;
+        long lFetchedRows = 10000;
+        long lRetrievRows = 10000;
+        long lCantidad    = 0;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szRowid[MAXFETCH][19];
+		long lhCodCliente[MAXFETCH];
+		long lhNumAbonado[MAXFETCH];
+		int  iCodProducto[MAXFETCH];
+		long lhNUmProceso[MAXFETCH];
+		int  iIndGravedad[MAXFETCH];
+		int  iPosEmpresa[MAXFETCH];
+		int prod_celular;
+		int val_cero;
+	EXEC SQL END DECLARE SECTION;
+
+	prod_celular = PROD_CELULAR;
+	val_cero = 0;
+
+        fprintf(stderr,"\n\t Busca_FaCicloCli \n");
+        vFechaHora();
+
+	EXEC SQL DECLARE cursor_cli CURSOR FOR
+	SELECT ROWID, COD_CLIENTE, NUM_ABONADO, 1, NUM_PROCESO, 0, 0
+	FROM FA_CICLOCLI
+	WHERE COD_CICLO  = :cod_ciclo
+	AND NUM_PROCESO  = :val_cero
+	AND COD_PRODUCTO = :prod_celular
+	AND FEC_ALTA    <= :fec_hasta
+	ORDER BY COD_CLIENTE, NUM_ABONADO;
+
+	EXEC SQL OPEN cursor_cli;
+
+	while(lFetchedRows == lRetrievRows){
+		EXEC SQL FETCH cursor_cli INTO
+			:szRowid     ,
+			:lhCodCliente,
+			:lhNumAbonado,
+			:iCodProducto,
+			:lhNUmProceso,
+			:iIndGravedad,
+			:iPosEmpresa ;
+
+		lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+		lLastRows = sqlca.sqlerrd[2];
+
+		for (i=0; i < lRetrievRows; i++) {
+			pstfa_ciclocli_nuevo = (rg_fa_ciclocli *) malloc (sizeof(rg_fa_ciclocli));
+
+			if (pstfa_ciclocli_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_FA_CICLOCLI\n");
+				exit(1);
+			}
+
+			strcpy(pstfa_ciclocli_nuevo->rowid , szRowid[i]);
+			pstfa_ciclocli_nuevo->cod_cliente  = lhCodCliente[i];
+			pstfa_ciclocli_nuevo->num_abonado  = lhNumAbonado[i];
+			pstfa_ciclocli_nuevo->cod_producto = iCodProducto[i];
+			pstfa_ciclocli_nuevo->num_proceso  = lhNUmProceso[i];
+			pstfa_ciclocli_nuevo->ind_gravedad = iIndGravedad[i];
+			pstfa_ciclocli_nuevo->pos_empresa  = iPosEmpresa[i];
+			pstfa_ciclocli_nuevo->sigte = NULL;
+
+			if (pstfa_ciclocli_primero==NULL){
+				pstfa_ciclocli_primero = pstfa_ciclocli_nuevo;
+				pstfa_ciclocli_ultimo = pstfa_ciclocli_nuevo;
+			}
+			else {
+				pstfa_ciclocli_ultimo->sigte = pstfa_ciclocli_nuevo;
+				pstfa_ciclocli_ultimo = pstfa_ciclocli_nuevo;
+			}
+			lCantidad++;
+		}
+	}
+	EXEC SQL CLOSE cursor_cli;
+	return(lCantidad-1);
+}
+
+int	Carga_GaEmpresa ()
+{
+	rg_ga_empresa	*pstga_empresa_nuevo;
+
+	long i=0;
+	long lLastRows    = 0;
+	long lFetchedRows = 10000;
+	long lRetrievRows = 10000;
+	long lCantidad    = 0;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhCodCliente[MAXFETCH];
+		long lhCodEmpresa[MAXFETCH];
+		int  ihCodCiclo[MAXFETCH];
+		char szCodPlantarif[MAXFETCH][4];
+	EXEC SQL END DECLARE SECTION;
+
+
+	fprintf(stderr,"\n\t Carga_GaEmpresa \n");
+	vFechaHora();
+
+	EXEC SQL DECLARE empresa_cursor CURSOR FOR
+	SELECT COD_CLIENTE, COD_EMPRESA, COD_CICLO, COD_PLANTARIF
+	FROM GA_EMPRESA
+	WHERE COD_CLIENTE IS NOT NULL
+	ORDER BY COD_CLIENTE;
+
+	EXEC SQL OPEN empresa_cursor;
+
+	while(lFetchedRows == lRetrievRows){
+		EXEC SQL FETCH empresa_cursor INTO
+			:lhCodCliente,
+			:lhCodEmpresa,
+			:ihCodCiclo,
+			:szCodPlantarif;
+
+		lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+		lLastRows = sqlca.sqlerrd[2];
+
+		for (i=0; i < lRetrievRows; i++) {
+			pstga_empresa_nuevo = (rg_ga_empresa *) malloc (sizeof(rg_ga_empresa));
+
+			if (pstga_empresa_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_GA_EMPRESA\n");
+				exit(1);
+			}
+
+			pstga_empresa_nuevo->cod_cliente = lhCodCliente[i];
+			pstga_empresa_nuevo->cod_empresa = lhCodEmpresa[i];
+			pstga_empresa_nuevo->cod_ciclo = ihCodCiclo[i];
+			strcpy(pstga_empresa_nuevo->cod_plantarif,szCodPlantarif[i]);
+			pstga_empresa_nuevo->sigte = NULL;
+
+			if (pstga_empresa_primero==NULL){
+				pstga_empresa_primero = pstga_empresa_nuevo;
+				pstga_empresa_ultimo = pstga_empresa_nuevo;
+			}
+			else {
+				pstga_empresa_ultimo->sigte = pstga_empresa_nuevo;
+				pstga_empresa_ultimo = pstga_empresa_nuevo;
+			}
+			lCantidad++;
+		}
+	}
+	EXEC SQL CLOSE empresa_cursor;
+	return(lCantidad-1);
+}
+
+
+int	Busca_Abonados_Activos (long c)
+{
+		EXEC SQL BEGIN DECLARE SECTION;
+		long contador = 0;
+		char szhFecCambioBajas[15];
+		long lhCodCliente;
+		EXEC SQL END DECLARE SECTION;
+
+		lhCodCliente = c;
+
+		strcpy(szhFecCambioBajas, FEC_CAMBIO_BAJAS);
+
+		EXEC SQL SELECT COUNT(*)
+		   INTO :contador
+		FROM GA_ABOCEL
+		WHERE COD_CLIENTE = :lhCodCliente
+		AND (FEC_BAJA > :szhFecCambioBajas OR FEC_BAJA IS NULL);
+
+		return(contador);
+}
+
+
+void Busca_Analiza_Infaccel(rg_fa_ciclocli *f)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	long contador = 0;
+	long abonado_cero = 0;
+	long ihCont = 0;
+	long lhCodCliente;
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente = f->cod_cliente;
+
+	EXEC SQL
+	SELECT COUNT(*)
+		INTO :contador
+	FROM GA_INFACCEL
+	WHERE COD_CLIENTE = :lhCodCliente
+	AND NUM_ABONADO = :abonado_cero
+	AND COD_CICLFACT = :cod_ciclfact;
+
+	if(contador == 0) {
+		EXEC SQL
+		SELECT COUNT(*)
+			INTO :ihCont
+		FROM GA_ABOCEL
+		WHERE COD_CLIENTE = :lhCodCliente
+		AND COD_SITUACION not in ('BAA', 'BAP');
+
+		if(ihCont != 0) {
+			anom85++;
+			f->ind_gravedad = GRAVE;
+			f->num_proceso = ANOM85;
+		}
+	}
+	f->num_proceso = RET_EMP;
+}
+
+void Busca_Empresa_Asociada(int pos_empresa)
+{
+	rg_ga_empresa *rgea;
+	int i=0;
+
+	rgea = NULL;
+
+
+/* busco el codigo de empresa asociado a la posicion en GA_EMPRESA */
+	i = 0;
+	rgea = pstga_empresa_primero;
+
+	while (rgea != NULL){
+		if (i == pos_empresa)
+			break;
+		i++;
+		rgea = rgea->sigte;
+	}
+
+
+	if (rgea != NULL){
+		empresa_asociada.cod_cliente = rgea->cod_cliente;
+		empresa_asociada.cod_empresa = rgea->cod_empresa;
+		empresa_asociada.cod_ciclo = rgea->cod_ciclo;
+		strcpy(empresa_asociada.cod_plantarif,rgea->cod_plantarif);
+	}
+}
+
+void Limpia_Empresa_Asociada()
+{
+	empresa_asociada.cod_cliente = 0;
+	empresa_asociada.cod_empresa = 0;
+	empresa_asociada.cod_ciclo = 0;
+	empresa_asociada.cod_plantarif[0] = '\0';
+}
+
+
+void Busca_Analiza_Intarcel(rg_fa_ciclocli *f)
+{
+	rg_ga_intarcel *rginl;
+	rg_ga_intarcel *pstga_intarcel_primero;
+	rg_ga_intarcel *pstga_intarcel_ultimo;
+	rg_ga_intarcel *pstga_intarcel_nuevo;
+
+	int                     cod_empresa  = 0;
+        int                     i;
+        long                    lLastRows    = 0;
+        long                    lFetchedRows = 10000;
+        long                    lRetrievRows = 10000;
+        long                    lCantidad    = 0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                long    lhNumAbonado[MAXFETCH];
+                char    szCodPlanTarif[MAXFETCH][3];
+                char    szCodCargoBasico[MAXFETCH][3];
+                char    szTipPlanTarif[MAXFETCH][2];
+                long    lhCodGrupo[MAXFETCH];
+                long    ihAbonadoCero  = 0;
+                long    lhCodCliente;
+        EXEC SQL END DECLARE SECTION;
+
+	rginl = NULL;
+	pstga_intarcel_primero = NULL;
+	pstga_intarcel_ultimo = NULL;
+	pstga_intarcel_nuevo = NULL;
+
+	Limpia_Empresa_Asociada();
+	Busca_Empresa_Asociada(f->pos_empresa);
+
+	cod_empresa = empresa_asociada.cod_empresa;
+
+	lhCodCliente = f->cod_cliente;
+
+	EXEC SQL DECLARE intar_cursor CURSOR FOR
+	SELECT
+		NUM_ABONADO,
+		COD_PLANTARIF,
+		COD_CARGOBASICO,
+		TIP_PLANTARIF,
+		NVL(COD_GRUPO, -1)
+	FROM GA_INTARCEL
+	WHERE COD_CLIENTE  = :lhCodCliente
+	AND (FEC_HASTA >= :fec_desde OR FEC_HASTA is NULL)
+	ORDER BY NUM_ABONADO;
+
+	EXEC SQL OPEN intar_cursor;
+
+	while(lFetchedRows == lRetrievRows){
+		EXEC SQL FETCH intar_cursor INTO
+			:lhNumAbonado,
+			:szCodPlanTarif,
+			:szCodCargoBasico,
+			:szTipPlanTarif,
+			:lhCodGrupo;
+
+		lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+		lLastRows = sqlca.sqlerrd[2];
+
+		for (i=0; i < lRetrievRows; i++) {
+			pstga_intarcel_nuevo = (rg_ga_intarcel *) malloc (sizeof(rg_ga_intarcel));
+
+			if (pstga_intarcel_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_GA_INTARCEL\n");
+				exit(1);
+			}
+
+			pstga_intarcel_nuevo->num_abonado = lhNumAbonado[i];
+			strcpy(pstga_intarcel_nuevo->cod_plantarif,szCodPlanTarif[i]);
+			strcpy(pstga_intarcel_nuevo->cod_cargobasico,szCodCargoBasico[i]);
+			strcpy(pstga_intarcel_nuevo->tip_plantarif,szTipPlanTarif[i]);
+			pstga_intarcel_nuevo->cod_grupo = lhCodGrupo[i];
+			pstga_intarcel_nuevo->sigte = NULL;
+
+			if (pstga_intarcel_primero == NULL){
+				pstga_intarcel_primero = pstga_intarcel_nuevo;
+				pstga_intarcel_ultimo = pstga_intarcel_nuevo;
+			}
+			else{
+				pstga_intarcel_ultimo->sigte = pstga_intarcel_nuevo;
+				pstga_intarcel_ultimo = pstga_intarcel_nuevo;
+			}
+			lCantidad++;
+		}
+	}
+	EXEC SQL CLOSE intar_cursor;
+
+	rginl = pstga_intarcel_primero;
+	if (lCantidad != 0){
+		if ((lCantidad > 0) && (rginl->num_abonado != 0)) {
+			anom87++;
+			f->ind_gravedad = GRAVE;
+			f->num_proceso = ANOM87;
+		}
+		for( ;rginl != NULL; rginl = rginl->sigte) {
+			if(rginl->cod_grupo != cod_empresa) {
+				anom88++;
+				f->ind_gravedad = WARNING;
+				f->num_proceso = ANOM88;
+			}
+			if((strcmp(rginl->tip_plantarif, EMPRESA) != 0) && (strcmp(rginl->tip_plantarif, HOLDING) != 0)) {
+				anom89++;
+				f->ind_gravedad = WARNING;
+				f->num_proceso = ANOM89;
+			}
+		}
+	}
+	else
+		f->num_proceso = RET_EMP;
+}
+
+
+int	iCuentaVerdaderosActivos (long c)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+ 	long ihCont = 0;
+	long lhCodCliente;
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente = c;
+
+	EXEC SQL  SELECT COUNT(*)
+		INTO :ihCont
+	FROM GA_ABOCEL
+	WHERE COD_CLIENTE = :lhCodCliente
+	AND COD_SITUACION not in ('BAA', 'BAP')
+	AND FEC_ALTA <= :fec_hasta;
+
+	if(ihCont != 0)
+	{
+		return(1);
+	}
+	else
+	{
+		return(0);
+	}
+}
+
+/* PGG SOPORTE 27-06-2007 41627 */
+int	iDetectaTraspasos (long c)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	 	long ihCont = 0;
+		long lhCodCliente;
+		long abonado_cero = 0;
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente = c;
+
+	EXEC SQL
+			SELECT COUNT(*)
+			INTO :ihCont
+			FROM GA_INFACCEL
+			WHERE COD_CLIENTE = :lhCodCliente
+			AND COD_CICLFACT 	= :cod_ciclfact
+			AND NUM_ABONADO 	= :abonado_cero
+			AND IND_ACTUAC 		= 3; /* Abonado traspazado */
+
+	if(ihCont != 0)
+	{
+		return(1);
+	}
+	else
+	{
+		return(0);
+	}
+
+}
+
+
+void Busca_Actualiza (rg_fa_ciclocli *f)
+{
+	rg_ga_empresa   *rgea;
+	int Flag;
+	int k;
+
+	Flag = 0;
+	k = 0;
+
+	rgea = NULL;
+	for(rgea=pstga_empresa_primero;rgea != NULL && f->cod_cliente >= rgea->cod_cliente;rgea=rgea->sigte){
+		if (f->cod_cliente == rgea->cod_cliente){
+			Flag=1;
+			break;
+		}
+		k++;
+	}
+	if (Flag == 0){
+		if (f->num_abonado == 0){
+			f->ind_gravedad = WARNING;
+			anom80++;
+			f->num_proceso = ANOM80;
+		}
+		else
+			f->num_proceso = NOENCONTADO;
+	}
+	else{
+		f->pos_empresa = k;
+		if (Busca_Abonados_Activos(f->cod_cliente) > 0){
+			if(f->num_abonado == 0){
+				if(rgea->cod_ciclo == cod_ciclo)
+					f->num_proceso = RET_EMP; /* Hasta ahora todo es consistente */
+				else{
+					anom81++;
+					f->ind_gravedad = WARNING;
+					f->num_proceso = ANOM81;
+				}
+			}
+			else{
+				if(iCuentaVerdaderosActivos(f->cod_cliente) > 0){
+					f->ind_gravedad = GRAVE;
+					anom84++;
+					f->num_proceso = ANOM84;
+				}
+				else
+					f->num_proceso = RET_EMP; /* Hasta ahora todo es consistente */
+			}
+		}
+		else
+		{
+				if (iDetectaTraspasos(f->cod_cliente) == 0) /* PGG SOPORTE 27-06-2007 41627 */
+				{
+						if(f->num_abonado == 0)
+						{
+							f->ind_gravedad = GRAVE;
+							anom82++;
+							f->num_proceso = ANOM82;
+						}
+						else
+						{
+							f->ind_gravedad = WARNING;
+							anom83++;
+							f->num_proceso = ANOM83;
+						}
+				}
+		}
+	}
+}
+
+
+
+
+void	Update_FaCicloCli (rg_fa_ciclocli *f)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char szRowid[19];
+	long num_proc = 0;
+	EXEC SQL END DECLARE SECTION;
+
+	num_proc = f->num_proceso;
+	strcpy(szRowid,f->rowid);
+
+	EXEC SQL
+	UPDATE FA_CICLOCLI
+	SET NUM_PROCESO = :num_proc
+	WHERE ROWID     = :szRowid;
+
+	if(sqlca.sqlcode < 0)
+	{
+  	 	vSqlError();
+	}
+}
+
+
+
+int 	main (int argc,char *argv[])
+{
+
+		rg_fa_ciclocli *rfci;
+		rg_fa_ciclocli *rfci_aux;
+
+		int Flag;
+
+		extern char *optarg;
+ 		extern int optind, optopt, opterr;
+  		long c, j=0;
+		int u_flag=FALSE, c_flag=FALSE;
+		long Cont_CicloCli=0, Cont_GaEmpresa=0, Cont_Emp=0;
+		char *szUserid_Aux;
+
+		char opstring[] = ":u:c:";
+		char userid[70];
+
+		FILE *fp_emp, *fp_anom_grave, *fp_anom_leve;
+
+ 		while ((c=getopt(argc, argv, opstring)) != EOF)
+  		{
+			switch(c)
+  	  	 	{
+	   		case 'u':
+	   			if(u_flag==FALSE)
+	   			{
+						if(optarg[0]=='-')
+						{
+							fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n"
+											"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+							exit(4);
+						}
+        	   	   		strcpy(userid, optarg);
+						if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+	 					{
+							fprintf(stderr, "\nUsuario Oracle no es valido\n"
+											"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", argv[0]);
+							exit(4);
+	  					}
+					 	else
+					  	{
+							strncpy(username,userid,szUserid_Aux-userid);
+						 	strcpy (passwd,szUserid_Aux+1);
+						}
+	   			}
+	   			else
+	   			{
+        	   	   fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+        	   	   exit(4);
+	   			}
+	   			u_flag=TRUE;
+					break;
+
+	   		case 'c':
+	   			if(c_flag==FALSE)
+	     		 	{
+						if(optarg[0]=='-')
+						{
+							fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n"
+											"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+							exit(4);
+						}
+		  		  	   cod_ciclfact=atoi(optarg);
+	     		  	}
+		  			else
+	     			{
+		  		 	   fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+		  		 	   exit(4);
+	    			}
+	     		  	c_flag=TRUE;
+					break;
+
+		   	case ':':
+		      		fprintf(stderr, "\nOpcion -%c requiere argumento\n"
+									"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+		 			exit(4);
+
+		   	case '?':
+		    		fprintf(stderr, "\nOpcion -%c no reconocida\n"
+									"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+		       	exit(4);
+		   }
+		}
+
+		if(c_flag == FALSE)
+		{
+			fprintf(stderr, "\nSe requiere argumento -c<cod_ciclfact>\n"
+							"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", argv[0]);
+			exit(4);
+		}
+
+		vFechaHora();
+		fprintf(stderr, "PROGRAMA DE CONTROL DE CONSISTENCIA DE CLIENTES EMPRESA\n"
+						"VERSION %s\n\n"
+						"\nNumero de proceso   : %d\n", PROG_VERSION, getpid());
+
+	  	vFechaHora();
+	 	fprintf(stderr, "Configurando ambiente ...\n");
+		Config_Ambiente();
+
+		if(fnOraConnect(username, passwd) == FALSE)
+		{
+			fprintf(stderr, "Usuario/Password Oracle no son validos. Se cancela.\n");
+			exit(5);
+		}
+		else
+		{
+			vFechaHora();
+			fprintf(stderr, "Conexion con la base de datos ha sido exitosa.\n"
+							"Username: %s\nPassword: ********\n", username);
+		}
+
+		EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT = 'yyyymmddhh24miss';
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion en tabla FA_CICLFACT ...\n");
+		Busca_FaCiclFact();
+		fprintf(stderr, "Ciclo      : %d\n"
+						"Periodo    : %d\n"
+						"Fecha Desde: %s\n"
+						"Fecha Hasta: %s\n"
+						, cod_ciclo, cod_ciclfact, fec_desde, fec_hasta);
+
+		vFechaHora();
+		fprintf(stderr, "Llevando a memoria la tabla GA_EMPRESA ...\n");
+		Cont_GaEmpresa=Carga_GaEmpresa()+1;
+		fprintf(stderr, "Registros leidos: %d\n", Cont_GaEmpresa);
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion de clientes/abonados a facturar (FA_CICLOCLI) ...\n");
+		Cont_CicloCli=Busca_FaCicloCli()+1;
+		fprintf(stderr, "Registros leidos: %d\n", Cont_CicloCli);
+
+		vFechaHora();
+		fprintf(stderr, "Buscando clientes de tipo empresa ...\n");
+
+		rfci_aux = NULL;
+		rfci = NULL;
+		Flag = 0;
+		rfci_aux = pstfa_ciclocli_primero;
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+			if (Flag == 0){
+				Busca_Actualiza(rfci);
+				Flag = 1;
+			}
+			else{
+				if(rfci->cod_cliente == rfci_aux->cod_cliente) {
+					rfci->num_proceso = rfci_aux->num_proceso;
+					rfci->pos_empresa = rfci_aux->pos_empresa;
+					rfci->ind_gravedad = rfci_aux->ind_gravedad;
+				}
+				else
+					Busca_Actualiza(rfci);
+				rfci_aux = rfci_aux->sigte;
+			}
+		}
+
+		vFechaHora();
+		fprintf(stderr, "Revisando existencia de abonado 0 en tabla GA_INFACCEL ...\n");
+		Flag = 0;
+		rfci_aux = pstfa_ciclocli_primero;
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+			if (Flag == 0){
+				if(rfci->num_proceso == RET_EMP)
+					Busca_Analiza_Infaccel(rfci);
+				Flag = 1;
+			}
+			else{
+				if(rfci->cod_cliente == rfci_aux->cod_cliente) {
+					rfci->num_proceso = rfci_aux->num_proceso;
+					rfci->ind_gravedad = rfci_aux->ind_gravedad;
+				}
+				else
+					if(rfci->num_proceso == RET_EMP)
+						Busca_Analiza_Infaccel(rfci);
+				rfci_aux = rfci_aux->sigte;
+			}
+		}
+
+
+		vFechaHora();
+		fprintf(stderr, "Validando consistencia en tabla GA_INTARCEL ...\n");
+		fprintf(stderr, "Buscando informacion de tabla GA_INTARCEL ...\n");
+
+		Flag = 0;
+		rfci_aux = pstfa_ciclocli_primero;
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+			if (Flag == 0){
+				if(rfci->num_proceso == RET_EMP){
+					Busca_Analiza_Intarcel(rfci);
+				}
+				Flag = 1;
+			}
+			else{
+				if(rfci->cod_cliente == rfci_aux->cod_cliente) {
+					rfci->num_proceso = rfci_aux->num_proceso;
+					rfci->ind_gravedad = rfci_aux->ind_gravedad;
+				}
+				else
+					if(rfci->num_proceso == RET_EMP){
+						Busca_Analiza_Intarcel(rfci);
+					}
+				rfci_aux = rfci_aux->sigte;
+			}
+		}
+
+		vFechaHora();
+
+		fprintf(stderr, "Marcando clientes con anomalias en FA_CICLOCLI ...\n");
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+			if((rfci->num_proceso != NOENCONTADO) && (rfci->ind_gravedad == GRAVE)) {
+				Update_FaCicloCli(rfci);
+			}
+		}
+
+		vFechaHora();
+		fp_emp=Abre_Arch(file_emp, "w");
+		fp_anom_grave=Abre_Arch(file_anom_grave, "w");
+		fp_anom_leve=Abre_Arch(file_anom_leve, "w");
+		fprintf(stderr, "Generando archivos de reporte de clientes empresa ...\n");
+		Flag = 0;
+		rfci_aux = pstfa_ciclocli_primero;
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+			Limpia_Empresa_Asociada();
+			Busca_Empresa_Asociada(rfci->pos_empresa);
+			if (Flag == 0){
+				if(rfci->num_proceso != NOENCONTADO){
+					Cont_Emp++;
+					fprintf(fp_emp, "%.6d %.5d %s %.3d %d\n",
+							rfci->cod_cliente,
+							empresa_asociada.cod_empresa,
+							empresa_asociada.cod_plantarif,
+							rfci->num_proceso,
+							rfci->ind_gravedad);
+					if((rfci->num_proceso != RET_EMP) && (rfci->ind_gravedad == GRAVE)){
+						fprintf(fp_anom_grave, "%.6d %.5d %.2d %s %.3d\n",
+								rfci->cod_cliente,
+								empresa_asociada.cod_empresa,
+								empresa_asociada.cod_ciclo,
+								empresa_asociada.cod_plantarif,
+								rfci->num_proceso);
+					}
+					if((rfci->num_proceso != RET_EMP) && (rfci->ind_gravedad == WARNING)){
+						fprintf(fp_anom_leve, "%.6d %.5d %.2d %s %.3d\n",
+								rfci->cod_cliente,
+								empresa_asociada.cod_empresa,
+								empresa_asociada.cod_ciclo,
+								empresa_asociada.cod_plantarif,
+								rfci->num_proceso);
+					}
+				}
+				Flag = 1;
+			}
+			else{
+				if((rfci->cod_cliente != rfci_aux->cod_cliente)&&(rfci->num_proceso != NOENCONTADO)){
+					Cont_Emp++;
+					fprintf(fp_emp, "%.6d %.5d %s %.3d %d\n",
+							rfci->cod_cliente,
+							empresa_asociada.cod_empresa,
+							empresa_asociada.cod_plantarif,
+							rfci->num_proceso,
+							rfci->ind_gravedad);
+					if((rfci->num_proceso != RET_EMP) && (rfci->ind_gravedad == GRAVE)){
+						fprintf(fp_anom_grave, "%.6d %.5d %.2d %s %.3d\n",
+								rfci->cod_cliente,
+								empresa_asociada.cod_empresa,
+								empresa_asociada.cod_ciclo,
+								empresa_asociada.cod_plantarif,
+								rfci->num_proceso);
+					}
+					if((rfci->num_proceso != RET_EMP) && (rfci->ind_gravedad == WARNING)){
+						fprintf(fp_anom_leve, "%.6d %.5d %.2d %s %.3d\n",
+								rfci->cod_cliente,
+								empresa_asociada.cod_empresa,
+								empresa_asociada.cod_ciclo,
+								empresa_asociada.cod_plantarif,
+								rfci->num_proceso);
+					}
+				}
+				rfci_aux = rfci_aux->sigte;
+			}
+		}
+		fclose(fp_emp);
+		fclose(fp_anom_grave);
+		fclose(fp_anom_leve);
+		fprintf(stderr, "\nEstadistica del proceso:\n"
+						"========================\n");
+		fprintf(stderr, "Cantidad de clientes empresa            : %.6d\n", Cont_Emp);
+		fprintf(stderr, "Cantidad de clientes con anomalia 80   	: %.6d\n", anom80);
+		fprintf(stderr, "Cantidad de clientes con anomalia 81   	: %.6d\n", anom81);
+		fprintf(stderr, "Cantidad de clientes con anomalia 82   	: %.6d\n", anom82);
+		fprintf(stderr, "Cantidad de clientes con anomalia 83   	: %.6d\n", anom83);
+		fprintf(stderr, "Cantidad de clientes con anomalia 84   	: %.6d\n", anom84);
+		fprintf(stderr, "Cantidad de clientes con anomalia 85   	: %.6d\n", anom85);
+		fprintf(stderr, "Cantidad de clientes con anomalia 86   	: %.6d\n", anom86);
+		fprintf(stderr, "Cantidad de clientes con anomalia 87   	: %.6d\n", anom87);
+		fprintf(stderr, "Cantidad de clientes con anomalia 88   	: %.6d\n", anom88);
+		fprintf(stderr, "Cantidad de clientes con anomalia 89   	: %.6d\n", anom89);
+
+		vFechaHora();
+		fprintf(stderr, "Proceso finalizado OK.\n");
+
+		EXEC SQL COMMIT WORK RELEASE;
+		return (0);
+
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

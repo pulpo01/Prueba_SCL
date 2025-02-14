@@ -1,0 +1,48 @@
+CREATE OR REPLACE TRIGGER AL_AFIN_ERRWEB
+/*
+<NOMBRE>          : AL_AFIN_ERRWEB</NOMBRE>
+<FECHACREA>       : Abril 2006 <FECHACREA/>
+<MODULO >         : WEB        </MODULO >
+<AUTOR >      : LyP        </AUTOR >
+<VERSION >    : 1.0</VERSION >
+<DESCRIPCION> : Triger que inserta en taba historica de errores web     </DESCRIPCION>
+<ParamEntr>   : </ParamEntr>
+<ParamSal >   : </ParamEntr>
+<FECMOD>      : 18/04/2006 </FECMOD>
+<INC>         : MA-200604170905</INC>
+<DESMOD>      : Se crea como consecuencia de la creación de tabla historica de errores web</DESMOD>
+*/
+AFTER INSERT
+ON AL_ERRORES_WEB
+FOR EACH ROW
+BEGIN
+
+   INSERT INTO AL_ERRORES_WEB_TH(
+   NUM_ERROR,
+   COD_PEDIDO,
+   LIN_PEDIDO,
+   NUM_SERIE,
+   COD_ARTICULO,
+   FEC_ERROR,
+   NUM_VENTA,
+   NUM_TRASPASO_MASIVO,
+   GLOSA_ERROR_TRASPASO,
+   GLOSA_ERROR_VENTA,
+   COD_ESTADO_ERROR)
+   VALUES(
+   :NEW.NUM_ERROR,
+   :NEW.COD_PEDIDO,
+   :NEW.LIN_PEDIDO,
+   :NEW.NUM_SERIE,
+   :NEW.COD_ARTICULO,
+   :NEW.FEC_ERROR,
+   :NEW.NUM_VENTA,
+   :NEW.NUM_TRASPASO_MASIVO,
+   :NEW.GLOSA_ERROR_TRASPASO,
+   :NEW.GLOSA_ERROR_VENTA,
+   :NEW.COD_ESTADO_ERROR
+   );
+
+END;
+/
+SHOW ERRORS

@@ -1,0 +1,12 @@
+CREATE OR REPLACE PACKAGE GA_CLIENTES_MAYORISTAS_D_PG
+IS
+
+ FUNCTION GA_ELIMINAR_FN
+               (
+               EV_valor ge_valores_dominios_td.valor%TYPE
+               )
+ RETURN NUMBER;
+
+END GA_CLIENTES_MAYORISTAS_D_PG;
+/
+SHOW ERRORS

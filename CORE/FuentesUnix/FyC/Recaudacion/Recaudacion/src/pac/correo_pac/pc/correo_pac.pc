@@ -1,0 +1,1171 @@
+/*============================================================================
+   Nombre     : correo_pac.pc
+   Programa   : Generacion email por Pagos Automaticos de Cuentas
+   Autor      : H.Q.R. 
+   Creado     : 22-Mayo-2009  ( Proyecto MIX-09003    )
+   Version    : 1.0.0
+   Modificado : <>
+  =============================================================================*/
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <pasoc.h>
+#include <unistd.h>
+#include "correo_pac.h"
+ 
+/*---------------------------------------------------------------------------*/
+/* Inclusion de	biblioteca para	manejo de interaccion con Oracle.	     */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca; 
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con	Oracle.		     */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+    int  iDecimal;
+    char szhFecha_mmddyyyy [11]; EXEC SQL VAR szhFecha_mmddyyyy        IS STRING(11);
+    char szhFecha_ddmmyyyy [11]; EXEC SQL VAR szhFecha_ddmmyyyy        IS STRING(11);
+    char szhHora_hhmmss     [9]; EXEC SQL VAR szhHora_hhmmss           IS STRING(9);
+    char szhFechaDD         [3]; EXEC SQL VAR szhFechaDD               IS STRING(3);
+    char szFecha1yyyymmdd   [9]; EXEC SQL VAR szFecha1yyyymmdd         IS STRING(9);
+    char szFechayyyymmdd    [9]; EXEC SQL VAR szFechayyyymmdd          IS STRING(9);
+    char szFechayymm        [5]; EXEC SQL VAR szFechayymm              IS STRING(5);
+    char szFechayyyymm      [7]; EXEC SQL VAR szFechayyyymm            IS STRING(7);
+    char szFechaCargo       [7]; EXEC SQL VAR szFechaCargo             IS STRING(7);
+    char szhDDMMYYYY       [11]; EXEC SQL VAR szhDDMMYYYY	           IS STRING(11); 
+    char szhOperadoraLocal  [6]; EXEC SQL VAR szhOperadoraLocal        IS STRING(6); 
+    char szhNomOperadora   [51]; EXEC SQL VAR szhNomOperadora          IS STRING(51); 
+    char szhAsunto        [101]; EXEC SQL VAR szhAsunto                IS STRING(101); 
+    char szhTextoCorreo  [1001]; EXEC SQL VAR szhTextoCorreo           IS STRING(1001); 
+    char zshFormatoMonto   [21]; EXEC SQL VAR zshFormatoMonto          IS STRING(21); 
+    char szhYYYYMMDDHHMISS [17]; EXEC SQL VAR szhYYYYMMDDHHMISS        IS STRING(17); 
+   
+
+    /* variables bind */    
+    char szhFiller          [2];
+    char szhMMYY            [5];
+    char szhYYYYMMDD        [9];
+    char szhmmddyyyy        [11];
+    char szhHH24miss        [11];
+    char szhyymm	    	[5];
+    char szhyyyymm          [7];
+    char szhDDMMYY          [7];
+    char szhdd_mm_yyyy      [11];
+    char szhDD              [3];
+    int  ihValor_Dos        ;
+    int  ihValor_Cero       ;
+    int  ihValor_uno        ;
+    int  ihValor_tres       ;
+    int  ihValor_cuatro     ;
+EXEC SQL END DECLARE SECTION; 
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de estructuras globales 				             			 */
+/*---------------------------------------------------------------------------*/
+LINEACOMANDO stLineaComando;
+ESTADISTICAS stEstadisticas;
+char szFileDat  [128]   ="" ;
+
+/*===========================================================================*/
+/* Rutina Principal						             						 */
+/*===========================================================================*/
+int main(int argc, char *argv[])
+{
+char modulo[]="Main";
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.							     						 */
+/*---------------------------------------------------------------------------*/
+int  iResultado, iFinProc=TRUE;
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de variables.						     					 */
+/*---------------------------------------------------------------------------*/
+	lContRegPac   	 = 0;
+	lRegAnomalo      = 0;
+	strcpy(szhFiller  ," ");
+	strcpy(szhMMYY    ,"MMYY");
+	strcpy(szhYYYYMMDD,"YYYYMMDD");
+	strcpy(szhDDMMYY  ,"DDMMYY");
+	strcpy(szhmmddyyyy,"mm-dd-yyyy");
+	strcpy(szhHH24miss,"hh24:mi:ss");
+	strcpy(szhyymm    ,"yymm");
+	strcpy(szhyyyymm  ,"yyyymm");
+	strcpy(szhDD      ,"DD");
+	strcpy(szhdd_mm_yyyy,"dd/mm/yyyy");
+	ihValor_Dos     = 2;
+	ihValor_Cero    = 0;
+	ihValor_uno     = 1;
+	ihValor_tres    = 3;
+	ihValor_cuatro  = 4;
+    strcpy(szhDDMMYYYY      ,"DD-MM-YYYY");
+    strcpy(szhYYYYMMDDHHMISS,"YYYYMMDDHH24MISS");
+	
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura	de linea de comando y de status del programa */
+/*---------------------------------------------------------------------------*/
+	memset( &stLineaComando	, 0, sizeof(LINEACOMANDO) );
+	memset( &stStatus	    , 0, sizeof(STATUS) );
+    memset( &stEstadisticas , 0, sizeof(ESTADISTICAS));
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos	ingresados como	parametros externos.		     	 */
+/*---------------------------------------------------------------------------*/
+	iResultado = ifnManejaArgumentos(argc, argv);
+  	if (iResultado != 0) exit(1);
+/*---------------------------------------------------------------------------*/
+/* Conexion a Oracle							     						 */
+/*---------------------------------------------------------------------------*/	
+	if( !bfnConnectORA( stLineaComando.szUser,stLineaComando.szPass ))	{
+		fprintf(stdout, "\n\tUsuario/Passwd Invalido\n\t\t pac  <usuario> <passwd> \n       ");
+		return FALSE;	
+	} else	{
+		fprintf(stdout, "\n\t--------------------------------------------------------------  "
+			        	"\n\t* Conectado a ORACLE: Usuario %s Passwd xxxxxxxx   *  "
+			        	"\n\t--------------------------------------------------------------\n",stLineaComando.szUser );
+	}	
+
+	
+/*---------------------------------------------------------------------------*/
+/* Inicializacion del Proceso PAC					     					 */
+/*---------------------------------------------------------------------------*/		
+	if (!bfnIniciarProcesoCorreoPac())	{
+		printf("\n\t Error Iniciando el Proceso\n\n");
+		return FALSE;
+	}
+/*---------------------------------------------------------------------------*/
+/* Header.								     								 */
+/*---------------------------------------------------------------------------*/	
+    fprintf(stdout, "\nProcesando ...\n");                                        
+    vDTrazasLog( modulo, "%s"      ,LOG03 , szRaya);                    
+    vDTrazasLog( modulo, "FECHA            [%s]",LOG03 , szhFecha_ddmmyyyy);
+    vDTrazasLog( modulo, "PROGRAMA         [%s]",LOG03 , LOGNAME    );                
+    vDTrazasLog( modulo, "%s"                   ,LOG03 , GLOSA_PROG );                
+    vDTrazasLog( modulo, "VERSION          [%s]",LOG03 , szhVersion );                   
+    vDTrazasLog( modulo, "%s\n"    ,LOG03, szRaya); 
+
+    fprintf( stdout, "%s\n"      , szRaya);                    
+    fprintf( stdout, "FECHA            [%s]\n", szhFecha_ddmmyyyy);
+    fprintf( stdout, "PROGRAMA         [%s]\n", LOGNAME    );                
+    fprintf( stdout, "%s\n"                   , GLOSA_PROG );                
+    fprintf( stdout, "VERSION          [%s]\n", szhVersion );       
+    fprintf( stdout, "%s\n"    , szRaya); 
+	    
+/*---------------------------------------------------------------------------*/
+/* Obtencion de Parametros						     						 */
+/*---------------------------------------------------------------------------*/
+    if (!bfnGedParametros())	{
+		printf("\n\t Error al Obtener Parametros\n\n");
+		return FALSE;
+	}              
+/*---------------------------------------------------------------------------*/
+	
+/* Proceso PAC  -  Principal						     					 */
+/*---------------------------------------------------------------------------*/		    
+	if (!bfnProcesoGenCorreoPac())	{
+		vDTrazasLog( modulo, "\n\t---------------------------------------"
+		"\n\t* Proceso NO termino Correctamente. *"
+		"\n\t---------------------------------------\n",LOG03);
+		iFinProc=FALSE;
+		if (!bfnOraRollBack()) return FALSE; 		
+	} else 	{
+		if (!bfnOraCommit())	return FALSE; 
+	}
+
+	stEstadisticas.lContRegPac= lContRegPac;
+	stEstadisticas.lRegAnomalo = lRegAnomalo;	
+/*---------------------------------------------------------------------------*/
+/* Desconexion de Oracle  					             					 */
+/*---------------------------------------------------------------------------*/		    
+	if (bfnDisconnectORA( 0 )) {
+		vDTrazasLog( modulo,   "\t---------------------------------------"
+				   			 "\n\t* Desconectado de  ORACLE             *" 
+				   			 "\n\t---------------------------------------\n\n"
+				   			,LOG03 );
+	}
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion	estadistica del	proceso.     		         */
+/*---------------------------------------------------------------------------*/
+    vDTrazasLog( modulo,  "************************************************" , LOG03);									 
+    vDTrazasLog( modulo,  "Estadistica del proceso", LOG03);			 
+    vDTrazasLog( modulo,  "************************************************" , LOG03);									 
+    vDTrazasLog( modulo,  "Cantidad de Registros con Pago PAC     [%ld]", LOG03,stEstadisticas.lContRegPac);			       
+    vDTrazasLog( modulo,  "Cantidad de Correos enviados           [%ld]", LOG03,stEstadisticas.lContRegPac-stEstadisticas.lRegAnomalo);	
+    vDTrazasLog( modulo,  "Cantidad de Correos con Error          [%ld]", LOG03,stEstadisticas.lRegAnomalo);	
+    if (iFinProc)  vDTrazasLog( modulo,  "Proceso [%s] finalizado Ok", LOG03,LOGNAME);
+    vDTrazasLog( modulo,  "************************************************\n\n\n" , LOG03);									 
+  
+    if (iFinProc)  {
+	    fprintf(stdout,	"================================================\n");									 
+	    fprintf(stdout, "Estadistica del proceso\n");								 
+	    fprintf(stdout,	"================================================\n");									 
+	    fprintf(stdout, "Cantidad de Registros con Pago PAC     [%ld]\n",stEstadisticas.lContRegPac);			       
+	    fprintf(stdout, "Cantidad de Correos enviados           [%ld]\n",stEstadisticas.lContRegPac-stEstadisticas.lRegAnomalo); 
+	    fprintf(stdout, "Cantidad de Correos con Error          [%ld]\n\n",stEstadisticas.lRegAnomalo);			       
+	    fprintf(stdout, "Proceso [%s] finalizado ok.\n\n\n", LOGNAME);
+    } else 
+	    fprintf(stdout,"\n\t* Proceso genero Errores. Favor Revisar. *\n\n");
+
+/*---------------------------------------------------------------------------*/
+/* Cierre de Archivos ERROR Y LOG   					                     */
+/*---------------------------------------------------------------------------*/		    
+	fclose(stStatus.LogFile );
+	fclose(stStatus.ErrFile );
+
+    EXEC SQL COMMIT	WORK RELEASE;													  
+    return(0);
+}/************************** Final main **************************************/
+
+/*===========================================================================*/
+/* Manejo de argumentos	ingresados como	parametros externos.		     	 */
+/*===========================================================================*/
+int ifnManejaArgumentos(int argc, char * const argv[])
+{
+char modulo[]="ifnManejaArgumentos";
+char  szUsuario[80] = ""    ;
+char  *psztmp               ; 
+char  opt[]         = "l:u:c:" ;
+
+extern char *optarg        ;
+
+BOOL  bArgumentou = FALSE;
+BOOL  bArgumentoc = FALSE;
+int   iOpt = 0 ;
+
+	while( ( iOpt = getopt( argc, argv, opt ) ) != EOF )
+	{
+		switch( iOpt )
+		{       
+			case 'u':
+				if(strlen(optarg)>0 )
+				{
+					strcpy(szUsuario,optarg);
+					if ( (psztmp=(char *)strstr (szUsuario,"/"))==(char *)NULL)
+					{
+						fprintf (stderr, "\n\tUsuario Oracle no Valido\n%s\n",szUsage);
+						return (1);
+					}
+					else
+					{
+						strncpy(stLineaComando.szUser,szUsuario,psztmp-szUsuario);
+						strcpy (stLineaComando.szPass,psztmp+1);
+					}
+					bArgumentou=TRUE; 
+				}
+				break;  		
+			
+			case 'c':
+				if(strlen(optarg)>0 && strlen(optarg)<16)
+				{
+					strcpy(stLineaComando.szCodBanco,optarg);
+					bArgumentoc=TRUE; 
+				}
+				break;  
+			
+			case 'l':
+				if(strlen(optarg)>0 && strlen(optarg)<2)
+				{
+					stStatus.LogNivel= atoi(optarg); 
+				}
+				break;  
+			
+		}/* fin switch ... */
+	}/* fin while */
+	
+	if (!bArgumentou || !bArgumentoc)	{
+		fprintf(stdout,"%s",szUsage);
+		return (3)                  ; 
+	}
+	
+	if (stStatus.LogNivel <= 0 ) stStatus.LogNivel = 3; 
+		
+	return 0;
+}/*vManejaArgumentos*/
+
+/*===========================================================================*/
+/* Obtencion de Parametros del Proceso 					     				 */
+/*===========================================================================*/
+BOOL bfnGedParametros()
+{
+char modulo[]="bfnGedParametros";
+char szNulo        [2] ;
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhCODIGOMENSAJE     [12];
+	char szhModulo             [3];
+	int  iValorUno  = 1;
+	char szhCodigoAsunto      [18];
+	char szhTextoArr[MAXFETCH][51];
+	char szhTexto             [51];
+	int  iFetchedRows = MAXFETCH;
+	int  iRetrievRows = MAXFETCH;	
+	long lMaxFetch ; 
+	long iLastRows;
+	int   i;
+	int ihCantRegs;
+	char szhTextoCorreoPaso[1001]        ; EXEC SQL VAR szhTextoCorreoPaso           IS STRING(1001); 	
+EXEC SQL END DECLARE SECTION;
+
+	strcpy(szhModulo       ,"CO");
+	strcpy(szhCODIGOMENSAJE,"PAC_CORREO%");
+	strcpy(szhCodigoAsunto ,"PAC_ASUNTO_CORREO");
+  	szNulo  [0]=' '; 
+  	lMaxFetch  = MAXFETCH;
+  	iLastRows  = 0;
+  	ihCantRegs = 0;
+  	
+  	/*-----------------------------------------------------------------------*/
+  	/* Obtencion de Codigo de Operadora Local            			 */
+  	/*-----------------------------------------------------------------------*/	
+  	EXEC SQL
+  		SELECT COD_OPERADORA_SCL
+  		INTO :szhOperadoraLocal
+		FROM GE_OPERADORA_SCL_LOCAL;
+		
+  	if (SQLCODE==NOTFOUND )  {
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Código de Operadora Local no existe.\n\t\t\t\t ",SQLERRM);*/
+		vDTrazasLog( modulo, "\n     Error, Código de Operadora Local no existe [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Código de Operadora Local no existe [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	}       
+	else if (SQLCODE != SQLOK) {
+       		/*iDError(modulo,ERR000,vInsertarIncidencia,"SELECT COD_OPERADORA_SCL. ",SQLERRM);        */
+       		vDTrazasLog( modulo,"\n     Error en SELECT COD_OPERADORA_SCL. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo,"\n     SELECT COD_OPERADORA_SCL. [%s]\n",LOG03,SQLERRM);	       				       		
+       		return FALSE;
+       	}
+       		
+	RighTrim(szhOperadoraLocal);
+  	vDTrazasLog(modulo,"\n\t=> Código de la Operadora Local [%s].",LOG03,szhOperadoraLocal);       		
+
+  	/*-----------------------------------------------------------------------*/
+  	/* Obtencion de Nombre de la Operadora Local            			 */
+  	/*-----------------------------------------------------------------------*/	
+  	EXEC SQL
+  	SELECT CO_ENCCUPON_PAGO_PG.CO_DESC_OPERADORA_FN(:szhOperadoraLocal)
+  	INTO   :szhNomOperadora
+  	FROM   DUAL; 
+
+  	if (SQLCODE==NOTFOUND )  {
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Descripción de Operadora No Existe.\n\t\t\t\t ",SQLERRM);*/
+		vDTrazasLog( modulo, 
+		"\n     Error, Descripción de Operadora No Existe [%s]. "
+		"\n       szhOperadoraLocal = [%s]\n",LOG03,SQLERRM, szhOperadoraLocal);		
+		vDTrazasError( modulo, 
+		"\n     Descripción de Operadora No Existe [%s]. "
+		"\n       szhOperadoraLocal = [%s]\n",LOG03,SQLERRM, szhOperadoraLocal);
+		return FALSE;
+	}       
+	else if (SQLCODE != SQLOK) {
+       		/*iDError(modulo,ERR000,vInsertarIncidencia,"SELECT CO_ENCCUPON_PAGO_PG.CO_DESC_OPERADORA_FN. ",SQLERRM);        */
+		vDTrazasLog( modulo, 
+		"\n     Error en SELECT CO_ENCCUPON_PAGO_PG.CO_DESC_OPERADORA_FN [%s]. "
+		"\n       szhOperadoraLocal = [%s]\n",LOG03,SQLERRM);	       		       		
+		vDTrazasError( modulo, 
+		"\n     SELECT CO_ENCCUPON_PAGO_PG.CO_DESC_OPERADORA_FN [%s]. "
+		"\n       szhOperadoraLocal = [%s]\n",LOG03,SQLERRM);	       		
+       		return FALSE;
+  	}
+
+	RighTrim(szhNomOperadora);
+  	vDTrazasLog(modulo,"\n\t=> Nombre de la Operadora [%s].",LOG03,szhNomOperadora);
+
+  	/*-----------------------------------------------------------------------*/
+  	/* Asunto del Correo			    				 */
+  	/*-----------------------------------------------------------------------*/	    
+  	EXEC SQL
+  	SELECT des_parametro
+  	INTO   :szhAsunto 
+  	FROM   ged_parametros 
+  	WHERE  nom_parametro = :szhCodigoAsunto
+  	AND cod_modulo = :szhModulo
+	AND cod_producto = :iValorUno;
+
+  	if (SQLCODE == NOTFOUND) {
+       		vDTrazasLog( modulo,"\n     Error, Asunto del Correo No existe. [%s]\n",LOG03,SQLERRM);
+    		vDTrazasError( modulo,"\n     Asunto del Correo No existe. [%s]\n",LOG03,SQLERRM);
+       		return FALSE;
+  	} 
+	else if (SQLCODE != SQLOK) {
+       		vDTrazasLog( modulo, "\n     Error en SELECT des_parametro FROM ged_parametros (PAC_ASUNTO_CORREO). [%s]\n",LOG03,SQLERRM);
+		    vDTrazasError( modulo, "\n     SELECT des_parametro FROM ged_parametros (PAC_ASUNTO_CORREO). [%s]\n",LOG03,SQLERRM);
+       		return FALSE;
+  	}
+  	RighTrim(szhAsunto);
+  	vDTrazasLog(modulo,"\n\t=> Asunto Correo [%s].",LOG07,szhAsunto);
+   
+  	EXEC SQL DECLARE CUR_TEXTO CURSOR FOR     
+  	SELECT des_parametro
+  	FROM   ged_parametros 
+  	WHERE  nom_parametro LIKE :szhCODIGOMENSAJE
+  	AND cod_modulo = :szhModulo
+	AND cod_producto = :iValorUno
+	ORDER BY nom_parametro;
+	
+	EXEC SQL OPEN CUR_TEXTO;      
+	if (SQLCODE!=SQLOK)	{
+		vDTrazasLog( modulo, "\n     Error en OPEN Cursor CUR_TEXTO. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     en OPEN Cursor CUR_TEXTO. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	} /* end if (SQLCODE!=SQLOK)	*/
+
+	memset(szhTextoCorreo,'\0',sizeof(szhTextoCorreo));
+	
+   	while (iFetchedRows == iRetrievRows)
+   	{	   		
+	   	   		
+		EXEC SQL 
+		for :lMaxFetch  FETCH CUR_TEXTO 
+		INTO  	:szhTextoArr;	
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+ 		iLastRows    = sqlca.sqlerrd[2];
+		vDTrazasLog(modulo,"\t\t iLastRows  [%d].",LOG03,iLastRows);		
+         	for (i=0; i < iRetrievRows; i++)
+         	{ 
+         		strcpy (szhTexto, szhTextoArr[i]);	
+         		RighTrim(szhTexto);
+         		sprintf(szhTextoCorreo,"%s%s",szhTextoCorreo, szhTexto);
+         		ihCantRegs++;
+         	}
+         }
+         if (ihCantRegs ==0){
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Texto del Correo no existe.\n",SQLERRM);*/
+		vDTrazasLog( modulo,"\n     Error, Texto del Correo no existe. [%s]\n",LOG00,SQLERRM);
+		vDTrazasError( modulo,"\n     Texto del Correo no existe. [%s]\n",LOG00,SQLERRM);
+		return FALSE;         	
+         }
+	/*---------------------------------------------------------------------------*/
+	/*	Cierra cursor CUR_TEXTO												 */
+	/*---------------------------------------------------------------------------*/	
+	EXEC SQL CLOSE CUR_TEXTO;
+	if (SQLCODE )  {
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\t En CLOSE CUR_TEXTO.\n\t\t\t\t ",SQLERRM);*/
+		vDTrazasLog( modulo, "\n     Error en CLOSE CUR_TEXTO. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     En CLOSE CUR_TEXTO. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	}   
+		
+	/*Reemplaza Nombre Operadora en Texto del Correo  */
+	memset(szhTextoCorreoPaso,'\0',sizeof(szhTextoCorreoPaso));
+	if (((char *) strstr(szhTextoCorreo,"<Operadora>"))!=(char *)NULL) {         			
+		strcpy(szhTextoCorreoPaso, szhTextoCorreo);
+		memset(szhTextoCorreo,'\0',sizeof(szhTextoCorreo));
+		if (ifnReplace(szhTextoCorreoPaso,"<Operadora>",szhNomOperadora, szhTextoCorreo)!=0){
+			/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Al reemplazar nombre Operadora en correo electronico.\n\t\t\t\t ",SQLERRM);*/
+			vDTrazasLog( modulo, "\n     Error al reemplazar nombre Operadora en correo electronico\n",LOG03);
+			vDTrazasError( modulo, "\n     Al reemplazar nombre Operadora en correo electronico\n",LOG03);
+			return FALSE;
+		}  		  
+	}		                        
+	
+        vDTrazasLog(modulo,"\n\t=> Mensaje Inicial Correo [%s].",LOG07,szhTextoCorreo); 	
+        
+  	return TRUE;
+}/*bfnGedParametros*/
+
+/*===========================================================================*/
+/* Inicializacion del Proceso PAC. Conexion a Oracle, inicializacion de      */
+/* archivos log															 	 */
+/*===========================================================================*/
+BOOL bfnIniciarProcesoCorreoPac()
+{
+char modulo[]="bfnIniciarProcesoCorreoPac";
+char szFileBanco[60] = "";
+int  i;
+
+	/*-----------------------------------------------------------------------*/
+	/* Obtencion y tratamiento de Fecha para ser utilizada en archivos       */
+	/*-----------------------------------------------------------------------*/	
+	strcpy( szTime, cfnGetTimePac() );
+	/*-----------------------------------------------------------------------*/
+	/* Obtenemos la Fecha y hora del Sistema y Numero de decimales a tratar  */
+	/*-----------------------------------------------------------------------*/
+	EXEC SQL EXECUTE
+		BEGIN
+			:iDecimal         :=GE_PAC_GENERAL.PARAM_GENERAL('num_decimal');
+			:szhFecha_mmddyyyy:=TO_CHAR(SYSDATE	,:szhmmddyyyy);
+         	:szhHora_hhmmss   :=TO_CHAR(SYSDATE	,:szhHH24miss);
+         	:szFechayyyymmdd  :=TO_CHAR(SYSDATE	,:szhYYYYMMDD)  ;
+         	:szFechayymm      :=TO_CHAR(SYSDATE	,:szhyymm)      ;         	
+         	:szFechaCargo     :=TO_CHAR(SYSDATE	,:szhDDMMYY)   ;
+         	:szhFecha_ddmmyyyy:=TO_CHAR(SYSDATE	,:szhdd_mm_yyyy);
+         	:szhFechaDD       :=TO_CHAR(SYSDATE	,:szhDD)        ;
+		   	:szFecha1yyyymmdd :=TO_CHAR(SYSDATE+1,:szhYYYYMMDD) ; 
+		END;
+	END-EXEC;
+
+	if (SQLCODE!=SQLOK )  {
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\nNumero Decimal y Fecha.\n\t ",SQLERRM);*/
+		vDTrazasLog( modulo, "\n     Error en Obtención Numero Decimal y Fecha. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Obtención Numero Decimal y Fecha. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	}       
+	
+	/* Definicion de Formato del Monto */	
+	strcpy(zshFormatoMonto,"99,999,999,999     ");
+	if (iDecimal > 0) {		
+		zshFormatoMonto[14] = '.';
+		for(i=1;i<=iDecimal;i++){
+		    zshFormatoMonto[14+i] = '9';
+		} /*for(i==1;i<=iDecimal;i++)*/
+	} /*if (iDecimal > 0)*/
+	RighTrim(zshFormatoMonto);
+	vDTrazasLog( modulo, "\n     zshFormatoMonto. [%s]\n",LOG03,zshFormatoMonto);
+	
+	/*-----------------------------------------------------------------------*/
+   	/* Inicializacion de Archivos LOG										 */
+	/*-----------------------------------------------------------------------*/
+  	if (ifnAbreArchivosLog(0)!=0) return FALSE;
+
+
+	vDTrazasError( modulo, "\n\t***************************************************************"
+					 	  "\n\t%s  correo_pac. Generación Automática de Correo por Pagos PAC.          Hora : %s      "
+						  "\n\t***************************************************************\n\n",LOG03,szhVersion,szhHora_hhmmss);	
+
+
+
+	return TRUE;
+}/* bfnIniciarProcesoCorreoPac */
+
+/*===========================================================================*/
+/* Funcion que abre los archivos de log y de error                           */
+/*===========================================================================*/
+int ifnAbreArchivosLog(int iTipfile)
+{
+char modulo[]="ifnAbreArchivosLog";
+char *pathDir               ;
+char szComando  [128]   ="" ;
+char szPathLog  [128]   ="" ;
+
+   /*-----------------------------------------------------------------------*/
+   /* Inicializacion de estructura	de archivo								*/
+   /*-----------------------------------------------------------------------*/
+	memset(szArchivo,'\0',sizeof(szArchivo));
+
+	sprintf(szArchivo,"correo_pac%s",szTime);
+	pathDir =(char *)malloc(228);
+	pathDir =szGetEnv("HOME");
+
+	if (iTipfile == 0) {
+		sprintf(szPathLog  ,"%s/LOG/Recaudacion/correo_pac/%s",pathDir,szFechayyyymmdd);
+		free(pathDir);
+		sprintf(szComando,"/usr/bin/mkdir -p %s", szPathLog);
+		system (szComando);
+	
+		sprintf(stStatus.ErrName,"%s/%s.err",szPathLog,szArchivo);
+		if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+		    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		    return -1;
+		}
+	
+		sprintf(stStatus.LogName,"%s/%s.log",szPathLog,szArchivo);
+		if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+		    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+	    	return -1;
+	   }
+    
+	/*} else {
+		sprintf(szPathDat  ,"%s/DAT/Recaudacion/%s",pathDir,szFechayyyymmdd);		
+		free(pathDir);
+		sprintf(szComando,"/usr/bin/mkdir -p %s", szPathDat);
+		system (szComando);
+	
+		sprintf(szFileDat,"%s/%s\0",szPathDat,szFilePac);
+		vDTrazasLog( modulo, "\n\t Fichero PAC : %s\n\n\n", LOG07, szFileDat);
+		if( ( FichBancos = fopen( szFileDat,"w" ) ) == (FILE*)NULL )  {
+		    vDTrazasError(modulo, "\t\t### Error: No puede abrirse el fichero para enviar al Banco\n\n\t [%s]\n", LOG01, szFilePac );
+			return -1;
+		}*/
+	}
+	
+   return 0;
+}/* ifnAbreArchivosLog */
+
+/* Inicio Requerimiento MIX-09003 - 135020 - 08.07.2010 - MQG*/
+/*===========================================================================*/
+/* Proceso Principal de Correo PAC							                 */
+/*===========================================================================*/
+BOOL bfnProcesoGenCorreoPac()
+{
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de Variables  										 	 */
+/*---------------------------------------------------------------------------*/
+char  modulo[]="bfnProcesoGenCorreoPac";
+char  szhCodBanco        [16];
+int   iFetchedRows = MAXFETCH;
+int   iRetrievRows = MAXFETCH;
+int   ihCuentaAgrupado  ; 
+int	  ihCuentaNoAgrupado; 
+int   iResultado     = 0;
+int   i;
+long  iLastRows    ;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/	
+EXEC SQL BEGIN DECLARE SECTION;
+	   	char szhCod_Banco     [16]; EXEC SQL VAR szhCod_Banco    IS STRING(16);	   	
+	   	char szhCodBancoPar   [MAXFETCH][16]; 
+	    long lMaxFetch ; 
+EXEC SQL END DECLARE SECTION;
+
+	
+    vDTrazasLog(modulo,	"\n\t* Parametros de Entrada a (bfnProcesoGenCorreoPac)"
+						"\n\t=> Nombre Usuario: [%s]"
+						"\n\t=> Password      : [xxxxxx]"
+						"\n\t=> Cod Banco     : [%s]"
+						,LOG03
+						,stLineaComando.szUser
+						,stLineaComando.szCodBanco);
+	
+	/*---------------------------------------------------------------------------*/
+	/* Inicializacion de estructuras de Bancos								     */
+	/*---------------------------------------------------------------------------*/	
+	memset( szhCod_Banco, '\0', sizeof( szhCod_Banco ) );	
+	strcpy( szhCod_Banco, stLineaComando.szCodBanco );
+	
+	/*---------------------------------------------------------------------------*/
+	/* Carga la estructura de manejo de decimales para la operadora local        */
+	/*---------------------------------------------------------------------------*/	
+	if (!bGetParamDecimales())	{
+		vDTrazasLog  ( modulo, "\n     Error al realizar carga de bGetParamDecimales(). [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Al realizar carga de bGetParamDecimales(). [%s]\n",LOG03,SQLERRM);
+	    return FALSE;
+	}    
+
+    /*---------------------------------------------------------------------------*/
+	/* Validacion Banco a procesar			         				 			 */
+	/*---------------------------------------------------------------------------*/	
+	ihCuentaAgrupado    = 0;
+	ihCuentaNoAgrupado  = 0;
+	lMaxFetch   = MAXFETCH;
+	iLastRows   = 0;
+
+	EXEC SQL
+	SELECT COUNT(1) 
+	INTO   :ihCuentaAgrupado
+    FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+	WHERE  B.COD_BANCO_GRP     = :szhCod_Banco
+	AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL;
+	
+	if (SQLCODE!=SQLOK)	{
+		vDTrazasLog  ( modulo, "\n     Error al consultar en GE_OPERADORA_SCL. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     Al Consultar en GE_OPERADORA_SCL. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	} /* end if (SQLCODE!=SQLOK) */
+
+	if (ihCuentaAgrupado == 0)	{
+		vDTrazasLog(modulo,"\t\t  Proceso Banco No Agrupado .",LOG03);
+		EXEC SQL
+		SELECT COUNT(1) 
+		INTO   :ihCuentaNoAgrupado
+    	FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+		WHERE  B.COD_BANCO     = :szhCod_Banco
+		AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL;
+
+		if (ihCuentaNoAgrupado == 0)	{ 
+		    vDTrazasError( modulo, "\n  No Existe BANCO  [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+		} /* if (ihCuentaNoAgrupado == 0) */
+
+  		EXEC SQL DECLARE CUR_OPERADORA_NO CURSOR FOR      
+		SELECT B.COD_BANCO
+  		FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+		WHERE  B.COD_BANCO         = :szhCod_Banco
+		AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL
+		ORDER BY B.COD_BANCO;	
+              
+  		EXEC SQL OPEN CUR_OPERADORA_NO;      
+		if (SQLCODE!=SQLOK)	{
+			iDError(modulo,ERR000,vInsertarIncidencia,"\t en OPEN Cursor CUR_OPERADORA_NO.\n\t\t\t\t ",SQLERRM);
+		    vDTrazasError( modulo, "\n  en OPEN Cursor CUR_OPERADORA_NO.  [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+		} /* end if (SQLCODE!=SQLOK) */
+	} else {
+		vDTrazasLog(modulo,"\t\t  Proceso Bancos Agrupados .",LOG03);
+  		EXEC SQL DECLARE CUR_OPERADORA CURSOR FOR      
+		SELECT B.COD_BANCO
+  		FROM   GE_OPERADORA_SCL A, CO_SERVICIOPAC B
+		WHERE  B.COD_BANCO_GRP     = :szhCod_Banco
+		AND    A.COD_OPERADORA_SCL = B.COD_OPERADORA_SCL
+		ORDER BY B.COD_BANCO;	
+              
+  		EXEC SQL OPEN CUR_OPERADORA;      
+		if (SQLCODE!=SQLOK)	{
+		    vDTrazasError( modulo, "\n  en OPEN Cursor CUR_OPERADORA.  [%s]\n",LOG03,SQLERRM);
+			return FALSE;
+		} /* end if (SQLCODE!=SQLOK)	*/
+	} /* end if (ihCuentaAgrupado == 0)	*/
+
+   	while (iFetchedRows == iRetrievRows)
+   	{
+			if (ihCuentaNoAgrupado > 0)	{
+				EXEC SQL 
+				for :lMaxFetch  FETCH CUR_OPERADORA_NO
+        		INTO :szhCodBancoPar;
+			} else {
+				EXEC SQL 
+				for :lMaxFetch  FETCH CUR_OPERADORA 
+        		INTO  :szhCodBancoPar;
+			} /* end if (ihCuentaNoAgrupado > 0)	*/
+
+		 iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+         iLastRows    = sqlca.sqlerrd[2];
+		 vDTrazasLog(modulo,"\t\t iLastRows  [%d].",LOG03,iLastRows);
+             
+         for (i=0; i < iRetrievRows; i++)
+         {                
+				strcpy (szhCodBanco    , szhCodBancoPar[i]);
+				RighTrim(szhCodBanco);
+				vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+		    	vDTrazasLog(modulo,"\t\t Registro Banco  ====>  [%d].",LOG03,i);
+				vDTrazasLog(modulo,"\t\t CodBanco        ====>  [%s].",LOG03,szhCodBanco);
+					
+				iResultado = ifnProcesaCorreo(szhCodBanco);
+				
+		} /* end for */
+	} /* end while */
+
+	/*---------------------------------------------------------------------------*/
+	/*	Cierra cursor CUR_OPERADORA												 */
+	/*---------------------------------------------------------------------------*/	
+	if (ihCuentaNoAgrupado > 0)	{	
+		EXEC SQL CLOSE CUR_OPERADORA_NO;
+		if (SQLCODE )  {
+		    vDTrazasError( modulo, "\n  en CLOSE CUR_OPERADORA_NO.  [%s]\n",LOG03,SQLERRM);			
+			return FALSE;
+		}
+	} else {
+		EXEC SQL CLOSE CUR_OPERADORA;
+		if (SQLCODE )  {
+		    vDTrazasError( modulo, "\n  en CLOSE CUR_OPERADORA.  [%s]\n",LOG03,SQLERRM);			
+			return FALSE;
+		}
+	} /* end if (ihCuentaNoAgrupado == 0)*/
+
+	if (iResultado < 0) return FALSE;
+
+	return TRUE;
+} /* bfnProcesoGenPac */
+
+/*===========================================================================*/
+/* Proceso ifnProcesaCorreo     							                 */
+/*===========================================================================*/
+BOOL ifnProcesaCorreo(char *szpCodBanco)
+{
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de Variables  										 	 */
+/*---------------------------------------------------------------------------*/
+char  modulo[]="ifnProcesaCorreo";
+char  szhEmail           [256];	
+char  zshNomCliente       [91];		
+char  szhFecProceso       [11]; 
+char  szhImporte          [21];	
+char  zshFecValor         [17];	
+char  szhTextoCorreoAct [1001];
+char  szhTextoCorreoPaso[1001];
+int   i;
+int   iFetchedRows = MAXFETCH;
+int   iRetrievRows = MAXFETCH;
+int   ihTipDocum  ;
+int   ihIndCorreo ;
+long  iLastRows   ;
+long  lhCodCliente;		   	
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables para ser usadas con	Oracle.		         		 */
+/*---------------------------------------------------------------------------*/	
+EXEC SQL BEGIN DECLARE SECTION;
+	   	char szhCod_Banco        [16]; EXEC SQL VAR szhCod_Banco    IS STRING(16);	   	
+	   	char szhEmailArr        [MAXFETCH][256];	
+	   	char zshNomClienteArr   [MAXFETCH][91];
+	   	char szhFecProcesoArr	[MAXFETCH][11];
+	   	char szhImporteArr      [MAXFETCH][21];	
+	   	char zshFecValorArr     [MAXFETCH][17];	
+	   	int ihTipDocumArr       [MAXFETCH];	
+	   	int ihIndCorreoArr      [MAXFETCH];   	
+	    long lMaxFetch  ; 
+	   	long lhCodClienteArr    [MAXFETCH];		   	
+		FILE *arch      ;
+		char comando[80];		
+EXEC SQL END DECLARE SECTION;
+	
+    vDTrazasLog(modulo,	"\n\t* Parametros de Entrada a (ifnProcesaCorreo)"
+						"\n\t=> Cod Banco: [%s]"
+						,LOG03
+						,szpCodBanco);
+	
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructuras de Bancos								     */
+/*---------------------------------------------------------------------------*/	
+	memset( szhCod_Banco, '\0', sizeof( szhCod_Banco ) );	
+	strcpy( szhCod_Banco, szpCodBanco );
+	
+	lMaxFetch   = MAXFETCH;
+	iLastRows   = 0;
+
+	vDTrazasLog(modulo,"\t\t  Proceso Correo Pac .",LOG03);
+	
+	EXEC SQL DECLARE CUR_CORREO CURSOR FOR   
+		SELECT b.cod_cliente, b.nom_email, 
+		       b.nom_cliente || ' ' || b.nom_apeclien1 || ' ' || b.nom_apeclien2 as nom_cliente,
+		       TO_CHAR(a.fec_proceso,:szhDDMMYYYY ), TRIM(TO_CHAR(GE_PAC_GENERAL.REDONDEA(a.importe_debe, :iDecimal, :ihValor_Cero),:zshFormatoMonto)) , 
+		       a.cod_tipdocum, TO_CHAR(a.fec_valor,:szhYYYYMMDDHHMISS), a.ind_correo 
+  		  FROM co_pagospac a, ge_clientes b
+		 WHERE a.cod_cliente = b.cod_cliente
+	       AND a.cod_banco   = :szhCod_Banco
+		   AND b.nom_email is not null   
+		   AND a.ind_correo in (:ihValor_uno, :ihValor_tres);
+      
+	EXEC SQL OPEN CUR_CORREO;      
+	if (SQLCODE!=SQLOK)	{
+		vDTrazasLog( modulo, "\n     Error en OPEN Cursor CUR_CORREO. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     en OPEN Cursor CUR_CORREO. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+    } /* end if (SQLCODE!=SQLOK)	*/
+
+   	while (iFetchedRows == iRetrievRows)
+   	{	   		
+	   	   		
+		EXEC SQL 
+		for :lMaxFetch  FETCH CUR_CORREO 
+		INTO  	:lhCodClienteArr,
+			    :szhEmailArr, 
+		  	    :zshNomClienteArr,
+		  	    :szhFecProcesoArr,
+		  	    :szhImporteArr,
+		  	    :ihTipDocumArr,
+		  	    :zshFecValorArr,
+		  	    :ihIndCorreoArr;
+
+			iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+       		iLastRows    = sqlca.sqlerrd[2];
+			vDTrazasLog(modulo,"\t\t iLastRows  [%d].",LOG03,iLastRows);
+             
+         	for (i=0; i < iRetrievRows; i++){
+         	         			
+       			lContRegPac++; 
+        			
+				strcpy (szhEmail     , szhEmailArr[i]);
+				strcpy (zshNomCliente, zshNomClienteArr[i]);
+				strcpy (szhFecProceso, szhFecProcesoArr[i]);
+				strcpy (szhImporte   , szhImporteArr[i]);
+				strcpy (zshFecValor  , zshFecValorArr[i]);
+				lhCodCliente = lhCodClienteArr[i];
+				ihTipDocum   = ihTipDocumArr[i];
+				ihIndCorreo  = ihIndCorreoArr[i];
+				
+				RighTrim(szhEmail);				
+				RighTrim(zshFecValor);	
+       			RighTrim(zshNomCliente);
+       			RighTrim(szhFecProceso);
+       			RighTrim(szhImporte);
+        			
+       			memset(szhTextoCorreoAct ,'\0',sizeof(szhTextoCorreoAct)); 
+       			memset(szhTextoCorreoPaso,'\0',sizeof(szhTextoCorreoPaso));
+       			strcpy(szhTextoCorreoPaso,szhTextoCorreo);         			         			
+       			strcpy(szhTextoCorreoAct ,szhTextoCorreo); 
+        			
+       			/*Reemplaza Nombre del Cliente*/
+       			if (((char *) strstr(szhTextoCorreoPaso,"<nom_cliente>"))!=(char *)NULL) {
+        				memset(szhTextoCorreoAct,'\0',sizeof(szhTextoCorreoAct)); 
+	         			if (ifnReplace(szhTextoCorreoPaso,"<nom_cliente>",zshNomCliente,szhTextoCorreoAct)!=0){
+						vDTrazasLog( modulo, 
+						"\n     Error al reemplazar nombre cliente en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03,lhCodCliente);	         				
+						vDTrazasError( modulo, 
+						"\n     Al reemplazar nombre cliente en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03,lhCodCliente);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndCorreo)) {
+							lRegAnomalo++;
+							continue;
+								
+	         				}
+	         			}
+	         			memset(szhTextoCorreoPaso,'\0',sizeof(szhTextoCorreoPaso));
+	         			strcpy(szhTextoCorreoPaso, szhTextoCorreoAct);	         				         			
+      			}         			
+         			
+       			/*Reemplaza Fecha de Pago */
+				if (((char *) strstr(szhTextoCorreoPaso,"<fec_pago>"))!=(char *)NULL) {         			
+					memset(szhTextoCorreoAct,'\0',sizeof(szhTextoCorreoAct));
+         			if (ifnReplace(szhTextoCorreoPaso,"<fec_pago>",szhFecProceso,szhTextoCorreoAct)!=0){
+						vDTrazasLog( modulo, 
+						"\n     Error al reemplazar fecha pago en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03,lhCodCliente);	         				
+						vDTrazasError( modulo, 
+						"\n     Al reemplazar fecha pago en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03,lhCodCliente);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndCorreo)) {
+							lRegAnomalo++;
+							continue;
+							
+	         				}
+         			}
+	         			
+         			memset(szhTextoCorreoPaso,'\0',sizeof(szhTextoCorreoPaso));
+         			strcpy(szhTextoCorreoPaso, szhTextoCorreoAct);
+       			}
+         			
+       			/*Reemplaza Monto de Pago */
+       			if (((char *) strstr(szhTextoCorreoPaso,"<mto_pago>"))!=(char *)NULL) {         			
+       				memset(szhTextoCorreoAct,'\0',sizeof(szhTextoCorreoAct));
+        			if (ifnReplace(szhTextoCorreoPaso,"<mto_pago>",szhImporte,szhTextoCorreoAct)!=0){
+						vDTrazasLog( modulo, 
+						"\n     Error al reemplazar monto pago en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03,lhCodCliente);	         				
+						vDTrazasError( modulo, 
+						"\n     Al reemplazar monto pago en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03,lhCodCliente);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndCorreo)) {
+							lRegAnomalo++;
+							continue;
+								
+         				}
+        			}
+         			memset(szhTextoCorreoPaso,'\0',sizeof(szhTextoCorreoPaso));
+         			strcpy(szhTextoCorreoPaso, szhTextoCorreoAct);
+       			}	         			           		
+      			
+       			/*Inserta Saltos de página*/	
+       			while (((char *)strstr (szhTextoCorreoAct,"<sp>"))!=(char *)NULL){	         				        				
+         			memset(szhTextoCorreoAct,'\0',sizeof(szhTextoCorreoAct));
+         			if (ifnReplace(szhTextoCorreoPaso,"<sp>","\n",szhTextoCorreoAct)!=0){
+						vDTrazasLog( modulo, 
+						"\n     Error al reemplazar Salto de Linea en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03, lhCodCliente);	         				
+						vDTrazasError( modulo, 
+						"\n     Al reemplazar Salto de Linea en correo electronico."
+						"\n       lhCodCliente = [%ld]\n",LOG03, lhCodCliente);
+						if (!bfnActualizaCoPagosPac(ihValor_tres, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndCorreo)) {
+							lRegAnomalo++;
+							continue;
+								
+         				}	         				
+         			} 
+         			memset(szhTextoCorreoPaso,'\0',sizeof(szhTextoCorreoPaso));
+         			strcpy(szhTextoCorreoPaso, szhTextoCorreoAct);  	         					        	         						
+       			}
+
+       			vDTrazasLog(modulo,"Mensaje final [%s]",LOG07,szhTextoCorreoAct);							
+			
+				RighTrim(szhCod_Banco);
+				RighTrim(szhEmail);
+				RighTrim(zshNomCliente);
+				RighTrim(szhFecProceso);
+				RighTrim(zshFecValor);
+				
+				vDTrazasLog(modulo,"\n\t *******************************************************",LOG03);
+		    	vDTrazasLog(modulo,"\t\t Registro Correo     ====>  [%d].",LOG03,i);
+				vDTrazasLog(modulo,"\t\t lhCodCliente        ====>  [%d].",LOG03,lhCodCliente);
+				vDTrazasLog(modulo,"\t\t sszhEmail           ====>  [%s].",LOG03,szhEmail);
+				vDTrazasLog(modulo,"\t\t zshNomCliente       ====>  [%s].",LOG03,zshNomCliente);
+				vDTrazasLog(modulo,"\t\t szhFecProceso       ====>  [%s].",LOG03,szhFecProceso);
+				vDTrazasLog(modulo,"\t\t szhImporte          ====>  [%s].",LOG03,szhImporte);
+				vDTrazasLog(modulo,"\t\t zshFecValor         ====>  [%s].",LOG03,zshFecValor);
+				vDTrazasLog(modulo,"\t\t ihTipDocum          ====>  [%ld].",LOG03,ihTipDocum);
+										
+				/*--------------------------------------------------------------*/
+				/* Envía correo         					                    */
+				/*--------------------------------------------------------------*/
+				
+				sprintf(comando,"echo '%s' > Correo_Enviado.txt",szhTextoCorreoAct);
+				system(comando);
+				
+				arch = fopen("Correo_Enviado.txt","r");			
+				strcpy(comando, "mailx ");
+				sprintf(comando,"%s -s '%s' %s",comando,szhAsunto,szhEmail);
+				strcat(comando, " < Correo_Enviado.txt");
+				fprintf(arch,szhTextoCorreoAct);
+				fclose(arch);
+				system(comando);				
+				strcpy(comando,"rm Correo_Enviado.txt");
+   				system(comando);			
+												
+				/*--------------------------------------------------------------*/
+				/* Actualiza Co_pagospac					                    */
+				/*--------------------------------------------------------------*/
+				if (!bfnActualizaCoPagosPac(ihValor_Dos, zshFecValor, szhCod_Banco, lhCodCliente, ihTipDocum, szhYYYYMMDDHHMISS, ihIndCorreo)) {
+					lRegAnomalo++;
+					continue;
+				} else {
+					vDTrazasLog( modulo,"\n\t----------------------------------------------------------"
+										"\n\tHemos volcado la informacion en la Base de Datos CO_PAGOSPAC"
+										"\n\t----------------------------------------------------------",LOG05);
+				}										
+					
+		} /* end for */
+	} /* end while */
+
+	/*---------------------------------------------------------------------------*/
+	/*	Cierra cursor CUR_CORREO												 */
+	/*---------------------------------------------------------------------------*/	
+	EXEC SQL CLOSE CUR_CORREO;
+	if (SQLCODE )  {
+		vDTrazasLog  ( modulo, "\n     Error en CLOSE CUR_CORREO. [%s]\n",LOG03,SQLERRM);
+		vDTrazasError( modulo, "\n     En CLOSE CUR_CORREO. [%s]\n",LOG03,SQLERRM);
+		return FALSE;
+	}	
+	return TRUE;
+} /* ifnProcesaCorreo */
+/* Fin Requerimiento MIX-09003 - 135020 - 08.07.2010 - MQG*/
+
+/*==================================================================================================*/
+/* Funcion que Actualiza el estado de envío del Correo                                                 */
+/*==================================================================================================*/
+BOOL bfnActualizaCoPagosPac(int ipIndCorreo, char *szpFecValor, char *szpCodBanco, long lpCodCliente, int ipCodTipDocum, char *szpFormatoFecha, int ipIndCorreoAnt)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int ihIndCorreo;
+	char	szhFecValor[17];
+	char	szhCodBanco[16];
+	char    szhFormatoFecha[17];
+	long	lhCodCliente;
+	int	ihCodTipDocum;
+   
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "bfnActualizaCoPagosPac";
+int	rr, ilong = 0;
+struct sqlca sqlca;
+
+	memset(szhFecValor, '\0', sizeof( szhFecValor ) );
+	memset(szhCodBanco, '\0', sizeof( szhCodBanco ) );
+	memset(szhFormatoFecha, '\0', sizeof( szhFormatoFecha ) );
+	
+	strcpy(szhFecValor, szpFecValor );
+	strcpy(szhCodBanco, szpCodBanco );
+	strcpy(szhFormatoFecha, szpFormatoFecha);
+	if ((ipIndCorreo == ihValor_tres) && (ipIndCorreoAnt == ihValor_tres)) {
+		ihIndCorreo = ihValor_cuatro;
+	}
+	else {
+		ihIndCorreo = ipIndCorreo ;
+	}		
+	
+	lhCodCliente = lpCodCliente;
+	ihCodTipDocum = ipCodTipDocum;
+
+	sqlca.sqlcode=0; /* se resetea la vble sql en caso de brain damage*/
+	EXEC SQL 
+		UPDATE CO_PAGOSPAC
+		SET IND_CORREO = :ihIndCorreo,
+		FEC_CORREO = SYSDATE 
+		WHERE fec_valor = TO_DATE(:szhFecValor,:szhFormatoFecha)
+		AND cod_banco = :szhCodBanco
+		AND cod_cliente = :lhCodCliente
+		AND cod_tipdocum = :ihCodTipDocum;
+
+	if( sqlca.sqlcode )
+	{
+		/*iDError(modulo,ERR000,vInsertarIncidencia,"\t Al actualizar co_pagospac.\n\t\t\t\t ",SQLERRM);*/
+		vDTrazasLog( modulo, 
+		"\n     Error al actualizar co_pagospac. [%s]"
+		"\n       lhCodCliente = [%ld]\n",LOG03,SQLERRM, lhCodCliente);		
+		vDTrazasError( modulo, 
+		"\n     Al actualizar co_pagospac. [%s]"
+		"\n       lhCodCliente = [%ld]\n",LOG03,SQLERRM, lhCodCliente);
+		return FALSE;		
+	}
+
+	return TRUE;
+
+}/* fin bfnActualizaCoPagosPac */
+
+/*===========================================================================*/
+/* Funcion RighTrim : Limpia blancos a la derecha                            */
+/*===========================================================================*/
+int RighTrim (char *szVar)
+{
+int  iLenVar = 0;
+int  i       = 0;
+
+   iLenVar = strlen(szVar);
+   for (i=iLenVar-1;i>-1;i--) {
+        if (szVar[i]==' ') {
+            szVar[i]='\0';
+        } else break;
+   }
+   return (0);        
+} /* RighTrim */
+
+/*===========================================================================*/
+/* Tratamiento de Fecha para ser utilizada en nombre de archivos             */
+/*===========================================================================*/
+char* cfnGetTimePac()
+{
+	int i;
+	char c[255] = "";
+	char a[255] = "";
+	time_t ltime;
+	
+	time(&ltime);
+	
+	strcpy(c,ctime(&ltime));
+	
+	for( i = 22; i < 24; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i =  4; i <  7; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i =  8; i < 10; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	strcat(a,"_");
+	
+	for( i = 11; i < 13; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i = 14; i < 16; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	for( i = 17; i < 19; i++ )
+		sprintf(a, "%s%c", a, ((c[i] == ' ') ? '0' : c[i]));
+	
+	return (char*)a;
+} /* cfnGetTimePac */
+
+int ifnReplace(char *szpPalabra, char* szpFind, char* szpReplace, char *szpMensajeCompleto)
+{
+char sz_Aux  [101];
+char sz_Aux2 [101];
+char szpMensajeCompleto2[1001];
+int ihInicio = 0;
+
+  ihInicio = strlen(szpFind);
+  if (strlen(szpMensajeCompleto)==0) {
+     strncpy(szpMensajeCompleto,&szpPalabra[0],strlen(szpPalabra)-strlen(strstr( szpPalabra,szpFind )));
+     strcat(szpMensajeCompleto,szpReplace);
+     strcpy(sz_Aux,strstr( szpPalabra,szpFind ));     
+     strncpy(sz_Aux,&sz_Aux[ihInicio],strlen(sz_Aux));
+     sprintf(szpMensajeCompleto,"%s%s",szpMensajeCompleto,sz_Aux);
+  } else {
+     strncpy(sz_Aux2,&szpMensajeCompleto[strlen(szpMensajeCompleto) - strlen(strstr(szpMensajeCompleto,szpFind )) +ihInicio],strlen(strstr( szpMensajeCompleto,szpFind )));
+     strncpy(szpMensajeCompleto2,&szpMensajeCompleto[0],strlen(szpMensajeCompleto)-strlen(strstr(szpMensajeCompleto,szpFind )));
+     strcat(szpMensajeCompleto2,szpReplace);
+     sprintf(szpMensajeCompleto2,"%s%s",szpMensajeCompleto2,sz_Aux2);
+     strcpy(szpMensajeCompleto,szpMensajeCompleto2);	
+  }
+    return 0;
+    
+} /*ifnReplace*/
+
+
+/******************************************************************************************/
+/** Informaci¢n de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisi¢n                                            : */
+/**  %PR% */
+/** Autor de la Revisi¢n                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisi¢n ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creaci¢n de la Revisi¢n                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module  backgroundImage="../recursosInterfaz/imagenes/otros/fondoLogin.jpg" xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="980" height="455" initialize="init();" verticalAlign="top"  backgroundColor="#FCFCFC" x="196" y="17" xmlns:ns1="user.libreria.componentes.*">
+<mx:Script>
+	<![CDATA[
+		import mx.events.CollectionEvent;
+		import mx.collections.ArrayCollection;
+		import mx.messaging.messages.HTTPRequestMessage;
+	 	import mx.controls.Alert;
+	 	import mx.events.ModuleEvent;
+	    import mx.modules.ModuleManager;
+		import mx.modules.IModuleInfo;
+		import mx.rpc.events.FaultEvent;
+		import mx.events.ValidationResultEvent;
+		import mx.controls.AdvancedDataGrid;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		
+		import generated.webservices.orquestador.*;
+	   	import user.libreria.componentes.DatosEncabezadoOOSS;
+	   	import user.libreria.clases.StringUtil;
+	   	 
+		public var info:IModuleInfo;
+	 	public var grillaGlobal:AdvancedDataGrid = new AdvancedDataGrid();
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject; 					
+	 	public var searchingPopUpView:Class = BarraDeProgreso2;
+	
+	 	public var wsORQ: WSSEGPortal= new WSSEGPortal();
+	 	public var ejecucionDTO:EjecucionCambioNumFrecuentesSACDTO = new EjecucionCambioNumFrecuentesSACDTO;
+	 	
+	 	public var numTransaccion :String;
+	 	
+	 	public var ComdataGen:ArrayCollection = new  ArrayCollection();
+		public var oItemGen : Object;
+		
+		public var ComdataNumFreFijo : ArrayCollection = new ArrayCollection();		
+		public var ComdataNumFreMovil : ArrayCollection = new ArrayCollection();
+		
+		[Embed(source="../../recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class;
+        
+        private var delay : uint = 10000;
+        private var nVeces : uint = 1;
+        private var myTimer:Timer = new Timer(delay, nVeces);
+        
+        private var RESPUESTA_NO_DISPONIBLE : String =  StringUtil.getValor("respuestaNoDisponibleFranquicias2", "VALOR") ;
+		
+		include "../../user/includes/datosEncabezadoOOSS.as";
+		include "../../user/includes/registroConsulOoss.as";
+		
+		private var codOOSS : int = 10432;
+		
+		private function getError(event:FaultEvent):void    
+		{
+			var mensaje:String = new String();
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {	
+				
+				/*
+				mensaje = "Ha ocurrido un error en la petición a los servicios.";
+		     	Alert.show(mensaje, "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	  		}
+	  		
+	     	cerrar();
+		}
+		
+		private function getDataCarga(event:CargaNumFrecuentesResultEvent) : void	
+		{
+			var numerosFrecuentesMoviles : ArrayCollection = new ArrayCollection();
+			var numerosFrecuentesFijos : ArrayCollection = new ArrayCollection();
+			var numcant : int;
+			var item : Object;
+
+			var mensaje:String = new String();
+			if (event.result.codError == null)	
+			{	
+				numTransaccion=event.result.numTransaccion;
+				if (event.result.arrayNumFrecuentesPlan != null ) 
+				{
+					numcant = event.result.arrayNumFrecuentesPlan.length;
+					for (var i:int = 0; i < numcant; i++)
+					{
+						item = new Object();
+						item.label=event.result.arrayNumFrecuentesPlan[i].numFrecuente;
+						if (event.result.arrayNumFrecuentesPlan[i].tipoNumFrecuente == 'M')
+						{
+							numerosFrecuentesMoviles.addItem(item);
+							ComdataNumFreFijo.addItem(item);
+						}
+						else
+						{
+							numerosFrecuentesFijos.addItem(item);	
+							ComdataNumFreMovil.addItem(item);
+						}
+					}
+					numFrecuenteFijoComboBox.dataProvider = numerosFrecuentesFijos;
+					numFrecuenteFijoComboBox.selectedIndex = 0;
+					numFrecuenteMovilComboBox.dataProvider = numerosFrecuentesMoviles;
+					numFrecuenteMovilComboBox.selectedIndex = 0;
+					
+					ejecucionDTO.bloqueNumFrecuentePlanTarifarioEliminar = event.result.arrayNumFrecuentesPlan;
+	 
+					cantRedFijaTextInput.text = event.result.cantRedFija.toString();
+					cantRedMovilTextInput.text = event.result.cantRedMovil.toString();
+					desPlantarifTextInput.text = event.result.desPlantarif.toString();
+					PopUpManager.removePopUp(popUpWindow);
+				} 			
+				else
+ 				{
+ 					if (event.result.cantidadMaximoTotal == 0) 
+ 					{
+		 				PopUpManager.removePopUp(popUpWindow);
+		 				mensaje = event.result.desError;
+			     		Alert.show("El plan del cliente no permite números frecuentes", "Error en la aplicación" );
+			     		cerrar();	
+		    		}
+		    		else
+		    		{
+		    			cantRedFijaTextInput.text= event.result.cantRedFija.toString();
+						cantRedMovilTextInput.text=event.result.cantRedMovil.toString();
+						desPlantarifTextInput.text = event.result.desPlantarif.toString();
+						PopUpManager.removePopUp(popUpWindow);
+		    		}
+ 				}
+			}
+			else
+			{
+				PopUpManager.removePopUp(popUpWindow);	
+				mensaje = event.result.desError ;
+	     		Alert.show(mensaje, "No se puede ejecutar la OOSS");
+	     		cerrar();
+			}		
+		} 
+		
+		private function getDataEjecutarCambioNumFrecuente(event: EjecutarCambioNumFrecuenteResultEvent) : void	
+		{
+			var mensaje : String = new String();
+			if (event.result.codError == "0")	
+			{	
+				nVeces = 1;
+				consultaOOSS();
+			}
+			else	
+			{
+				mensaje = event.result.desError;
+	     		Alert.show(mensaje, "No se puede ejecutar la OOSS");
+			}
+			cerrar();
+		}
+		
+		private function getDataConOOSS(event: ConsultaOrdenServicioResultEvent) : void	
+		{
+			if (event.result.codError == null)
+			{
+				PopUpManager.removePopUp(popUpWindow);
+				Alert.show("Número de la OOSS.: " + event.result.nroOOSS.toString(), "Cambio de Números Frecuentes");
+					
+				cerrar();
+				
+				//Se levanta la pantalla de registro
+		     	//levantaRegistroIngOoss('Abonado'); levantaRegistroIngOoss
+				
+			}
+			else
+			{
+				if (event.result.codError == RESPUESTA_NO_DISPONIBLE)	
+				{
+					nVeces++;
+					consultaOOSS();
+					myTimer.start();
+				}
+				else
+				{
+					PopUpManager.removePopUp(popUpWindow);
+	     			Alert.show(event.result.desError, "No se puede ejecutar la OOSS");
+					cerrar();
+				}
+			}			
+		}
+		
+		
+		private function consultaOOSS() : void
+		{
+			
+			if (nVeces < 200)
+			{	
+				wsORQ.addWSSEGPortalFaultEventListener(getError);
+				wsORQ.addconsultaOrdenServicioEventListener(getDataConOOSS);	
+				wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL", "VALOR") + StringUtil.getValor("endpointORQ", "VALOR"));
+				wsORQ.consultaOrdenServicio(codOOSS, numTransaccion, parentApplication.usuario.username);			
+			}
+			else
+			{
+				PopUpManager.removePopUp(popUpWindow);
+				cerrar();
+			}
+		} 
+			
+		private function executeWSCarga():void	
+		{
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addcargaNumFrecuentesEventListener(getDataCarga);
+			var codEvento:String = parentApplication.codEvento;
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			wsORQ.cargaNumFrecuentes(parentApplication.aboSelect,parentApplication.usuario.username, codEvento);
+		} 
+		
+		private function executeWSEjecuta():void	
+		{
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addejecutarCambioNumFrecuenteEventListener(getDataEjecutarCambioNumFrecuente);
+			
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL", "VALOR") + StringUtil.getValor("endpointORQ", "VALOR"));
+			
+			ejecucionDTO.numTransaccion = numTransaccion; 
+			ejecucionDTO.comentario = txtComentario.text; 
+			ejecucionDTO.nomUsuarioSCL = parentApplication.usuario.username;
+			ejecucionDTO.codError = "0";
+			ejecucionDTO.desError = "0";
+			ejecucionDTO.numAbonado=parentApplication.aboSelect
+			ejecucionDTO.nroOOSS = 0;
+			
+			var ComdataInsert : ArrayCollection = new ArrayCollection();
+			var vo : NumFrecuentesFirmaVO;
+			ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar = new Array();
+			
+			var fijos : int;
+			var moviles : int;
+			
+			fijos = ArrayCollection( numFrecuenteFijoComboBox.dataProvider).length;
+			moviles = ArrayCollection( numFrecuenteMovilComboBox.dataProvider).length;
+
+			for (var i : int = 0; i < fijos; i++)
+			{
+				vo = new NumFrecuentesFirmaVO();
+				numFrecuenteFijoComboBox.selectedIndex = i;
+				ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar[i] = new NumFrecuentesFirmaVO;				
+				ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar[i].numFrecuente = new Number(numFrecuenteFijoComboBox.selectedLabel.toString()); 
+				ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar[i].tipoNumFrecuente = 'F';				
+			}			 
+			
+			for (var j : int = 0; j < moviles; j++)
+			{
+				vo = new NumFrecuentesFirmaVO();
+				numFrecuenteMovilComboBox.selectedIndex = j;
+				ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar[fijos + j] = new NumFrecuentesFirmaVO;				
+				ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar[fijos + j].numFrecuente = new Number(numFrecuenteMovilComboBox.selectedLabel.toString()); 
+				ejecucionDTO.bloqueNumFrecuentePlanTarifarioInsertar[fijos + j].tipoNumFrecuente = 'M';				
+			}
+			
+			wsORQ.ejecutarCambioNumFrecuente(ejecucionDTO);
+		}
+		
+		private function Ejecuta():void	
+		{
+			if (validaRequeridos())
+			{
+				executeWSEjecuta();
+			}			
+		}
+		
+		private function validaRequeridos():Boolean	
+		{
+			if (txtComentario.text.length == 0)	
+			{
+				Alert.show("Debe ingresar todos los datos requeridos identificados con (*).", 
+				"Advertencia", 
+				mx.controls.Alert.OK,
+				this,
+				null,
+				iconWarning,
+				mx.controls.Alert.OK );
+				return false;				
+			}
+			return true;
+		}
+		
+		private function init():void	
+		{
+			datosCuenta(parentApplication.ctaSelect);
+			datosCliente(parentApplication.cliSelect);
+			executeWSCarga();
+		}
+		
+		private function cerrar():void
+		{
+			this.visible=false;
+			parentDocument.vbOOSS.enabled = false;
+			parentDocument.vb1.enabled=true;
+			parentDocument.tab1.selectedIndex= 0;	
+			return;
+		}
+			
+		private function validaNumFijo() : Boolean
+		{
+			for (var i:int = 0; i < ArrayCollection(numFrecuenteFijoComboBox.dataProvider).length; i++)
+			{
+				if (ArrayCollection(numFrecuenteFijoComboBox.dataProvider)[i].label == numFrecuenteFijoTextInput.text)
+				{
+					return false;
+				}
+				if (ArrayCollection(numFrecuenteFijoComboBox.dataProvider).length >= parseInt(cantRedFijaTextInput.text))
+				{
+					Alert.show("Ud. ya ingresó el máximo de números fijos", "Advertencia");
+					return false;
+				}
+			}
+			return true;
+		}
+			
+		private function validaNumMovil() : Boolean
+		{
+			for (var i:int = 0; i < ArrayCollection(numFrecuenteMovilComboBox.dataProvider).length; i++)
+			{
+				if (ArrayCollection(numFrecuenteMovilComboBox.dataProvider)[i].label == numFrecuenteMovilTextInput.text)
+				{
+					return false;
+				}
+				if (ArrayCollection(numFrecuenteMovilComboBox.dataProvider).length >= parseInt(cantRedMovilTextInput.text))
+				{
+					Alert.show("Ud. ya ingresó el máximo de números móviles", "Advertencia");
+					return false;
+				}
+			}
+			return true;
+		}
+
+		private function agregarFijoAlComboBox():void
+		{	
+			if (numFrecuenteFijoTextInput.length != 0) 
+			{
+				if (validaNumFijo()) 
+				{
+					var nuevoFijo : Object = new Object();
+					nuevoFijo.numFrecMovil = numFrecuenteFijoTextInput.text;
+					nuevoFijo.label = numFrecuenteFijoTextInput.text;
+					ArrayCollection(numFrecuenteFijoComboBox.dataProvider).addItemAt(nuevoFijo, 0);
+					numFrecuenteFijoComboBox.selectedIndex = 0;
+					numFrecuenteFijoTextInput.text = "";						
+				}
+			}
+		}
+		
+		private function agregarMovilAlComboBox():void
+		{
+			if (numFrecuenteMovilTextInput.length != 0) 
+			{
+				if (validaNumMovil()) 
+				{
+					var nuevoMovil : Object = new Object();				
+					nuevoMovil.numFrecMovil = numFrecuenteMovilTextInput.text;
+					nuevoMovil.label = numFrecuenteMovilTextInput.text;
+					ArrayCollection(numFrecuenteMovilComboBox.dataProvider).addItemAt(nuevoMovil, 0);
+					numFrecuenteMovilComboBox.selectedIndex = 0;
+					numFrecuenteMovilTextInput.text = "";
+				}
+			} 
+		}
+		
+		private function sacarFijoDelComboBox():void 
+		{
+			if (ArrayCollection(numFrecuenteFijoComboBox.dataProvider).length > 0)
+			{
+        		ArrayCollection(numFrecuenteFijoComboBox.dataProvider).removeItemAt(numFrecuenteFijoComboBox.selectedIndex);
+   			}
+		}	
+		
+		private function sacarMovilDelComboBox():void 
+		{
+			if (ArrayCollection(numFrecuenteMovilComboBox.dataProvider).length > 0)
+			{
+        		ArrayCollection(numFrecuenteMovilComboBox.dataProvider).removeItemAt(numFrecuenteMovilComboBox.selectedIndex);
+   			}
+        }	
+
+	]]>	
+	</mx:Script>
+		
+	<mx:StringValidator id="valObservacion" requiredFieldError="Ingrese el comentario de la OOSS" source="{txtComentario}" property="text" />
+		
+	<mx:Panel width="961" height="440" layout="absolute" title="&gt;&gt; Cambio de Números Frecuentes" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="-4">
+		<mx:backgroundImage>@Embed(source='../../recursosInterfaz/imagenes/otros/fondo.jpg')</mx:backgroundImage>
+	<ns1:DatosEncabezadoOOSS x="13.85" y="10" id="DatosEncabezadoOOSS"  fontSize="10"/>
+	<mx:Label text="Plan actual" styleName="TituloCampo" width="75" x="52" y="164" fontSize="10" color="#000000"/>
+	<mx:TextInput styleName="TextoCampo" width="687.10004" id="desPlantarifTextInput" x="212.9" y="164" fontSize="10" editable="false" height="22" color="#000000"/>
+	<mx:Label styleName="TituloCampo" width="154" text="Cant. de N° Fijos Máximo" x="52" y="203" fontSize="10" color="#000000"/>
+	<mx:TextInput styleName="TextoCampo" width="168.9" id="cantRedFijaTextInput" x="214" y="203" fontSize="10" editable="false" height="22" color="#000000"/>
+	<mx:Label text="Cant. de N° Móvil Máximo" styleName="TituloCampo" width="153.95" x="52.05" y="233" fontSize="10" height="18" color="#000000"/>
+	<mx:TextInput styleName="TextoCampo" width="168.9" id="cantRedMovilTextInput" x="214" y="231" fontSize="10" editable="false" height="22" color="#000000"/>
+	<mx:Label text="Numero Frecuente Fijo" styleName="TituloCampo" width="142" x="52" y="264" fontSize="10" color="#000000"/>
+	<mx:TextInput width="170.9" id="numFrecuenteFijoTextInput" editable="true" enabled="true" maxChars="20"  x="214" y="261" fontSize="10" height="22" color="#000000" restrict="0-9"/>
+	<mx:Button label="Agregar"  click="agregarFijoAlComboBox()" width="92" height="23" fontSize="10" x="398.45" y="257" color="#000000">
+	<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableAddOn.gif')</mx:icon>
+	</mx:Button>
+	<mx:Button click="sacarFijoDelComboBox()" label="Sacar" width="92" height="23" fontSize="10" id="sacarFijoButton" x="498.45" y="257" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableDeleteOn.gif')</mx:icon>
+				</mx:Button>
+	<mx:ComboBox width="179" id="numFrecuenteFijoComboBox" color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" x="605" y="258" height="22"></mx:ComboBox>
+	<mx:Label text="Numero Frecuente Móvil" styleName="TituloCampo" width="142" x="52" y="293" fontSize="10" color="#000000"/>
+	<mx:TextInput width="170.9" id="numFrecuenteMovilTextInput" editable="true" enabled="true" maxChars="20"  x="214" y="290" fontSize="10" height="22" color="#000000" restrict="0-9"/>
+	<mx:Button label="Agregar"  click="agregarMovilAlComboBox()" width="92" height="23" fontSize="10" x="398.45" y="288" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableAddOn.gif')</mx:icon>
+				</mx:Button>
+	<mx:Button click="sacarMovilDelComboBox()" label="Sacar" width="92" height="23" fontSize="10" id="sacarMovilButton" x="498.45" y="288" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableDeleteOn.gif')</mx:icon>
+				</mx:Button>
+	<mx:ComboBox width="179" id="numFrecuenteMovilComboBox" color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" x="605" y="289"></mx:ComboBox>
+	<mx:Label text="Comentario" styleName="TituloCampo" width="75" x="52" y="328" fontSize="10" color="#000000"/>
+	<mx:Label text="(*)" styleName="TituloCampo" x="126.25" y="328" width="31" color="#FF0000" fontSize="10"/>
+	<mx:TextInput width="686" id="txtComentario" editable="true" enabled="true" maxChars="256"  x="214" y="325" fontSize="10" height="22" color="#000000" restrict="0-9A-Za-zñáéíóúÁÉÍÓÚü \-_@"/>
+	<mx:Button label="Cerrar" width="84" click="cerrar()" x="477.5" y="364" themeColor="#CBDEEB" color="#000000" fontSize="10"/>
+	<mx:Button label="Ejecutar" click="Ejecuta()" x="379.5" y="364" fontSize="10" width="90" color="#000000"/>
+	</mx:Panel>
+	<!--<mx:Button label="Ejecutar" click="EjecutaAnulaSiniestro()" x="408.5" y="406" themeColor="#CBDEEB" color="#2154C9"/>-->
+	
+</mx:Module>

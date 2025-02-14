@@ -1,0 +1,203 @@
+/* ============================================================================= 
+Tipo        :  ACCION
+Nombre      :  AsigEjecPerfil.pc ("AEPER"->szfnAsigEjecPerfil)
+Descripcion :  ASIGna un EJECutivo de acuerdo al PERFIL del cliente
+               a todos los abonados del cliente dado
+Recibe      :  by Val -> Cod Cliente 
+Devuelve    :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+               "NOAGE"-> Fue imposible asignar un agente (entidad)
+               "NODIR"-> Fue imposible determinar la direccion (comuna) del cliente
+               "OK"   -> La accion se ejecuto correctamente
+Autor       :  Roy Barrera Richards
+Fecha       :  10 - Agosto - 2000 
+================================================================================
+MGG 07-01-2003	Se agrega funcionalidad para tratamiento de cobranza a nivel de cuenta o cliente	
+17-08-2004  GAC.  Homologacion a Incidencia XC-200406200056
+Modificacion    :  12-11-2004
+						 Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo
+================================================================================ */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "AsigEjecPerfil.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* funcion de asignacion de ejecutivo(a) por Perfil  */
+/* ============================================================================= */
+char  *szfnAsigEjecPerfil(FILE **ptArchLog,  long lCliente, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long lhCodCliente  = 0;
+	long lhCodVendedor = 0;
+	char szhFecTope    [9];	EXEC SQL VAR szhFecTope IS STRING (9);
+	char szhNomEjec   [31];	EXEC SQL VAR szhNomEjec IS STRING (31);
+	short shNomEjec       ; /* Homol. a XC-0056 GAC*/
+	/* Vbles Bind */
+	char szhDDMMYYYY [9];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+
+char modulo[] = "szfnAsigEjecPerfil";
+char szValParametro[21];
+int  iRet = 0;
+FILE *pfLog = *ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+
+	memset( szValParametro, '\0', sizeof( szValParametro ) );
+	memset( szhFecTope, '\0', sizeof( szhFecTope ) );
+	memset( szhNomEjec, '\0', sizeof( szhNomEjec ) );
+
+	strcpy(szhDDMMYYYY,"DDMMYYYY");
+	lhCodCliente = lCliente;
+
+  	/* obtenemos la entidad a la cual va dirigida la Cobranza Externa */
+   if (ifnRecuperaGedParametro(&pfLog, "ENTIDAD_GESTION_COB", szMODULOCOBRANZA, szValParametro, CXX )!=0) 
+    	return "ERENC";
+
+	rtrim( szValParametro );
+
+	if( !strcmp( szValParametro, szENTIDADCLIENTE ) )	/* la cobranza esta dirigida al cliente */
+	{
+	    /* Verificar si existen otros clientes de la cuenta, con agente asignado */    
+	    iRet = ifnAsigEjecCliente(&pfLog, lCliente, "S", CXX );
+	    if ( iRet < 0 )
+	        return "EJEIN";		/* Fallo por error oracle */
+	    else if( iRet == 1 )
+	        return "OK";		/* Asigno mismo ejecutivo que los otros clientes del mismo rut y operadora */
+	}
+	else												/* la cobranza esta dirigida  ala cuenta */
+	{
+	    /*-- Verificar si el rut de este cliente ya tiene algun agente asignado --*/    
+	    iRet = ifnAsigEjecRut(&pfLog, lCliente, CXX );
+	    if( iRet < 0 )
+	        return "EJEIN";		/* Fallo por error oracle */
+	    else if( iRet == 1 )
+	        return "OK";		/* Asigno mismo ejecutivo que los otros clientes del mismo rut */
+	}
+
+	/* se debe asignar ejecutivo segun corresponda */    
+    strcpy( szhFecTope, "31123000" ); /* Fecha tope lejana, idem concepto de fecha nula */
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT NOM_EJECUTIVO
+	INTO  :szhNomEjec
+	FROM  CO_CATCUENTAS
+	WHERE COD_CLIENTE = :lhCodCliente
+	AND ( FEC_HASTA IS NULL OR ( TRUNC( FEC_HASTA ) = TO_DATE( :szhFecTope, :szhDDMMYYYY ) ) );
+
+    if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] CO_CATCUENTAS => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "ERSEL";     
+    }
+    else if( sqlca.sqlcode == SQLNOTFOUND )
+    {
+        /* no lo encontro en co_catcuenta, verificar si es gran cliente */
+		sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL
+		SELECT COD_VENDEDOR
+		  INTO :lhCodVendedor
+		  FROM VE_VENDCLIENTE
+		 WHERE COD_CLIENTE = :lhCodCliente 
+		   AND FEC_DESASIGNAC IS NULL ;
+           
+        if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+        {
+            ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] VE_VENDCLIENTE => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+            return "ERSEL";     
+        }
+        else if ( sqlca.sqlcode == SQLNOTFOUND )
+        {
+           /* no lo encontro, no es gran cliente tampoco, por lo tanto es Natural, llama a AEJCS jlr_30.10.00 */
+				return (char*) szfnAsigEJecCobSuc(&pfLog, lhCodCliente, CXX );
+        }
+        else
+        {
+            /* Lo encontro, por lo tanto es Gran Cliente*/
+            ifnTrazaHilos( modulo,&pfLog, "lhCodVendedor => [%ld].", LOG05, lhCodVendedor );  
+            
+				/* Homol. a XC-0056 GAC*/
+				
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL 
+				SELECT MIN(U.NOM_USUARIO)
+			   INTO  :szhNomEjec:shNomEjec
+			   FROM  GE_SEG_USUARIO U, GE_VIG_USUARIO V
+			   WHERE U.COD_VENDEDOR = :lhCodVendedor
+			   AND   V.NOM_USUARORA = U.NOM_USUARIO
+			   AND   V.FEC_CREACION = (SELECT MAX(Y.FEC_CREACION)
+						   					FROM GE_SEG_USUARIO X, GE_VIG_USUARIO Y
+						  						WHERE X.COD_VENDEDOR = :lhCodVendedor	
+						    					AND Y.NOM_USUARORA = X.NOM_USUARIO);
+    
+				/*if( sqlca.sqlcode == SQLNOTFOUND )
+	            {   * no lo encontro, no es gran cliente tampoco, por lo tanto es Natural, llama a AEJCS jlr_30.11.00 */
+	            /* Homol. a XC-0056 GAC*/
+		    	if (shNomEjec == ORA_NULL)  {
+                /* no lo encontro, no esta en la ge_seg_usuario, llama a AEJCS jlr_30.11.00 */
+                ifnTrazaHilos( modulo,&pfLog, "No encontro en GE_SEG_USUARIO Vendedor => [%ld].", LOG05, lhCodVendedor );                
+                return (char*) szfnAsigEJecCobSuc(&pfLog, lhCodCliente, CXX );
+				
+            }    
+            
+            else if( sqlca.sqlcode )    
+            {   
+                ifnTrazaHilos( modulo,&pfLog, "Cliente => [%d] GE_SEG_USUARIO => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+                return "ERSEL";      
+            }
+        }
+    } /* if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND ) */
+
+    ifnTrazaHilos( modulo,&pfLog, "szhNomEjec => [%s].", LOG05, szhNomEjec );  
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL 
+	UPDATE CO_MOROSOS
+	   SET COD_AGENTE  = :szhNomEjec
+	 WHERE COD_CLIENTE = :lhCodCliente;
+
+    if( sqlca.sqlcode )
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Ejecutivo => [%s] Actualizando Agente CO_MOROSOS => [%s].",
+								LOG00, lhCodCliente, szhNomEjec, sqlca.sqlerrm.sqlerrmc );  
+        return "ERUPD";   
+    }
+
+    ifnTrazaHilos( modulo,&pfLog, "Cliente => [%ld] Ejecutivo => [%s] OK.", LOG03, lhCodCliente, szhNomEjec );  
+    return "OK";
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

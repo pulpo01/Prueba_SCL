@@ -1,0 +1,1995 @@
+/****************************************************************************/
+/*                                                                          */
+/*    Programa    : Funciones para la generacion de recargos.               */
+/*    Modulo      : COBROS.                                                 */
+/*    Fichero     : recargos.pc                                             */
+/*    Descripcion : Funciones para la generacion de recargos                */
+/*    Programador : Julia Serrano Pozo.                                     */
+/*    Fecha       : 05-12-1996                                              */
+/*                                                                          */
+/*    NOTA: LAS FACTURAS DE PRIMERA VENTA NO DEBERIAN GENERAR RECARGOS      */
+/*                                                                          */
+/****************************************************************************/
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+
+#include <geora.h>
+#include <GenORA.h>
+#include <coerr.h>
+#include "recargos.h"
+
+/****************************************************************************/
+EXEC SQL INCLUDE sqlca;
+/*****************************************************************************/
+
+
+/*****************************************************************************/
+/*                         CANTIDADES                                        */ 
+/*****************************************************************************/
+
+int ifnDBCreateDatCantidades(ARRCAN *stArrCan)
+/**
+Descripcion: Funcion que crea un array que contiene todas las cantidades
+             del sistema.
+Entrada:     stArrCan, puntero a la estructura array que contiene el
+             tipo Cantidad.
+Salida:      OK, si todo ha ido bien.
+             ERR_xxx, si falla algo.
+**/
+{
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+	int    ihCodRngCanti      ;
+	char   szhFecDesde[9]     ; EXEC SQL VAR szhFecDesde IS STRING(9);
+	char   szhFecHasta[9]     ; EXEC SQL VAR szhFecHasta IS STRING(9);
+	int    ihCodTipCanti      ;
+	int	 ihCodProducto		  ;	
+	char   szhDesTipCanti[41] ; EXEC SQL VAR szhDesTipCanti IS STRING(41);
+	char   szhCodCalClien[3]  ; EXEC SQL VAR szhCodCalClien IS STRING(3);
+	double dhCantiRecargo     ;
+	int    ihInd              ;
+
+	EXEC SQL END DECLARE SECTION;
+
+	int iArg = 0; /* indice del array          */
+	DATCAN *pDat; /* Estructura de Cantidades  */
+
+	/* Cursor para Carga de Cantidades */
+	EXEC SQL DECLARE C_CAN CURSOR FOR
+	SELECT 	A.COD_RNGCANTI,
+				TO_CHAR(B.FEC_DESDE,'yyyymmdd'),
+				TO_CHAR(B.FEC_HASTA,'yyyymmdd'),
+				B.COD_TIPCANTI,
+				C.DES_TIPCANTI,
+				A.COD_CALCLIEN,
+				A.CANTI_RECARGO,
+				A.COD_PRODUCTO
+	FROM CO_CANTIREC A,CO_RNGCANTI B,CO_TIPCANTI C
+	WHERE A.COD_RNGCANTI = B.COD_RNGCANTI
+	AND B.COD_TIPCANTI = C.COD_TIPCANTI;
+
+	/* Primero contamos para dimensionar el array */
+	EXEC SQL 
+	SELECT COUNT(*) INTO :ihInd
+	FROM CO_CANTIREC A,CO_RNGCANTI B,CO_TIPCANTI C
+	WHERE A.COD_RNGCANTI = B.COD_RNGCANTI
+	AND B.COD_TIPCANTI = C.COD_TIPCANTI;
+
+	if (sqlca.sqlcode < 0)
+	{
+		/* fprintf(stderr,"* Error en count %s\n",szfnORAerror()); */
+		return ERR_COUNT;
+	}
+
+	/* Error no hay cantidades definidas */
+	if (!ihInd)
+	{
+		return ERR_DEFCANTI;
+	}
+
+	stArrCan->stDatCanCli = malloc(ihInd*sizeof(DATCAN));
+
+	/* No hay memoria para cargar el array */
+	if (stArrCan->stDatCanCli == NULL)
+	{
+		return ERR_MEMORIA;
+	}
+
+	stArrCan->iCont = ihInd;
+
+	/* Apertura del cursor */
+	EXEC SQL OPEN C_CAN;
+
+	if (sqlca.sqlcode != SQLOK)
+	{
+		/* fprintf(stderr,"Error en cursor cantidad %s\n",szfnORAerror()); */
+		return ERR_OPENCURSOR;
+	}
+
+	/* Bucle para lectura de cantidades. Termina en NOTFOUND */
+	while (TRUE)
+	{
+		EXEC SQL FETCH C_CAN INTO
+							:ihCodRngCanti,
+							:szhFecDesde,
+							:szhFecHasta,
+							:ihCodTipCanti,
+							:szhDesTipCanti,
+							:szhCodCalClien,
+							:dhCantiRecargo,
+							:ihCodProducto;
+
+		if (sqlca.sqlcode < 0)
+		{
+			/*fprintf(stderr,"Error en Fetch de cantidades %s\n",szfnORAerror());*/
+			return ERR_FETCH;
+		}
+
+		if (sqlca.sqlcode == NOT_FOUND)
+			break;
+
+		stArrCan->stDatCanCli[iArg].iCodRngCanti = ihCodRngCanti; 
+
+		/* Comentadas las trazas  PONER en CASO DE ERROR */
+		/*fprintf(stdout,"CodRngCanti : %d\n",
+			stArrCan->stDatCanCli[iArg].iCodRngCanti);  */
+
+		strcpy(stArrCan->stDatCanCli[iArg].szFecDesde,szhFecDesde); 
+		/*fprintf(stdout,"szFecDesde: %s\n",
+			stArrCan->stDatCanCli[iArg].szFecDesde);  */
+
+		strcpy(stArrCan->stDatCanCli[iArg].szFecHasta,szhFecHasta); 
+		/*fprintf(stdout,"szFecHasta: %s\n", 
+			stArrCan->stDatCanCli[iArg].szFecHasta); */
+
+		stArrCan->stDatCanCli[iArg].iCodTipCanti = ihCodTipCanti; 
+		/*fprintf(stdout,"codtipcanti: %d\n",
+			stArrCan->stDatCanCli[iArg].iCodTipCanti); */
+
+		strcpy(stArrCan->stDatCanCli[iArg].szDesTipCanti,szhDesTipCanti); 
+		/*fprintf(stdout,"szdestipcanti: %s\n", 
+			stArrCan->stDatCanCli[iArg].szDesTipCanti);  */
+
+		strcpy(stArrCan->stDatCanCli[iArg].szCodCalClien,szhCodCalClien); 
+		/*fprintf(stdout,"CodCalClien: %s\n", 
+			stArrCan->stDatCanCli[iArg].szCodCalClien); */
+
+		stArrCan->stDatCanCli[iArg].dCantiRecargo = dhCantiRecargo;
+		/*fprintf(stdout,"dcantirecargo: %f\n",
+			stArrCan->stDatCanCli[iArg].dCantiRecargo); */
+
+		stArrCan->stDatCanCli[iArg].iCodProducto = ihCodProducto;
+		/*fprintf(stdout,"producto: %d\n",
+			stArrCan->stDatCanCli[iArg].iCodProducto); */
+
+	/*	fprintf(stdout,"\n");*/ 
+
+		iArg++;
+	}/* Fin de lectura del cursor C_POR */
+
+
+	EXEC SQL CLOSE C_CAN;
+
+	if (sqlca.sqlcode != 0)
+	{
+		/* fprintf(stderr,"* Error al cerrar C_CAN : %s\n",szfnORAerror()); */
+		return ERR_CLOSECURSOR;
+	}
+
+	/* Ordenamos el array por "quicksort" */
+	qsort((void*) stArrCan->stDatCanCli,stArrCan->iCont,sizeof(DATCAN),
+                                &iCmpArrayCan);
+
+	return OK;
+}/* Fin ifnDBCreateDatCantidades() */
+
+/***************************************************************************/
+int iCmpArrayCan(const void* vpCad1,const void* vpCad2)
+/**
+Descripcion: Funcion que compara dos cadenas pasadas como parametro.
+				El array de porcentajes esta ordenado por codigo de calidad de
+				cliente, codigo de tipo de cantidad y fecha.
+Entrada:    vpCad1, Cadena 1 a ser comparada.
+				vpCad2, Cadena 2 a ser comparada.
+Salida:     Entero que indica si dichas cadena son o no iguales.
+				Si son iguales devuelve 0.
+				Se comporta igual que strcmp().
+**/
+{
+	int iRes;
+
+	/* Comparacion de la calidad de cliente */
+	iRes = strcmp(((DATCAN*)vpCad1)->szCodCalClien,
+                                 ((DATCAN*)vpCad2)->szCodCalClien);
+	if (!iRes)
+	{
+		/* Comparacion del tipo de producto */
+		if (((DATCAN*)vpCad1)->iCodProducto == ((DATCAN*)vpCad2)->iCodProducto)
+			/* Iguales */
+			iRes = 0;
+		else
+		if (((DATCAN*)vpCad1)->iCodProducto < ((DATCAN*)vpCad2)->iCodProducto)
+			/* Menor */
+			iRes = -1;
+		else
+			/* Mayor */
+			iRes = 1;
+
+		if (!iRes)
+		{
+			/* Comparacion del tipo de Cantidad */
+			if (((DATCAN*)vpCad1)->iCodTipCanti == ((DATCAN*)vpCad2)->iCodTipCanti)
+				/* Iguales */
+				iRes = 0;
+			else
+			if (((DATCAN*)vpCad1)->iCodTipCanti < ((DATCAN*)vpCad2)->iCodTipCanti)
+				/* Menor */
+				iRes = -1;
+			else
+				/* Mayor */
+			iRes = 1;
+
+			if (!iRes)
+			{
+				/* Comparacion de Fechas */
+				iRes = strcmp(((DATCAN*)vpCad1)->szFecDesde,
+								((DATCAN*)vpCad2)->szFecDesde);
+				if ((!iRes) | (iRes > 0))
+				{
+					iRes = strcmp(((DATCAN*)vpCad1)->szFecDesde,
+									((DATCAN*)vpCad2)->szFecHasta);
+					if ((!iRes) | (iRes < 0))
+					{
+						iRes = 0;
+					}
+				}
+			} 
+		}
+	}
+	return iRes;
+
+}/*iCmpArrayCan() */
+
+/***************************************************************************/
+int ifnGetCantidad(char *szFec,int iCodTip,char *szCalClien,int iCodProducto,
+                    double *dCantiRec,ARRCAN *stArrCan)
+/**
+Descripcion: Funcion que devuelve la cantidad del recargo.
+Entrada:    szFec, Fecha .
+				iCodTip, el el codigo del tipo de cantidad.
+				szCalCliente, es el codigo de calidad de cliente.
+				dCantiRec, es el valor devuelto de la cantidad del recargo.
+				stArrCan, es la estructura array de tipo cantidad.
+				iCodProducto, codigo de producto.
+Salida:     OK, si todo va bien.
+				ERR_xxx, si no lo encuentra.
+**/
+{
+	BOOL   bResul;
+	DATCAN stDat;            /* Estructura de Cantidades           */
+	DATCAN *pDatCan = NULL;  /* Puntero a estructura de cantidades */
+
+	/* Preparamos datos para la busqueda */
+	strcpy(stDat.szCodCalClien,szCalClien);
+	stDat.iCodProducto = iCodProducto;
+	stDat.iCodTipCanti = iCodTip;
+	strcpy(stDat.szFecDesde,szFec);
+
+	/* Busqueda binaria */
+	pDatCan = (DATCAN*) bsearch(&stDat,(void*) stArrCan->stDatCanCli,
+								stArrCan->iCont,sizeof(DATCAN),&iCmpArrayCan);
+  
+	/* No se ha encontrado */
+	if (pDatCan == NULL)
+		return ERR_CANTI;
+
+	/* Devolvemos el porcentaje */
+	*dCantiRec = pDatCan->dCantiRecargo;
+/*	fprintf(stdout,"la cantidad obtenida %f\n",*dCantiRec);*/
+
+	return OK;
+
+}/*Fin ifnGetCantidad() */
+
+/***************************************************************************/
+void vfnLiberarCan(ARRCAN *stArrCan)
+/**
+Descripcion: Funcion que libera la memoria del array de cantidades.
+Entrada:     stArrCan, puntero al array de cantidades.
+Salida:      Ninguna.
+**/
+{
+	DATCAN* pActual;
+
+	pActual = stArrCan->stDatCanCli;
+
+	if (pActual != NULL)
+	{
+		free(pActual);
+		stArrCan->iCont = 0;
+	}
+
+}/* Fin vfnLiberarCan() */
+/*****************************************************************************/
+/*                         PORCENTAJES                                       */ 
+/*****************************************************************************/
+
+int ifnDBCreateDatPorcentajes(ARRPOR *stArrPor)
+/**
+Descripcion: Funcion que crea un array que contiene todos los porcentajes
+             del sistema.
+Entrada:     stArrPor, puntero a la estructura array que contiene el
+             tipo Porcentaje.
+Salida:      OK, si todo ha ido bien.
+             ERR_xxx, si falla algo.
+**/
+{
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+	int    ihCodRngPorcen     ;
+	char   szhFecDesde[9]     ; EXEC SQL VAR szhFecDesde IS STRING(9);
+	char   szhFecHasta[9]     ; EXEC SQL VAR szhFecHasta IS STRING(9);
+	int    ihCodTipPorcen     ;
+	int	 ihCodProducto		  ;
+	char   szhDesTipPorcen[41]; EXEC SQL VAR szhDesTipPorcen IS STRING(41);
+	char   szhCodCalClien[3]  ; EXEC SQL VAR szhCodCalClien IS STRING(3);
+	double dhPrcRecargo       ;
+	int    ihInd              ;
+
+	EXEC SQL END DECLARE SECTION;
+
+	int iArg = 0; /* indice del array          */
+	DATPOR *pDat; /* Estructura de Porcentajes */
+
+	/* Cursor para Carga de Porcentajes */
+	EXEC SQL DECLARE C_POR CURSOR FOR
+	SELECT 	A.COD_RNGPORCEN,
+				TO_CHAR(B.FEC_DESDE,'yyyymmdd'),
+				TO_CHAR(B.FEC_HASTA,'yyyymmdd'),
+				B.COD_TIPPORCEN,
+				C.DES_TIPPORCEN,
+				A.COD_CALCLIEN,
+				A.PRC_RECARGO,
+				A.COD_PRODUCTO
+	FROM CO_PORCENTAJES A,CO_RNGPORCEN B,CO_TIPPORCEN C
+	WHERE A.COD_RNGPORCEN = B.COD_RNGPORCEN
+	AND B.COD_TIPPORCEN = C.COD_TIPPORCEN;
+
+	/* Primero contamos para dimensionar el array */
+	EXEC SQL 
+	SELECT COUNT(*) INTO :ihInd
+	FROM CO_PORCENTAJES A,CO_RNGPORCEN B,CO_TIPPORCEN C
+	WHERE A.COD_RNGPORCEN = B.COD_RNGPORCEN
+	AND B.COD_TIPPORCEN = C.COD_TIPPORCEN;
+
+	if (sqlca.sqlcode < 0)
+	{
+		/* fprintf(stderr,"* Error en count %s\n",szfnORAerror()); */
+		return ERR_COUNT;
+	}
+
+	/* Error no hay porcentajes definidos */
+	if (!ihInd)
+	{
+		return ERR_DEFPORCEN;
+	}
+
+	stArrPor->stDatPorCli = malloc(ihInd*sizeof(DATPOR));
+
+	/* No hay memoria para cargar el array */
+	if (stArrPor->stDatPorCli == NULL)
+	{
+		return ERR_MEMORIA;
+	}
+
+	stArrPor->iCont = ihInd;
+
+	/* Apertura del cursor */
+	EXEC SQL OPEN C_POR;
+
+	if (sqlca.sqlcode != SQLOK)
+	{
+		/* fprintf(stderr,"Error en cursor porcentaje%s\n",szfnORAerror()); */
+		return ERR_OPENCURSOR;
+	}
+
+	/* Bucle para lectura de porcentajes. Termina en NOTFOUND */
+	while (TRUE)
+	{
+		EXEC SQL FETCH C_POR INTO
+							:ihCodRngPorcen,
+							:szhFecDesde,
+							:szhFecHasta,
+							:ihCodTipPorcen,
+							:szhDesTipPorcen,
+							:szhCodCalClien,
+							:dhPrcRecargo,
+							:ihCodProducto;
+
+		if (sqlca.sqlcode < 0)
+		{
+			/*fprintf(stderr,"Error en Fetch de porcentaje %s\n",szfnORAerror());*/
+			return ERR_FETCH;
+		}
+
+		if (sqlca.sqlcode == NOT_FOUND)
+			break;
+
+		stArrPor->stDatPorCli[iArg].iCodRngPorcen = ihCodRngPorcen; 
+
+		/* Comentadas las trazas  PONER en CASO DE ERROR */
+		/*fprintf(stdout,"CodRngPorcen : %d\n",
+			stArrPor->stDatPorCli[iArg].iCodRngPorcen);  */
+
+		strcpy(stArrPor->stDatPorCli[iArg].szFecDesde,szhFecDesde); 
+		/*fprintf(stdout,"szFecDesde: %s\n",
+			stArrPor->stDatPorCli[iArg].szFecDesde);  */
+
+		strcpy(stArrPor->stDatPorCli[iArg].szFecHasta,szhFecHasta); 
+		/*fprintf(stdout,"szFecHasta: %s\n", 
+			stArrPor->stDatPorCli[iArg].szFecHasta); */
+
+		stArrPor->stDatPorCli[iArg].iCodTipPorcen = ihCodTipPorcen; 
+		/*fprintf(stdout,"codtipporcen: %d\n",
+			stArrPor->stDatPorCli[iArg].iCodTipPorcen); */
+
+		strcpy(stArrPor->stDatPorCli[iArg].szDesTipPorcen,szhDesTipPorcen); 
+	   /*fprintf(stdout,"szdestipporcen: %s\n", 
+			stArrPor->stDatPorCli[iArg].szDesTipPorcen);  */
+
+		strcpy(stArrPor->stDatPorCli[iArg].szCodCalClien,szhCodCalClien); 
+		/*fprintf(stdout,"CodCalClien: %s\n", 
+			stArrPor->stDatPorCli[iArg].szCodCalClien); */
+
+		stArrPor->stDatPorCli[iArg].dPrcRecargo = dhPrcRecargo;
+		/* fprintf(stdout,"dprcrecargo: %f\n",
+			stArrPor->stDatPorCli[iArg].dPrcRecargo); */
+
+		stArrPor->stDatPorCli[iArg].iCodProducto = ihCodProducto;
+		/*fprintf(stdout,"producto: %d\n",
+			stArrPor->stDatPorCli[iArg].iCodProducto); */
+
+		/*fprintf(stdout,"\n");*/ 
+
+		iArg++;
+	}/* Fin de lectura del cursor C_POR */
+
+
+	EXEC SQL CLOSE C_POR;
+
+	if (sqlca.sqlcode != 0)
+	{
+		/* fprintf(stderr,"* Error al cerrar C_POR : %s\n",szfnORAerror()); */
+		return ERR_CLOSECURSOR;
+	}
+
+	/* Ordenamos el array por "quicksort" */
+	qsort((void*) stArrPor->stDatPorCli,stArrPor->iCont,sizeof(DATPOR),
+                                &iCmpArrayPor);
+
+	return OK;
+
+}/* Fin ifnDBCreateDatPorcentajes() */
+/***************************************************************************/
+int iCmpArrayPor(const void* vpCad1,const void* vpCad2)
+/**
+Descripcion: Funcion que compara dos cadenas pasadas como parametro.
+				El array de porcentajes esta ordenado por codigo de calidad de
+				cliente, codigo de tipo de porcentaje, y fecha.
+Entrada:    vpCad1, Cadena 1 a ser comparada.
+				vpCad2, Cadena 2 a ser comparada.
+Salida:     Entero que indica si dichas cadena son o no iguales.
+				Si son iguales devuelve 0.
+				Se comporta igual que strcmp().
+**/
+{
+	int iRes;
+
+	/* Comparacion de la calidad de cliente */
+	iRes = strcmp(((DATPOR*)vpCad1)->szCodCalClien,
+                                 ((DATPOR*)vpCad2)->szCodCalClien);
+
+	if (!iRes)
+	{
+		/* Comparacion del tipo de producto */
+		if (((DATPOR*)vpCad1)->iCodProducto == ((DATPOR*)vpCad2)->iCodProducto)
+			/* Iguales */
+			iRes = 0;
+		else
+		if (((DATPOR*)vpCad1)->iCodProducto < ((DATPOR*)vpCad2)->iCodProducto)
+			/* Menor */
+			iRes = -1;
+		else
+			/* Mayor */
+			iRes = 1;
+
+		if (!iRes)
+		{
+			/* Comparacion del tipo de Porcentaje */
+			if (((DATPOR*)vpCad1)->iCodTipPorcen == 	
+														((DATPOR*)vpCad2)->iCodTipPorcen)
+				/* Iguales */
+				iRes = 0;
+			else
+			if (((DATPOR*)vpCad1)->iCodTipPorcen<((DATPOR*)vpCad2)->iCodTipPorcen)
+				/* Menor */
+				iRes = -1;
+			else
+				/* Mayor */
+				iRes = 1;
+
+			if (!iRes)
+			{
+				/* Comparacion de Fechas */
+				iRes = strcmp(((DATPOR*)vpCad1)->szFecDesde,
+															((DATPOR*)vpCad2)->szFecDesde);
+				if ((!iRes) | (iRes > 0))
+				{
+					iRes = strcmp(((DATPOR*)vpCad1)->szFecDesde,
+										((DATPOR*)vpCad2)->szFecHasta);
+					if ((!iRes) | (iRes < 0))
+					{
+						iRes = 0;
+					}
+				}
+			} 
+		}
+	}
+	return iRes;
+
+}/*iCmpArrayPor() */
+
+/***************************************************************************/
+int ifnGetPorcentaje(char *szFec,int iCodTip,char *szCalClien,int iCodProducto,
+                                      double *dPrcRec,ARRPOR *stArrPor)
+/**
+Descripcion: Funcion que devuelve el porcentaje del recargo.
+Entrada:    szFec, Fecha .
+				iCodTip, el el codigo del tipo de porcentaje.
+				szCalCliente, es el codigo de calidad de cliente.
+				dPrcRec, es el valor devuelto del porcentaje del recargo.
+				stArrPor, es la estructura array de tipo porcentaje.
+			   iCodProducto, es el codigo de producto.
+Salida:     OK, si todo va bien.
+				ERR_xxx, si no lo encuentra.
+**/
+{
+	BOOL   bResul;
+	DATPOR stDat;            /* Estructura de Porcenatjes           */
+	DATPOR *pDatPor = NULL;  /* Puntero a estructura de porcentajes */
+
+	/*fprintf(stdout,"obtener el porcentaje\n");*/
+	/* Preparamos datos para la busqueda */
+	strcpy(stDat.szCodCalClien,szCalClien);
+	stDat.iCodTipPorcen = iCodTip;
+	stDat.iCodProducto = iCodProducto;
+	strcpy(stDat.szFecDesde,szFec);
+
+	/*fprintf(stdout," valores %s %d %d %s\n", szCalClien, iCodTip, 
+															iCodProducto, szFec);*/
+	/* Busqueda binaria */
+	pDatPor = (DATPOR*) bsearch(&stDat,(void*) stArrPor->stDatPorCli,
+								stArrPor->iCont,sizeof(DATPOR),&iCmpArrayPor);
+  
+	/* No se ha encontrado */
+	if (pDatPor == NULL)
+		return ERR_PORCEN;
+
+	/* Devolvemos el porcentaje */
+	*dPrcRec = pDatPor->dPrcRecargo;
+
+	return OK;
+
+}/*Fin ifnGetPorcentaje() */
+
+/***************************************************************************/
+void vfnLiberarPor(ARRPOR *stArrPor)
+/**
+Descripcion: Funcion que libera la memoria del array de porcentajes.
+Entrada:     stArrPor, puntero al array de porcentajes.
+Salida:      Ninguna.
+**/
+{
+	DATPOR* pActual;
+
+	pActual = stArrPor->stDatPorCli;
+
+	if (pActual != NULL)
+	{
+		free(pActual);
+		stArrPor->iCont = 0;
+	}
+
+}/* Fin vfnLiberarPor() */
+
+/***************************************************************************/
+/*                              RECARGOS                                   */
+/***************************************************************************/
+int ifnDBCreateDatRec(ARRREC *stArrRec)
+/**
+Descripcion: Funcion que crea el array de datos de Recargos. 
+Entrada:    stArrRec, puntero a la estructura array de datos de Recargos.
+Salida:     OK, si todo ha ido bien.
+				ERR_xxx, si falla algo.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		int    ihCodRngConcep;
+		int    ihCodCon;
+		char   szhFecDesde[9]; EXEC SQL VAR szhFecDesde IS STRING(9);
+		char   szhFecHasta[9]; EXEC SQL VAR szhFecHasta IS STRING(9);
+		int    ihCodConGen;
+		int    ihIndPorcen;
+		double dhImpUmbral;
+		int    ihCodTipPorcen;
+		short  shIndTipPorcen;
+		int    ihCodTipCanti;
+		short  shIndTipCanti;
+		int    ihInd;
+
+	EXEC SQL END DECLARE SECTION;
+
+	int iArg = 0;/* indice del array */
+	DATREC *pDat;
+
+	/* Cursor para recoger recargos del sistema */
+	EXEC SQL DECLARE C_REC CURSOR FOR
+	SELECT   A.COD_RNGCONCEP,
+				A.COD_CONCEPTO,
+				TO_CHAR(A.FEC_DESDE,'yyyymmdd'),
+				TO_CHAR(A.FEC_HASTA,'yyyymmdd'),
+				B.COD_CONCEPTO_GEN,
+				B.IND_PORCEN,
+				B.IMP_UMBRAL,
+				B.COD_TIPPORCEN,
+				B.COD_TIPCANTI
+	FROM CO_RNGCONCEP A,CO_RECARGOS B
+	WHERE A.COD_RNGCONCEP = B.COD_RNGCONCEP;
+
+	/* Primero contamos para dimensionar el array de porcentajes */
+	EXEC SQL 
+	SELECT COUNT(*) INTO :ihInd
+	FROM CO_RNGCONCEP A,CO_RECARGOS B
+	WHERE A.COD_RNGCONCEP = B.COD_RNGCONCEP;
+
+	if (sqlca.sqlcode < 0)
+	{
+		/* fprintf(stderr,"* Error en count %s\n",szfnORAerror()); */
+		return ERR_COUNT;
+	}
+
+	/* No existen recargos */
+	if (!ihInd)
+	{
+		/* fprintf(stderr,"* Error: No hay recargos definidos\n"); */
+		return ERR_DEFRECARGO;
+	}
+
+	stArrRec->stDatRec = malloc(ihInd*sizeof(DATREC));
+
+	/* No se ha podido atrapar memoria. */
+	if (stArrRec->stDatRec == NULL)
+	{
+		/* fprintf(stderr,"* Error: No hay memoria para cargar la tabla\n"); */
+		return ERR_MEMORIA;
+	}
+
+	stArrRec->iCont = ihInd;
+
+	EXEC SQL OPEN C_REC;
+
+	if (sqlca.sqlcode != SQLOK)
+	{
+		/* fprintf(stderr,"Error en cursor recargos%s\n",szfnORAerror()); */
+		return ERR_OPENCURSOR;
+	}
+
+	/* Bucle para lectura de Recargos. Termina con NOTFOUND. */
+	while (TRUE)
+	{
+		EXEC SQL FETCH C_REC INTO
+						:ihCodRngConcep,
+						:ihCodCon,
+						:szhFecDesde,
+						:szhFecHasta,
+						:ihCodConGen,
+						:ihIndPorcen,
+						:dhImpUmbral,
+						:ihCodTipPorcen:shIndTipPorcen,
+						:ihCodTipCanti:shIndTipCanti;
+
+		if (sqlca.sqlcode < 0)
+		{
+			/*fprintf(stderr,"* Error en Fetch de recargos %s\n",szfnORAerror());*/
+			return ERR_FETCH;
+		}
+
+		if (sqlca.sqlcode == NOT_FOUND)
+			break;
+
+		/* Llevamos datos leidos a posicion del array */
+		stArrRec->stDatRec[iArg].iCodRngConcep = ihCodRngConcep;
+
+		/* Comentamos las trazas. PONER en Caso de PROBLEMAS */
+		/*fprintf(stdout,"CodRngConcep : %d\n",
+			stArrRec->stDatRec[iArg].iCodRngConcep); */
+
+		stArrRec->stDatRec[iArg].iCodCon = ihCodCon;
+		/* fprintf(stdout,"Codcon : %d\n",
+			stArrRec->stDatRec[iArg].iCodCon); */
+
+		strcpy(stArrRec->stDatRec[iArg].szFecDesde,szhFecDesde);
+		/*fprintf(stdout,"szFecDesde: %s\n",
+			stArrRec->stDatRec[iArg].szFecDesde); */
+
+		strcpy(stArrRec->stDatRec[iArg].szFecHasta,szhFecHasta);
+		/*fprintf(stdout,"szFecHasta: %s\n",
+			stArrRec->stDatRec[iArg].szFecHasta); */
+
+		stArrRec->stDatRec[iArg].iCodConGen = ihCodConGen;
+		/* fprintf(stdout,"CodConGen : %d\n",
+			stArrRec->stDatRec[iArg].iCodConGen); */
+
+		stArrRec->stDatRec[iArg].iIndPorcen = ihIndPorcen;
+		/*fprintf(stdout,"IndPorcen: %d\n",
+			stArrRec->stDatRec[iArg].iIndPorcen); */
+
+		stArrRec->stDatRec[iArg].dImpUmbral = dhImpUmbral;
+		/*fprintf(stdout,"ImpUmbral: %f\n",
+			stArrRec->stDatRec[iArg].dImpUmbral); */
+
+		if (shIndTipPorcen == ORA_NULL)
+		{
+			stArrRec->stDatRec[iArg].iCodTipPorcen = ORA_NULL;
+		/*	fprintf(stdout,"CodTipPorcen: %d\n",
+				stArrRec->stDatRec[iArg].iCodTipPorcen); */
+		}
+		else
+		{
+			stArrRec->stDatRec[iArg].iCodTipPorcen = ihCodTipPorcen;
+		/*	fprintf(stdout,"CodTipPorcen: %d\n",
+				stArrRec->stDatRec[iArg].iCodTipPorcen); */
+		}
+
+		if (shIndTipCanti == ORA_NULL)
+		{
+			stArrRec->stDatRec[iArg].iCodTipCanti = ORA_NULL;
+			/*fprintf(stdout,"CodTipCanti: %d\n",
+				stArrRec->stDatRec[iArg].iCodTipCanti); */
+		}
+		else
+		{
+			stArrRec->stDatRec[iArg].iCodTipCanti = ihCodTipCanti;
+			/*fprintf(stdout,"CodTipCanti: %d\n",
+				stArrRec->stDatRec[iArg].iCodTipCanti); */
+		}
+	/*	fprintf(stdout,"\n\n"); */
+
+		iArg++;
+	}/* Fin de lectura del cursor C_POR */
+
+	EXEC SQL CLOSE C_REC;
+
+	if (sqlca.sqlcode != 0)
+	{
+		/* fprintf(stderr,"* Error al cerrar C_POR :%s\n",szfnORAerror()); */
+		return ERR_CLOSECURSOR;
+	}
+
+	/* Ordenamos el array en memoria por "quicksort" */
+	qsort((void*) stArrRec->stDatRec,stArrRec->iCont,sizeof(DATREC),
+						&iCmpArrayRec);
+
+	return OK;
+
+}/* Fin ifnDBCreateDatRec() */
+/***************************************************************************/
+int iCmpArrayRec(const void* vpCad1,const void* vpCad2)
+/**
+Descripcion: Funcion de comparacion. El array de recargos esta ordenado por
+				codigo de concepto, y fecha.
+Entrada:    vpCad1, Cadena 1 a ser comparada.
+				vpCad2, Cadena 2 a ser comparada.
+Salida:     Entero que indica si la comparacion es correcta o no.
+				0 si la busqyeda ha tenido exito.
+				Se comporta igual que srtcmp().
+**/
+{
+	int iRes;
+
+	/* Comparamos codigo de concepto */
+	if (((DATREC*)vpCad1)->iCodCon == ((DATREC*)vpCad2)->iCodCon)
+		iRes = 0;
+	else
+		if (((DATREC*)vpCad1)->iCodCon < ((DATREC*)vpCad2)->iCodCon)
+			iRes = -1;
+		else
+			iRes = 1;
+
+	if (!iRes)
+	{
+		/* Comparamos Fechas */
+		iRes = strcmp(((DATREC*)vpCad1)->szFecDesde,
+							((DATREC*)vpCad2)->szFecDesde);
+
+		if ((!iRes) | (iRes > 0))
+		{
+			iRes = strcmp(((DATREC*)vpCad1)->szFecDesde,
+								((DATREC*)vpCad2)->szFecHasta);
+			if ((!iRes) | (iRes < 0))
+			{
+				iRes = 0;
+			}
+		}
+	}
+
+return iRes;
+
+}/*iCmpArrayRec() */
+/***************************************************************************/
+
+int ifnGetRecargos(char *szFec,int iCodCon,DATREC *stRec,ARRREC stArrRec)
+/**
+Descripcion: Funcion que devuelve una estructura con el recargo.
+Entrada:    szFec, Fecha .
+				iCodTip, el el codigo del concepto.
+				stREC, es la estructura que se devuelve.
+				stArrRec, es la estructura array de tipo Recargo.
+Salida:     OK, si todo va bien.
+				ERR_xxx, si no lo encuentra.
+**/
+{
+
+	BOOL   bResul;
+	DATREC stDat;           /* Estructura de datos de recargos  */
+	DATREC *pDatRec = NULL; /* Puntero a estructura de recargos */
+
+	/* Preparamos datos para busqueda */
+	stDat.iCodCon = iCodCon;
+	strcpy(stDat.szFecDesde,szFec);
+
+	/* Busqueda binaria */
+	pDatRec = (DATREC*) bsearch(&stDat,(void*) stArrRec.stDatRec,
+	stArrRec.iCont,sizeof(DATREC),&iCmpArrayRec);
+
+	/* No se han encontrado recargos */
+	if (pDatRec == NULL)
+		return ERR_RECARGOS;
+
+	/* Devolver Datos */
+	stRec->iCodRngConcep = pDatRec->iCodRngConcep;
+	stRec->iCodCon       = pDatRec->iCodCon;
+	strcpy(stRec->szFecDesde, pDatRec->szFecDesde);
+	strcpy(stRec->szFecHasta, pDatRec->szFecHasta);
+	stRec->iCodConGen    = pDatRec->iCodConGen;
+	stRec->iIndPorcen    = pDatRec->iIndPorcen;
+	stRec->dImpUmbral    = pDatRec->dImpUmbral;
+	stRec->dValor        = pDatRec->dValor;
+	stRec->iCodTipPorcen = pDatRec->iCodTipPorcen;
+
+	return OK;
+
+}/*Fin ifnGetRecargos() */
+
+/***************************************************************************/
+void vfnLiberarRec(ARRREC *stArrRec)
+/**
+Descripcion: Funcion que libera la memoria del array de Recargos.
+Entrada:     stArrRec, puntero al array de recargos.
+Salida:      Ninguna.
+**/
+{
+	DATREC* pActual;
+
+	pActual = stArrRec->stDatRec;
+
+	if (pActual != NULL)
+	{
+		free(pActual);
+		stArrRec->iCont = 0;
+	}
+
+}/* Fin vfnLiberarRec() */
+/****************************************************************************/
+/*                         GENERACION DE RECARGOS                           */
+/****************************************************************************/
+int ifnDBCompRecargos(long lCodCliente,ARRREC *stArrRec,ARRPOR *stArrPor,
+								ARRCAN *stArrCan,char *szFecValor,int iCodCredito,
+								char *szCodCalCli, double *dImporteRecar)
+/**
+Descripcion: Comprueba primero si ha vencido algun concepto.
+				 En caso afirmativo llama a la funcion que genera recargos.
+Salida     : Si todo va bien devuelve OK y en caso contrario ERR_XXXX.
+**/
+{
+
+   EXEC SQL BEGIN DECLARE SECTION;
+
+      long   lhCodCliente;
+      char   *szhFecValor; EXEC SQL VAR szhFecValor IS STRING(9);
+      int    ihCodCredito;
+      int    ihDiasVenc;
+      short  shIndDias;
+
+   EXEC SQL END DECLARE SECTION;
+
+   int 		  iResul ;
+	BOOL       bResul;
+	char       *szFec;
+	DATCLI     stCli;
+	double	  dImporte = 0.0;
+
+
+   /* Validamos la fecha Valor yyyymmdd. Si es chunga o mayor que hoy Fallo */
+   if (!bfnDBValFecValor(szFecValor))
+   {
+      /* fprintf(stderr,"* Error fecha mayor que sysdate \n"); */
+		*dImporteRecar = 0.0;
+      return ERR_FECVALOR;
+   }
+
+   szFec = szFecValor;
+   stCli.lCodCliente = lCodCliente;
+
+   /* Crear la estructura de datos para el cliente */
+	strcpy(stCli.szCodCalCli,szCodCalCli);
+
+
+   /* Preparamos valores para select */
+   lhCodCliente = lCodCliente;
+   szhFecValor  = szFecValor;
+
+   EXEC SQL
+     SELECT TO_DATE(:szhFecValor,'yyyymmdd') - MIN(FEC_VENCIMIE)
+       INTO :ihDiasVenc:shIndDias
+      FROM CO_CARTERA
+      WHERE COD_CLIENTE = :lhCodCliente
+        AND IND_CONTADO   = 0
+        AND IND_FACTURADO = 1;
+
+   if (sqlca.sqlcode < 0)
+   {
+      /* fprintf(stderr,"Error en Select Vencimiento %s\n",szfnORAerror()); */
+		*dImporteRecar = 0.0;
+      return ERR_SELVEN;
+   }
+
+   if (sqlca.sqlcode == NOT_FOUND || shIndDias == ORA_NULL)
+      ihDiasVenc = 0;
+
+   /* Solo calculamos recargos cuando hay conceptos vencidos */
+   if (ihDiasVenc > 0)
+	{
+		iResul = ifnDBGenerarRecargos(stCli,stArrRec,stArrPor,stArrCan,
+											szFec,iCodCredito);
+		if (iResul != OK)
+		{
+			*dImporteRecar = 0.0;
+			return iResul;
+		}
+	}
+		
+	bResul = bfnDBGetImpRecargo(lCodCliente,&dImporte);
+	if (!bResul)
+	{
+		*dImporteRecar = 0.0;
+		return ERR_IMPORTE;
+	}
+
+	*dImporteRecar = dImporte;
+   return OK;
+
+}/* Fin ifnDBCompRecargos() */
+/****************************************************************************/
+
+int ifnRecargos(long lCodCliente,char *szFecValor,int iCodCredito)
+/**
+Descripcion: Funcion encargada de generar los recargos.
+Entrada:    lCodCliente, codigo de cliente.
+				szFecValor, fecha del sistema.
+				iCodCredito,codigo de concepto credito. 
+Salida:     OK, si todo ha ido bien.
+				ERR_xxx, si falla algo.
+
+---------------
+Esta funcion es para generar recargos para un cliente, primero carga en 
+memoria los datos del recargos y porcentajes del sistema. Si vamos a generar 
+recargos para muchos clientes seria ineficiente usarla y es mejor hacer 
+la carga una sola vez y luego llamar a ifnDBGenerarRecargos().
+---------------
+**/
+{
+	BOOL       bResul;
+	int        iResul = OK;
+	char       *szFec;
+	DATCLI     stCli;
+	ARRREC     stArrRec;
+	ARRPOR     stArrPor;
+	ARRCAN     stArrCan;
+	double	  dImporteRecar = 0.0;
+
+	/* Validamos la fecha Valor yyyymmdd. Si es chunga o mayor que hoy Fallo */
+	if (!bfnDBValFecValor(szFecValor))
+	{
+		/* fprintf(stderr,"* Error fecha mayor que sysdate \n"); */
+		return ERR_FECVALOR;
+	}
+
+	/* Creacion del array de recargos */
+	iResul = ifnDBCreateDatRec(&stArrRec);
+
+	if (iResul != OK)
+	{
+		/* fprintf(stderr,"* Error al generar  el array de recargos\n");*/
+		return iResul;
+	}
+
+	/* Si el array esta vacio no puedo generar recargos. */
+	if (!(stArrRec.iCont))
+	{
+		/*fprintf(stderr,"** ERROR GRAVE: el array de recargos esta vacio \n");*/
+		vfnLiberarRec(&stArrRec);
+		return ERR_RECARVACIO;
+	}
+
+	/* Creacion del array de porcentajes */
+	iResul = ifnDBCreateDatPorcentajes(&stArrPor);
+
+	if (iResul)
+	{
+		/* fprintf(stderr,"* Error al generar  el array de porcentajes\n"); */
+		vfnLiberarRec(&stArrRec);
+		return iResul;
+	}
+
+	/* Si el array esta vacio no puedo generar recargos. */
+	if (!(stArrPor.iCont))
+	{
+		/* fprintf(stderr,"* Error el array de porcentajes esta vacio \n"); */
+		vfnLiberarRec(&stArrRec);
+		vfnLiberarPor(&stArrPor);
+		return ERR_PORCENVACIO;
+	}
+
+	/* Creacion del array de cantidades */
+	iResul = ifnDBCreateDatCantidades(&stArrCan);
+
+	if (iResul)
+	{
+		/* fprintf(stderr,"* Error al generar  el array de cantidades\n"); */
+		vfnLiberarRec(&stArrRec);
+		vfnLiberarPor(&stArrPor);
+		return iResul;
+	}
+
+	/* Si el array esta vacio no puedo generar recargos. */
+	if (!(stArrCan.iCont))
+	{
+		/* fprintf(stderr,"* Error el array de cantidades esta vacio \n"); */
+		vfnLiberarRec(&stArrRec);
+		vfnLiberarPor(&stArrPor);
+		vfnLiberarCan(&stArrCan);
+		return ERR_CANTIVACIO;
+	}
+	szFec = szFecValor;
+	stCli.lCodCliente = lCodCliente;
+
+	/* Crear la estructura de datos para el cliente */ 
+	bResul = bfnDBGetCalCliente(&stCli);
+	if (!bResul)
+	{
+		vfnLiberarRec(&stArrRec);
+		vfnLiberarPor(&stArrPor);
+		vfnLiberarCan(&stArrCan);
+		return ERR_DATCLI;
+	}
+
+	/* Generar los recargos para los conceptos del cliente */
+	iResul = ifnDBGenerarRecargos(stCli,&stArrRec,&stArrPor,&stArrCan,
+											szFec,iCodCredito);
+
+	if (iResul != OK)
+	{
+		vfnLiberarRec(&stArrRec);
+		vfnLiberarPor(&stArrPor);
+		vfnLiberarCan(&stArrCan);
+		return iResul;
+	}
+
+	vfnLiberarPor(&stArrPor);
+	vfnLiberarRec(&stArrRec);
+	vfnLiberarCan(&stArrCan);
+
+	return OK;
+
+} /*Fin ifnRecargos() */
+/*****************************************************************************/
+int ifnDBGenerarRecargos(DATCLI stCli,ARRREC *stArrRec, ARRPOR *stArrPor,
+							ARRCAN *stArrCan, char *szFecValor,int iCodCredito)
+/**
+Descripcion: Funcion que para un cliente obtiene sus conceptos  y los 
+				conceptos generados actualizando la CARTERA.
+Entrada:    stCli, estructura de datos de Cliente.
+				stCon, puntero a la estructura de conceptos de Cliente.
+				stArrRec, puntero al array de estructura de recargos.
+				stArrPor, puntero al array de estructura de porcentaje.
+				stArrCan, puntero al array de estructura de cantidades.
+				szFecValor, Fecha del sistema.
+				iCodCredito, indica si es debe o haber.
+Salida:     OK, si todo ha ido bien.
+				ERR_xxx, si falla algo.
+Prerrequisitos:
+ La fecha valor se supone validada y menor que la del sistema.
+**/
+{
+	typedef       char    asc2[2];
+	typedef       char    asc9[9];        
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		EXEC SQL TYPE asc2 IS STRING(2);      
+		EXEC SQL TYPE asc9 IS STRING(9);      
+
+		long    lhCodCliente;
+		int     ihCodTipDocum[512];
+		long    lhCodAgente[512]; 
+		asc2    szhLetra[512];
+		int     ihCodCentremi[512];
+		long    lhNumSecuenci[512];
+		int     ihCodConcepto[512];
+		int     ihColumna[512];
+		int     ihCodProducto[512];
+		double  dhImpDebe[512];
+		double  dhImpHaber[512];
+		asc9    szhFecEfectividad[512];
+		asc9    szhFecVencimie[512];
+		asc9    szhFecCaducida[512];
+		asc9    szhFecAntiguedad[512];
+		char    *szhFecValor;
+					EXEC SQL VAR szhFecValor IS STRING(9);
+		int     ihDiasVencimiento[512];
+		long	  lhNumAbonado[512];
+		long	  lhNumFolio[512];
+		long	  lhNumCuota[512];
+		int	  ihSecCuota[512];
+		long	  lhNumVenta[512];
+		long	  lhNumTransa[512];
+		short   shIndFecVenci[512];
+		short   shIndFecCadu[512];
+		short   shIndFecAnti[512];
+		short   shIndNumAbonado[512];
+		short   shIndNumFolio[512];
+		short   shIndNumCuota[512];
+		short   shIndSecCuota[512];
+		short   shIndNumTransa[512];
+		short   shIndNumVenta[512];
+
+	EXEC SQL END DECLARE SECTION;
+
+	DATCON	stCon;
+	BOOL		bResul;
+	int		iModi,iDebe,iEnc = 0;
+	int		iResul = OK;
+	BOOL		bFin = FALSE;
+	int		i,iNumCon = 0;
+	double	dImpCon = 0.0;
+
+	iModi = 1;
+	lhCodCliente = stCli.lCodCliente;
+	szhFecValor  = szFecValor;
+
+	/* Cursor para tratar conceptos al debe del cliente */
+	EXEC SQL DECLARE C_CON CURSOR FOR
+		SELECT COD_TIPDOCUM,
+				COD_CENTREMI,
+				NUM_SECUENCI,
+				COD_VENDEDOR_AGENTE,
+				LETRA,
+				COD_CONCEPTO,
+				COLUMNA,
+				COD_PRODUCTO,
+				IMPORTE_DEBE,
+				IMPORTE_HABER,
+				TO_CHAR(FEC_EFECTIVIDAD,'yyyymmdd'),
+				TO_CHAR(FEC_VENCIMIE,'yyyymmdd'),
+				TO_CHAR(FEC_CADUCIDA,'yyyymmdd'),
+				TO_CHAR(FEC_ANTIGUEDAD,'yyyymmdd'),
+				TRUNC(TO_DATE(:szhFecValor,'yyyymmdd') - FEC_VENCIMIE),
+				NUM_ABONADO,
+				NUM_FOLIO,
+				NUM_CUOTA,
+				SEC_CUOTA,
+				NUM_TRANSACCION,
+				NUM_VENTA
+		FROM CO_CARTERA
+		WHERE COD_CLIENTE    = :lhCodCliente
+		AND IND_CONTADO    = 0  /* No contado, osea consumo */
+		AND IND_FACTURADO  = 1
+		FOR UPDATE;  /* Facturados */
+
+	EXEC SQL OPEN C_CON;
+
+	if (sqlca.sqlcode != SQLOK)
+	{
+		/* fprintf(stderr,"* Error en el cursorcartera%s\n",szfnORAerror()); */
+		return ERR_OPENCURSOR;
+	}
+
+	/* Bucle para generacion de recargos */
+	while (!bFin)
+	{
+		EXEC SQL FETCH C_CON INTO
+					:ihCodTipDocum,
+					:ihCodCentremi,
+					:lhNumSecuenci,
+					:lhCodAgente,
+					:szhLetra,
+					:ihCodConcepto,
+					:ihColumna,
+					:ihCodProducto,
+					:dhImpDebe,
+					:dhImpHaber,
+					:szhFecEfectividad,
+					:szhFecVencimie:shIndFecVenci,
+					:szhFecCaducida:shIndFecCadu,
+					:szhFecAntiguedad:shIndFecAnti,
+					:ihDiasVencimiento, 
+					:lhNumAbonado:shIndNumAbonado,
+					:lhNumFolio:shIndNumFolio,
+					:lhNumCuota:shIndNumCuota,
+					:ihSecCuota:shIndSecCuota,
+					:lhNumTransa:shIndNumTransa,
+					:lhNumVenta:shIndNumVenta;
+	/* fec sistema - fec vencimiento */
+
+	if (sqlca.sqlcode < 0)
+	{
+		if (sqlca.sqlcode == ORA_FETCHNULL)
+		{
+			/*fprintf(stderr,"* Error: Fecha Vencimiento NULL %s\n",szfnORAerror());*/
+			return ERR_FETCHNULL;
+		} 
+		/*fprintf(stderr,"* Error en Fetch C_CON de recargos %s\n",szfnORAerror());*/
+		return ERR_FETCH;
+	}
+
+	iNumCon = 512;
+
+	if (sqlca.sqlcode == NOT_FOUND)
+	{
+		iNumCon = sqlca.sqlerrd[2] % 512;
+		bFin = TRUE;
+	}
+
+	for (i=0;i<iNumCon;i++)
+	{
+
+		/* si el concepto es un credito no se trata */
+		if (ihCodConcepto[i] != iCodCredito)
+		{  
+			/* Si Venc != Antig entonces ya hemos generado recargos y
+			no tenemos que aplicar dias de gracia */
+			if (!strcmp(szhFecVencimie[i],szhFecAntiguedad[i])) 
+			/* si son iguales */
+			{
+				bResul = bfnDBGetDiaGracia(&stCli, szFecValor,ihCodProducto[i]);
+				if (!bResul)
+				{
+					return ERR_DIASGRACIA;
+				}
+				ihDiasVencimiento[i] = ihDiasVencimiento[i]-stCli.iDiasGracia;
+				ihDiasVencimiento[i] = rint(ihDiasVencimiento[i]);
+			}
+
+			if (ihDiasVencimiento[i] < 0) ihDiasVencimiento[i] = 0;
+			/* Hay que generar recargos */
+			if (ihDiasVencimiento[i] > 0)
+			{
+				/* Llenamos estructura de datos de Concepto. */
+				stCon.iCodTipDocum = ihCodTipDocum[i];
+				stCon.lCodAgente = lhCodAgente[i];
+				strcpy(stCon.szLetra,szhLetra[i]);
+				stCon.iCodCentremi = ihCodCentremi[i];
+				stCon.lNumSecuenci = lhNumSecuenci[i];
+				stCon.iCodConcepto = ihCodConcepto[i];
+				stCon.iColumna = ihColumna[i];
+				stCon.iCodProducto = ihCodProducto[i];
+				stCon.dImporteDebe = dhImpDebe[i];
+				stCon.dImporteHaber = dhImpHaber[i];
+				strcpy(stCon.szFecEfectividad,szhFecEfectividad[i]);
+				if (shIndFecVenci[i] == ORA_NULL)
+					strcpy(stCon.szFecVencimie,"");
+				else
+					strcpy(stCon.szFecVencimie,szhFecVencimie[i]);
+				if (shIndFecCadu[i] == ORA_NULL)
+					strcpy(stCon.szFecCaducida,"");
+				else
+					strcpy(stCon.szFecCaducida,szhFecCaducida[i]);
+				if (shIndFecCadu[i] == ORA_NULL)
+					strcpy(stCon.szFecAntiguedad,"");
+				else
+					strcpy(stCon.szFecAntiguedad,szhFecAntiguedad[i]);
+				stCon.iDiasVencimiento = ihDiasVencimiento[i];
+				if (shIndNumAbonado[i] == ORA_NULL)
+					stCon.lNumAbonado = -1;
+				else
+					stCon.lNumAbonado = lhNumAbonado[i];
+				if (shIndNumFolio[i] == ORA_NULL)
+					stCon.lNumFolio = -1;
+				else
+					stCon.lNumFolio = lhNumFolio[i];
+
+				if (shIndNumCuota[i] == ORA_NULL)
+					stCon.lNumCuota = -1;
+				else
+					stCon.lNumCuota = lhNumCuota[i];
+				if (shIndSecCuota[i] == ORA_NULL)
+					stCon.iSecCuota = -1;
+				else
+					stCon.iSecCuota = ihSecCuota[i];
+				if (shIndNumTransa[i] == ORA_NULL)
+					stCon.lNumTransa = -1;
+				else
+					stCon.lNumTransa = lhNumTransa[i];
+				if (shIndNumVenta[i] == ORA_NULL)
+					stCon.lNumVenta = -1;
+				else
+					stCon.lNumVenta = lhNumVenta[i];
+
+				/*Calculo suma al haber de todos los importes del concepto */
+				stCon.dImporteDebe = stCon.dImporteDebe - stCon.dImporteHaber;
+				/*stCon.dImporteDebe = rint(stCon.dImporteDebe * INVMIN)/INVMIN;			*/
+                stCon.dImporteDebe = (stCon.dImporteDebe * INVMIN)/INVMIN;			
+
+				if (stCon.dImporteDebe < 0)
+				{
+					return ERR_HABERDEBE;
+				}
+
+				/* Insertar registro de recargo en base de datos */
+				iResul = ifnIntGenerado(stCli,&stCon,szFecValor, 
+										stArrRec,stArrPor,stArrCan,&iModi);
+
+				if (iResul)
+				{
+					return iResul;
+				}
+
+				/* Modificar fec vencimiento si se han generado recargos */
+				if (iModi)
+				{
+					bResul = bfnDBModConcepto(szFecValor,
+														&stCon, stCli.lCodCliente);
+
+					if (!bResul)
+					{
+						return ERR_MODCONCEP;
+					}
+				}
+
+			}/* iDiasVencimiento >0 */
+
+		}/* if ihCodConcepto != iCodCredito */
+	}/* FOR */
+
+	}/*Fin del cursor  C_CON*/
+
+	EXEC SQL CLOSE C_CON;
+
+	if (sqlca.sqlcode != 0)
+	{
+		/*fprintf(stderr,"* Error en cierre de C_CON %s\n",szfnORAerror());*/
+		return ERR_CLOSECURSOR;
+	}
+
+	return OK;
+
+}/* Fin ifnDBGenerarRecargos()*/
+
+/*****************************************************************************/
+BOOL bfnDBUpdImpRecargo(long lCodCliente)
+/**
+Descripcion: Funcion que modifica el indicado de facturado de los recargos
+Salida     : TRUE si todo va bien
+				 FALSE si falla algo
+**/
+{
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		
+		long		lhCodCliente;
+
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente = lCodCliente;
+
+	EXEC SQL
+		UPDATE CO_CARTERA
+		SET IND_FACTURADO = 1
+		WHERE COD_CLIENTE = :lhCodCliente
+		AND IND_CONTADO = 0
+		AND IND_FACTURADO = 0;
+
+	if (sqlca.sqlcode < 0)
+	{
+		/*fprintf(stderr,"* Error al modificar el importe del recargo %s\n",
+																szfnORAerror());*/
+		return FALSE;
+	}
+
+	return TRUE;
+
+}/* Fin bfnDBUpdImpRecargo() */
+/*****************************************************************************/
+BOOL bfnDBGetImpRecargo(long lCodCliente, double *dImporte)
+/**
+Descripcion: Funcion que obtiene el importe del recargo
+Salida     : TRUE si todo va bien
+				 FALSE si falla algo
+**/
+{
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		
+		long		lhCodCliente;
+		double	dhImporte;
+
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente = lCodCliente;
+
+	EXEC SQL
+		SELECT NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),0.0)
+		INTO :dhImporte
+		FROM CO_CARTERA
+		WHERE COD_CLIENTE = :lhCodCliente
+		AND IND_CONTADO = 0
+		AND IND_FACTURADO = 0;
+
+	if (sqlca.sqlcode)
+	{
+		/* fprintf(stderr,"* Error al obtener el importe del recargo %s\n",
+																    ());*/
+		*dImporte = 0.0;
+		return FALSE;
+	}
+
+	*dImporte = dhImporte;
+	
+	return TRUE;
+
+}/* Fin bfnDBGetImpRecargo() */
+/*****************************************************************************/
+int ifnIntGenerado(DATCLI stCli,DATCON *stCon,char *szFecValor,
+					 ARRREC *stArrRec,ARRPOR *stArrPor,ARRCAN *stArrCan,int *iModi)
+/**
+Descripcion: Funcion que obtiene los conceptos generados.
+Entrada:    stCli, estructura de cliente.
+				stCon, estructura de concepto origen.
+				szFecValor, fecha del sistema.
+				stArrRec, estructura de array de recargos.
+				stArrPor, estructura de array de porcentaje.
+				stArrCan, estructura de array de cantidades.
+				iModi,variable que indica si se ha de modificar fecvencimie.
+Salida:     OK, si todo va bien.
+				ERR_xxx, si falla algo.
+**/
+{
+
+	DATCON  stConGen;
+	int     iInd,iMod,iCodTip;
+	int     iResul = OK;
+	double  dPrcRec,dImpor,dCanRec;                           
+	BOOL    bResul;
+
+	iMod = 0;
+
+	/* Hacemos busqueda secuencial del recargo a generar */
+	for (iInd = 0; iInd < stArrRec->iCont; iInd ++)
+	{
+		iResul = 1;
+		/* Buscamos por concepto */
+		if (stArrRec->stDatRec[iInd].iCodCon == stCon->iCodConcepto)
+			iResul = 0;
+		else
+			if (stArrRec->stDatRec[iInd].iCodCon > stCon->iCodConcepto)
+				break; /* me he pasado y no sigo buscando generados */
+		/* Buscamos por fechas */
+		if (!iResul)
+		{
+			iResul = strcmp(szFecValor,stArrRec->stDatRec[iInd].szFecDesde);
+			if (iResul >= 0)
+			{
+				iResul = strcmp(szFecValor,stArrRec->stDatRec[iInd].szFecHasta);
+				if (iResul <= 0)
+				{
+					iResul = 0;
+
+					/* Son iguales: Generar Recargo */
+					stConGen.iCodConcepto = stArrRec->stDatRec[iInd].iCodConGen;
+					dImpor = stArrRec->stDatRec[iInd].dImpUmbral;
+					/*dImpor = rint(dImpor * INVMIN) / INVMIN; */
+					dImpor = (dImpor * INVMIN) / INVMIN; 
+
+					/* Comprobamos el Importe Umbral */
+					if (stCon->dImporteDebe < dImpor) 
+						stConGen.dImporteDebe = 0.0;
+					else
+					{
+						if (stArrRec->stDatRec[iInd].iIndPorcen)
+						{
+							/* estamos tratando un porcentaje           */
+							/* cojer el procentaje que lleva el recargo */
+							dPrcRec = 0.0;
+							/* fprintf(stdout,"es un porcentaje %d\n",
+												stArrRec->stDatRec[iInd].iCodTipPorcen);
+							fprintf(stdout,"producto %d\n",stCon->iCodProducto);*/
+							iCodTip = stArrRec->stDatRec[iInd].iCodTipPorcen;
+							iResul = ifnGetPorcentaje(szFecValor,
+							stArrRec->stDatRec[iInd].iCodTipPorcen,
+							stCli.szCodCalCli,stCon->iCodProducto,&dPrcRec,stArrPor);
+							if (iResul != OK)
+								return iResul;
+							/* Importe por Dias de Venc. entre cien. */
+							stConGen.dImporteDebe = (stCon->dImporteDebe * 
+												stCon->iDiasVencimiento * dPrcRec / 100);
+							/* fprintf(stdout,"importe generado %f\n",
+												stConGen.dImporteDebe);*/
+							/*stConGen.dImporteDebe = rint(stConGen.dImporteDebe);*/
+							stConGen.dImporteDebe = (stConGen.dImporteDebe);
+
+						}
+						else  /* es cantidad */
+						{
+						/*	fprintf(stdout,"es una cantidad %d\n",
+											stArrRec->stDatRec[iInd].iCodTipCanti);*/
+							dCanRec = 0.0;
+							iCodTip = stArrRec->stDatRec[iInd].iCodTipCanti,
+							iResul = ifnGetCantidad(szFecValor,
+							stArrRec->stDatRec[iInd].iCodTipCanti,
+							stCli.szCodCalCli,stCon->iCodProducto,&dCanRec,stArrCan);
+
+							if (iResul != OK)
+								return iResul;
+							stConGen.dImporteDebe=(dCanRec * stCon->iDiasVencimiento);
+						/*	fprintf(stdout,"importe generado %f\n",
+												stConGen.dImporteDebe);*/
+							/*stConGen.dImporteDebe = rint(stConGen.dImporteDebe);*/
+							stConGen.dImporteDebe = (stConGen.dImporteDebe);
+							
+						}/* else de cantidad */
+ 
+					}/* else importe < importe umbral */ 
+					/*stConGen.dImporteDebe = rint(stConGen.dImporteDebe * INVMIN)/INVMIN;*/
+					stConGen.dImporteDebe = (stConGen.dImporteDebe * INVMIN)/INVMIN;
+
+					if (stConGen.dImporteDebe >= IMPORTEMINIMO)
+					{
+						/* Preparamos datos para insertar recargo */
+						stConGen.iCodTipDocum    = stCon->iCodTipDocum;
+               	stConGen.lCodAgente    =stCon->lCodAgente;
+               	strcpy(stConGen.szLetra        ,stCon->szLetra);
+               	stConGen.iCodCentremi    = stCon->iCodCentremi;
+               	stConGen.lNumSecuenci    = stCon->lNumSecuenci;
+						stConGen.iIndFacturado = 0;
+						stConGen.iIndContado = 0;
+						strcpy(stConGen.szFecEfectividad,szFecValor);
+						strcpy(stConGen.szFecVencimie   ,szFecValor);
+						strcpy(stConGen.szFecCaducida   ,szFecValor);
+						strcpy(stConGen.szFecAntiguedad ,szFecValor);
+						strcpy(stConGen.szFecPago,"");
+						stConGen.dImporteHaber = 0.0;
+						stConGen.lNumAbonado = stCon->lNumAbonado;
+						stConGen.iCodProducto = stCon->iCodProducto;
+						stConGen.lNumFolio = stCon->lNumFolio;
+						stConGen.lNumCuota = stCon->lNumCuota;
+						stConGen.iSecCuota = stCon->iSecCuota;
+						stConGen.lNumTransa = stCon->lNumTransa;
+						stConGen.lNumVenta = stCon->lNumVenta;
+
+						bResul = bfnDBIntCartera(&stConGen,stCli.lCodCliente);
+						if (!bResul)
+							return ERR_INTCARTE;
+
+						bResul = bfnDBIntRecarConc(stCli.lCodCliente,stCon,&stConGen,
+											stArrRec->stDatRec[iInd].iIndPorcen, iCodTip);
+						if (!bResul)
+							return ERR_INTRECARCONC;
+
+						iMod ++;
+					}/* si importe concepto mayor IMPORTEMINIMO */
+
+				}/* fecha igual o menor que fecha hasta */
+
+			}/* fecha igual o mayor  que fecha desde */
+
+		}/* if CodCon iguales */
+
+	}/* For del array */
+
+	*iModi = iMod;
+
+	return OK;
+
+}/* Fin ifnIntGenerado()*/
+
+/*****************************************************************************/
+BOOL bfnDBIntRecarConc(long lCodCliente,DATCON *stCon,DATCON *stConGen,
+							int iIndPorcen,int iCodTip)
+/** 
+Descripcion: Funcion que inserta el concepto con el concepto generado
+Salida	  : TRUE si todo ha ido correctamente.
+**/
+{
+
+   EXEC SQL BEGIN DECLARE SECTION;
+
+      long    lhCodCliente;
+      long    lhNumFolio;
+      int     ihCodConcepto;
+      int     ihColumna;
+      int     ihCodConceptoGen;
+      int     ihColumnaGen;
+      int     ihCodTipCanti;
+      int     ihCodTipPorcen;
+      short   shIndTipCanti;
+      short   shIndTipPorcen;
+      int     ihCodTipDocum;
+      long    lhCodAgente;
+      char    szhLetra[2];      EXEC SQL VAR szhLetra IS STRING(2);
+      int     ihCodCentremi;
+      long    lhNumSecuenci;
+
+   EXEC SQL END DECLARE SECTION;
+
+   /* fprintf(stdout,"Introducir en co_recarcon \n"); */
+
+   lhCodCliente = lCodCliente;
+   lhNumFolio = stConGen->lNumFolio;
+   ihCodTipDocum = stConGen->iCodTipDocum;
+   lhCodAgente   = stConGen->lCodAgente;
+   strcpy(szhLetra , stConGen->szLetra);
+   ihCodCentremi = stConGen->iCodCentremi;
+   lhNumSecuenci = stConGen->lNumSecuenci;
+   ihCodConceptoGen = stConGen->iCodConcepto;
+   ihColumnaGen = stConGen->iColumna;
+   ihCodConcepto = stCon->iCodConcepto;
+   ihColumna = stCon->iColumna;
+   if (iIndPorcen)
+   {
+      ihCodTipPorcen = iCodTip;
+      shIndTipPorcen = 0;
+      ihCodTipCanti = 0;
+      shIndTipCanti = ORA_NULL;
+   }
+   else
+   {
+      ihCodTipPorcen = 0;
+      shIndTipPorcen = ORA_NULL;
+      ihCodTipCanti = iCodTip;
+      shIndTipCanti = 0;
+   }
+
+   EXEC SQL
+   INSERT
+      INTO CO_RECARCONC
+            (COD_CLIENTE,
+            NUM_SECUENCI,
+            COD_TIPDOCUM,
+            COD_VENDEDOR_AGENTE,
+            LETRA,
+            COD_CENTREMI,
+            NUM_FOLIO,
+            COD_CONCEPTO,
+            COLUMNA,
+            COD_CONCEPTOGEN,
+            COLUMNAGEN,
+            COD_TIPCANTI,
+            COD_TIPPORCEN)
+      VALUES
+            (:lhCodCliente,
+            :lhNumSecuenci,
+            :ihCodTipDocum,
+            :lhCodAgente,
+            :szhLetra,
+            :ihCodCentremi,
+            :lhNumFolio,
+            :ihCodConcepto,
+            :ihColumna,
+            :ihCodConceptoGen,
+            :ihColumnaGen,
+            :ihCodTipCanti:shIndTipCanti,
+            :ihCodTipPorcen:shIndTipPorcen);
+
+   if (sqlca.sqlcode != 0)
+   {
+      /* fprintf(stderr,"Error al insertar en CO_RECARCONC %s\n",szfnORAerror());*/
+      return FALSE;
+   }
+
+   /* fprintf(stdout,"se ha insertado un registro en co_recarconc\n"); */
+   return TRUE;
+
+}/* Fin bfnDBIntRecarConc() */
+/*****************************************************************************/
+BOOL bfnDBModConcepto(char *szFecValor,DATCON *stCon,long lCodCliente)
+/**
+Descripcion: Funcion que modifica la fecha de vencimiento del concepto origen
+				por la fecha valor.
+Entrada:    szFecValor, es la fecha valor.
+				stCon, estructura de concepto origen.
+				lCodCliente, codigo de cliente.
+Salida:     TRUE, si todo va bien.
+				FALSE, si falla algo.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		long    lhCodCliente;
+		int     ihCodTipDocum;
+		long    lhCodAgente;  
+		char    *szhLetra;      EXEC SQL VAR szhLetra IS STRING(2);
+		char    szhFecValor[9]; EXEC SQL VAR szhFecValor IS STRING(9);
+		int     ihCodCentremi;
+		long    lhNumSecuenci;
+		int     ihCodConcepto;
+		int     ihColumna;
+		int	  ihCodProducto;
+
+	EXEC SQL END DECLARE SECTION;
+
+	BOOL  bResul;
+
+	/* Copiamos datos para actualizacion de fec_vencimiento */
+	strcpy(szhFecValor,szFecValor);
+	lhCodCliente  = lCodCliente;
+	ihCodTipDocum = stCon->iCodTipDocum;
+	lhCodAgente   = stCon->lCodAgente;
+	szhLetra      = stCon->szLetra;
+	ihCodCentremi = stCon->iCodCentremi;
+	lhNumSecuenci = stCon->lNumSecuenci;
+	ihCodConcepto = stCon->iCodConcepto;
+	ihColumna     = stCon->iColumna;
+	ihCodProducto = stCon->iCodProducto;
+
+	/* Actualizacion de Fecha */
+	EXEC SQL 
+	UPDATE CO_CARTERA
+	SET FEC_VENCIMIE     = TO_DATE(:szhFecValor,'yyyymmdd')
+	WHERE COD_TIPDOCUM   = :ihCodTipDocum
+	AND COD_CENTREMI   = :ihCodCentremi
+	AND NUM_SECUENCI   = :lhNumSecuenci
+	AND COD_VENDEDOR_AGENTE     = :lhCodAgente
+	AND LETRA          = :szhLetra
+	AND COD_CONCEPTO   = :ihCodConcepto
+	AND COD_PRODUCTO   = :ihCodProducto
+	AND COLUMNA        = :ihColumna;
+
+	if (sqlca.sqlcode != 0)
+	{
+		/*fprintf(stderr,"* Error: al modificar Fec Vencimiento %s\n", 
+							szfnORAerror());*/
+		return FALSE;
+	}
+
+	return TRUE;
+
+}/* Fin bfnDBModConcepto() */
+/*****************************************************************************/
+BOOL bfnDBGetDiaGracia(DATCLI *stCli, char *szFec, int iProducto)
+/**
+Descripcion: Funcion que obtiene los dias de gracia.
+Entrada:     stCli, estructura de cliente.
+             szFec, fecha del sistema.
+				 iProducto, producto.
+Salida:      TRUE, si todo va bien.
+             FALSE, si falla algo.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		char    szhCodCalCli[3]; EXEC SQL VAR szhCodCalCli IS STRING(3);
+		char    szhFec[9]      ; EXEC SQL VAR szhFec IS STRING(9);
+		int     ihProducto     ;
+		int     ihDiasGracia   ;
+
+	EXEC SQL END DECLARE SECTION;
+
+	ihProducto = iProducto;
+	strcpy(szhCodCalCli,stCli->szCodCalCli);
+	strcpy(szhFec,szFec);
+
+	EXEC SQL
+	SELECT DIAS_GRACIA
+	INTO :ihDiasGracia
+	FROM CO_DIASGRACIA
+	WHERE COD_CALCLIEN = :szhCodCalCli
+	AND COD_PRODUCTO = :ihProducto
+	AND (:szhFec BETWEEN TO_CHAR(FEC_DESDE,'yyyymmdd')
+	AND TO_CHAR(FEC_HASTA,'yyyymmdd'));
+
+	if (sqlca.sqlcode < 0)
+	{
+		/*fprintf(stderr,"* Error en Select Dias de Gracia%s\n",szfnORAerror());*/
+		return FALSE;
+	}
+
+	if (sqlca.sqlcode == NOT_FOUND)
+	{
+		stCli->iDiasGracia = 0;
+	}
+	else
+	{
+		stCli->iDiasGracia = ihDiasGracia;
+	}
+	return TRUE;
+
+}/* bfnDBGetDiaGracia()*/
+/***************************************************************************/
+BOOL bfnDBGetCalCliente(DATCLI *stCli)
+/**
+Descripcion: Funcion que obtiene la calidad de cliente.
+Entrada:     stCli, estructura de cliente.
+Salida:      TRUE, si todo va bien.
+             FALSE, si falla algo.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		char    szhCodCalCli[3]; EXEC SQL VAR szhCodCalCli IS STRING(3);
+		long    lhCodCliente   ;
+
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente = stCli->lCodCliente;
+
+	EXEC SQL
+	SELECT COD_CALCLIEN
+	INTO :szhCodCalCli
+	FROM GE_CLIENTES
+	WHERE COD_CLIENTE = :lhCodCliente;
+
+	if (sqlca.sqlcode < 0)
+	{
+		/* fprintf(stderr,"* Error en Select calidad Cliente %s\n",szfnORAerror());*/
+		return FALSE;
+	}
+
+	if (sqlca.sqlcode == NOT_FOUND)
+	{
+		/* fprintf(stderr,"* Error el cliente no tiene calidad de cliente %s\n",
+							szfnORAerror());*/
+		return FALSE;
+	}
+	else
+	{
+		strcpy(stCli->szCodCalCli,szhCodCalCli);
+	}
+	return TRUE;
+
+}/* bfnDBGetCalCliente()*/
+/***************************************************************************/
+
+BOOL bfnDBProxCol(long lCodCliente,DATCON *stCon)
+/**
+Descripcion: Funcion que obtiene la proxima columna.
+Entrada:     lCodcliente, codigo de cliente.
+             stCon, estructura de datos de concepto generado.
+Salida:      TRUE, si todo va bien.
+             FALSE, si falla algo.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		long    lhCodCliente ;
+		int     ihCodTipDocum;
+		long    lhCodAgente  ; 
+		char    *szhLetra    ; EXEC SQL VAR szhLetra IS STRING(2);
+		int     ihCodCentremi;
+		long    lhNumSecuenci;
+		int     ihCodConcepto;
+		int     ihColumna    ;
+		short   shIndColumna ;
+
+	EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente  = lCodCliente        ;
+	ihCodTipDocum = stCon->iCodTipDocum;
+	lhCodAgente   = stCon->lCodAgente  ;
+	szhLetra      = stCon->szLetra     ;
+	ihCodCentremi = stCon->iCodCentremi;
+	lhNumSecuenci = stCon->lNumSecuenci;
+	ihCodConcepto = stCon->iCodConcepto;
+
+	EXEC SQL 
+	SELECT MAX(COLUMNA)
+	INTO  :ihColumna:shIndColumna
+	FROM  CO_CARTERA
+	WHERE COD_TIPDOCUM   = :ihCodTipDocum
+	AND COD_VENDEDOR_AGENTE     = :lhCodAgente
+	AND LETRA          = :szhLetra
+	AND COD_CENTREMI   = :ihCodCentremi
+	AND NUM_SECUENCI   = :lhNumSecuenci
+	AND COD_CONCEPTO   = :ihCodConcepto;
+
+	if (sqlca.sqlcode < 0)
+	{
+		/* fprintf(stderr,"* Error al insertar en CO_CARTERA %s\n",szfnORAerror());*/
+		return FALSE ;
+	}
+	if (shIndColumna == ORA_NULL)
+	{
+		ihColumna = 1;
+	}
+	else
+	{
+		ihColumna++;
+	}
+
+	stCon->iColumna = ihColumna;
+
+	return TRUE;
+
+} /* Fin bfnDBProxCol() */
+/*****************************************************************************/
+
+/*****************************************************************************/
+int ifnDecimal_Recargo(int *inum_decimal)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    int iDecimal;
+EXEC SQL END DECLARE SECTION;    
+
+
+    EXEC SQL
+    SELECT GE_PAC_GENERAL.PARAM_GENERAL('num_decimal')
+    INTO   :iDecimal
+    FROM   DUAL;
+
+    if (sqlca.sqlcode)  {
+        fprintf(stderr,"Error en GE_PAC_GENERAL.PARAM_GENERAL %s\n",szfnORAerror());
+        return -1;
+    }
+
+    *inum_decimal=iDecimal;
+
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales())	{
+        printf("Error al realizar carga de bGetParamDecimales().");        
+	    return -1;
+	}
+
+    return 0;
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

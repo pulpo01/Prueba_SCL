@@ -1,0 +1,498 @@
+/*****************************************************************************/
+/*  Fichero    : MtoMinFact.pc                                               */
+/*  Descripcion: Monto Minimo Facturable                                     */
+/*****************************************************************************/
+#define _MTOMINFACT_PC_
+
+#include "MtoMinFact.h"
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*  Funcion : bfnMontoMin_Fact                                               */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+access BOOL bfnMontoMin_Fact (long lCliente)
+{
+int     iCntAboEmp, iCntAboInd, iCntPaso ;
+int     iNroCptoCB, iNroCpto, iCont ;
+double  dNumRegInit;
+REGMMF  stAboInd[NUM_ABONADOS_CLIENTE];
+REGMMF  stAboEmp[NUM_ABONADOS_CLIENTE];
+int     iPosAboCero;
+BOOL    bFlag_Exis ;
+int     i = 0;
+
+    iCntAboEmp  =0;
+    iCntAboInd  =0;
+    iPosAboCero =0;
+
+    memset (&stAboInd[0],0,sizeof(REGMMF)*NUM_ABONADOS_CLIENTE);
+    memset (&stAboEmp[0],0,sizeof(REGMMF)*NUM_ABONADOS_CLIENTE);
+
+    vDTrazasLog (modulo,"\n\t\t** Function bfnMontoMin_Fact MMF **"
+                        "\n\t\t=> lCliente................. [%ld]"
+                        ,LOG03      ,lCliente );
+
+    dNumRegInit=stPreFactura.iNumRegistros;
+
+    for (iNroCpto=0;iNroCpto < dNumRegInit ;iNroCpto++)
+    {
+        if (stPreFactura.A_PFactura[iNroCpto].iCodConcepto==stDatosGener.iCodAbonoCel)
+        {
+            if (bfnValidaPlanTarifMFF(stPreFactura.A_PFactura[iNroCpto].szCodPlanTarif))
+            {
+                if (strcmp(stPreFactura.A_PFactura[iNroCpto].szTipPlanTarif, "I")==0)
+                {
+                    bFlag_Exis=FALSE;
+                    for (iCont=0;iCont<iCntAboInd;iCont++)
+                    {
+                        if ((stAboInd[iCont].lNumAbonado==stPreFactura.A_PFactura[iNroCpto].lNumAbonado)
+                            && (strcmp(stAboInd[iCont].szPlantarif,stPreFactura.A_PFactura[iNroCpto].szCodPlanTarif)==0))
+                        {
+                            iCntPaso=iCntAboInd ;
+                            iCntAboInd=iCont    ;
+                            bFlag_Exis=TRUE     ;
+                            break;
+                        }
+                    }
+                    stAboInd[iCntAboInd].lNumAbonado        =stPreFactura.A_PFactura[iNroCpto].lNumAbonado    ;
+                    strcpy(stAboInd[iCntAboInd].szPlantarif ,stPreFactura.A_PFactura[iNroCpto].szCodPlanTarif );
+                    stAboInd[iCntAboInd].dImpCargoBasico    +=stPreFactura.A_PFactura[iNroCpto].dImpFacturable;
+                    stAboInd[iCntAboInd].iPosCargoBasico    =iNroCpto;
+                    if ( bFlag_Exis )
+                    {
+                        iCntAboInd=iCntPaso;
+                    }else {
+                        iCntAboInd++;
+                    }
+                }
+                else if (  (strcmp(stPreFactura.A_PFactura[iNroCpto].szTipPlanTarif, "E")==0)
+                        || (strcmp(stPreFactura.A_PFactura[iNroCpto].szTipPlanTarif, "H")==0) )
+                {
+                    bFlag_Exis=FALSE;
+                    for (iCont=0;iCont<iCntAboEmp;iCont++)
+                    {
+                        if ((stAboEmp[iCont].lNumAbonado==stPreFactura.A_PFactura[iNroCpto].lNumAbonado)
+                            && (strcmp(stAboEmp[iCont].szPlantarif,stPreFactura.A_PFactura[iNroCpto].szCodPlanTarif)==0))
+                        {
+                            iCntPaso=iCntAboEmp ;
+                            iCntAboEmp=iCont    ;
+                            bFlag_Exis=TRUE     ;
+                            break;
+                        }
+                    }
+                    if (stPreFactura.A_PFactura[iNroCpto].lNumAbonado<=0)
+                    {
+                        iPosAboCero=iCntAboEmp;
+                        stAboEmp[iPosAboCero].dImpCargoBasico +=stPreFactura.A_PFactura[iNroCpto].dImpFacturable;
+                    }
+                    stAboEmp[iCntAboEmp].lNumAbonado        = stPreFactura.A_PFactura[iNroCpto].lNumAbonado;
+                    strcpy(stAboEmp[iCntAboEmp].szPlantarif , stPreFactura.A_PFactura[iNroCpto].szCodPlanTarif);
+                    stAboEmp[iCntAboEmp].iPosCargoBasico    = iNroCpto;
+                    if ( bFlag_Exis )
+                    {
+                        iCntAboEmp=iCntPaso;
+                    }else {
+                        iCntAboEmp++;
+                    }
+                }
+            }
+        }
+    }
+
+    vDTrazasLog (modulo,"\n\t\t\t=>Nro. de Abonados Individuales. [%d]"
+                        "\n\t\t\t=>Nro. de Abonados Empresa...... [%d]\n"
+                        ,LOG03,iCntAboInd,iCntAboEmp);
+
+    for (iCont=0;iCont < iCntAboInd ;iCont++)
+    {
+        for (iNroCpto=0;iNroCpto < dNumRegInit ;iNroCpto++)
+        {
+            if (stAboInd[iCont].lNumAbonado==stPreFactura.A_PFactura[iNroCpto].lNumAbonado)
+            {
+                if (bBuscaCodTraficoLocal(stPreFactura.A_PFactura[iNroCpto].iCodConcepto))
+                {
+                    stAboInd[iCont].dImpTrafico+=stPreFactura.A_PFactura[iNroCpto].dImpFacturable;
+                }
+            }
+        }
+    }
+    for (iCont=0;iCont < iCntAboEmp ;iCont++)
+    {
+        for (iNroCpto=0;iNroCpto < dNumRegInit ;iNroCpto++)
+        {
+            if (stAboEmp[iCont].lNumAbonado==stPreFactura.A_PFactura[iNroCpto].lNumAbonado)
+            {
+                if (bBuscaCodTraficoLocal(stPreFactura.A_PFactura[iNroCpto].iCodConcepto))
+                {
+                    stAboEmp[iPosAboCero].dImpTrafico+=stPreFactura.A_PFactura[iNroCpto].dImpFacturable;
+                }
+            }
+        }
+    }
+
+    for (iCont=0;iCont < iCntAboInd ;iCont++)
+    {
+        vDTrazasLog (modulo,"\n\t\t\t=>Imp. Ind. Cargo Basico. [%.0f]"
+                            "\n\t\t\t=>Imp. Ind. Trafico...... [%.0f]\n"
+                            ,LOG05
+                            ,stAboInd[iCont].dImpCargoBasico
+                            ,stAboInd[iCont].dImpTrafico);
+        if (stAboInd[iCont].dImpTrafico<stAboInd[iCont].dImpCargoBasico)
+        {
+
+            if (!bfnGeneraCptoMMF(stAboInd[iCont].iPosCargoBasico
+                                , stAboInd[iCont].dImpCargoBasico
+                                , stAboInd[iCont].dImpTrafico))
+            {
+                vDTrazasError(modulo,"\t\tGenerando Concepto MMF Individual",LOG01);
+                return (FALSE);
+            }
+        }
+        if (!bfnRebajaCargoBasico(stAboInd[iCont].iPosCargoBasico))
+        {
+            vDTrazasError(modulo,"\t\tRebajando Cargo Basico Individual",LOG01);
+            return (FALSE);
+        }
+    }
+
+    if (iCntAboEmp>0)
+    {
+        vDTrazasLog (modulo,"\n\t\t\t=>Imp. Emp. Cargo Basico. [%.0f]"
+                            "\n\t\t\t=>Imp. Emp. Trafico...... [%.0f]\n"
+                            ,LOG05
+                            ,stAboEmp[iPosAboCero].dImpCargoBasico
+                            ,stAboEmp[iPosAboCero].dImpTrafico);
+
+        if (stAboEmp[iPosAboCero].dImpTrafico< stAboEmp[iPosAboCero].dImpCargoBasico)
+        {
+            if (!bfnGeneraCptoMMF(stAboEmp[iPosAboCero].iPosCargoBasico
+                                , stAboEmp[iPosAboCero].dImpCargoBasico
+                                , stAboEmp[iPosAboCero].dImpTrafico))
+            {
+                vDTrazasError(modulo,"\t\tGenerando Concepto MMF Empresa",LOG01);
+                return (FALSE);
+            }
+        }
+        if (!bfnRebajaCargoBasico(stAboEmp[iPosAboCero].iPosCargoBasico))
+        {
+            vDTrazasError(modulo,"\t\tRebajando Cargo Basico Empresa",LOG01);
+            return (FALSE);
+        }
+    }
+
+    /* [JQH] Validar si flag de Validacion de importe esta activado */
+    if (stDatosGener.lIndValImporte == 1L )
+    { 
+        for(iNroCpto=0;iNroCpto< stPreFactura.iNumRegistros;iNroCpto++)
+        {
+            if( abs(stPreFactura.A_PFactura[iNroCpto].dImpConcepto) <= (double)(stDatosGener.lMontoImporte) )
+            {
+                vDTrazasLog(modulo,"\t [JQH] Procediendo a trasladar Registros... iNroCpto : [%d]",LOG05, iNroCpto);
+                for(i=iNroCpto;i<stPreFactura.iNumRegistros-1;i++)
+                {
+                    memcpy(&stPreFactura.A_PFactura[i], &stPreFactura.A_PFactura[i+1], sizeof(FAPFACTURA));
+               
+                }
+            
+                /* Antes del siguiente bucle, disminuimos en 1 iNroCpto para que tome el trasladado hacia arriba */
+                iNroCpto--;
+                /* Limpiamos el ultimo registro */
+                vfnLimpiarRegs(stPreFactura.iNumRegistros-1, stPreFactura.iNumRegistros);
+                /* Decrementar la cantidad de registros validos */
+                stPreFactura.iNumRegistros--;
+                
+            }
+            
+        }
+
+    }
+
+    return (TRUE);
+}/************************ bfnMontoMin_Fact **********************************/
+
+
+/*****************************************************************************/
+/* bfnGeneraCptoMMF: Genera el nuevo concepto de la diferencia del cargo     */
+/*                   basico (MMF) y el trafico local                         */
+/*                                                                           */
+/*****************************************************************************/
+BOOL bfnGeneraCptoMMF (long lNroConcCB, double  dImpCargoBasico, double dImpTrafico)
+{
+    int     iCodConcep          =0 ;
+    char    szDesConcep [1025]  ="";
+    int     iNumConceptos       =0 ;
+    double  dDifConcepto        =0 ;
+
+    /*if (stPreFactura.iNumRegistros >= MAX_CONCFACTUR)
+    {
+        iDError (szExeName,ERR035,vInsertarIncidencia);
+        return FALSE;
+    }*/
+
+    dDifConcepto= dImpCargoBasico - dImpTrafico;
+
+    vDTrazasLog (modulo,"\n\t\t\tEntrada en bfnGeneraCptoMMF"
+                        "\n\t\t\t=> Nro. Abonado......[%ld] "
+                        "\n\t\t\t=> Imp. Cargo Basico.[%ld] "
+                        "\n\t\t\t=> Imp. Trafico......[%ld] "
+                        ,LOG05,stPreFactura.A_PFactura[lNroConcCB].lNumAbonado ,
+                        dImpCargoBasico,dImpTrafico );
+
+    iNumConceptos = stPreFactura.iNumRegistros;
+
+    stPreFactura.A_PFactura[iNumConceptos].lNumAbonado     =stPreFactura.A_PFactura[lNroConcCB].lNumAbonado     ;
+                                                                                               
+    stPreFactura.A_PFactura[iNumConceptos].lNumProceso     =stPreFactura.A_PFactura[lNroConcCB].lNumProceso     ;
+    stPreFactura.A_PFactura[iNumConceptos].lCodCliente     =stPreFactura.A_PFactura[lNroConcCB].lCodCliente     ;
+                            
+    if (!bfnGetConcParam ( 21, &iCodConcep, szDesConcep ))
+    {                       
+        vDTrazasError(modulo,"\n\t\tObteniendo el Codigo de Concepto desde FAD_PARAMETROS ",LOG01);
+        return (FALSE);
+    }
+
+            stPreFactura.A_PFactura[iNumConceptos].iCodConcepto    =iCodConcep;
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szDesConcepto   ,szDesConcep);
+
+    if (!bGetMaxColPreFa
+        (stPreFactura.A_PFactura[iNumConceptos].iCodConcepto       ,
+        &stPreFactura.A_PFactura[iNumConceptos].lColumna           ))
+        return FALSE;
+
+            stPreFactura.A_PFactura[iNumConceptos].iCodProducto    =stPreFactura.A_PFactura[lNroConcCB].iCodProducto    ;
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodMoneda     ,stPreFactura.A_PFactura[lNroConcCB].szCodMoneda     );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szFecValor      ,stPreFactura.A_PFactura[lNroConcCB].szFecValor      );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szFecEfectividad,stPreFactura.A_PFactura[lNroConcCB].szFecEfectividad);
+
+            stPreFactura.A_PFactura[iNumConceptos].dImpConcepto    =dDifConcepto;
+            stPreFactura.A_PFactura[iNumConceptos].dImpMontoBase   =0;
+            stPreFactura.A_PFactura[iNumConceptos].dImpFacturable  =dDifConcepto;
+                                                  
+            stPreFactura.A_PFactura[iNumConceptos].lSegConsumido   =0;
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodRegion     ,stPreFactura.A_PFactura[lNroConcCB].szCodRegion     );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodProvincia  ,stPreFactura.A_PFactura[lNroConcCB].szCodProvincia  );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodCiudad     ,stPreFactura.A_PFactura[lNroConcCB].szCodCiudad     );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodModulo     ,stPreFactura.A_PFactura[lNroConcCB].szCodModulo     );
+            stPreFactura.A_PFactura[iNumConceptos].lCodPlanCom     =stPreFactura.A_PFactura[lNroConcCB].lCodPlanCom     ;
+            stPreFactura.A_PFactura[iNumConceptos].iCodCatImpos    =stPreFactura.A_PFactura[lNroConcCB].iCodCatImpos    ;
+            stPreFactura.A_PFactura[iNumConceptos].iCodPortador    =stPreFactura.A_PFactura[lNroConcCB].iCodPortador    ;
+            stPreFactura.A_PFactura[iNumConceptos].iIndFactur      =stPreFactura.A_PFactura[lNroConcCB].iIndFactur      ;
+            stPreFactura.A_PFactura[iNumConceptos].lNumUnidades    =stPreFactura.A_PFactura[lNroConcCB].lNumUnidades    ; /* Incorporado por PGonzaleg 1-03-2002 */
+            stPreFactura.A_PFactura[iNumConceptos].iIndEstado      =stPreFactura.A_PFactura[lNroConcCB].iIndEstado      ;
+
+            stPreFactura.A_PFactura[iNumConceptos].iCodTipConce    =stPreFactura.A_PFactura[lNroConcCB].iCodTipConce    ;
+            stPreFactura.A_PFactura[iNumConceptos].lCodCiclFact    =stPreFactura.A_PFactura[lNroConcCB].lCodCiclFact    ;
+            stPreFactura.A_PFactura[iNumConceptos].iCodConceRel    =0;
+            stPreFactura.A_PFactura[iNumConceptos].lColumnaRel     =0;
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szNumTerminal   ,stPreFactura.A_PFactura[lNroConcCB].szNumTerminal   );
+            stPreFactura.A_PFactura[iNumConceptos].lCapCode        =stPreFactura.A_PFactura[lNroConcCB].lCapCode        ;
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szNumSerieMec   ,stPreFactura.A_PFactura[lNroConcCB].szNumSerieMec   );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szNumSerieLe    ,stPreFactura.A_PFactura[lNroConcCB].szNumSerieLe    );
+            stPreFactura.A_PFactura[iNumConceptos].iFlagImpues     =stPreFactura.A_PFactura[lNroConcCB].iFlagImpues     ;
+            stPreFactura.A_PFactura[iNumConceptos].iFlagDto        =stPreFactura.A_PFactura[lNroConcCB].iFlagDto        ;
+            stPreFactura.A_PFactura[iNumConceptos].fPrcImpuesto    =stPreFactura.A_PFactura[lNroConcCB].fPrcImpuesto    ;
+            stPreFactura.A_PFactura[iNumConceptos].dValDto         =stPreFactura.A_PFactura[lNroConcCB].dValDto         ;
+            stPreFactura.A_PFactura[iNumConceptos].iTipDto         =stPreFactura.A_PFactura[lNroConcCB].iTipDto         ;
+            stPreFactura.A_PFactura[iNumConceptos].lNumVenta       =stPreFactura.A_PFactura[lNroConcCB].lNumVenta       ;
+
+            stPreFactura.A_PFactura[iNumConceptos].lNumTransaccion =stPreFactura.A_PFactura[lNroConcCB].lNumTransaccion ;
+            stPreFactura.A_PFactura[iNumConceptos].lNumCargo       =stPreFactura.A_PFactura[lNroConcCB].lNumCargo       ;
+            stPreFactura.A_PFactura[iNumConceptos].iMesGarantia    =stPreFactura.A_PFactura[lNroConcCB].iMesGarantia    ;
+
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szNumGuia       ,stPreFactura.A_PFactura[lNroConcCB].szNumGuia       );
+                                                                                                       
+            stPreFactura.A_PFactura[iNumConceptos].iIndAlta        =stPreFactura.A_PFactura[lNroConcCB].iIndAlta        ;
+            stPreFactura.A_PFactura[iNumConceptos].iIndSuperTel    =stPreFactura.A_PFactura[lNroConcCB].iIndSuperTel    ;
+            stPreFactura.A_PFactura[iNumConceptos].iNumPaquete     =stPreFactura.A_PFactura[lNroConcCB].iNumPaquete     ;
+            stPreFactura.A_PFactura[iNumConceptos].iIndCuota       =stPreFactura.A_PFactura[lNroConcCB].iIndCuota       ;
+            stPreFactura.A_PFactura[iNumConceptos].lSeqCuotas      =stPreFactura.A_PFactura[lNroConcCB].lSeqCuotas      ;
+            stPreFactura.A_PFactura[iNumConceptos].iNumCuotas      =stPreFactura.A_PFactura[lNroConcCB].iNumCuotas      ;
+            stPreFactura.A_PFactura[iNumConceptos].iOrdCuota       =stPreFactura.A_PFactura[lNroConcCB].iOrdCuota       ;
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodCuota      ,stPreFactura.A_PFactura[lNroConcCB].szCodCuota      );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szFecVenta      ,stPreFactura.A_PFactura[lNroConcCB].szFecVenta      );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodPlanTarif  ,stPreFactura.A_PFactura[lNroConcCB].szCodPlanTarif  );
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szCodCargoBasico,stPreFactura.A_PFactura[lNroConcCB].szCodCargoBasico);
+    strcpy( stPreFactura.A_PFactura[iNumConceptos].szTipPlanTarif  ,stPreFactura.A_PFactura[lNroConcCB].szTipPlanTarif  );
+            stPreFactura.A_PFactura[iNumConceptos].bOptPenaliza    =stPreFactura.A_PFactura[lNroConcCB].bOptPenaliza    ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptCargos      =stPreFactura.A_PFactura[lNroConcCB].bOptCargos      ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptServicios   =stPreFactura.A_PFactura[lNroConcCB].bOptServicios   ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptAbonos      =stPreFactura.A_PFactura[lNroConcCB].bOptAbonos      ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptTrafico     =stPreFactura.A_PFactura[lNroConcCB].bOptTrafico     ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptCuotas      =stPreFactura.A_PFactura[lNroConcCB].bOptCuotas      ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptDescuento   =stPreFactura.A_PFactura[lNroConcCB].bOptDescuento   ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptImpuesto    =stPreFactura.A_PFactura[lNroConcCB].bOptImpuesto    ;
+            stPreFactura.A_PFactura[iNumConceptos].bOptArriendo    =stPreFactura.A_PFactura[lNroConcCB].bOptArriendo    ;
+
+    /* stPreFactura.iNumRegistros++; */
+    if(bfnIncrementarIndicePreFactura()==FALSE)
+    {
+	vDTrazasLog  (szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+	vDTrazasError(szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+	return FALSE;
+    }
+
+    return (TRUE);
+}
+
+/*****************************************************************************/
+/* bfnRebajaCargoBasico : Deja en 0 el concepto de Cargo basico              */
+/*                                                                           */
+/*****************************************************************************/
+BOOL bfnRebajaCargoBasico(int iNroCpto)
+{
+    vDTrazasLog (modulo,"\n\t\t\tEntrada en bfnRebajaCargoBasico"
+                        "\n\t\t\t=> Pos. Abonado [%ld] "
+                        ,LOG05,iNroCpto);
+
+    stPreFactura.A_PFactura[iNroCpto].dImpConcepto    =0;
+    stPreFactura.A_PFactura[iNroCpto].dImpMontoBase   =0;
+    stPreFactura.A_PFactura[iNroCpto].dImpFacturable  =0;
+    return (TRUE);
+}
+
+/*****************************************************************************/
+/* bBuscaCodTraficoLocal : Funcion que verifica que el ind_tabla sea = 1 para*/
+/*                        un codigo de concepto,en pstTaConcepFact.          */
+/*****************************************************************************/
+BOOL bBuscaCodTraficoLocal (int iCodConcepto)
+{
+    long lCont;
+
+
+/*    TACONCEPFACT  stkey                   ;
+    TACONCEPFACT  *pConcepto= (TACONCEPFACT *)NULL;
+
+    memset (&stkey, 0, sizeof (TACONCEPFACT));
+
+    stkey.iCodFacturacion= iCodConcepto;
+
+    if ((pConcepto = (TACONCEPFACT *)bsearch (&stkey, pstTaConcepFact, NUM_TACONCEPFACT,
+                            sizeof (TACONCEPFACT), ifnCmpCodConcep))==(TACONCEPFACT *)NULL)
+    {
+        vDTrazasError(modulo,"\t\tBusqueda binaria en pstTaConcepFact ",LOG01);
+        return (FALSE);
+    }
+    else
+    {
+        if (pConcepto->iIndTabla==1)
+        {
+            return (TRUE);
+        }
+    }
+    return (FALSE);
+*/
+
+    vDTrazasLog (modulo,"\t\t\tEntrada en bBuscaCodTraficoLocal \n"
+                        "\t\t\t=> Cod.Concepto [%d] "
+                        ,LOG05,iCodConcepto);
+
+    for (lCont=0;lCont < NUM_TACONCEPFACT ;lCont++)
+    {
+        if (iCodConcepto== pstTaConcepFact[lCont].iCodFacturacion)
+        {
+            if (pstTaConcepFact[lCont].iIndTabla==1)
+            {
+                return (TRUE);
+            }
+            return (FALSE);
+        }
+    }
+    return (FALSE);
+
+}/********************** Final bBuscaCodTraficoLocal *************************/
+
+
+/*****************************************************************************/
+/* ifnCmpCodConcep : Funcion para la busqueda binaria de codigo de conceptos */
+/*                  en pstTaConcepFact.                                      */
+/*****************************************************************************/
+int ifnCmpCodConcep(const void* cad1,const void* cad2)
+{
+    return (
+           (((TACONCEPFACT *)cad1)->iCodFacturacion < ((TACONCEPFACT *)cad2)->iCodFacturacion) ?-1:
+           (((TACONCEPFACT *)cad1)->iCodFacturacion == ((TACONCEPFACT *)cad2)->iCodFacturacion) ?0:1);
+
+}/************************ Final ifnCmpCodConcep *****************************/
+
+
+
+/*****************************************************************************/
+/* bfnValidaPlanTarifMFF : Valida que el plan tarifario entregado posea el   */
+/*                         indicador "P" en el campo "Ind_Francons"          */
+/*****************************************************************************/
+BOOL bfnValidaPlanTarifMFF (char *szPlanTarif)
+{
+    long x;
+    vDTrazasLog (modulo,"\t\t\tEntrada en bfnValidaPlanTarifMFF [%s] "
+                        ,LOG05,szPlanTarif);
+
+    for (x=0;x<NUM_PLANTARIF;x++)
+    {
+        if (strcmp(szPlanTarif,pstPlanTarif[x].szCodPlanTarif) == 0 )
+        {
+            if (strcmp(pstPlanTarif[x].szInd_Francons,"P")== 0)
+            {
+                return (TRUE);
+            }
+            return (FALSE);
+        }
+    }
+    return (FALSE);
+}
+
+/*****************************************************************************/
+/* bfnGetConcParam : Devuelve el concepto y su descripcion de la tabla de    */
+/*                   parametros                                              */
+/*****************************************************************************/
+BOOL bfnGetConcParam (long lCodParametro, int *iCodConcep, char *szDesConcep)
+{
+ EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodParametro = 0;
+    int  ihCodConcep    = 0;
+    char szhDesConcep  [1025] ; EXEC SQL VAR szhDesConcep  IS STRING (1025);
+ EXEC SQL END DECLARE SECTION;
+
+    lhCodParametro =lCodParametro;
+
+    EXEC SQL
+        SELECT VAL_NUMERICO, VAL_CARACTER
+          INTO :ihCodConcep, :szhDesConcep
+          FROM FAD_PARAMETROS
+         WHERE COD_PARAMETRO= :lhCodParametro;
+
+    if (sqlca.sqlcode != SQLOK)
+    {
+        return (FALSE);
+    }
+    *iCodConcep=ihCodConcep;
+    strcpy (szDesConcep, szhDesConcep);
+    return (TRUE);
+}
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

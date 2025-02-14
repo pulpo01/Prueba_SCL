@@ -1,0 +1,1155 @@
+/* Control de Morosidad por Distribuidores */
+/* 
+	Genera un archivo plano que contenga los candidatos a bloqueos de facturacion del 
+	canal de venta de distribucion con : mas de 30 dias de suspencion (cualquier tipo), 
+	venta de distribuidor y cuyos contratos tengan una permanencia en la empresa no 
+	superior a 6 meses (desde la fecha de contrato)
+	ultima compilacion : 27-Marzo-2000
+*/
+
+/*------------------------------------------------------------------------------------------*/
+
+#include <geora.h>
+#include <genco.h>
+#include "MorDealer.h"
+
+EXEC SQL INCLUDE sqlca;
+ARCHMOROSOS   stArchMorosos	[iNum];
+DATOSCLIENT   stDatosCliente ;
+DATOSABONAD   stDatosAbonado ;
+LINEACOMANDO  stLineaComando ;
+DOCSPENDVENC  stDocsPendVenc [1000]; /* numero maximo hipotetico */
+PATHARCH      stArchivos;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	rg_suspendidos	sthSuspendidos;
+	char  szhEsteDia[9];     /* Dia actual */
+	char  szhEsteMomento[7]; /* Hora actual */
+	char  szhTreintaDias[9]; /* Hace 30 dias */
+	char  szhSeisMeses[9];   /* Hace 6 meses */
+EXEC SQL END DECLARE SECTION;
+
+char szFecJuliana [4] = "";
+char szFecHora   [15] = "";
+int iContDocs=0;
+
+int main(int argc, char *argv[])
+{
+	char modulo[]="main";
+	
+	char status[16]="";
+	
+	fprintf( stdout, "\n\t\t\t ***********************************"
+					 "\n\t\t\t ******** Mor_Distrib v 0.0 ********"
+					 "\n\t\t\t ***********************************"
+					 "\n\t\t\t ** Morosidad por Distribuidores. **" 
+					 "\n\t\t\t ***********************************"
+					 "\n\t\t\t ***** %s ****"
+					 "\n\t\t\t ***********************************"
+					 "\n\n", szGetTime(1)); 
+    memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+	memset(status,0,sizeof(status));
+
+	if( !bfnValidaParametros(argc,argv,&stLineaComando))   
+		return FALSE;
+
+	if( !bfnIniciarProceso( &stLineaComando ) )
+		return FALSE;
+
+	if( !bfnObtieneFechas())
+		return FALSE;
+
+	/* Comienza el procesamiento propiamente tal */
+	
+	/* EXEC SQL SET TRANSACTION READ ONLY; */ /* rbr */
+	
+	if( !bfnProcesaSuspendidos(&stLineaComando))
+	{
+		fprintf(stderr, "\n\t - Error en el procesamiento de archivos de maestros -\n\n");
+		return FALSE;
+	}
+
+	/* desconexion de la base de datos */
+	if( bfnDisconnectORA(0) )
+		vDTrazasLog(modulo,"\n%s <<Desconectado de  ORACLE>> ",LOG03, szGetTime(1));
+	
+	fclose( stStatus.ErrFile );
+	fclose( stStatus.LogFile );
+
+	return TRUE;
+} /* main */
+
+
+/***************************************************************************/
+/* bfnValidaParametros */
+/***************************************************************************/
+BOOL bfnValidaParametros (int argc, char *argv[], LINEACOMANDO *pstLineaCom)
+{          
+	       char  modulo[]="bfnValidaParametros";
+
+	extern char  *optarg;
+	extern  int  optind, opterr, optopt;
+	        int  iOpt=0;
+	       char  opt[] = ":u:l:h";
+ 	       char  *psztmp = "";
+	        int  Userflag=FALSE;
+ 	        int  Logflag=FALSE;
+		   char  szAux[8]="";
+		   
+	opterr=0;
+  
+	/* Inicio de los Valores por Defecto */    
+	pstLineaCom->iLogLevel = iLOGNIVEL_DEF ;
+	stStatus.LogNivel = pstLineaCom->iLogLevel;
+	
+	if(argc == 1)
+	{
+		fprintf (stdout,"\n\t<< Ejecucion sin parametros : Asume valores por defecto >>\n");
+		return TRUE;
+	}
+
+	/* Analizo los argumentos recibidos */
+	while ( (iOpt = getopt(argc, argv, opt) ) != EOF)
+	{
+		switch(iOpt)
+		{
+			case 'h': 
+					fprintf (stderr,"\n%s\n",szUsage);
+					return FALSE;
+
+			case 'u':  
+ 				if(Userflag==FALSE)
+				{
+	                strcpy(pstLineaCom->szUsuarioOra, optarg);                      
+    	            Userflag=TRUE;
+					if ( (psztmp=(char *)strstr(pstLineaCom->szUsuarioOra,"/"))==(char *)NULL)
+					{
+						fprintf (stderr,"\n\t<< Error : Usuario Oracle no valido. Requiere '/' >>\n%s\n",szUsage);
+						return FALSE;
+					}
+					else
+					{
+						strncpy (pstLineaCom->szOraAccount,pstLineaCom->szUsuarioOra,psztmp-pstLineaCom->szUsuarioOra);
+						strcpy  (pstLineaCom->szOraPasswd, psztmp+1)                 ;
+					}
+				}
+				else
+				{
+					fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+					return FALSE;
+				}
+				break;
+
+			case 'l': 
+				if(Logflag==FALSE)
+				{
+                    pstLineaCom->iLogLevel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+					stStatus.LogNivel = pstLineaCom->iLogLevel;
+                    Logflag=TRUE;
+				}
+				else
+				{
+					fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+					return FALSE;
+				}
+				break;
+
+			case '?':
+				fprintf (stderr,"\n\t<< Error : opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+				return FALSE;
+
+			case ':':
+				fprintf (stderr,"\n\t<< Error : Falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+				return FALSE;
+				
+		} /*endswitch*/
+		
+	} /*endwhile*/
+	
+	fprintf (stdout,"\n\t<< Parametros Validados OK >>\n");
+	return TRUE;
+} /* bfnValidaParametros */
+
+/***************************************************************************/
+/* bfnIniciarProceso */
+/***************************************************************************/
+BOOL bfnIniciarProceso(LINEACOMANDO *pstLineaComando)
+{
+	char modulo[] = "bfnIniciarProceso";
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhPathTeca [255]	; EXEC SQL VAR szhPathTeca  IS STRING(255);
+	EXEC SQL END DECLARE SECTION;
+	
+	/* Conexion a la Base de Datos */
+/*	if( bfnConnectORA( pstLineaComando->szOraAccount, pstLineaComando->szOraPasswd ) ) */
+	if( !bfnOraConnecta( pstLineaComando->szOraAccount, pstLineaComando->szOraPasswd ) )	
+	{
+		fprintf(stderr, "\n\tERROR : Usuario/Password No valido\n");
+		return FALSE;
+	}
+	
+	fprintf( stdout, "\n\t----------------------------------------------------"
+	"\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx      "
+	"\n\t----------------------------------------------------", pstLineaComando->szOraAccount );
+	
+	/* Obtencion de Fecha y Hora en formato Oracle (de hoy) y Juliano (de mañana) */
+	sprintf( szFecHora, "%s\0", szGetTime(7) );
+	fprintf( stdout, "\n\tFecha Hora        : [%s]", szFecHora );
+	sprintf( szFecJuliana, "%03d\0", (atoi(szGetTime(6))+1) );
+	fprintf( stdout, "\n\tFecha Juliana(+1) : [%s]", szFecJuliana );
+	fprintf( stdout, "\n\t----------------------------------------------------" );
+	
+	/* Creando Archivos de Logs y Errores */
+	if( !bfnDBCreaDirPath("PATHLOG", stArchivos.szPathLog ) )
+		return FALSE;
+	
+	fprintf(stdout, "\n\t Preparando Archivos de Log ... (LOG0%d)"
+	"\n\t----------------------------------------------------", stStatus.LogNivel);
+	
+	sprintf( stStatus.ErrName, "%s/MorDealer_%s.err", stArchivos.szPathLog, szFecHora ); 
+	
+	if( ( stStatus.ErrFile = fopen( stStatus.ErrName, "a" ) ) == (FILE*)NULL )
+	{	
+		fprintf(stderr, "\n\t<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+		return FALSE;    
+	}
+	
+	vDTrazasError(modulo, "%s << Abre Archivo de Errores >>", LOG03, szGetTime(1));
+	fprintf(stdout, "\n\t [%s] ",stStatus.ErrName);
+	
+	sprintf( stStatus.LogName, "%s/MorDealer_%s.log", stArchivos.szPathLog, szFecHora ); 
+	if( ( stStatus.LogFile = fopen( stStatus.LogName, "a" ) ) == (FILE*)NULL ) /* "wb+" */
+	{	
+		fprintf( stderr, "\n\t<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName );
+		vDTrazasError( modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName );
+		return FALSE;    
+	}
+	
+	vDTrazasLog( modulo, "%s << Abre Archivo de Log >>", LOG03, szGetTime(1) );
+	
+	vDTrazasLog (modulo,"\n\t----------------------------------------------------"
+	"\n\tConectado a ORACLE: Usuario %s Passwd xxxxxxxx      "
+	"\n\t----------------------------------------------------", LOG03, pstLineaComando->szOraAccount );
+	
+	fprintf( stdout, "\n\t [%s] ", stStatus.LogName );
+	
+	/* Creando Archivos de Salida para los Maestros */
+	EXEC SQL SELECT PATHTECA  INTO :szhPathTeca  FROM CO_DATGEN;
+	if( SQLCODE )
+	{
+		fprintf(stderr, "\n\n\t ERROR al obtener el path de los archivos de salida : %s",SQLERRM);
+		vDTrazasError(modulo,"en select from CO_DATGEN : %s ",LOG01,SQLERRM);
+		return FALSE;
+	}
+	
+	strcpy(stArchivos.szPathCtlMorosos      , szhPathTeca);
+	strcpy(stArchivos.szPathMorosos         , szhPathTeca);
+	
+	fprintf(stdout,"\n\t----------------------------------------------------" );
+	fprintf(stdout, "\n\t Preparando Archivos de Salida ... "
+	"\n\t----------------------------------------------------" );
+	
+	/*
+	sprintf(stArchivos.szPathCtlMorosos,"%sMorDealer_%s.ctl",stArchivos.szPathCtlMorosos,szFecJuliana);
+	if ((stArchivos.ArchCtlMorosos = fopen(stArchivos.szPathCtlMorosos,"wb")) == (FILE*)NULL)
+	{
+	fprintf( stderr, "\n ERROR : No se pudo abrir el archivo :'%s'\n",stArchivos.szPathCtlMorosos);
+	vDTrazasError(modulo,"No se pudo abrir el archivo :'%s'",LOG01,stArchivos.szPathCtlMorosos);
+	return FALSE;
+	}
+	*/
+
+	sprintf( stArchivos.szPathMorosos, "%sMorDealer_%s.dat", stArchivos.szPathMorosos, szFecJuliana );
+	if( ( stArchivos.ArchMorosos = fopen( stArchivos.szPathMorosos, "wb" ) ) == (FILE*)NULL )
+	{
+		fprintf( stderr, "\n ERROR : No se pudo abrir el archivo :'%s'\n",stArchivos.szPathMorosos);
+		vDTrazasError(modulo,"No se pudo abrir el archivo :'%s'",LOG01,stArchivos.szPathMorosos);
+		return FALSE;
+	}
+
+	fprintf( stdout, "\n\t [%s] ", stArchivos.szPathMorosos );
+	
+	/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s : user:[%s/%s] log:[%d]",LOG05,modulo,
+	pstLineaComando->szOraAccount,pstLineaComando->szOraPasswd,pstLineaComando->iLogLevel);
+	/*=============================================================================================*/
+	
+	return TRUE;
+} /* bfnIniciarProceso */
+
+/*-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-*/
+/***************************************************************************/
+/* BOOL bfnObtieneFechas() */
+/***************************************************************************/
+BOOL bfnObtieneFechas()
+{
+	char modulo[]="bfnObtieneFechas";
+	
+	memset(szhEsteMomento,'\0',sizeof(szhEsteMomento));
+	memset(szhTreintaDias,'\0',sizeof(szhTreintaDias));
+	memset(szhSeisMeses,'\0',sizeof(szhSeisMeses));
+	
+	EXEC SQL SELECT TO_CHAR(SYSDATE,'YYYYMMDD')
+				  , TO_CHAR(SYSDATE,'HH24MISS')
+				  , TO_CHAR((SYSDATE-30),'YYYYMMDD') 
+				  , TO_CHAR(ADD_MONTHS(SYSDATE,-6),'YYYYMMDD')	
+	           INTO :szhEsteDia
+	              , :szhEsteMomento
+	              , :szhTreintaDias 
+	              , :szhSeisMeses
+	           FROM DUAL;
+	
+	if (SQLCODE) 
+	{
+		vDTrazasLog(modulo,"Error al obtener las fechas /n%s",LOG01,SQLERRM);
+		return FALSE;
+	}
+	
+/*
+	strcat(szhTreintaDias,"000000");
+	strcat(szhSeisMeses,"000000");
+*/
+
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s : 0d:[%s] -30d:[%s] -6m:[%s]",LOG05,modulo,
+	                    szhEsteDia,szhTreintaDias,szhSeisMeses);
+/*=============================================================================================*/
+
+	return TRUE;
+
+}
+
+
+/***************************************************************************/
+/* bfnProcesaSuspendidos(&stLineaComando) */
+/***************************************************************************/
+BOOL bfnProcesaSuspendidos(LINEACOMANDO *pstLineaComando)
+{
+	char modulo[]="bfnProcesaSuspendidos";
+	
+	 int i=0
+	   , j=0
+	   , iSQLAUXSTATUS=0 ;
+	     
+	long lhCodClieAnt  = 0 
+	   , lCont = 0			
+	   , lContBloque=0		
+	   , lContRecu=0
+	   , lRegistrosRecuperados=0;
+
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s",LOG05,modulo);
+/*=============================================================================================*/
+
+	vDTrazasLog(modulo,"\tComienza Generacion de Morosos por Distribuidores a las %s hrs ",LOG03,szGetTime(3));
+	fprintf(stdout,"\n\t----------------------------------------------------" );
+	fprintf(stdout,"\n\n\t Comienza Generacion de Morosos por Distribuidores a las %s hrs\n",szGetTime(3));
+
+
+	/* Verifica suspendidos con mas de 30 dias  */
+	EXEC SQL DECLARE cursor_Suspendidos CURSOR FOR
+	SELECT A.COD_EVENTO
+	     , A.NUM_ABONADO
+	     , A.COD_CLIENTE
+	     , A.COD_PRODUCTO
+	     , A.FECHA_ALTA
+	     , A.IMP_DEUDA
+	     , A.COD_ESTADO
+	     , H.FEC_HISTORICO
+	     , H.COD_ESTADO
+	  FROM CO_HISTABOEVENTO H
+	     , CO_ABONADOEVENTO A
+	 WHERE A.COD_CLIENTE > 0
+	   AND (A.COD_ESTADO='SU' OR A.COD_ESTADO='BF' OR A.COD_ESTADO='SS')
+	   AND A.COD_PRODUCTO = 1
+	   AND H.COD_EVENTO=A.COD_EVENTO
+	   AND H.NUM_ABONADO=A.NUM_ABONADO
+	   AND H.FEC_HISTORICO < TO_DATE(:szhTreintaDias,'YYYYMMDD')
+	   AND H.CAUSA_EXCLUSION='0'
+	   AND (H.COD_ESTADO='PR' OR H.COD_ESTADO='ET') 
+  ORDER BY A.COD_CLIENTE ;
+
+
+	if (SQLCODE)
+	{
+	    vDTrazasError(modulo,"al declarar cursor sobre CO_ABONADOEVENTO y CO_HISTABOEVENTO : %s",LOG01,SQLERRM);
+		return FALSE;
+	}
+
+	EXEC SQL OPEN cursor_Suspendidos;
+	if (SQLCODE)
+	{
+	    vDTrazasError(modulo,"al abrir cursor sobre CO_ABONADOEVENTO y CO_HISTABOEVENTO : %s",LOG01,SQLERRM);
+		return FALSE;
+	}
+
+	/* limpia estructuras de acumulación  */
+	vfnLimpiaStArchMorosos();
+
+	/* inicia variables auxiliares */
+	lCont=0;  		  /* contador de morosos que van al archivo         */
+	lhCodClieAnt = 0; /* setea validador de 'solo una vez por cliente'  */
+
+	while(1)
+	{
+		EXEC SQL FETCH cursor_Suspendidos
+		INTO :sthSuspendidos;
+		
+		iSQLAUXSTATUS=SQLCODE;
+		
+		if(iSQLAUXSTATUS != SQLOK && iSQLAUXSTATUS != SQLNOTFOUND)
+		{
+			vDTrazasError(modulo,"%s en el Fetch sobre cursor_Suspendidos\n\t%s\n", LOG01, szGetTime(3),SQLERRM);
+			return FALSE;
+		}
+
+		lContRecu=sqlca.sqlerrd[2];
+		lRegistrosRecuperados = (lContRecu-lContBloque);
+
+		fprintf(stderr,		"\n\t A las %s hrs "
+							"\n\t suspendidos recuperados en esta iteracion    :[%ld] "
+							"\n\t                         en total hasta ahora :[%ld] "
+							,szGetTime(3),lRegistrosRecuperados,lContRecu);
+
+		vDTrazasLog(modulo, "\n\t A las %s hrs "
+							"\n\t suspendidos recuperados en esta iteracion    :[%ld] "
+							"\n\t                         en total hasta ahora :[%ld] "
+							,LOG03,szGetTime(3),lRegistrosRecuperados,lContRecu);
+
+		for(i=0; i < lRegistrosRecuperados; i++)
+		{
+			/* Verifica si es venta Dealer con 6 meses o menos */
+			if (bfnVerificaCondiciones(sthSuspendidos.lNumAbonado[i]))
+			{   /* Si el cliente cumple con las condiciones, se reune su informacion relevante */
+				if ( sthSuspendidos.lCodCliente[i] != lhCodClieAnt )
+				{	/* obtiene datos del cliente,ciclo y direccion una sola vez por cliente */
+					lhCodClieAnt = sthSuspendidos.lCodCliente[i]; 
+					if (bfnGetDatosDireccionCliente(sthSuspendidos.lCodCliente[i]) ) 
+					{	/*sigue buscando datos solo si los datos del cliente estan ok */
+						/* Verificamos ahora los documentos de ese cliente */
+						iContDocs=0;
+						if (bfnObtieneDocumentos(sthSuspendidos.lCodCliente[i]))
+						{
+							if (iContDocs > 0)
+							{
+								for (j=0; j<iContDocs; j++)
+								{
+									/* Aqui carga una linea mas de la estructura stArchMorosos */
+									/* a partir de la informacion recuperada hasta ahora mas */
+									/*  la informacion de los documentos pendiente que tenga el cliente */
+							
+									/* Pasamos los datos de abonadoevento a la estructura */
+									stArchMorosos[lCont].lCodCliente  =      sthSuspendidos.lCodCliente	 [i];
+									stArchMorosos[lCont].lNumAbonado  =      sthSuspendidos.lNumAbonado	 [i];
+									stArchMorosos[lCont].lCodEvento   =      sthSuspendidos.lCodEvento	 [i];
+									stArchMorosos[lCont].iNegocio     =      sthSuspendidos.iCodProducto [i];
+									strcpy(stArchMorosos[lCont].szEstadoCob,sthSuspendidos.szCodEstado   [i]);
+									
+									/* pasamos ahora los datos de la venta del abonado */
+									stArchMorosos[lCont].lCodCuenta = stDatosAbonado.lCodCuenta;
+									stArchMorosos[lCont].lNumCelular = stDatosAbonado.lNumCelular;
+									strcpy(stArchMorosos[lCont].szFecContrato,stDatosAbonado.szFecContrato);
+									strcpy(stArchMorosos[lCont].szFecEnganche,stDatosAbonado.szFecContrato); /* ok misma fecha */
+									strcpy(stArchMorosos[lCont].szNumContrato,stDatosAbonado.szNumContrato);
+									stArchMorosos[lCont].lCodVendedor = stDatosAbonado.lCodVendedor;
+									strcpy(stArchMorosos[lCont].szVendedor,stDatosAbonado.szVendedor);
+									strcpy(stArchMorosos[lCont].szCodOficina,stDatosAbonado.szCodOficina);
+									strcpy(stArchMorosos[lCont].szOficina,stDatosAbonado.szOficina);
+									strcpy(stArchMorosos[lCont].szCanalVenta,stDatosAbonado.szCanalVenta);
+									
+									/* Datos propios del Cliente */
+									strcpy(stArchMorosos[lCont].szRut,       stDatosCliente.szRut);
+									strcpy(stArchMorosos[lCont].szDV,        stDatosCliente.szDV);
+									strcpy(stArchMorosos[lCont].szNombre,    stDatosCliente.szNombre);
+									stArchMorosos[lCont].iCiclo =            stDatosCliente.iCiclo;
+									strcpy(stArchMorosos[lCont].szCodBanco,  stDatosCliente.szCodBanco);
+							        
+							        /* Datos de la Direccion */
+									stArchMorosos[lCont].iCodDireccion =     stDatosCliente.iCodDireccion;
+									strcpy(stArchMorosos[lCont].szRegion,    stDatosCliente.szRegion);
+									strcpy(stArchMorosos[lCont].szProvincia, stDatosCliente.szProvincia);
+									strcpy(stArchMorosos[lCont].szCodCiudad, stDatosCliente.szCodCiudad);
+									strcpy(stArchMorosos[lCont].szCiudad,    stDatosCliente.szCiudad);
+									strcpy(stArchMorosos[lCont].szCodComuna, stDatosCliente.szCodComuna);
+									strcpy(stArchMorosos[lCont].szComuna,    stDatosCliente.szComuna);
+									strcpy(stArchMorosos[lCont].szCalle,     stDatosCliente.szCalle);
+									strcpy(stArchMorosos[lCont].szNumCalle,  stDatosCliente.szNumCalle);
+									strcpy(stArchMorosos[lCont].szCasilla,   stDatosCliente.szCasilla);
+		
+									/* Datos de la J-esima factura */			
+									stArchMorosos[lCont].iCodDocum = stDocsPendVenc[j].iCodDocum;
+									stArchMorosos[lCont].fImporte = stDocsPendVenc[j].fImporte;
+									stArchMorosos[lCont].lNumFolio = stDocsPendVenc[j].lNumFolio;
+									strcpy(stArchMorosos[lCont].szNumCTC,     stDocsPendVenc[j].szNumCTC);
+									strcpy(stArchMorosos[lCont].szFecVencimie,stDocsPendVenc[j].szFecVencimie);
+									strcpy(stArchMorosos[lCont].szFecEmision, stDocsPendVenc[j].szFecEmision);
+									
+									/* Indicador final */
+									stArchMorosos[lCont].bfinal = FALSE; 
+	/*=============================================================================================*/
+									if (stStatus.LogNivel==LOG05)
+									{
+										vfnLog(lCont);
+									}
+	/*=============================================================================================*/
+									
+									lCont++; /* Un registro-moroso más para el archivo */
+									if ( lCont > (iNum-2) )	 /* verifica llenado de la estructura para vaciar en archivo */
+									{
+										if(!bfnInsArchMorosos())
+										{
+											return FALSE;
+										}
+										vfnLimpiaStArchMorosos();
+										lCont=0; /*estructura vacia, resetea el contador */
+									}
+								}/*endfor J*/
+							}/* endif iContDocs*/
+						} /* endif obtiene documentos*/
+					}/* endif getDireccion */
+				}/*endif cliente distinto */
+			} /* end if condiciones */
+		} /* endfor */ /* siguiente abonado del grupo recuperado */
+
+		lContBloque = lContRecu; /* resetea el contador */
+
+		if(iSQLAUXSTATUS == SQLNOTFOUND) /* si con el ultimo fetch llegó al final del universo de datos */
+		{
+			fprintf(stderr, "\n\n\t A las %s hrs no hay mas clientes que procesar."
+			                "\n\t Se revisaron en total [%ld] clientes ", szGetTime(3),lContRecu);
+			break;	
+		}
+
+	} /* endwhile */ /* recuperar siguiente grupo de clientes */
+
+	
+	/**	Si lCon=0 quiere decir que la ultima Iteracion vaciamos la estructura stArchMorosos
+		si no Debemos vaciarla en el fichero 	**/
+	if ( lCont != 0)
+	{
+		fprintf(stderr, "\n\t Completando archivo de salida...\n\n", szGetTime(3),lContRecu);
+		if (!bfnInsArchMorosos())
+			return FALSE;
+	}
+
+
+	EXEC SQL CLOSE cursor_Suspendidos;
+	if (SQLCODE)
+	{
+	    vDTrazasError(modulo,"al cerrar el 'cursor_Suspendidos': %s",LOG01,SQLERRM);
+		return FALSE;
+	}
+
+	/*fclose(stArchivos.ArchCtlMorosos);*/
+	fclose(stArchivos.ArchMorosos);
+	/************************** Terminando Archivos de Log **********************************/
+	vDTrazasLog(modulo,"\n\tTermina de procesar el Cursor Clientes a las %s hrs ",LOG03,szGetTime(3));
+	vDTrazasLog(modulo,"\n\tSe revisaron en total [%ld] clientes",LOG03,lContRecu);
+	fprintf(stdout,"\n\n\t Termina de procesar el Cursor Clientes a las %s hrs\n\n\n",szGetTime(3));
+
+	return TRUE;
+}
+
+/*************************************************************************************************/
+/* bfnVerificaCondiciones()*/
+/*************************************************************************************************/
+BOOL bfnVerificaCondiciones(long lNumAbo)
+{
+	char modulo[]="bfnVerificaCondiciones";
+	 int iAux = 0;
+	BOOL bOkFechaContrato = TRUE;
+	BOOL bVentaDealer = TRUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhNumAbonado=lNumAbo;
+		long lhCodCuenta=0;
+		long lhNumVenta=0;
+		long lhNumCelular=0;
+		long lhCodVendedor=0;
+		char szhFecContrato[9]=""	; EXEC SQL VAR szhFecContrato IS STRING(9) ;
+		char szhCodTipComis[3]=""	; EXEC SQL VAR szhCodTipComis IS STRING(3) ;
+		char szhNumContrato[20]=""	; EXEC SQL VAR szhNumContrato IS STRING(20);
+		char szhCodOficina[3]=""	; EXEC SQL VAR szhCodOficina  IS STRING(3) ;
+		char szhOficina[41]=""		; EXEC SQL VAR szhOficina     IS STRING(41);
+		char szhVendedor[41]=""		; EXEC SQL VAR szhVendedor    IS STRING(41);
+	EXEC SQL END DECLARE SECTION;
+
+	memset(&stDatosAbonado,0,sizeof(DATOSABONAD));
+
+	/* Obtiene el numero de venta del abonado celular */
+	EXEC SQL 
+	SELECT NUM_VENTA
+	     , COD_CUENTA
+	     , NUM_CELULAR
+	     , TO_CHAR(FEC_ALTA,'YYYYMMDD')
+	     , NVL(NUM_CONTRATO,'Nnnnnnn')
+	     , COD_VENDEDOR
+	  INTO :lhNumVenta
+	     , :lhCodCuenta
+	     , :lhNumCelular
+		 , :szhFecContrato
+		 , :szhNumContrato
+		 , :lhCodVendedor
+	  FROM GA_ABOCEL
+	 WHERE NUM_ABONADO = :lhNumAbonado;
+	 
+	if (SQLCODE)
+	{
+	    vDTrazasError(modulo,"En select sobre GA_ABOCEL (abonado=%ld) \n%s",LOG01,lhNumAbonado,SQLERRM);
+		return FALSE; 
+	}
+
+
+    /* Verifica si el contrato tiene 6 meses o menos */
+	bOkFechaContrato = (atol(szhFecContrato) >= atol(szhSeisMeses) )?TRUE:FALSE ;
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s :abonado:[%8ld]\tfecContrato:[%s]\t%s",LOG05,modulo,
+	            lNumAbo,szhFecContrato,(bOkFechaContrato)?"OK FECHA CONTRATO":"MAS DE 6 MESES");
+/*=============================================================================================*/
+
+	if (bOkFechaContrato) 
+	{
+		EXEC SQL 
+		SELECT COD_TIPCOMIS
+		     , COD_OFICINA
+		  INTO :szhCodTipComis
+		     , :szhCodOficina
+		  FROM GA_VENTAS
+		 WHERE NUM_VENTA = :lhNumVenta;
+		          
+		if (SQLCODE)
+		{
+		    vDTrazasError(modulo,"En select sobre GA_VENTAS (venta=%ld) \n%s",LOG01,lhNumVenta,SQLERRM);
+			return FALSE;
+		}
+		
+		/* Verifica si es venta de distribuidor */
+		iAux = atoi(szhCodTipComis); 
+		bVentaDealer =( iAux==10 || iAux==13 ) ? TRUE:FALSE;
+		
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\tTipComis :%s %s",
+	            LOG05,szhCodTipComis,(bVentaDealer)?"ES DEALER":"OTRO");
+/*=============================================================================================*/
+		
+		if (bVentaDealer)
+		{
+			/* obtiene la oficina */
+			EXEC SQL SELECT DES_OFICINA 
+			           INTO :szhOficina
+			           FROM GE_OFICINAS
+			          WHERE COD_OFICINA = :szhCodOficina;
+
+			if (SQLCODE)
+			{
+			    vDTrazasError(modulo,"En select sobre GE_OFICINAS (oficina=%s) \n%s",LOG01,szhCodOficina,SQLERRM);
+				return FALSE;
+			}
+				    
+		    /* obtiene el vendedor */  
+			EXEC SQL SELECT NOM_VENDEDOR
+			           INTO :szhVendedor
+			           FROM VE_VENDEDORES
+			          WHERE COD_VENDEDOR = :lhCodVendedor;
+
+			if (SQLCODE)
+			{
+			    vDTrazasError(modulo,"En select sobre VE_VENDEDORES (vendedor=%ld) \n%s",LOG01,lhCodVendedor,SQLERRM);
+				return FALSE;
+			}
+         
+            /* guarda los valores recuperados en la estructura */
+			stDatosAbonado.lCodCuenta = lhCodCuenta;
+			stDatosAbonado.lNumCelular = lhNumCelular;
+			strcpy(stDatosAbonado.szFecContrato,szhFecContrato);
+			strcpy(stDatosAbonado.szNumContrato,szhNumContrato);
+			stDatosAbonado.lCodVendedor = lhCodVendedor;
+			strcpy(stDatosAbonado.szVendedor,szhVendedor);
+			strcpy(stDatosAbonado.szCodOficina,szhCodOficina);
+			strcpy(stDatosAbonado.szOficina,szhOficina);
+			strcpy(stDatosAbonado.szCanalVenta,szhCodTipComis);
+			return TRUE;
+		}
+		
+	}	
+
+} /* Fin VerificaCondiciones */
+
+/*************************************************************************************************/
+/* bfnGetDatosDireccionCliente()*/
+/*************************************************************************************************/
+BOOL bfnGetDatosDireccionCliente(long lCodCli)
+{
+	char modulo[]="bfnGetDatosDireccionCliente"; /* Nombre, Ciclo y Direccion del Cliente */
+
+	char g_digito[2]		;
+	 int iLen;
+	 
+	EXEC SQL BEGIN DECLARE SECTION;
+		long g_cod_cliente = lCodCli; /* cliente */
+		char g_num_ident[12]		; EXEC SQL VAR g_num_ident IS STRING(12)      ;
+		char g_nombre[36]			; EXEC SQL VAR g_nombre IS STRING(36)         ;
+		char g_tel_contacto[13]		; EXEC SQL VAR g_tel_contacto IS STRING(13)   ;
+		 int g_cod_ciclo  = 0       ; /* ciclo */
+		char g_cod_ciudad[6]		; EXEC SQL VAR g_cod_ciudad IS STRING(6)      ;
+		char g_des_ciudad[16]		; EXEC SQL VAR g_des_ciudad IS STRING(16)     ;
+		char g_cod_comuna[6]		; EXEC SQL VAR g_cod_comuna IS STRING(6)      ;
+		char g_des_comuna[16]		; EXEC SQL VAR g_des_comuna IS STRING(16)     ;
+		char g_nom_calle[17]		; EXEC SQL VAR g_nom_calle IS STRING(17)      ;
+		char g_num_calle[7]			; EXEC SQL VAR g_num_calle IS STRING(7)       ;
+		char g_num_casilla[16]		; EXEC SQL VAR g_num_casilla IS STRING(16)    ;
+		char g_des_region[31]		; EXEC SQL VAR g_des_region IS STRING(31)     ;
+		char g_des_provincia[31]	; EXEC SQL VAR g_des_provincia IS STRING(31)  ;
+		 int g_dir_corresp = 3      ; /* direccion de correspondencia */
+		char g_cod_banco[4]         ;  EXEC SQL VAR g_cod_banco IS STRING(4)      ;
+	EXEC SQL END DECLARE SECTION;
+
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s : cli:[%ld]",LOG05,modulo,lCodCli);
+/*=============================================================================================*/
+/*..................................................................................*/
+	EXEC SQL SELECT COD_BANCO 
+	           INTO :g_cod_banco
+	           FROM CO_UNIPAC
+	         WHERE COD_CLIENTE = :g_cod_cliente;
+
+	if (SQLCODE == SQLNOTFOUND)
+	{
+		strcpy(g_cod_banco,"000");
+	}
+	else if (SQLCODE)
+	{
+    	vDTrazasError(modulo,"en la seleccion del cod_banco para PAC del cliente[%ld]  %s",LOG01,g_cod_cliente,SQLERRM);
+    	return FALSE;
+	}	         
+/*...................................................................................*/
+
+	memset(&stDatosCliente,0,sizeof(DATOSCLIENT)); /*limpia la estructura antes de proceder */
+
+	EXEC SQL SELECT GC.NUM_IDENT
+				  , GC.NOM_CLIENTE||' '||nvl(GC.NOM_APECLIEN1,' ')||' '||nvl(GC.NOM_APECLIEN2,' ')
+				  , nvl(GC.TEF_CLIENTE1,'00000000')
+				  , nvl(GC.COD_CICLO,0)
+				  , g4.COD_CIUDAD
+				  , g4.DES_CIUDAD
+				  , g5.COD_COMUNA
+				  , ltrim(g5.DES_COMUNA)
+				  , g1.NOM_CALLE
+				  , nvl(g1.NUM_CALLE,' ')
+				  , nvl(g1.NUM_CASILLA,' ')
+				  , g2.DES_REGION
+				  , g3.DES_PROVINCIA
+			   INTO :g_num_ident
+				  , :g_nombre
+				  , :g_tel_contacto
+				  , :g_cod_ciclo   
+				  , :g_cod_ciudad
+				  , :g_des_ciudad
+				  , :g_cod_comuna
+				  , :g_des_comuna
+				  , :g_nom_calle
+				  , :g_num_calle
+				  , :g_num_casilla
+				  , :g_des_region
+				  , :g_des_provincia
+			   FROM GE_CLIENTES     GC
+				  , GA_DIRECCLI     g0
+				  , GE_DIRECCIONES  g1 
+				  , GE_REGIONES     g2
+				  , GE_PROVINCIAS   g3
+				  , GE_CIUDADES     g4
+				  , GE_COMUNAS      g5
+			  WHERE GC.COD_CLIENTE = :g_cod_cliente
+			    AND g0.COD_CLIENTE =  GC.COD_CLIENTE
+			    AND g0.COD_TIPDIRECCION = :g_dir_corresp
+			    AND g1.COD_DIRECCION = g0.COD_DIRECCION
+			    AND g1.COD_REGION    = g2.COD_REGION 
+			    AND g1.COD_REGION    = g3.COD_REGION
+			    AND g1.COD_PROVINCIA = g3.COD_PROVINCIA 
+			    AND g1.COD_REGION    = g4.COD_REGION 
+			    AND g1.COD_PROVINCIA = g4.COD_PROVINCIA 
+			    AND g1.COD_CIUDAD    = g4.COD_CIUDAD 
+			    AND g1.COD_REGION    = g5.COD_REGION 
+			    AND g1.COD_PROVINCIA = g5.COD_PROVINCIA 
+			    AND g1.COD_COMUNA    = g5.COD_COMUNA ;
+
+	if (SQLCODE)
+	{
+    	vDTrazasError(modulo,"en la seleccion de datos del cliente [%ld]  %s",LOG01,g_cod_cliente,SQLERRM);
+		return FALSE;
+	}
+
+	iLen = strlen(g_num_ident);
+	g_digito[0] = g_num_ident[iLen - 1];
+	g_digito[1] = '\0';
+
+	if (g_num_ident[iLen-2] == '-')
+		g_num_ident[iLen-2] = '\0';
+	else
+		g_num_ident[iLen-1] = '\0';
+	
+	g_tel_contacto[8] = '\0';
+	
+
+	/* Datos propios del cliente */
+	strcpy(stDatosCliente.szRut,g_num_ident);
+	strcpy(stDatosCliente.szDV,g_digito);
+	strcpy(stDatosCliente.szNombre,g_nombre);
+/*  strcpy(stDatosCliente.szFonoContacto,g_tel_contacto); */
+	stDatosCliente.iCiclo = g_cod_ciclo;
+	strcpy(stDatosCliente.szCodBanco,g_cod_banco);
+	
+	/* Datos de la Direccion del Cliente */
+	stDatosCliente.iCodDireccion = g_dir_corresp;
+	strcpy(stDatosCliente.szRegion, g_des_region);
+	strcpy(stDatosCliente.szProvincia,g_des_provincia);
+	strcpy(stDatosCliente.szCodCiudad,g_cod_ciudad);
+	strcpy(stDatosCliente.szCiudad,g_des_ciudad);
+	strcpy(stDatosCliente.szCodComuna,g_cod_comuna);
+	strcpy(stDatosCliente.szComuna,g_des_comuna);
+	strcpy(stDatosCliente.szCalle,g_nom_calle);
+	strcpy(stDatosCliente.szNumCalle,g_num_calle);
+	strcpy(stDatosCliente.szCasilla,g_num_casilla);
+
+	return TRUE;
+
+} /* bfnGetDatosDireccionCliente()*/
+
+/***************************************************************************/
+/* vfnLimpiaStArchMorosos() */
+/***************************************************************************/
+void vfnLimpiaStArchMorosos()
+{
+	char modulo[]="vfnLimpiaStArchMorosos";
+
+	int i;
+
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s",LOG05,modulo);
+/*=============================================================================================*/
+
+	for(i=0;i<iNum;i++) 
+	{
+		memset(&stArchMorosos[i],0,sizeof(ARCHMOROSOS)); 
+		stArchMorosos[i].bfinal=TRUE;
+	}
+
+} /* vfnLimpiaStArchMorosos() */
+
+
+/***************************************************************************/
+/*  bfnInsArchMorosos() */
+/***************************************************************************/
+BOOL bfnInsArchMorosos()
+{
+	char modulo[]="bfnInsArchMorosos";
+	
+	int	iI = 0;
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s",LOG05,modulo);
+/*=============================================================================================*/
+
+	while(!stArchMorosos[iI].bfinal) /* mienstras no sea el final del arreglo */
+	{
+		if (fprintf(stArchivos.ArchMorosos, "%2d|%8ld|%8ld|%8ld|%35s|%3s|%1d|%30s|%30s|%5s|%15s|"
+		                                    "%5s|%15s|%16s|%6s|%5s|%8ld|%02d|%2s|%40s|%8s|%8s|%8ld|"
+		                                    "%14.4f|%8ld|%6ld|%40s|%20s|%8s|%8s|%11s| | |"
+		                                    "%1d|%11s|%1s|%2s| | | | |%2s\n"
+											, stArchMorosos[iI].iCodDocum 	 	/* %2d */
+											, stArchMorosos[iI].lCodCuenta  	/* %8ld */ 
+											, stArchMorosos[iI].lCodCliente 	/* %8ld */
+											, stArchMorosos[iI].lNumAbonado 	/* %8ld */
+											, stArchMorosos[iI].szNombre    	/* %35s */ 
+											, stArchMorosos[iI].szCodBanco    	/* %3s */
+											, stArchMorosos[iI].iCodDireccion 	/* %1d */ 
+											, stArchMorosos[iI].szRegion 		/* %30s */ 
+											, stArchMorosos[iI].szProvincia 	/* %30s */ 
+											, stArchMorosos[iI].szCodCiudad	    /* %5s */	
+											, stArchMorosos[iI].szCiudad		/* %15s */
+											, stArchMorosos[iI].szCodComuna     /* %5s */
+											, stArchMorosos[iI].szComuna		/* %15s */
+											, stArchMorosos[iI].szCalle		    /* %16s */	
+											, stArchMorosos[iI].szNumCalle		/* %6s */
+											, stArchMorosos[iI].szCasilla       /* %5s */ 
+											, stArchMorosos[iI].lNumCelular     /* %8ld */	
+											, stArchMorosos[iI].iCiclo          /* %02d */ 
+											, stArchMorosos[iI].szCodOficina	/* %2s */
+											, stArchMorosos[iI].szOficina		/* %40s */
+											, stArchMorosos[iI].szFecEmision    /* %8s */ 
+											, stArchMorosos[iI].szFecVencimie   /* %8s */ 
+											, stArchMorosos[iI].lNumFolio       /* %8ld */ 
+											, stArchMorosos[iI].fImporte        /* %14.4f */ 
+											, stArchMorosos[iI].lCodEvento		/* %8ld */
+											, stArchMorosos[iI].lCodVendedor	/* %6ld */
+											, stArchMorosos[iI].szVendedor		/* %40s */
+											, stArchMorosos[iI].szNumContrato 	/* %20s */
+											, stArchMorosos[iI].szFecContrato 	/* %8s */
+											, stArchMorosos[iI].szFecEnganche   /* %8s */ 
+											, stArchMorosos[iI].szNumCTC		/* %11s */
+											/* , stArchMorosos[iI].CORTE        */			/* %? */ 
+											/* , stArchMorosos[iI].PERIODO      */			/* %? */ 
+											, stArchMorosos[iI].iNegocio		/* %1d */
+											, stArchMorosos[iI].szRut			/* %11s */
+											, stArchMorosos[iI].szDV			/* %1s */
+											, stArchMorosos[iI].szEstadoCob     /* %2s */ 	
+											/* , stArchMorosos[iI]. FecVence	*/			/* %? */
+											/* , stArchMorosos[iI]. Vence		*/			/* %? */
+											/* , stArchMorosos[iI]. GranCli	    */			/* %? */
+											/* , stArchMorosos[iI]. Ejecutivo	*/			/* %? */
+											, stArchMorosos[iI].szCanalVenta	/* %2s */ 	
+		   ) == -1 )
+		{
+			vDTrazasError(modulo,"al Escribir en Archivo de Morosos : [%ld]"
+			                    , LOG01, stArchMorosos[iI].lCodCliente);
+			return FALSE;
+		}
+		
+		iI++;
+
+	}/* endwhile */
+
+	fflush(stArchivos.ArchMorosos);
+
+	return TRUE; 
+	
+
+} /*  bfnInsArchMorosos() */
+
+/***************************************************************************/
+/*  bfnObtieneDocumentos() */
+/***************************************************************************/
+BOOL bfnObtieneDocumentos(long lCliente)
+{
+	char modulo[]="bfnObtieneDocumentos";
+	BOOL bTerminoNormal=TRUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhCodCliente;
+     	 int ihCodTipDocum;
+      	long lhNumFolio ; 
+      	char szhFolioCTC[12]="";
+   short int i_shFolioCTC ;
+       float fhMonto ;
+      	char szhFecVencimie[9]="";
+      	char szhFecEmision[9]="";
+	EXEC SQL END DECLARE SECTION;
+	
+	lhCodCliente = lCliente;
+    
+
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t%s: cli:[%ld]",LOG05,modulo,lhCodCliente);
+/*=============================================================================================*/
+
+	/* limpia la estructura de los documentos pendientes vencidos */
+	iContDocs=0;	/* variable global */
+	memset (&stDocsPendVenc,0,sizeof(DOCSPENDVENC));
+
+	/* para todas la facturas del cliente ... */
+	EXEC SQL DECLARE cursor_Deudor_ROY CURSOR FOR 
+			  SELECT  COD_CLIENTE
+			        , COD_TIPDOCUM
+				    , NUM_FOLIO
+				    , NUM_FOLIOCTC
+				    , SUM( IMPORTE_DEBE - IMPORTE_HABER ) MTO_SALDO
+				    , TO_CHAR(FEC_VENCIMIE,'YYYYMMDD')
+				    , TO_CHAR(FEC_EFECTIVIDAD,'YYYYMMDD')
+			     FROM CO_CARTERA
+			    WHERE COD_CLIENTE = :lhCodCliente
+			      AND FEC_VENCIMIE < TRUNC(SYSDATE)           /* vencidas (antes hoy dia a las 00:00:00) */
+		     GROUP BY COD_CLIENTE
+				    , COD_TIPDOCUM
+				    , NUM_FOLIO
+				    , NUM_FOLIOCTC
+				    , FEC_VENCIMIE
+				    , FEC_EFECTIVIDAD ;
+	
+	if (SQLCODE != 0)
+	{
+	    vDTrazasError(modulo,"al declarar cursor sobre CO_CARTERA para Cliente [%ld]\n%s",LOG01,lhCodCliente,SQLERRM);
+	    vDTrazasLog(modulo,"al declarar cursor sobre CO_CARTERA para Cliente [%ld]\n%s",LOG01,lhCodCliente,SQLERRM);
+		return FALSE;
+	}
+		
+	
+	EXEC SQL OPEN cursor_Deudor_ROY;
+
+	if (SQLCODE)
+	{
+	    vDTrazasError(modulo,"al abrir cursor sobre CO_CARTERA : \n%s",LOG01,SQLERRM);
+		return FALSE;
+	}
+
+	while (1)
+	{
+		EXEC SQL FETCH cursor_Deudor_ROY
+	    		  INTO :lhCodCliente
+     				 , :ihCodTipDocum
+      				 , :lhNumFolio  
+      				 , :szhFolioCTC :i_shFolioCTC
+      				 , :fhMonto
+      				 , :szhFecVencimie
+      				 , :szhFecEmision;
+      				 
+		if (SQLCODE == SQLNOTFOUND)
+		{
+			break;	/* fin 'normal' de este cursor */
+		}
+		else if (SQLCODE != SQLOK)
+		{
+			iContDocs = 0;
+	    	vDTrazasError(modulo,"en el FETCH de CO_CARTERA : %s",LOG01,SQLERRM);
+			return FALSE;
+		}
+		
+		if (fhMonto > 0) /* importe_debe > importe_haber : aun debe */
+		{
+			/* Asigna datos recuperados referentes a cada Factura */		
+			stDocsPendVenc[iContDocs].iCodDocum = ihCodTipDocum;
+			stDocsPendVenc[iContDocs].fImporte = fhMonto;  /* lo que esta pendiente de pagarse */
+			stDocsPendVenc[iContDocs].lNumFolio = lhNumFolio;
+			strcpy(stDocsPendVenc[iContDocs].szNumCTC ,((i_shFolioCTC == ORA_NULL)?" ":szhFolioCTC));
+			strcpy(stDocsPendVenc[iContDocs].szFecVencimie, szhFecVencimie);
+			strcpy(stDocsPendVenc[iContDocs].szFecEmision,  szhFecEmision);
+			iContDocs++; /* aumenta el contador de Documentos pendientes */
+		}				 
+	}/*endwhile*/
+
+	EXEC SQL CLOSE cursor_Deudor_ROY;
+	if (SQLCODE)
+	{
+    	vDTrazasError(modulo,"al cerrar el Cursor sobre CO_MAESTROSALDO: %s",LOG01,SQLERRM);
+		return FALSE;
+	}
+/*=============================================================================================*/
+	vDTrazasLog(modulo,"\t # Documentos Pendientes Vencidos :%d",LOG05,iContDocs);
+/*=============================================================================================*/
+
+	return TRUE;
+
+} /* bfnObtieneDocumentos()*/
+
+
+/*=============================================================================================*/
+
+/***************************************************************************/
+/*  vfnLog() */
+/***************************************************************************/
+void vfnLog(int l)
+{
+	char modulo[]="vfnLog";
+
+	vDTrazasLog(modulo,"\n\t -%s-",LOG05,modulo);
+	vDTrazasLog(modulo,"\t i:%d",LOG05,l);
+	vDTrazasLog(modulo,"cod tip docum:[%2d]"    ,LOG05,stArchMorosos[l].iCodDocum);
+	vDTrazasLog(modulo,"cod cuenta   :[%8ld]"   ,LOG05,stArchMorosos[l].lCodCuenta);
+	vDTrazasLog(modulo,"cod cliente  :[%8ld]"   ,LOG05,stArchMorosos[l].lCodCliente);
+	vDTrazasLog(modulo,"num abonado  :[%8ld]"   ,LOG05,stArchMorosos[l].lNumAbonado);
+	vDTrazasLog(modulo,"nombre       :[%35s]"   ,LOG05,stArchMorosos[l].szNombre);
+	vDTrazasLog(modulo,"cod banco    :[%3s]"    ,LOG05,stArchMorosos[l].szCodBanco);
+	vDTrazasLog(modulo,"cod direccion:[%1d]"    ,LOG05,stArchMorosos[l].iCodDireccion);
+	vDTrazasLog(modulo,"region       :[%30s]"   ,LOG05,stArchMorosos[l].szRegion);
+	vDTrazasLog(modulo,"provincia    :[%30s]"   ,LOG05,stArchMorosos[l].szProvincia);
+	vDTrazasLog(modulo,"cod ciudad   :[%5s]"    ,LOG05,stArchMorosos[l].szCodCiudad);
+	vDTrazasLog(modulo,"ciudad       :[%15s]"   ,LOG05,stArchMorosos[l].szCiudad);
+	vDTrazasLog(modulo,"cod comuna   :[%5s]"    ,LOG05,stArchMorosos[l].szCodComuna);
+	vDTrazasLog(modulo,"comuna       :[%15s]"   ,LOG05,stArchMorosos[l].szComuna);
+	vDTrazasLog(modulo,"calle        :[%16s]"   ,LOG05,stArchMorosos[l].szCalle);
+	vDTrazasLog(modulo,"num calle    :[%6s]"    ,LOG05,stArchMorosos[l].szNumCalle);
+	vDTrazasLog(modulo,"casilla      :[%5s]"    ,LOG05,stArchMorosos[l].szCasilla);
+	vDTrazasLog(modulo,"nro celular  :[%8ld]"   ,LOG05,stArchMorosos[l].lNumCelular);
+	vDTrazasLog(modulo,"ciclo        :[%02d]"   ,LOG05,stArchMorosos[l].iCiclo);
+	vDTrazasLog(modulo,"cod oficina  :[%2s]"    ,LOG05,stArchMorosos[l].szCodOficina);
+	vDTrazasLog(modulo,"oficina      :[%40s]"   ,LOG05,stArchMorosos[l].szOficina);
+	vDTrazasLog(modulo,"fec emision  :[%8s]"    ,LOG05,stArchMorosos[l].szFecEmision);
+	vDTrazasLog(modulo,"fec vencimie :[%8s]"    ,LOG05,stArchMorosos[l].szFecVencimie);
+	vDTrazasLog(modulo,"folio        :[%8ld]"   ,LOG05,stArchMorosos[l].lNumFolio);
+	vDTrazasLog(modulo,"importe      :[%14.4f]" ,LOG05,stArchMorosos[l].fImporte);
+	vDTrazasLog(modulo,"cod evento   :[%8ld]"   ,LOG05,stArchMorosos[l].lCodEvento);
+	vDTrazasLog(modulo,"cod vendedor :[%6ld]"   ,LOG05,stArchMorosos[l].lCodVendedor);
+	vDTrazasLog(modulo,"nom vendedor :[%40s]"   ,LOG05,stArchMorosos[l].szVendedor);
+	vDTrazasLog(modulo,"nro contrato :[%20s]"   ,LOG05,stArchMorosos[l].szNumContrato);
+	vDTrazasLog(modulo,"fec contrato :[%8s]"    ,LOG05,stArchMorosos[l].szFecContrato);
+	vDTrazasLog(modulo,"fec enganche :[%8s]"    ,LOG05,stArchMorosos[l].szFecEnganche);
+	vDTrazasLog(modulo,"folio CTC    :[%11s]"   ,LOG05,stArchMorosos[l].szNumCTC);
+	vDTrazasLog(modulo,"corte        :[ ]"      ,LOG05);
+	vDTrazasLog(modulo,"periodo      :[ ]"      ,LOG05);
+	vDTrazasLog(modulo,"cod producto :[%1d]"    ,LOG05,stArchMorosos[l].iNegocio);
+	vDTrazasLog(modulo,"rut          :[%11s]"   ,LOG05,stArchMorosos[l].szRut);
+	vDTrazasLog(modulo,"digito       :[%1s]"    ,LOG05,stArchMorosos[l].szDV);
+	vDTrazasLog(modulo,"estado cob   :[%2s]"    ,LOG05,stArchMorosos[l].szEstadoCob);
+	vDTrazasLog(modulo,"FecVence     :[ ]"      ,LOG05);
+	vDTrazasLog(modulo,"Vence        :[ ]"      ,LOG05);
+	vDTrazasLog(modulo,"GranCli      :[ ]"      ,LOG05);
+	vDTrazasLog(modulo,"Ejecutivo    :[ ]"      ,LOG05);
+	vDTrazasLog(modulo,"canal venta  :[%2s]"    ,LOG05,stArchMorosos[l].szCanalVenta);
+	vDTrazasLog(modulo,"final        :[%s]"     ,LOG05,(stArchMorosos[l].bfinal)?".T.":".F.");
+}
+
+
+/*=============================================================================================*/
+
+BOOL bfnOraConnecta( char *szUser, char *szPasw )
+{
+
+  EXEC SQL BEGIN DECLARE SECTION;
+       char hszConnectStr[129]; EXEC SQL VAR hszConnectStr IS STRING(129);
+       char szhUser[30]; EXEC SQL VAR szhUser IS STRING(30);
+  EXEC SQL END DECLARE SECTION;
+
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+
+  Ora.Connected=FALSE;
+  strcpy(hszConnectStr,szUser);
+  strcat(hszConnectStr,"/");
+  strcat(hszConnectStr,szPasw);
+
+  fprintf (stdout,"\n\t<< Ejecucion sin parametros : Asume valores por defecto >>\n");
+
+  EXEC SQL CONNECT :hszConnectStr;
+  if(sqlca.sqlcode<0)
+      return (FALSE);
+  
+  Ora.Connected=TRUE;
+
+  EXEC SQL SELECT USER INTO :szhUser FROM DUAL;   
+  
+/*   strcpy(szUser,szhUser); 
+  
+  if((szPasw) || (szUser)) 
+    return fnOraActivaRoles(szUser);
+  else
+      return (TRUE); */
+  
+/* Solicitado el 16-07-2002 */      
+  EXEC SQL SET ROLE ALL;    
+  return (TRUE);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

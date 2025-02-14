@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Application backgroundImage="recursosInterfaz/imagenes/otros/fondoLogin.jpg" xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="1024" height="640" borderColor="#FFFFFF" backgroundGradientAlphas="[1.0, 1.0]" backgroundGradientColors="[#FFFFFF, #FFFFFF]" initialize="init()" applicationComplete="cargaFinal()" fontSize="12">
+
+	<mx:Style source="recursosInterfaz/estilos/estilos.css"/>
+
+	<mx:Script>
+	<![CDATA[
+		
+		import mx.containers.TabNavigator;
+		import mx.containers.VBox;
+		import mx.messaging.channels.StreamingAMFChannel;
+		import mx.collections.ArrayCollection;
+		import mx.messaging.messages.HTTPRequestMessage;
+	 	import mx.controls.Alert;
+	 	import mx.events.ModuleEvent;
+	    import mx.modules.ModuleManager;
+		import mx.modules.IModuleInfo;
+		import mx.rpc.events.FaultEvent;
+		import mx.events.ValidationResultEvent;
+		import mx.controls.AdvancedDataGrid;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso1;
+		import generated.webservices.orquestador.*;
+		import flash.system.System;
+		import flash.net.*;
+		import user.libreria.clases.StringUtil;
+		import mx.rpc.http.HTTPService;
+		import mx.utils.Base64Encoder;
+		import mx.rpc.events.ResultEvent;		
+		import mx.events.CloseEvent;
+		
+		import flash.utils.setTimeout;
+		
+		
+		import flash.display.Sprite;
+		import flash.events.TimerEvent;
+		import flash.utils.Timer;
+		
+		// --------------------------------------------------------------------------------			
+		// SDK-12061
+		// load and unloading a module will case drag and drop to stop working
+		// Gabriel Galetti 20/10/08
+		import mx.managers.DragManager;
+	   	private var dragManager:DragManager
+	   	
+		// --------------------------------------------------------------------------------			
+		// SDK-?????
+		// load and unloading a module will case history to stop working ???
+		// Gabriel Galetti 27/11/08
+	 	import mx.managers.HistoryManager;
+	   	private var historyManager:HistoryManager
+	
+		// --------------------------------------------------------------------------------
+	
+		public var info:IModuleInfo;
+	 	public var grillaGlobal:AdvancedDataGrid = new AdvancedDataGrid();
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject; 					
+	 	public var searchingPopUpView:Class = BarraDeProgreso1;
+		
+		// Arrays para el menu principal
+		[Bindable]
+	 	public var aMenuCuenta:Array;
+	 	[Bindable]
+	 	public var aMenuCliente:Array;
+	 	[Bindable]
+	 	public var aMenuAbonado:Array;
+	 	[Bindable]
+	 	public var aMenuUsuario:Array;
+
+		// Arrays para los menus de consultas
+		[Bindable]
+	 	public var aPopMenuCuenta:ArrayCollection = new ArrayCollection();
+	 	[Bindable]
+	 	public var aPopMenuCliente:ArrayCollection = new ArrayCollection();
+	 	[Bindable]
+	 	public var aPopMenuAbonado:ArrayCollection = new ArrayCollection();
+	 	
+	 	public var activarBtnAccesoPortalSTP:Object = {codigo:"PST0001", activar:false};
+		public var activarBtnAccesoReportes:Object = {codigo:"PST0002", activar:false};
+
+	 	[Bindable]
+	 	public var usuario:Object = new Object();
+	 	
+	 	public var wsORQ:WSSEGPortal = new WSSEGPortal();
+	 	
+	 	// datos seleccionados para trabajar
+	 	public var ctaSelect:String;		// cod cuenta
+	 	public var nomCtaSelect:String		// nombre de la cuenta
+	 	public var cliSelect:String;		// cod Cliente
+	 	public var nomCliSelect:String;		// Nombre del cliente
+	 	public var aboSelect:String;		// num abonado
+	 	public var numCelAboSelect:String;	// num celular abonado
+	 	public var nomAboSelect:String;		// Nombre del abonado
+	 	public var sitAboSelect:String;		// Situacion del abonado
+	 	
+	 	public var clienteDTO:ClienteDTO;	// Para tener a mano los datos del cliente seleccionado
+	 	public var abonadoDTO:AbonadoDTO;	// Para tener a mano los datos del abonado seleccionado
+
+		// globales para las consultas de detalles
+		public var codCuentaDetalle:String;
+		public var codClienteDetalle:String;
+		public var numAbonadoDetalle:String;
+		
+		// ArrayCollection con todas las propiedas definidas en el portalSAC.properties
+		[Bindable]
+		public var acProperties:ArrayCollection = new ArrayCollection();
+
+		// Codigo de OOSS o Consulta actualmente cargada para la auditoria
+		public var codEvento:String;
+		
+		// Archivos de configuracion
+		public var xmlConfig:XML; 
+		public var xmlConfigHttpServices:XML;
+		public var xmlConfigOOSS:XML;
+		public var xmlConfigConsultas:XML;
+		
+		[Embed(source="recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class; 		
+
+		// Se instancian y utlizan cuando se elige una OOSS 
+		public var boxOOSS:VBox;
+		public var tabAreasTrabajo:TabNavigator;
+ 		public var lblPathTitulo:Label = new Label();		
+		
+		// objeto comodin para ser usado para compartir un dato entre modulos
+		public var paramGenerico:String = new String();
+		
+		// Url del archivo que genera pdfs
+		public var urlGeneraPdf:String = new String();
+		
+		// Http services para traer las configuraciones						
+   		public var servPropGenerales:HTTPService = new HTTPService();
+   		public var servPropOOSS:HTTPService = new HTTPService();
+   		public var servPropHTTP:HTTPService = new HTTPService();
+   		public var servPropConsultas:HTTPService = new HTTPService();
+   								
+   		public var timer:Number;
+   		
+   		/*
+   		 * Descripcion: variables para el manejo de registro de consulta y de registro OK de OOSS
+   		 * Developer: Gabriel Moraga L.		 
+   		 */
+   		 
+   		//Se utilizan como flag de acciones
+   		//public var flagConsultaCta:Number; //Contiene la cantidad de consulta por cuenta
+		//public var flagConsultaClie:Number; //Contiene la cantidad de consulta por cliente
+		//public var flagConsultaAbo:Number; //Contiene la cantidad de consulta por abonado
+		public var flagButon:Boolean = false; //contiene un true cunado se ejecuta la consulta por el boton de busqueda
+				
+		//Contienen el resultado consulta anterior
+		public var sesionNumCta:Number; //Contiene el numero de cuanta de la consulta anterior
+		public var sesionCodClie:Number; //Contiene el codigo de cliente de la consulta anterior
+		public var sesionNumAbo:Number; //Contiene el numero de abonado de la consulta anterior
+		//Contienen el primer resultado de consulta
+		public var sNumCta:Number; //Contiene el numero de cuanta de la consulta anterior
+		public var sCodClie:Number; //Contiene el codigo de cliente de la consulta anterior
+		public var sNumAbo:Number; //Contiene el numero de abonado de la consulta anterior
+		
+   		public var sesionDate:String; //Contiene la fecha de inicio de consulta (Cuenta, Cliente, Abonado)
+   		public var sesionTipoBus:String = "SinConsulta"; //Contien un flg de tipo de busqueda realizada 
+   		public var sesionFlagButon:Boolean = false; //contiene un true cunado se ejecuta la consulta por el boton de busqueda en sesion
+   		
+   		public var estadoGuaOK:Boolean = false;
+   		public var cantIntentos:Number = 0;
+   		
+   		//contiene la fecha de ejecucion Ok de la OOSS
+   		public var sesionDateOOSS:String; //Contiene la fecha de inicio de correcto de la ejecucion de una OOSS
+   		public var flagVentanaConsultas:Boolean = false;
+   		//
+   		public var openSTP:Boolean = false;
+   		
+   		//variable para guardar dominio de ejecucion de kiosco
+   		public var dominioKiosco:String = null;
+   		
+		// -- METODOS  --
+		include "user/includes/portalSAC/codigo.as";
+
+
+		// --------------------------------------------------------------------------------	
+		
+		public function cargaFinal():void {
+			ExternalInterface.addCallback("cancloseornot",cancloseornot);
+		}
+		
+		public function cancloseornot():Boolean
+	    {
+	
+			var retorno:Boolean = false;
+
+	    	levantaRegistrarConsultaExit();
+
+	    	retorno = validarEstadoOK();
+		
+	    	return retorno;
+	    }
+
+	]]>
+	</mx:Script>
+
+	<mx:Image x="158" y="527" source="recursosInterfaz/imagenes/otros/logoChico.png" alpha="1.0"/>
+	<mx:Label x="210" y="536" text="® 2011 Movistar. Telefónica. Todos los derechos reservados. Sitio Web diseñado para resolución 1024x768" width="658" fontStyle="italic"/>
+	<mx:TextArea x="96.5" y="39" text="Portal de Servicios Atención Cliente" width="428" height="76" borderStyle="none" fontSize="25" fontStyle="italic" fontFamily="Verdana" backgroundAlpha="0.0" fontWeight="bold" editable="false" color="#429831" textAlign="left"/>
+	<mx:Image x="453" y="241" source="recursosInterfaz/imagenes/otros/pareja.png"/>
+</mx:Application>
+

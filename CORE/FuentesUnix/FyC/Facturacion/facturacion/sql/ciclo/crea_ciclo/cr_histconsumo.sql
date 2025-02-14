@@ -1,0 +1,107 @@
+set echo off verify off
+
+spool $WORKDIR/tab_FA_HISTCONSUMO_CLIENTES_&1.log
+
+prompt Table FA_HISTCONSUMO_CLIENTES_&1
+
+CREATE TABLE FA_HISTCONSUMO_CLIENTES_&1
+(
+  COD_CLIENTE    NUMBER(8)   NOT NULL,
+  COD_CICLFACT   NUMBER(6)   NOT NULL,
+  FEC_EMISION    DATE        NOT NULL,
+  MTO_FACTCICLO  NUMBER(20,4),
+  NUM_MINREBA    NUMBER(10),
+  NUM_MINADIC    NUMBER(10),
+  NUM_MINRFIJA   NUMBER(10),
+  NUM_MINOPER    NUMBER(10),
+  NUM_MINFREC    NUMBER(10),
+  NUM_MINESPE    NUMBER(10),
+  NUM_MINTMOV    NUMBER(10)
+)
+TABLESPACE INSTALL_DATA
+PCTUSED    60
+PCTFREE    5
+INITRANS   4
+MAXTRANS   255
+STORAGE    (INITIAL          20M
+            NEXT             10M
+            MINEXTENTS       1
+            MAXEXTENTS       256
+            PCTINCREASE      0
+            FREELISTS        8
+            FREELIST GROUPS  1
+            BUFFER_POOL      DEFAULT)
+LOGGING
+NOCACHE
+NOPARALLEL;
+
+COMMENT ON TABLE FA_HISTCONSUMO_CLIENTES_&1 IS 'Consumos por Ciclo Por Cliente.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..COD_CLIENTE IS 'Código de cliente.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..MTO_FACTCICLO IS 'Monto facturado en el ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINREBA IS 'Minutos rebajados en factura del ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINADIC IS 'minutos adicionales en factura del ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINRFIJA IS 'minutos consumidos trafico hacia red fija en factura del ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINOPER IS 'minutos consumidos trafico hacia otras operadoras en factura del ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINFREC IS 'minutos consumidos trafico hacia números frecuentes en factura del ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINESPE IS 'minutos consumidos trafico hacia números especiales en factura del ciclo.';
+
+COMMENT ON COLUMN FA_HISTCONSUMO_CLIENTES_&1..NUM_MINTMOV IS 'minutos consumidos trafico hacia teléfonos t. Movil en factura del ciclo.';
+
+
+CREATE UNIQUE INDEX PK_FA_HISTCONSUMO_CLIE_&1 ON FA_HISTCONSUMO_CLIENTES_&1
+(COD_CLIENTE, COD_CICLFACT)
+LOGGING
+TABLESPACE INSTALL_INDEX
+PCTFREE    5
+INITRANS   8
+MAXTRANS   255
+STORAGE    (
+            INITIAL          5M
+            NEXT             5M
+            MINEXTENTS       1
+            MAXEXTENTS       256
+            PCTINCREASE      0
+            FREELISTS        8
+            FREELIST GROUPS  1
+            BUFFER_POOL      DEFAULT
+           )
+NOPARALLEL;
+
+CREATE PUBLIC SYNONYM FA_HISTCONSUMO_CLIENTES_&1 FOR FA_HISTCONSUMO_CLIENTES_&1;
+
+ALTER TABLE FA_HISTCONSUMO_CLIENTES_&1 ADD (
+  CONSTRAINT FA_HISTCONSUMO_CLIENTES_&1 PRIMARY KEY (COD_CLIENTE, COD_CICLFACT)
+    USING INDEX
+    TABLESPACE INSTALL_INDEX
+    PCTFREE    5
+    INITRANS   8
+    MAXTRANS   255
+    STORAGE    (
+                INITIAL          20M
+                NEXT             5M
+                MINEXTENTS       1
+                MAXEXTENTS       256
+                PCTINCREASE      0
+                FREELISTS        8
+                FREELIST GROUPS  1
+               ));  
+
+
+GRANT SELECT ON FA_HISTCONSUMO_CLIENTES_&1 TO SISCEL_SELECT;
+GRANT DELETE ON FA_HISTCONSUMO_CLIENTES_&1 TO  ops$xpfactur;
+GRANT INSERT ON FA_HISTCONSUMO_CLIENTES_&1 TO  ops$xpfactur;
+GRANT SELECT ON FA_HISTCONSUMO_CLIENTES_&1 TO  ops$xpfactur;
+GRANT UPDATE ON FA_HISTCONSUMO_CLIENTES_&1 TO  ops$xpfactur;
+
+
+spool off
+
+exit;

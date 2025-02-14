@@ -1,0 +1,4495 @@
+/* ===========================================================================================================
+Tipo        :	ACCION
+Nombre      :	RevBaja.pc ("REVBJ")
+Descripcion :	Anula la baja de un cliente ( y de todos sus abonados )
+Fecha       :	Abril 2001
+Parametro   :	Recibe Cod_cliente ( a cuyos abonados sera anulada la baja)
+			      Retorna OK, SQL (errores para la tabla)
+Modificaciones	:
+
+17-08-2004  GAC.  Homologacion a Incidencia XC-200406200056
+
+12-11-2004 	Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+		Puntero de archivo log tipo Hilo. 
+		Variable de contexto para instancia de BD tipo hilo
+
+=========================================================================================================== */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "RevBaja.h"                                       
+#include "ctype.h"
+
+EXEC SQL INCLUDE sqlca;
+int  	iAboCeluLocal = 0;
+int	iAboBeepLocal = 0;
+
+/* ============================================================================= */
+/* funcion reversa de Baja para el cliente y sus abonados, los que correspondan  */
+/* ============================================================================= */
+char  *szfnRevBaja(FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int	 ihCodUsoAmistar 	  = USOAMISTAR;
+	int	 ihCodCtaSeguraCtc	  = CTASEGURACTC; 
+	char   szhCodCausaBaja[3] ="" ;EXEC SQL VAR szhCodCausaBaja IS STRING (3);
+	long	 lhCodCliente;
+	int	 ihCodControlada;
+	char	 szhCodFyfCel[4];
+	int	 ihCodProdCelular;	
+	int	 ihCodProdBeeper;         
+	long	 lhNumSecuencia;
+	int	 ihCntReg;
+	double dhSaldo = 0;
+	double dhDeuVencida = 0;
+	long	 lhDiasBaja = 0;
+	int	 ihDiasDesdeBaja = 0;
+	int	 ihCodActRehaTotal;
+	char	 szhCadena[2001];			EXEC SQL VAR szhCadena IS STRING (2001);
+	int	 ihRepoPuntual;		                        		
+	long	 lhCodCiclFac;
+	int	 ihIndCuotas;
+	long	 lhCodCiclFacAux;
+	int	 ihCntOtrosAbonados = 0;
+	int	 ihCuentaMovPend = 0;                   
+	char	 szPerfilAux[256];			EXEC SQL VAR szPerfilAux IS STRING (256);
+	char	 szRetornoPL[2];
+	long	 lhNumAbonado;
+	long    lhNumSeqGlobal;             /*HM-200505160045 18-05-2005 Soporte RyC PRM. Homologación de incidencia CH-200412272562  03-01-2005 Soporte RyC  PRM*/
+	char	 szhIndExclusion[2]= "" ;
+	char 	 szIndCargo[2]     = ""; 	EXEC SQL VAR szIndCargo IS STRING (2);
+	long	 lhNumSecuenciaRep = 0;
+	td_Abonado  sthAbonado;     
+	td_AlSeries	sthAlSeries;                                                  
+
+	double dhMtoAux;
+	char	 szhFecAux[9];
+	char   szhCodTiPlan[9];		EXEC SQL VAR szhCodTiPlan IS STRING (9);
+	char	 szhFecBaja[9]; 		EXEC SQL VAR szhFecBaja IS STRING (9); /* P-COL-08022 MAC*/
+	char	 szhFecAlta_aux[20]; EXEC SQL VAR szhFecAlta_aux IS STRING (20); /* P-COL-08022 MAC*/
+   char	 szhFecSysdate[20]= "";	EXEC SQL VAR szhFecSysdate IS STRING(20);	
+	long   lNum_abonado;
+	char   szCod_plantarif[4];
+   long   ihCod_retorno ;
+   char   szhMens_retorno [3001]; EXEC SQL VAR szhMens_retorno IS STRING (3001); /* P-COL-08022 MAC*/
+   long   ihNum_evento;
+	
+	
+	/* Vbles. Bind */
+	char szhRBAJA  [6];
+	char szhEJE    [4];
+   char szhRER    [4];
+   char szhBAJA   [5];
+   char szhABP    [4];
+   char szhBAA    [4];
+	char szhBAP    [4];
+   char szhModulo [3];
+   char szhPENDIENTE  [10];
+	char szhFiller     [2];
+   int  ihValor_cero  = 0;
+   int  ihValor_uno   = 1;
+   int  ihValor_dos   = 2;
+	int  ihValor_tres  = 3;
+   int  ihValor_cuatro= 4;
+	int	ihCntTemp;
+	char  szhLetra_T [2];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;                                                 
+int 	iEnComodato = 6;    
+int 	iEnArriendo = 3;                                                             
+char 	modulo[] = "szfnRevBaja";         
+char	szActuacionAnulaBaja[3];
+int	iRet;
+static  char	szRet[6] = "";
+char	*pszRet;
+long	lNumMovimiento1;                                       
+BOOL	bExisteAlSer;
+BOOL  bReservado;
+int	iLong = 0, iResul = 0;                                          
+int	i;              
+int	iError = 0;    
+char	szCadAux[256];
+int	rr;
+char 	szCodActAbo[3];
+struct sqlca sqlca;
+FILE *pfLog=*ptArchLog;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+	                
+	memset( szActuacionAnulaBaja, '\0', sizeof( szActuacionAnulaBaja ) );
+	memset( szhCodTiPlan, '\0', sizeof( szhCodTiPlan ) );
+   memset( szCodActAbo, '\0', sizeof( szCodActAbo ) );
+	memset( szhFecBaja	, '\0', sizeof( szhFecBaja	 ) );
+	memset( szhFecSysdate, '\0', sizeof( szhFecSysdate ) );
+	
+	strcpy( szActuacionAnulaBaja, ACTUACIONALTAPLS );
+	strcpy( szhCodCausaBaja, CAUSABAJA );
+	strcpy(szhBAP   ,"BAP");
+	strcpy(szhRBAJA ,"RBAJA");
+	strcpy(szhEJE   ,"EJE");
+	strcpy(szhRER   ,"RER");
+	strcpy(szhBAJA  ,"BAJA");
+	strcpy(szhABP   ,"ABP");
+	strcpy(szhBAA   ,"BAA");
+	strcpy(szhModulo,"CO");
+	strcpy(szhPENDIENTE,"PENDIENTE");
+	strcpy(szhFiller," ");
+	strcpy(szhLetra_T,"T");
+                       
+	/* asignacion de cliente original */
+	lhCodCliente = lCliente;
+
+	/* verifica si algun abonado del cliente se encuentra en un estado temporal 
+	if( ( iResul = ifnAbonadosSituacionTemporal(&pfLog, lhCodCliente, CXX ) ) < 0 )
+		return "PND";
+	if( iResul )	el cliente presenta abonados en situacion temporal 
+		return "PND";*/
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT COUNT(*)
+	INTO  :ihCntTemp
+	FROM  GA_ABOCEL G
+	WHERE G.COD_CLIENTE = :lhCodCliente
+	AND   G.COD_SITUACION IN (SELECT COD_SITUACION
+								     FROM  GA_SITUABO
+								     WHERE G.COD_SITUACION = COD_SITUACION 
+							        AND   TIP_SITUACION = :szhLetra_T );	 /* marca estado temporal */
+    
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )	{   
+		ifnTrazaHilos( modulo,&pfLog,  "Cliente => [%ld], Error comprobando situacion temporal =>[%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "PND";
+	}
+	if ( ihCntTemp > 0 )	  {
+		ifnTrazaHilos( modulo,&pfLog,  "Cliente => [%ld], TIENE ABONADOS CON SITUACION TEMPORAL.", LOG02, lhCodCliente );  
+		return "PND";
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL EXECUTE
+		BEGIN
+			:szhFecSysdate:=TO_CHAR(SYSDATE,'DD-MM-YYYY HH24:MI:SS');
+		END;
+	END-EXEC;
+
+		
+    sprintf( szRet, "OK\0" );
+
+  	 sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+    EXEC SQL
+    SELECT COUNT(*)
+    INTO :ihCuentaMovPend
+    FROM 
+    (
+        SELECT COD_SITUACION
+        FROM GA_ABOCEL
+        WHERE COD_CLIENTE = :lhCodCliente
+        AND COD_SITUACION = :szhBAP 			/* Baja abonado en Proceso */
+        UNION ALL
+        SELECT COD_SITUACION
+        FROM GA_ABOBEEP
+        WHERE COD_CLIENTE = :lhCodCliente
+        AND COD_SITUACION = :szhBAP 			/* Baja abonado en Proceso */
+    );
+    if (sqlca.sqlcode)
+    {   
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) SITUACIONES 'BAP' %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+        return "PND";   
+    }
+    if ( ihCuentaMovPend > 0 )
+    {
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) TIENE BAJAS PENDIENTES ",LOG02,lhCodCliente);  
+        return "PND";    /* Pendiente */
+    }
+
+    /* Obtiene datos generales para procesos */
+  	 sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+    EXEC SQL
+    SELECT B.PROD_CELULAR,
+    		  B.PROD_BEEPER            
+    INTO   :ihCodProdCelular,	
+    		  :ihCodProdBeeper         
+    FROM   GE_DATOSGENER B;
+    
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "Cliente:%ld) GE_DATOSGENER %s  %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+    }                                    
+    
+/* ================================================================================================== */
+   /*Inicio HM-200505160045 18-05-2005 Soporte RyC PRM. Homologación de incidencia CH-200412272562  03-01-2005 Soporte RyC PRM*/
+    lhNumSeqGlobal = iNumSeqGlobal;    
+	ifnTrazaHilos( modulo,&pfLog, "Número de secuencia de acción a reversar lhNumSeqGlobal => [%ld].", LOG05, lhNumSeqGlobal );  
+    /*Fin*/
+
+	/* Verificamos si es una reposicion Puntual */
+  	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+   EXEC SQL
+	SELECT R.IND_CARGO, 
+			R.IND_EXCLUSION,
+			R.NUM_SECUENCIA
+	INTO 	:szIndCargo,
+			:szhIndExclusion,
+			:lhNumSecuenciaRep
+	FROM 	CO_REPOPUNTUAL R, CO_ACCIONES A
+	WHERE A.COD_CLIENTE 	= :lhCodCliente
+	AND	A.COD_RUTINA    = :szhRBAJA        
+	AND   A.COD_ESTADO   <> :szhEJE
+	AND   A.COD_CLIENTE   = R.COD_CLIENTE
+	AND   A.NUM_SECUENCIA = R.NUM_SECUENCIA
+	AND   A.NUM_SECUENCIA = :lhNumSeqGlobal;  /*HM-200505160045 18-05-2005 Soporte RyC PRM. Homologación de incidencia CH-200412272562  03-01-2005 Soporte RyC PRM*/
+	
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld), al verificar si es Reversa de Baja Puntual => [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+        return "PND";
+	} 
+	else if ( sqlca.sqlcode != SQLNOTFOUND )	/* es RepoPuntual, llamo el EJECUTOR */ 
+	{
+		ifnTrazaHilos( modulo,&pfLog, "RepoPuntual (Cliente: %ld)  IND_CARGO[%s]  IND_EXCLUSION [%s]  Secuencia [%ld]", 
+					       	 LOG02, lhCodCliente, szIndCargo, szhIndExclusion, lhNumSecuenciaRep );  
+		ihRepoPuntual = 1;
+	}
+    else	/* no es repopuntual, llamo el EXCLUIDOR */
+	{
+		if ( bGeneraCargos )   /* si no es cambio de categoria */
+			/* asume Valores por Defecto, implica que SI se deben generar cargos por reposicion */
+			strcpy( szIndCargo, "S" );    
+		else
+			/* Implica que NO se deben generar cargos por reposicion, es cambio de categoria MGG 27-02-2001 */
+			strcpy( szIndCargo, "N" );     
+		
+		strcpy( szhIndExclusion, "N" );     
+		ihRepoPuntual = 0;
+	}
+
+	/* si es reversa de baja automatica, se realizan validaciones adicionales */
+	if( ihRepoPuntual == 0 )
+	{	
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Tiene reversa de Baja Automatica.", LOG03, lhCodCliente );  
+
+	    /* Obtiene parametros para validar saldo */
+	    sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	    EXEC SQL 
+	    SELECT VAL_NUMERICO
+	    INTO	  :dhSaldo
+	    FROM   FAD_PARAMETROS
+	    WHERE  COD_PARAMETRO  = :ihValor_uno
+	    AND    COD_MODULO     = :szhModulo;   
+
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select Saldo FAD_PARAMETROS %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+	        return "PND";
+	    }
+		else if ( sqlca.sqlcode == SQLNOTFOUND )
+		{	
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select Saldo FAD_PARAMETROS, no se encontro parametro", LOG00, lhCodCliente );  
+	        return "PND";
+		}
+			    		 
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Saldo permitido para ejecutar Reversa [%.0f] ", LOG03, lhCodCliente, dhSaldo );  
+
+	    /* Verifica si el cliente tiene saldo vencido */
+		
+		if( !bfnGetSaldoClienteAcc(&pfLog, lhCodCliente, &dhDeuVencida, &dhMtoAux, szhFecAux, CXX ) ) 
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fallo bfnGetSaldoCliente......", LOG03, lhCodCliente );  
+			return "PND";
+        }
+        
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Saldo Vencido actual [%.0f] ", LOG03, lhCodCliente, dhDeuVencida );  
+
+		/* No se realiza la baja el cliente tiene saldo vencido */
+		if ( ( dhDeuVencida - dhSaldo ) > 0 )
+			return "SALDO";	    		 
+    
+	   /* Obtiene parametros para validar dias desde la baja */    
+      sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+      EXEC SQL 
+      SELECT VAL_NUMERICO
+	   INTO	 :lhDiasBaja
+	   FROM   FAD_PARAMETROS
+	   WHERE  COD_PARAMETRO  = :ihValor_dos
+	   AND    COD_MODULO     = :szhModulo;
+
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select Dias FAD_PARAMETROS %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+	        return "PND";
+	    }    
+		else if ( sqlca.sqlcode == SQLNOTFOUND )
+		{	
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select DiasBaja FAD_PARAMETROS, no se encontro parametro", LOG00, lhCodCliente );  
+	        return "PND";
+		}
+
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Dias permitidos para reversar baja [%ld] ", LOG03, lhCodCliente, lhDiasBaja );  
+
+      sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+      EXEC SQL 
+      SELECT NVL( TRUNC(SYSDATE) - TRUNC(MAX(FEC_ESTADO)), :ihValor_cero )
+	   INTO	 :ihDiasDesdeBaja
+	   FROM   CO_ACCIONES
+	   WHERE  COD_CLIENTE  = :lhCodCliente
+	   AND    COD_RUTINA   = :szhBAJA
+	   AND    COD_ESTADO   IN (:szhEJE, :szhRER);
+
+	    		                              
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Select FEC_BAJA CO_ACCIONES %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+	        return "PND";
+	    }
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) No tiene Accion de Baja en CO_ACCIONES.", LOG03, lhCodCliente );  
+	        return "PND";
+	    }
+
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Dias desde que se dio la baja [%d] ", LOG03, lhCodCliente, ihDiasDesdeBaja );  
+
+		/* No se realiza la baja el cliente tiene mas dias de los permitidos para la reposicion */
+		if ( ihDiasDesdeBaja > lhDiasBaja )
+			return "NDIAS";	    		 
+	
+	} /* ihRepoPuntual == 0 ) */
+
+	/* sea reversa puntual o automatica */                     
+
+	/* selecciona el universo de todos los abonados (celulares y beepers) del cliente dado */
+    sprintf(szhCadena, 	"SELECT 1 "                                  
+								", NUM_ABONADO "                         
+								", COD_SITUACION "                       
+								", COD_CAUSABAJA "                       
+								", NVL(IND_PLEXSYS, 0 ) "                
+								", COD_CENTRAL "                         
+								", NVL(COD_CENTRAL_PLEX,0) "             
+								", NUM_CELULAR "                         
+								", NVL(NUM_CELULAR_PLEX,0) "             
+								", NVL( NUM_SERIEHEX, '0')"                        
+								", TIP_TERMINAL "                        
+								", COD_MODVENTA "                        
+								", NVL(IND_PROCEQUI,' ') "                        
+								", COD_CICLO "                           
+								", NVL(COD_PLANSERV,' ') "                        
+								", NVL(NUM_CONTRATO,' ') "                        
+								", NVL(NUM_ANEXO, ' ') "                           
+								", TO_CHAR(FEC_FINCONTRA,'YYYYMMDD') "   
+								", COD_CUENTA "                          
+								", COD_USO "                             
+								", NVL(COD_PLANTARIF, ' ') "                       
+								", IND_SUPERTEL "                        
+								", NVL(NUM_TELEFIJA,'000000000000000') "         
+								", NVL(PERFIL_ABONADO,' ') "             
+								", TO_CHAR(FEC_ALTA,'YYYYMMDD') "             
+								", NVL( IND_EQPRESTADO, '0' ) "             
+								", NVL( TO_CHAR(FEC_PRORROGA,'YYYYMMDD'), '00000000' ) "             
+								", COD_TECNOLOGIA "
+								", NVL( NUM_SERIE, ' ' ) "
+								", NVL( NUM_IMEI, ' ' ) "
+								", DECODE( COD_TECNOLOGIA, 'GSM', fRecuperSIMCARD_FN( NUM_SERIE, 'IMSI'), ' ' ) IMSI "
+								", CO_fGetTipPlanCelular( COD_PLANTARIF ) "
+								", to_char(fec_baja, 'dd-mm-yyyy') "
+								"FROM  GA_ABOCEL "
+								"WHERE COD_CLIENTE = %ld "
+								"AND   COD_SITUACION = 'BAA' "
+								"AND   COD_CAUSABAJA = '%s' "
+								"AND   COD_PRODUCTO != %d "
+                        "UNION ALL "
+                   		"SELECT 2 "                                          
+								", NUM_ABONADO "                                 
+								", COD_SITUACION "                               
+								", COD_CAUSABAJA "                               
+								", 0 "          		/* ind plexsys */        
+								", COD_CENTRAL "                                 
+								", 0 "        			/* cod_central_plex */   
+								", NUM_BEEPER "   		/* num_celular */        
+								", 0 "   				/* num_celular_plex */   
+								", '00000000' "   		/* num_seriehex */       
+								", '0' "          		/* tip_terminal */       
+								", COD_MODVENTA "                                
+								", IND_PROCEQUI "                                
+								", COD_CICLO "                                   
+								", COD_PLANSERV "                                
+								", NUM_CONTRATO "                                
+								", NUM_ANEXO "                                   
+								", TO_CHAR(FEC_FINCONTRA,'YYYYMMDD') "           
+								", COD_CUENTA "                                  
+								", COD_USO "                                     
+								", COD_PLANTARIF "                               
+								", 0 "                                           
+								", '000000000000000' "  	/* ind_supertel, num_telefija */
+								", NVL(PERFIL_ABONADO,' ') "                      
+								", TO_CHAR(FEC_ALTA,'YYYYMMDD') "
+								", '0' " 
+								", '00000000' "            
+								", ' ' "
+								", NUM_SERIE "
+								", ' ' "
+								", ' ' IMSI "
+								", ' ' "
+								", to_char(fec_baja, 'dd-mm-yyyy') "
+								"FROM  GA_ABOBEEP "
+								"WHERE COD_CLIENTE   = %ld "
+								"AND   COD_SITUACION = 'BAA' "
+								"AND   NUM_BEEPER   >= 9000000 "
+								"AND   COD_CAUSABAJA = '%s' ", lhCodCliente, szhCodCausaBaja, ihCodUsoAmistar, lhCodCliente, szhCodCausaBaja );
+
+	ifnTrazaHilos( modulo,&pfLog, "szhCadena\n[%s] ", LOG08, szhCadena);  
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL PREPARE sqlDinamico FROM :szhCadena;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Prepare curAbonados %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "PND";
+	}
+					
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL DECLARE curAbonados CURSOR FOR sqlDinamico;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Declare curAbonados %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "PND";
+	}
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL OPEN curAbonados;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Open curAbonados %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "PND";
+	}
+	
+	int xx=0;
+	for( ; ; ) /* siempre */
+	{
+		
+		/*sprintf( szRet, "PND\0" );*/
+		strcpy( szRet, "OK" );
+		iError = 0;      
+		xx++; 
+		bfnLimpiaStruct( &sthAbonado ); 
+		
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL FETCH curAbonados 
+		INTO    :sthAbonado.ihCodProducto,                              
+				:sthAbonado.lhNumAbonado,      
+				:sthAbonado.szhCodSituacion,   
+				:sthAbonado.szhCodCausaBaja,
+				:sthAbonado.ihIndPlexsys,    
+				:sthAbonado.ihCodCentral,      
+				:sthAbonado.ihCodCentralPlex,  
+				:sthAbonado.lhNumCelularBeeper,
+				:sthAbonado.lhNumCelularPlex,  
+				:sthAbonado.szhNumSerieHex,    
+				:sthAbonado.szhTipTerminal,  
+				:sthAbonado.ihCodModventa,     
+				:sthAbonado.szhIndProcequi,  
+				:sthAbonado.ihCodCiclo,        
+				:sthAbonado.szhCodPlanserv,    
+				:sthAbonado.szhNumContrato,  
+				:sthAbonado.szhNumAnexo,       
+				:sthAbonado.szhFecFincontra,   
+				:sthAbonado.lhCodCuenta,
+				:sthAbonado.ihCodUso,          
+				:sthAbonado.szhCodPlanTarif,
+				:sthAbonado.ihIndSupertel,     
+				:sthAbonado.szhNumTeleFija,
+				:sthAbonado.szhPerfilAbonado,  	
+				:sthAbonado.szhFecAlta,  	
+				:sthAbonado.szhIndEqPrestado,  	
+				:sthAbonado.szhFecProrroga,  	
+				:sthAbonado.szhCodTecnologia,  	
+				:sthAbonado.szhNumSerie,  	
+				:sthAbonado.szhNumImei,  	
+				:sthAbonado.szhNumImsi,
+				:szhCodTiPlan,
+				:szhFecBaja	;  	
+		
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fetch curAbonados %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			iError = 1;
+			break;
+		}
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Fetch curAbonados, Termino de datos.", LOG03, lhCodCliente );  
+			break;  	/* fin del ciclo */
+        }
+		/* limpio variables de cadena */
+		rtrim( sthAbonado.szhPerfilAbonado );
+		rtrim( sthAbonado.szhIndProcequi );
+		rtrim( sthAbonado.szhCodPlanserv );
+		rtrim( sthAbonado.szhNumContrato );
+		rtrim( sthAbonado.szhNumAnexo );
+		rtrim( sthAbonado.szhCodPlanTarif );
+		rtrim( sthAbonado.szhCodTecnologia );
+		rtrim( sthAbonado.szhNumSerie );
+		rtrim( sthAbonado.szhNumImei );
+		rtrim( sthAbonado.szhNumImsi );
+		
+        ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Datos del Abonado \n"
+								"\t\t\tihCodProducto      = [%d],\n"                              
+								"\t\t\tlhNumAbonado       = [%ld],\n"  
+								"\t\t\tszhCodSituacion    = [%s],\n"   
+								"\t\t\tszhCodCausaBaja    = [%s],\n"  
+								"\t\t\tihIndPlexsys       = [%d],\n"    
+								"\t\t\tihCodCentral       = [%d],\n"      
+								"\t\t\tihCodCentralPlex   = [%d],\n"  
+								"\t\t\tlhNumCelularBeeper = [%ld],\n"  
+								"\t\t\tlhNumCelularPlex   = [%ld],\n"  
+								"\t\t\tszhNumSerieHex     = [%s],\n"    
+								"\t\t\tszhTipTerminal     = [%s],\n"  
+								"\t\t\tszhNumSerie        = [%s],\n"       
+								"\t\t\tihCodModventa      = [%d],\n"     
+								"\t\t\tszhIndProcequi     = [%s],\n"  
+								"\t\t\tihCodCiclo         = [%d],\n"        
+								"\t\t\tszhCodPlanserv     = [%s],\n"    
+								"\t\t\tszhNumContrato     = [%s],\n"  
+								"\t\t\tszhNumAnexo        = [%s],\n"       
+								"\t\t\tszhFecFincontra    = [%s],\n"   
+								"\t\t\tlhCodCuenta        = [%ld],\n"  
+								"\t\t\tihCodUso           = [%d],\n"          
+								"\t\t\tszhCodPlanTarif    = [%s],\n"  
+								"\t\t\tihIndSupertel      = [%d],\n"     
+								"\t\t\tszhNumTeleFija     = [%s],\n"  
+								"\t\t\tszhPerfilAbonado   = [%s],\n" 
+		                        "\t\t\tszhFecAlta         = [%s],\n"
+		                        "\t\t\tLargo PefilAbonado = [%d],\n"
+								"\t\t\tszhIndEqPrestado   = [%s],\n"  	
+								"\t\t\tszhFecProrroga     = [%s],\n"
+								"\t\t\tszhCodTecnologia   = [%s],\n"
+								"\t\t\tszhNumSerie        = [%s],\n"
+								"\t\t\tszhNumImei         = [%s],\n"
+								"\t\t\tszhNumImsi         = [%s].\n",
+		                        LOG03,
+								lhCodCliente,
+								sthAbonado.ihCodProducto,                              
+								sthAbonado.lhNumAbonado,      
+								sthAbonado.szhCodSituacion,   
+								sthAbonado.szhCodCausaBaja,
+								sthAbonado.ihIndPlexsys,    
+								sthAbonado.ihCodCentral,      
+								sthAbonado.ihCodCentralPlex,  
+								sthAbonado.lhNumCelularBeeper,
+								sthAbonado.lhNumCelularPlex,  
+								sthAbonado.szhNumSerieHex,    
+								sthAbonado.szhTipTerminal,  
+								sthAbonado.szhNumSerie,       
+								sthAbonado.ihCodModventa,     
+								sthAbonado.szhIndProcequi,  
+								sthAbonado.ihCodCiclo,        
+								sthAbonado.szhCodPlanserv,    
+								sthAbonado.szhNumContrato,  
+								sthAbonado.szhNumAnexo,       
+								sthAbonado.szhFecFincontra,   
+								sthAbonado.lhCodCuenta,
+								sthAbonado.ihCodUso,          
+								sthAbonado.szhCodPlanTarif,
+								sthAbonado.ihIndSupertel,     
+								sthAbonado.szhNumTeleFija,
+								sthAbonado.szhPerfilAbonado,
+								sthAbonado.szhFecAlta,
+								strlen(sthAbonado.szhPerfilAbonado),  	
+								sthAbonado.szhIndEqPrestado,  	
+								sthAbonado.szhFecProrroga,
+								sthAbonado.szhCodTecnologia,  	
+								sthAbonado.szhNumSerie,  	
+								sthAbonado.szhNumImei,  	
+								sthAbonado.szhNumImsi );  	
+
+		ifnTrazaHilos( modulo,&pfLog, "Procesando lhNumAbonado:[%ld], Producto = [%d]. Num_Serie = [%s]", LOG03, sthAbonado.lhNumAbonado, sthAbonado.ihCodProducto, sthAbonado.szhNumSerie );
+
+		if ( ( strlen( sthAbonado.szhPerfilAbonado ) % 6 ) != 0 )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld], Perfil Abonado incorrecto[%s]", LOG03, sthAbonado.lhNumAbonado, sthAbonado.szhPerfilAbonado );
+			sprintf( szRet, "SERER\0" );
+			iError = 1;
+			break;
+		}	
+		
+		/* variables boleanas para manejar reserva efectiva de equipo y existencia en al_series */
+		bExisteAlSer = FALSE;
+		bReservado   = FALSE;
+
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT COD_CICLFACT
+		INTO	 :lhCodCiclFac
+		FROM 	 FA_CICLFACT
+		WHERE  COD_CICLO = :sthAbonado.ihCodCiclo
+		AND	 SYSDATE BETWEEN FEC_DESDELLAM AND FEC_HASTALLAM;
+		
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Recuperando Ciclo de Facturacion %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+			break;
+		}
+
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Cod_Ciclo = [%d], Recuperado CodCicloFact [%d].", LOG03, sthAbonado.lhNumAbonado, sthAbonado.ihCodCiclo, lhCodCiclFac );
+
+		if ( sthAbonado.ihCodProducto == ihCodProdCelular )	/* es celular */
+		{
+			/* se valida que el num_celular no este asignado a otro usuario */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COUNT(*) 
+			INTO	 :ihCntOtrosAbonados
+			FROM 	 GA_ABOCEL
+			WHERE  NUM_CELULAR = (SELECT 	NUM_CELULAR FROM GA_ABOCEL
+									    WHERE 	NUM_ABONADO = :sthAbonado.lhNumAbonado )
+			AND 	 COD_SITUACION NOT IN (:szhBAA)
+			AND    NUM_ABONADO <> :sthAbonado.lhNumAbonado;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Verificando si el num_celular esta asignado a otro Usuario Celular %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Otros abonados con el mismo num_celular [%d].", LOG03, sthAbonado.lhNumAbonado, ihCntOtrosAbonados );
+
+			if ( ihCntOtrosAbonados > 0 )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No puede anularse la baja. Existe otro abonado con el mismo número de Celular.", LOG03, sthAbonado.lhNumAbonado );
+				sprintf( szRet, "NCOAB\0" );
+				iError = 1;
+				break;
+			}
+
+			/* Verifica si el abonado celular tiene periodo vigente */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COD_CICLFACT 
+			  INTO :lhCodCiclFacAux 
+			  FROM GA_INFACCEL  
+			 WHERE COD_CLIENTE  = :lhCodCliente 
+			   AND NUM_ABONADO  = :sthAbonado.lhNumAbonado
+			   AND COD_CICLFACT = :lhCodCiclFac 
+			   AND IND_ACTUAC = :ihValor_dos
+			   AND ROWNUM < :ihValor_dos;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select Ga_InfacCel %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+		
+			/* Si el cliente no tiene ciclo vigente retorna NOPER */
+			if ( sqlca.sqlcode == SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No tiene Periodo Vigente en Ga_Infaccel\n ", LOG03, sthAbonado.lhNumAbonado );  
+				sprintf( szRet, "NOPER\0" );
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] VAriable de Retorno [%s]", LOG03, sthAbonado.lhNumAbonado, szRet );  
+				iError = 1;
+				break;
+			}
+
+			/* se actualiza la ga_abocel a Abonado Baja en Proceso */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			UPDATE GA_ABOCEL
+			SET  	 COD_SITUACION = :szhABP 
+			WHERE  COD_CLIENTE   = :lhCodCliente 
+			AND    NUM_ABONADO   = :sthAbonado.lhNumAbonado
+			AND    COD_SITUACION = :szhBAA;
+			
+			if ( sqlca.sqlcode != SQLOK )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhAbonado:[%ld] Update Ga_Abocel 'ABP' %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+					
+
+		  
+
+	
+			/* Llama a PL especial para caso comodato */
+			lhNumAbonado = sthAbonado.lhNumAbonado;
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL EXECUTE
+				BEGIN
+					P_ANULA_BAJAMOROSIDAD_COMODATO( :lhNumAbonado, :szRetornoPL );
+				END;
+			END-EXEC;						
+			
+			/* el codigo de retorno 2, no se considera error */
+			if( atoi(szRetornoPL) != 0 && atoi(szRetornoPL) != 1 && atoi(szRetornoPL) != 2 )  /* es error */
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhAbonado:[%ld] P_ANULA_BAJAMOROSIDAD_COMODATO Retorno [%s].", LOG03, sthAbonado.lhNumAbonado, szRetornoPL );
+				sprintf( szRet, "PABC%s\0", szRetornoPL );
+				iError = 1;
+				break;
+			}
+
+			/* borramos los cargos por indemnizacion */
+			pszRet = (*szBorraCargosIndem)(&pfLog, lhCodCliente, &sthAbonado, CXX );
+			sprintf( szRet, "%s\0", pszRet );
+			
+			/* si ocurre un error se sale de la accion con el codigo de error */
+			if ( strcmp( szRet, "OK" ) != 0 )
+			{
+				iError = 1;
+				break;
+			}
+		
+			/* Verifica si el equipo esta en AL_SERIES */
+			pszRet = (*szRevisaAlSeries)(&pfLog, sthAbonado, &sthAlSeries, &bExisteAlSer, CXX );
+			sprintf( szRet, "%s\0", pszRet );
+			
+			/* si ocurre un error se sale de la accion con el codigo de error */
+			if ( strcmp( szRet, "OK" ) != 0 )
+			{
+				iError = 1;
+				break;
+			}
+			
+			/* si existe en AL_SERIES */
+			if ( bExisteAlSer )
+			{ 
+    			ifnTrazaHilos( modulo,&pfLog, "lhAbonado:[%ld] El equipo esta en Al_SERIES.", LOG03, sthAbonado.lhNumAbonado );
+			
+				/* se actualiza la GA_EQUIPABOSER desde la AL_SERIES */
+				if ( !bfnActualizaEquipAbo(&pfLog, sthAbonado, &sthAlSeries, CXX ) )
+				{
+					iError = 1;
+					sprintf( szRet, "PND\0" );
+					break;
+                }
+                
+				/* comprueba si esta disponible en almacen y lo reserva, si puede */ 
+				bReservado = FALSE; /* por comentarios de no utilizacion de devolucion diferida */
+				
+				/* se valida que el equipo no este asignado a otro usuario */
+				sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+				EXEC SQL
+				SELECT COUNT(*) 
+				INTO	 :ihCntOtrosAbonados
+				FROM 	 GA_ABOCEL
+				WHERE  NUM_SERIE = (SELECT 	NUM_SERIE FROM GA_ABOCEL
+										  WHERE 	NUM_ABONADO = :sthAbonado.lhNumAbonado )
+				AND 	 COD_SITUACION NOT IN (:szhBAA)
+				AND    NUM_ABONADO <> :sthAbonado.lhNumAbonado;
+	
+				if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Verificando si el equipo esta asignado a otro Usuario Celular %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					iError = 1;
+					break;
+				}
+	
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Otros abonados con la misma serie [%d].", LOG03, sthAbonado.lhNumAbonado, ihCntOtrosAbonados );
+			
+				if ( ihCntOtrosAbonados > 0 )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No puede anularse la baja. Existe otro abonado con el mismo número de Serie.", LOG03, sthAbonado.lhNumAbonado );
+					sprintf( szRet, "SEOAB\0" );
+					iError = 1;
+					break;
+				}
+
+			
+			} /* if ( bExisteAlSer ) */	
+		}
+		else /* es beepers */
+		{
+			/* se valida que el num_beeper no este asignado a otro usuario */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COUNT(*) 
+			INTO	 :ihCntOtrosAbonados
+			FROM 	 GA_ABOBEEP
+			WHERE  NUM_BEEPER = (SELECT 	NUM_BEEPER FROM GA_ABOBEEP
+									   WHERE 	NUM_ABONADO = :sthAbonado.lhNumAbonado )
+			AND 	 COD_SITUACION NOT IN (:szhBAA)
+			AND    NUM_ABONADO <> :sthAbonado.lhNumAbonado;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Verificando si el num_beeper esta asignado a otro Usuario %s.", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Otros abonados con el mismo num_beeper [%d].", LOG03, sthAbonado.lhNumAbonado, ihCntOtrosAbonados );
+
+			if ( ihCntOtrosAbonados > 0 )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No puede anularse la baja. Existe otro abonado con el mismo número de Beeper.", LOG03, sthAbonado.lhNumAbonado );
+				sprintf( szRet, "NBOAB\0" );
+				iError = 1;
+				break;
+			}
+
+			/* Verifica si el abonado beeper tiene periodo vigente */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COD_CICLFACT 
+			INTO   :lhCodCiclFacAux 
+			FROM 	 GA_INFACBEEP B 
+			WHERE  COD_CLIENTE  = :lhCodCliente 
+			AND    NUM_ABONADO  = :sthAbonado.lhNumAbonado
+			AND	 COD_CICLFACT = :lhCodCiclFac 
+			AND    IND_ACTUAC = :ihValor_dos;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select Ga_InfacBeep %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+		
+			/* Si el cliente no tiene ciclo vigente retorna NOPER */
+			if ( sqlca.sqlcode == SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No tiene Periodo Vigente en Ga_InfacBeep\n ", LOG00, sthAbonado.lhNumAbonado );  
+				sprintf( szRet, "NOPER\0" );
+				iError = 1;
+				break;
+			}
+
+			/* se actualiza la ga_abobeep a Abonado Baja en Proceso */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			UPDATE GA_ABOBEEP
+			SET  	 COD_SITUACION  = :szhABP 
+			WHERE  COD_CLIENTE    = :lhCodCliente 
+			AND    NUM_ABONADO    = :sthAbonado.lhNumAbonado
+			AND	 COD_SITUACION  = :szhBAA;			       
+			
+			if ( sqlca.sqlcode != SQLOK )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhAbonado:[%ld] UPDATE GA_ABOBEEP 'ABP' %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+
+			/* Verifica si el equipo esta en AL_SERIES */
+			pszRet = (*szRevisaAlSeries)( &pfLog,sthAbonado, &sthAlSeries, &bExisteAlSer, CXX );
+			sprintf( szRet, "%s\0", pszRet );
+			
+			/* si ocurre un error se sale de la accion con el codigo de error */
+			if ( strcmp( szRet, "OK" ) != 0 )
+			{
+				iError = 1;
+				break;
+			}
+			
+			/* si existe en AL_SERIES */
+			if ( bExisteAlSer )
+			{ 
+    			ifnTrazaHilos( modulo,&pfLog, "lhAbonado:[%ld] El equipo esta en Al_SERIES.", LOG03, sthAbonado.lhNumAbonado );
+			
+				/* se actualiza la GA_EQUIPABOSER desde la AL_SERIES */
+				if ( !bfnActualizaEquipAbo(&pfLog, sthAbonado, &sthAlSeries, CXX ) )
+				{
+					iError = 1;
+					break;
+                }
+                
+				/* comprueba si esta disponible en almacen y lo reserva, si puede */
+				bReservado = FALSE;
+				/* si ocurre un error se sale de la accion con el codigo de error */
+				/* se valida que el equipo no este asignado a otro usuario */
+				sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+				EXEC SQL
+				SELECT 	COUNT(*) 
+				INTO	:ihCntOtrosAbonados
+				FROM 	GA_ABOBEEP
+				WHERE 	NUM_SERIE = ( 	SELECT 	NUM_SERIE FROM GA_ABOBEEP
+										WHERE 	NUM_ABONADO = :sthAbonado.lhNumAbonado )
+				AND 	COD_SITUACION NOT IN (:szhBAA)
+				AND     NUM_ABONADO <> :sthAbonado.lhNumAbonado;
+	
+				if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Verificando si el equipo esta asignado a otro Usuario Celular %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					iError = 1;
+					break;
+				}
+	
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Otros abonados con la misma serie [%d].", LOG03, sthAbonado.lhNumAbonado, ihCntOtrosAbonados );
+			
+				if ( ihCntOtrosAbonados > 0 )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No puede anularse la baja. Existe otro abonado con el mismo número de Serie.", LOG03, sthAbonado.lhNumAbonado );
+					sprintf( szRet, "SEOAB\0" );
+					iError = 1;
+					break;
+				}
+			} /* if ( bExisteAlSer ) */	
+		} /* if (ihCodProducto == 1) */
+		
+		/* debiera ser igual para celulares y beepers */
+
+        ifnTrazaHilos( modulo,&pfLog, "bfnEjecutaPLInterfasesAbonados, comentada.", LOG05 );  
+	    /* recuperamos la actuacion de abonado celular */
+	    if( !bfnGetActAbodeAccion(&pfLog, szCODRUTINA, szhCodTiPlan, 1, szCodActAbo, CXX ) )
+	    {
+			iError = 1;
+			ifnTrazaHilos( modulo,&pfLog, "bfnGetActAbodeAccion, codigo de acuacion no encontrado", LOG03 ); 
+			sprintf( szRet, "SQL\0" );
+			break;
+	    }
+	
+        /* Se llama a PL para anular la baja del abonado */
+		if( !bfnEjecutaPLInterfasesAbonados(&pfLog, sthAbonado.lhNumAbonado, sthAbonado.ihCodProducto, szCodActAbo, CXX ) )
+		{
+			strcpy( szRet, "PLIAB" );
+			iError = 1;
+			break;
+		}
+
+		/* se insertan los movimientos en ICC_MOVIMIENTOS o ICB_MOVIMIENTOS segun corresponda */
+		pszRet = (*szfnInsICMovim)(&pfLog, sthAbonado, ihCodProdCelular, &lNumMovimiento1, szhCodTiPlan, CXX );
+		sprintf( szRet, "%s\0", pszRet );
+		
+		/* si ocurre un error se sale de la accion con el codigo de error */
+		if ( strcmp( szRet, "OK" ) != 0 )
+		{
+			iError = 1;
+			break;
+		}
+
+
+
+		 /* Inicio Modificacion P-COL-08022  MAC*/
+			 lNum_abonado =sthAbonado.lhNumAbonado;
+			 strcpy(szCod_plantarif,sthAbonado.szhCodPlanTarif);
+		         ifnTrazaHilos( modulo,&pfLog, "Inicio modificacion PV_PLANES_ADICIONALES_PG.... ", LOG03);
+		         ifnTrazaHilos( modulo,&pfLog, "szhFecSysdate    [%s]", LOG03,szhFecSysdate);
+		         ifnTrazaHilos( modulo,&pfLog, "lNum_abonado     [%ld]", LOG03,lNum_abonado);
+		         ifnTrazaHilos( modulo,&pfLog, "szCod_plantarif  [%s]", LOG03,szCod_plantarif);
+		         
+			 sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			 if (xx == 1) {
+					   /* La Primera vez, se dan de alta los planes por defecto para el cliente */
+			    EXEC SQL EXECUTE
+						   DECLARE 
+						  	   iCod_retorno NUMBER:=0;
+							   szMens_retorno VARCHAR2(3000);
+							   iNum_evento  NUMBER:=0;	
+							   szhFecAlta_aux_full VARCHAR2(19);
+						   BEGIN
+							   szhFecAlta_aux_full:=:szhFecSysdate;
+							   PV_PLANES_ADICIONALES_PG.PV_PLANES_DEFECTO_PR  ( :lhCodCliente, 0, :szCod_plantarif, szhFecAlta_aux_full, NULL, :lNumMovimiento1, '0', 'CO', iCod_retorno, szMens_retorno, iNum_evento  );
+		
+				                   :szhFecAlta_aux:=	szhFecAlta_aux_full;
+			                           :szhMens_retorno:=szMens_retorno;
+			                           :ihCod_retorno:=iCod_retorno;
+			                           :ihNum_evento:=iNum_evento;
+							   
+						   END;
+			    END-EXEC; 
+		
+		            ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR)szhFecAlta_aux :[%s]) ", LOG03, szhFecAlta_aux);
+		            ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR)szhMens_retorno:[%s]) ", LOG03, szhMens_retorno);
+		            ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR)ihCod_retorno  :[%d]) ", LOG03, ihCod_retorno);
+		            ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR)ihNum_evento   :[%d]) ", LOG03, ihNum_evento);
+		            ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR)sqlca.sqlcode  :[%d]) ", LOG03, sqlca.sqlcode);
+		            memset(szhFecAlta_aux,'\0',sizeof(szhFecAlta_aux));
+		            ifnTrazaHilos( modulo,&pfLog, "(szhFecAlta_aux seteada:[%s])", LOG03, szhFecAlta_aux);
+			    if (ihCod_retorno != 0 ) {
+					   	strcpy(szRet,"PND");
+					   	break;
+					   }
+		
+			   }
+		
+			   sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			   /* Se dan de alta los planes por defecto para el abomado */
+			   EXEC SQL EXECUTE
+					   DECLARE 
+						   iCod_retorno NUMBER:=0;
+						   szMens_retorno VARCHAR2(3000);
+						   iNum_evento  NUMBER:=0;
+						   szhFecAlta_aux_full VARCHAR2(19);
+					   BEGIN
+						   szhFecAlta_aux_full:=:szhFecSysdate;
+						   PV_PLANES_ADICIONALES_PG.PV_PLANES_DEFECTO_PR ( :lhCodCliente, :lNum_abonado, :szCod_plantarif, szhFecAlta_aux_full, NULL, :lNumMovimiento1, '0', 'CO', iCod_retorno, szMens_retorno, iNum_evento  );
+		
+						       :szhFecAlta_aux:=	szhFecAlta_aux_full;
+					               :szhMens_retorno:=szMens_retorno;
+					               :ihCod_retorno:=iCod_retorno;
+					               :ihNum_evento:=iNum_evento;
+		
+					   END;
+			   END-EXEC; 
+				
+			   ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR 2)szhFecAlta_aux :[%s]) ", LOG03, szhFecAlta_aux);
+			   ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR 2)szhMens_retorno:[%s]) ", LOG03, szhMens_retorno);
+			   ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR 2)ihCod_retorno  :[%d]) ", LOG03, ihCod_retorno);
+			   ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR 2)ihNum_evento   :[%d]) ", LOG03, ihNum_evento);
+			   ifnTrazaHilos( modulo,&pfLog, "((PV_PLANES_DEFECTO_PR 2)sqlca.sqlcode  :[%d]) ", LOG03, sqlca.sqlcode);
+			   memset(szhFecAlta_aux,'\0',sizeof(szhFecAlta_aux));
+			   ifnTrazaHilos( modulo,&pfLog, "(szhFecAlta_aux seteada:[%s])", LOG03, szhFecAlta_aux);
+			   if (ihCod_retorno != 0 ) {
+					   	strcpy(szRet,"PND");
+					   	break;
+			   }
+		
+		          if (xx >= 1) 
+			  {
+		            ifnTrazaHilos( modulo,&pfLog, "Ejecutando PV_PLANES_ADICIONALES_PG.PV_PROVISION_ABONADO_PR.... ", LOG03);
+		            ifnTrazaHilos( modulo,&pfLog, "(Cliente   :[%ld]) ", LOG03, lhCodCliente );
+		            ifnTrazaHilos( modulo,&pfLog, "(Abonado   :[%ld]) ", LOG03, lNum_abonado);
+		
+				      /* Se ejecuta la provisión de los movimientos de alta de los planes del cliente para el abonado */
+				      EXEC SQL EXECUTE
+					   DECLARE 
+						   iCod_retorno NUMBER:=0;
+						   szMens_retorno VARCHAR2(3000);
+						   iNum_evento  NUMBER:=0;
+						   szhFecAlta_aux_full VARCHAR2(19);
+					      BEGIN
+						      szhFecAlta_aux_full:=:szhFecSysdate;
+						      PV_PLANES_ADICIONALES_PG.PV_PROVISION_ABONADO_PR ( :lhCodCliente, :lNum_abonado, szhFecAlta_aux_full, :lNumMovimiento1,0, iCod_retorno, szMens_retorno, iNum_evento  );
+			               
+					              :szhFecAlta_aux:=	szhFecAlta_aux_full;
+				                      :szhMens_retorno:=szMens_retorno;
+				                      :ihCod_retorno:=iCod_retorno;
+				                      :ihNum_evento:=iNum_evento;
+		
+					      END;
+				      END-EXEC; 
+		
+			              ifnTrazaHilos( modulo,&pfLog, "((PV_PROVISION_ABONADO_PR)szhFecAlta_aux :[%s]) ", LOG03, szhFecAlta_aux);
+			              ifnTrazaHilos( modulo,&pfLog, "((PV_PROVISION_ABONADO_PR)szhMens_retorno:[%s]) ", LOG03, szhMens_retorno);
+			              ifnTrazaHilos( modulo,&pfLog, "((PV_PROVISION_ABONADO_PR)ihCod_retorno  :[%d]) ", LOG03, ihCod_retorno);
+			              ifnTrazaHilos( modulo,&pfLog, "((PV_PROVISION_ABONADO_PR)ihNum_evento   :[%d]) ", LOG03, ihNum_evento);
+				      ifnTrazaHilos( modulo,&pfLog, "((PV_PROVISION_ABONADO_PR)sqlca.sqlcode  :[%d]) ", LOG03, sqlca.sqlcode);
+				      if (ihCod_retorno != 0 ) {
+					   	strcpy(szRet,"PND");
+					   	break;
+				      }
+		            
+		         }
+		         ifnTrazaHilos( modulo,&pfLog, "Fin modificacion PV_PLANES_ADICIONALES_PG.... ", LOG03);
+		         /*fin Modificacion P-COL-08022  MAC */
+
+
+		if( strcmp( szIndCargo, "S" ) == 0 ) /* se genera cargo por reposicion */
+		{
+			if ( !ifnGeneraCargo(&pfLog, lhCodCliente, sthAbonado.lhNumAbonado, sthAbonado.ihCodProducto, "AF", CXX ) )
+			{
+				iError = 1;
+				break;
+			}
+			else
+			{
+				ifnTrazaHilos( modulo,&pfLog, "Ok. Abonado %ld Reversa (Aunque Fallo la PL :%s)", LOG03, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );  
+				sqlca.sqlcode = SQLOK; /* Ajuste : limpio la variable */   
+			}
+		}
+		  
+		/* Llamamos a la PL P_AL_INTERFAZ_CLUB 
+		if( !bfnEjecutaPLAlInterfazClub(&pfLog, sthAbonado.lhNumAbonado, " ", szActuacionAnulaBaja, CXX ) )
+		{
+			strcpy( szRet, "PLICL" );
+			iError = 1;
+			break;
+		}*/
+		
+		if ( sthAbonado.ihCodProducto == ihCodProdCelular )	/* es celular */
+		{
+	    	/* Inserta registro en GA_MOVCCONTROL */
+			if ( !bRegMovCControlada (&pfLog, sthAbonado, lNumMovimiento1, CXX ) ) 
+			{
+				iError = 1;
+				sprintf( szRet, "SQL\0" );
+				break;
+			}
+		
+			if ( !bInsertaMovtoSTM (&pfLog, sthAbonado, CXX ) ) 
+			{
+				iError = 1;
+				sprintf( szRet, "SQL\0" );
+				break;
+			}
+			
+			/* Verificamos Fyf */
+			pszRet = (*szfnActivaFF)(&pfLog, sthAbonado, lhCodCliente, CXX );
+			sprintf( szRet, "%s\0", pszRet ); 
+			
+			/* si ocurre un error se sale de la accion con el codigo de error */
+			if ( strcmp( szRet, "OK" ) != 0 )
+			{
+				iError = 1;
+				break;
+			}
+			
+			/* Procesa Plan Numero Frecuente */
+			
+			pszRet = (*szfnProcesaPlanFrecuente)(&pfLog, sthAbonado, lhCodCliente, CXX );
+			sprintf( szRet, "%s\0", pszRet );
+			
+			/* si ocurre un error se sale de la accion con el codigo de error */
+			if ( strcmp( szRet, "OK" ) != 0 )
+			{
+				iError = 1;
+				break;
+			}                   
+
+			if( !bfnDesHibernaEquipo(&pfLog, sthAbonado.lhNumCelularBeeper, sthAbonado.ihCodProducto, CXX ) )
+			{
+				strcpy( szRet, "PND" );
+				break;
+			}	
+
+			/* se coloca la fecha de baja a null */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			UPDATE GA_ABOCEL
+			SET	 FEC_BAJA 	  = NULL,
+					 FEC_BAJACEN   = NULL,
+					 COD_CAUSABAJA = NULL
+			WHERE  COD_CLIENTE = :lhCodCliente
+			AND	 NUM_ABONADO = :sthAbonado.lhNumAbonado;
+
+			if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Al actualizar FEC_BAJA de GA_ABOCEL %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+			/* se coloca la fecha de baja a null */
+			/* XO-200508260480 Soporte RyC 26-08-2005 */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			UPDATE GE_CLIENTES
+			SET	 FEC_BAJA 	  = NULL
+			WHERE  COD_CLIENTE = :lhCodCliente;
+			if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhCodCliente:[%ld] Al actualizar FEC_BAJA de GE_CLIENTES %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}			
+		}
+		else	/* el producto es beeper */
+		{
+			if( !bfnDesHibernaEquipo(&pfLog, sthAbonado.lhNumCelularBeeper, sthAbonado.ihCodProducto, CXX ) )
+			{
+				strcpy( szRet, "PND" );
+				break;
+			}	
+			
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			UPDATE GA_ABOBEEP
+			SET	 FEC_BAJA	= NULL,
+					 FEC_BAJACEN = NULL
+			WHERE  COD_CLIENTE = :lhCodCliente
+			AND	 NUM_ABONADO = :sthAbonado.lhNumAbonado;					
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Al actualizar FEC_BAJA de GA_ABOBEEP %s ", LOG00, sthAbonado.lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+		}
+
+	} /* for( ;; ) siempre */
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL CLOSE curAbonados;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) CLOSE curAbonados %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "PND";
+	}
+
+	if ( iError != 0 ) 	/* en algun lugar se produjo un error */
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Variable de Retorno [%s]", LOG03, sthAbonado.lhNumAbonado, szRet );  
+		return szRet;
+	}
+	
+	iAboCeluGlobal=iAboCeluLocal;
+	iAboBeepGlobal=iAboBeepLocal;
+	
+	/* inicio P-COL-08022*/
+	ifnTrazaHilos( modulo,&pfLog, "Retorna szRet [%s] ",LOG03,szRet);  
+	if( strcmp( szRet, "OK" )!=0 )  {
+	   ifnTrazaHilos( modulo,&pfLog, "Retorna Distinto de OK.",LOG03);  
+	   return (char *)szRet;
+	}
+	/* fin P-COL-08022*/
+	
+	return "OK";
+
+} /* char  *szfnRevBaja( long lCliente ) */    
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnLimpiaStruct(td_Abonado *sthAbo )
+{
+	sthAbo->ihCodProducto 		= 0; 			                        
+	sthAbo->lhNumAbonado 		= 0; 			                         
+	sthAbo->szhCodSituacion[0]  = '\0';
+	sthAbo->szhCodCausaBaja[0]  = '\0';
+	sthAbo->ihIndPlexsys 		= 0; 			                         
+	sthAbo->ihCodCentral 		= 0; 			                         
+	sthAbo->ihCodCentralPlex 	= 0; 			                         
+	sthAbo->lhNumCelularBeeper 	= 0; 			                            
+	sthAbo->lhNumCelularPlex 	= 0; 			                         
+	sthAbo->szhNumSerieHex[0]   = '\0';
+	sthAbo->szhTipTerminal[0]   = '\0';
+	sthAbo->szhNumSerie[0]      = '\0';
+	sthAbo->ihCodModventa 		= 0; 			                         
+	sthAbo->szhIndProcequi[0]   = '\0';
+	sthAbo->ihCodCiclo 			= 0; 			                         
+	sthAbo->szhCodPlanserv[0]   = '\0';
+	sthAbo->szhNumContrato[0]   = '\0';
+	sthAbo->szhNumAnexo[0]      = '\0';
+	sthAbo->szhFecFincontra[0]  = '\0';
+	sthAbo->lhCodCuenta 		= 0; 			                         
+	sthAbo->ihCodUso 			= 0; 			                         
+	sthAbo->szhCodPlanTarif[0]  = '\0';
+	sthAbo->ihIndSupertel 		= 0; 			                         
+	sthAbo->szhNumTeleFija[0]   = '\0';
+	sthAbo->szhPerfilAbonado[0] = '\0';
+	sthAbo->szhFecAlta[0]       = '\0';
+	sthAbo->szhCodTecnologia[0] = '\0';
+	sthAbo->szhNumSerie[0]      = '\0';
+	sthAbo->szhNumImei[0]       = '\0';
+	sthAbo->szhNumImsi[0]       = '\0';
+	return TRUE;
+}
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szRevisaAlSeries(FILE **ptArchLog, td_Abonado sthAbo, td_AlSeries *sthAlSeries, BOOL *bExiste, sql_context ctxCont )
+{
+char modulo[] = "szRevisaAlSeries";
+
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhNumSerie[iLENNUMSERIE];
+	long	lhNumAbonado;
+	int	ihCodBodega;
+	int	ihTipStock;
+	long	lhCodArticulo;
+	int	ihCodUso;
+	int	ihCodEstado;
+	long	lhCapCode;
+	char	szhNumSerieMec[iLENNUMSERIE];
+	char  szhFiller[2];
+	int   ihValor_cero=0;
+	sql_context CXX;
+	
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	lhNumAbonado = sthAbo.lhNumAbonado;
+	strcpy ( szhNumSerie, sthAbo.szhNumSerie );
+	strcpy ( szhFiller , " ");
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT 	COD_BODEGA, 
+			TIP_STOCK,
+			COD_ARTICULO, 
+			COD_USO, 
+			COD_ESTADO,
+			NVL(CAP_CODE,:ihValor_cero),
+			NVL(NUM_SERIEMEC, :szhFiller) 
+	INTO  :ihCodBodega,
+			:ihTipStock,
+			:lhCodArticulo,
+			:ihCodUso,
+			:ihCodEstado,
+			:lhCapCode,
+			:szhNumSerieMec
+	FROM 	AL_SERIES
+	WHERE NUM_SERIE = :szhNumSerie;
+	
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select AL_SERIES %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+	if ( sqlca.sqlcode != SQLNOTFOUND )
+	{
+		sthAlSeries->ihCodBodega   	= ihCodBodega;   
+		sthAlSeries->ihTipStock     = ihTipStock;    
+		sthAlSeries->lhCodArticulo  = lhCodArticulo; 
+		sthAlSeries->ihCodUso       = ihCodUso;      
+		sthAlSeries->ihCodEstado    = ihCodEstado;   
+		sthAlSeries->lhCapCode      = lhCapCode;     
+		strcpy (sthAlSeries->szhNumSerieMec, szhNumSerieMec ); 
+	
+		ifnTrazaHilos( modulo,&pfLog, "sthAlSeries->ihCodBodega     = [%d],"
+							  "\t\t\tsthAlSeries->ihTipStock     = [%d],"
+							  "\t\t\tsthAlSeries->lhCodArticulo  = [%ld],"
+							  "\t\t\tsthAlSeries->ihCodUso       = [%d],"
+							  "\t\t\tsthAlSeries->ihCodEstado    = [%d],"
+							  "\t\t\tsthAlSeries->lhCapCode      = [%ld],"
+							  "\t\t\tsthAlSeries->szhNumSerieMec = [%s] ",          
+							  	LOG03,
+							  	sthAlSeries->ihCodBodega,   	 
+							  	sthAlSeries->ihTipStock,      
+							  	sthAlSeries->lhCodArticulo,   
+							  	sthAlSeries->ihCodUso,        
+							  	sthAlSeries->ihCodEstado,     
+							  	sthAlSeries->lhCapCode,       
+							  	sthAlSeries->szhNumSerieMec); 
+
+		*bExiste = TRUE;
+
+	} /* if ( sqlca.sqlcode != SQLNOTFOUND ) */
+
+	return "OK";
+	
+} /* char *szRevisaAlSeries( td_Abonado sthAbo, td_AlSeries *sthAlSeries, BOOL bExiste ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnActualizaEquipAbo(FILE **ptArchLog, td_Abonado sthAbo, td_AlSeries *sthAlSeries, sql_context ctxCont )
+{
+char modulo[] = "bfnActualizaEquipAbo";
+EXEC SQL BEGIN DECLARE SECTION;
+
+	char	szhNumSerie[iLENNUMSERIE];
+	long	lhNumAbonado;
+	int		ihCodBodega;
+	int		ihTipStock;
+	long	lhCodArticulo;
+	int		ihCodUso;
+	int		ihCodEstado;
+	long	lhCapCode;
+	char	szhNumSerieMec[iLENNUMSERIE];
+	sql_context CXX;
+
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	
+	ifnTrazaHilos( modulo,&pfLog, 	"Ingreso modulo => [%s].", LOG05, modulo );
+
+	lhNumAbonado = sthAbo.lhNumAbonado;
+	strcpy ( szhNumSerie, sthAbo.szhNumSerie );
+	
+	ihCodBodega  	= sthAlSeries->ihCodBodega;
+	ihTipStock   	= sthAlSeries->ihTipStock;
+	lhCodArticulo	= sthAlSeries->lhCodArticulo;
+	ihCodUso     	= sthAlSeries->ihCodUso;
+	ihCodEstado  	= sthAlSeries->ihCodEstado;
+	lhCapCode    	= sthAlSeries->lhCapCode;
+	strcpy (szhNumSerieMec, sthAlSeries->szhNumSerieMec ); 
+
+	rtrim( szhNumSerieMec );
+	rtrim( szhNumSerie );
+	
+	ifnTrazaHilos( modulo,&pfLog, "Datos entrada.\n"
+							"\t\t   ihCodBodega    => [%d],\n"   
+							"\t\t   ihTipStock     => [%d],\n"    
+							"\t\t   lhCodArticulo  => [%ld],\n" 
+							"\t\t   ihCodUso       => [%d],\n"      
+							"\t\t   ihCodEstado    => [%d],\n"   
+							"\t\t   lhCapCode      => [%ld],\n"     
+							"\t\t   szhNumSerieMec => [%s],\n" 
+							"\t\t   lhNumAbonado   => [%ld],\n"
+							"\t\t   szhNumSerie    => [%s],\n",
+							LOG06,
+							ihCodBodega,   
+							ihTipStock,    
+							lhCodArticulo, 
+							ihCodUso,      
+							ihCodEstado,   
+							lhCapCode,     
+							szhNumSerieMec,
+							lhNumAbonado,
+							szhNumSerie );
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	UPDATE GA_EQUIPABOSER 
+	SET	COD_BODEGA 		=  :ihCodBodega,   
+			TIP_STOCK 		=  :ihTipStock,    
+			COD_ARTICULO 	=  :lhCodArticulo, 
+			COD_USO 		   =  :ihCodUso,      
+			COD_ESTADO 		=  :ihCodEstado,   
+			CAP_CODE 		=  :lhCapCode,     
+			NUM_SERIEMEC 	=  :szhNumSerieMec 
+	WHERE NUM_ABONADO 	=  :lhNumAbonado
+	AND 	NUM_SERIE 		=  :szhNumSerie;
+
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Actualizando GA_EQUIPABOSER %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+	
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Se actualizo GA_EQUIPABOSER.", LOG03, lhNumAbonado );
+	return TRUE;
+	
+} /* BOOL bfnActualizaEquipAbo( td_Abonado sthAbo, td_AlSeries *sthAlSeries ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szfnSerieBodega (FILE **ptArchLog, td_Abonado sthAbo, td_AlSeries *sthAlSeries, BOOL *bReservado, sql_context ctxCont )   
+/*-----------------------------------------------------------------------------------------------------
+	Parametro	sthAbo	Datos del Abonado.
+	Retorno		
+-----------------------------------------------------------------------------------------------------*/
+{
+EXEC SQL BEGIN DECLARE SECTION;
+
+	char	szhNumSerie[iLENNUMSERIE];
+	char	szhNumSerieAS[iLENNUMSERIE];
+	long	lhNumAbonado;
+	int	ihIndDisponibilidad;
+	int	ihCodEstado;
+	long	lhNumSecuencia;
+	int	ihCodBodega;
+	int	ihTipStock;
+	long	lhCodArticulo;
+	int	ihCodUso;
+	char	szhNumSerieMec[iLENNUMSERIE];
+	int	ihCodEstadoAux;
+	long	ihCodRetorno;
+	char	szhDesCadena[256];    
+	long	lhNumMovimiento;
+	int	ihRet;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "szfnSerieBodega";
+char	*pszRet;
+char	szhRet[6];
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+
+			
+	lhNumAbonado = sthAbo.lhNumAbonado;
+	strcpy ( szhNumSerie, sthAbo.szhNumSerie );
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT B.IND_DISPONIBILIDAD, 
+			A.COD_ESTADO
+	INTO	:ihIndDisponibilidad,
+			:ihCodEstado		
+	FROM 	AL_SERIES A, AL_ESTADOS B
+	WHERE A.NUM_SERIE = :szhNumSerie
+	AND 	B.COD_ESTADO = A.COD_ESTADO;
+	
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select Ind_Disponibilidad, Cod_Estado %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+	/* el equipo esta en bodega*/
+	if ( sqlca.sqlcode != SQLNOTFOUND )
+    {
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] el equipo esta en Bodega ", LOG03, lhNumAbonado );
+
+		if( ihIndDisponibilidad == 1 ) /* el equipo esta disponible */
+		{
+			/* esto se puede reemplazar por mi estructura */
+			/* se reserva el equipo */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COD_ESTADO
+			INTO   :ihCodEstadoAux
+			FROM 	 AL_SERIES
+			WHERE  NUM_SERIE = :szhNumSerie;
+			
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select para comprobar estado %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return "PND";
+			}
+			
+			if( ihCodEstado != ihCodEstadoAux )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] La serie fue seleccionada por otro usuario ", LOG00, lhNumAbonado );				
+			    return "PND";
+			}		
+
+			/* Bloquea la Serie */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			SELECT NUM_SERIE 
+			INTO	 :szhNumSerieAS
+			FROM 	 AL_SERIES 
+			WHERE  NUM_SERIE = :szhNumSerie
+			FOR UPDATE OF NUM_SERIE NOWAIT;
+			
+			if (sqlca.sqlcode == 54)  /* ORA-00054 */
+			{
+				ifnTrazaHilos( modulo,&pfLog, "(Abonado:%ld) La serie fue seleccionado por otro usuario ", LOG00, lhNumAbonado );  
+				EXEC SQL ROLLBACK; /* libera el registro bloqueado */
+				return "PND";
+			}
+			else if( sqlca.sqlcode )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "(Abonado:%ld) Error al bloquear la serie %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );  
+				EXEC SQL ROLLBACK; /* libera el registro bloqueado */
+				return "PND";
+			}
+
+			ifnTrazaHilos( modulo,&pfLog, "(Abonado:%ld) Serie bloqueda con exito.", LOG03, lhNumAbonado );  
+			
+			/* usamos la estructura que teniamos cargada */
+			ihCodBodega   	= sthAlSeries->ihCodBodega;   
+			ihTipStock     	= sthAlSeries->ihTipStock;    
+			lhCodArticulo  	= sthAlSeries->lhCodArticulo; 
+			ihCodUso       	= sthAlSeries->ihCodUso;      
+
+			/* saca secuencia para PL */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			SELECT	CO_SEQ_TRANSACINT.NEXTVAL
+			INTO 	:lhNumSecuencia
+			FROM 	DUAL;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fallo CO_SEQ_TRANSACINT.NEXTVAL %s ", LOG00, lhNumAbonado, lhNumSecuencia );
+				return "PND";
+			}
+
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Secuencia CO_SEQ_TRANSACINT.NEXTVAL [%d] ", LOG03, lhNumAbonado, szhDesCadena );
+
+			/* Actualiza el stock llama a PL */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL EXECUTE
+				BEGIN
+					P_GA_INTERAL ( :lhNumSecuencia, '4', :ihTipStock, :ihCodBodega, :lhCodArticulo, 
+								   :ihCodUso, :ihCodEstado,  '', '1', :szhNumSerie, '1' );
+				END;
+			END-EXEC;
+
+			/* Verifica ejecución de la PL, en DES_CADENA viene el codigo de Almacen o la Cadena descripcion de Error */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			SELECT	COD_RETORNO, 
+					DES_CADENA
+			INTO 	:ihCodRetorno,
+					:szhDesCadena
+			FROM 	GA_TRANSACABO
+			WHERE   NUM_TRANSACCION = :lhNumSecuencia;
+			
+			if ( sqlca.sqlcode != SQLOK )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select para COD_RETORNO GA_TRANSACABO %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return "PND";
+			}
+			
+			if( ihCodRetorno != 0 ) /* 0 = OK */
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error en Actualizacion de Stock. Descripcion \n[%s] ", LOG00, lhNumAbonado, szhDesCadena );
+				return "PLINT";
+			}				
+			
+            /* se recupera el numero de movimiento asignado por almacen */
+			pszRet = (*szfnDescCadena)(&pfLog, szhDesCadena, SZSEPARADOR, CXX );
+        	sprintf( szhRet, "%s\0", pszRet );                                         
+
+       	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Retorno pszRet [%s] szhRet [%s]", LOG03, lhNumAbonado, pszRet, szhRet );
+
+			/* si ocurre un error se sale de la funcion con el codigo de error devuelto por szfnDescCadena*/
+			if ( strcmp( szhRet, "OK" ) != 0 )
+				return szhRet;
+
+            lhNumMovimiento = atol( szhDesCadena );
+			
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			UPDATE GA_EQUIPABOSER 
+			SET 	NUM_MOVIMIENTO = :lhNumMovimiento 
+			WHERE NUM_ABONADO 	= :lhNumAbonado
+			AND 	FEC_ALTA 		= ( SELECT	MAX(FEC_ALTA) 
+							 			FROM 	GA_EQUIPABOSER
+							 			WHERE 	NUM_ABONADO = :lhNumAbonado );
+										 
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] UPDATE GA_EQUIPABOSER en Reserva %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return "PND";
+			}
+	
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Se reservo el equipo.", LOG03, lhNumAbonado );
+			*bReservado = TRUE; 
+			
+		} /* if( ihIndDisponibilidad == 1 */
+		else
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] El equipo esta en bodega, pero no se encuentra disponible", LOG00, lhNumAbonado );
+			return "ENDIS";
+		}
+	} /* if ( sqlca.sqlcode != SQLNOTFOUND ) */
+	
+	return "OK";
+
+} /* char *szfnSerieBodega ( td_Abonado sthAbo, td_AlSeries *sthAlSeries, BOOL *bReservado ) */     
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szfnDescCadena(FILE **ptArchLog, char *szDesCadena, char *szSep, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhCadena[501];                     
+	char  szhSep[2];
+	char  szhFiller[2];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;                     
+char	modulo[] = "szfnDescCadena";
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	
+	ifnTrazaHilos( modulo,&pfLog, "Cadena de entrada a funcion [%s] ", LOG03, szDesCadena );
+	
+	strcpy( szhCadena, szDesCadena );
+	strcpy( szhSep, szSep );
+	strcpy( szhFiller," ");
+	
+	szhSep[1] = '\0';
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+	SELECT 	LTRIM( RTRIM( REPLACE ( :szhCadena, '/', :szhFiller ) ) )
+	INTO	:szhCadena
+	FROM	DUAL;		
+	
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "Error al transformar Cadena retorno Bodega [%s] ", LOG00, szhCadena );
+		return "PND";
+	}                 
+	
+	szDesCadena = szhCadena;
+	return "OK";
+
+} /* char *szfnDescCadena( char *szDesCadena, char *szSep ) */     
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szfnDesReservaEquipo (FILE **ptArchLog, td_Abonado sthAbo, td_AlSeries sthAlSeries, sql_context ctxCont )   
+/*-----------------------------------------------------------------------------------------------------
+	Parametro	sthAbo	Datos del Abonado.
+	
+	Retorno		SQL		Error de Sql.
+				PLINT	Error de la PL P_GA_INTERAL.
+				OK		OK
+
+-----------------------------------------------------------------------------------------------------*/
+{
+EXEC SQL BEGIN DECLARE SECTION;
+
+	char	szhNumSerie[iLENNUMSERIE];
+	long	lhNumAbonado;
+	long	lhNumSecuencia;
+	int	ihCodBodega;
+	int	ihTipStock;
+	long	lhCodArticulo;
+	int	ihCodUso;
+	int	ihCodEstado;
+	char	szhNumSerieMec[iLENNUMSERIE];
+	long	ihCodRetorno;
+	char	szhDesCadena[256];    
+	long	lhNumMovimiento;
+	int	ihRet;
+	sql_context CXX;
+
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "szfnDesReservaEquipo";
+char	*pszRet;
+char	szhRet[6];
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+		
+	lhNumAbonado = sthAbo.lhNumAbonado;
+	strcpy ( szhNumSerie, sthAbo.szhNumSerie );
+	
+	/* usamos la estructura que teniamos cargada */
+	ihCodBodega   	= sthAlSeries.ihCodBodega;   
+	ihTipStock     	= sthAlSeries.ihTipStock;    
+	lhCodArticulo  	= sthAlSeries.lhCodArticulo; 
+	ihCodUso       	= sthAlSeries.ihCodUso;      
+	ihCodEstado		= sthAlSeries.ihCodEstado;
+	
+	/* saca secuencia para PL */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+	SELECT	CO_SEQ_TRANSACINT.NEXTVAL
+	INTO 	:lhNumSecuencia
+	FROM 	DUAL;
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fallo CO_SEQ_TRANSACINT.NEXTVAL %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Secuencia CO_SEQ_TRANSACINT.NEXTVAL [%d] ", LOG03, lhNumAbonado, lhNumSecuencia );
+
+	/* Actualiza el stock llama a PL */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL EXECUTE
+		BEGIN
+			P_GA_INTERAL ( :lhNumSecuencia, '6', :ihTipStock, :ihCodBodega, :lhCodArticulo, 
+						   :ihCodUso, :ihCodEstado,  null, '1', :szhNumSerie, '1' );
+		END;
+	END-EXEC;
+
+	/* Verifica ejecución de la PL, en DES_CADENA viene el codigo de Almacen o la Cadena descripcion de Error */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+	SELECT COD_RETORNO, DES_CADENA
+	INTO 	:ihRet,
+			:szhDesCadena
+	FROM 	GA_TRANSACABO
+	WHERE NUM_TRANSACCION = :lhNumSecuencia;
+	
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select para COD_RETORNO GA_TRANSACABO %s ", LOG03, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+	
+	if( ihRet != 0 )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error en Actualizacion de Stock %s ", LOG00, lhNumAbonado, szhDesCadena );
+		return "PLINT";
+	}				
+	
+    /* se recupera el numero de movimiento asignado por almacen */
+	pszRet = szfnDescCadena( &pfLog,szhDesCadena, SZSEPARADOR, CXX );
+  	sprintf( szhRet, "%s\0", pszRet );
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Retorno pszRet [%s] szhRet [%s]", LOG03, lhNumAbonado, pszRet, szhRet );
+		
+	/* si ocurre un error se sale de la accion con el codigo de error */
+	if ( strcmp( szhRet, "OK" ) != 0 )
+		return szhRet;
+
+    lhNumMovimiento = atol( szhDesCadena );
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	UPDATE GA_EQUIPABOSER 
+	SET	COD_BODEGA  = :ihCodBodega,
+			TIP_STOCK   = :ihTipStock,
+			COD_ESTADO  = :ihCodEstado
+	WHERE NUM_ABONADO = :lhNumAbonado
+	AND 	NUM_SERIE   = :szhNumSerie;
+         
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] UPDATE GA_EQUIPABOSER en DesReserva %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	} 
+	
+	return "OK";
+
+} /* char *szfnDesReservaEquipo ( td_Abonado sthAbo, td_AlSeries sthAlSeries ) */
+                             
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szfnInsICMovim (FILE **ptArchLog, td_Abonado sthAbo, int iCodCelular, long	*plNumMovimiento1, char *szCodTiPlan, sql_context ctxCont )
+{
+/*-----------------------------------------------------------------------------------------------------
+	Parametro	sthAbo				Datos del Abonado.
+				iCodActRehaTotal
+
+	Retorno		"PND"		Error de Sql.
+				"PND"		Error al insertar movimientos en ICC_MOVIMIENTO		
+				"OK"		OK
+-----------------------------------------------------------------------------------------------------*/
+
+EXEC SQL BEGIN DECLARE SECTION;
+
+	long	lhNumAbonado;
+	int	ihCodUso;
+	char	szhActAbo[3];
+	int	ihCodActuacion;
+	long	lhNumMovimiento1;
+	long	lhNumMovimiento2;		
+	int	ihCodCentralPlex;
+	long	lhNumCelularPlex;                
+	int	ihCodCentral;
+	char	szhTipTerminal[2];      
+	char	szhCodSRTotal[4];
+	char  szhNumMin[4];
+	char  szhCodServicios[10];
+	long	lhRet;                                                      
+	long	lhNumCelularBeeper;
+	int	ihCodProducto;
+	int	ihCodActCen;
+	int	ihIndPlexsys;   
+	char	szhNumSerieHex[9];                       
+	char  szhPerfilAbonado[256];
+	char  szhIndProcequi[3];
+	char	szhCodTecnologia[iLENCODTECNO];
+	char	szhNumSerie[iLENNUMSERIE];
+	char	szhNumImei[iLENNUMIMEI];
+	char	szhNumImsi[iLENNUMIMSI];
+	  
+	char 	szhTs[2]		= ""; 		EXEC SQL VAR szhTs 	IS STRING(2);
+	long 	lhId            = 0; 
+	long 	lhCc            = 0; 
+	char 	szhTp[2]        = ""; 		EXEC SQL VAR szhTp 	IS STRING(2);
+	char 	szhPro[3]       = ""; 		EXEC SQL VAR szhPro IS STRING(3);
+	char 	szhVel[5]       = ""; 		EXEC SQL VAR szhVel IS STRING(5);
+	int 	ihFre           = 0;	
+	char 	szhFre[2]       = ""; 		EXEC SQL VAR szhFre IS STRING(2);
+	char 	szhCob[4]       = ""; 		EXEC SQL VAR szhCob IS STRING(4);
+	char 	szhNom[51]      = ""; 		EXEC SQL VAR szhNom IS STRING(51);
+	char 	szhGm1[8]       = ""; 		EXEC SQL VAR szhGm1 IS STRING(8);
+	char 	szhGm2[8]       = ""; 		EXEC SQL VAR szhGm2 IS STRING(8);
+	char 	szhGm3[8]       = ""; 		EXEC SQL VAR szhGm3 IS STRING(8);
+	char 	szhGm4[8]       = ""; 		EXEC SQL VAR szhGm4 IS STRING(8);
+	char 	szhGm5[8]       = ""; 		EXEC SQL VAR szhGm5 IS STRING(8);
+	char 	szhRut[iLENNUMIDENT] = "";	EXEC SQL VAR szhRut IS STRING(iLENNUMIDENT);
+	char 	szhSta[2]       = ""; 		EXEC SQL VAR szhSta IS STRING(2);
+	char 	szhMarp[21]     = ""; 		EXEC SQL VAR szhMarp IS STRING(21);
+	char 	szhModp[51]     = ""; 		EXEC SQL VAR szhModp IS STRING(51);
+	char 	szhNser[31]     = ""; 		EXEC SQL VAR szhNser IS STRING(31);
+	char 	szhTcue[2]      = ""; 		EXEC SQL VAR szhTcue IS STRING(2);
+	char 	szhEmp[51]      = ""; 		EXEC SQL VAR szhEmp IS STRING(51);
+
+   char szhModulo [3];
+   char szhPENDIENTE  [10];
+	char szhFiller     [2];
+   int  ihValor_cero  = 0;
+   int  ihValor_uno   = 1;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "szhInsICMovim";
+char	szServicioAkeys[7];
+int	iRet = 0;
+char 	szCodActAbo[3];
+GENSERVICIO stServicios;
+struct sqlca sqlca;
+FILE *pfLog=*ptArchLog;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;	
+	
+	memset( szServicioAkeys, '\0', sizeof( szServicioAkeys ) );
+	memset( szhCodTecnologia, '\0', sizeof( szhCodTecnologia ) );
+	memset( szhNumSerie, '\0', sizeof( szhNumSerie ) );
+	memset( szhNumImei, '\0', sizeof( szhNumImei ) );
+	memset( szhNumImsi, '\0', sizeof( szhNumImsi ) );
+	memset( szCodActAbo, '\0', sizeof( szCodActAbo ) );
+
+	lhNumAbonado  = sthAbo.lhNumAbonado;
+	ihCodUso 	  = sthAbo.ihCodUso;
+	ihCodProducto = sthAbo.ihCodProducto;
+	ihCodCentralPlex = sthAbo.ihCodCentralPlex;
+	lhNumCelularPlex = sthAbo.lhNumCelularPlex;                
+	ihCodCentral     = sthAbo.ihCodCentral;          
+	lhNumCelularBeeper = sthAbo.lhNumCelularBeeper;
+	ihIndPlexsys = sthAbo.ihIndPlexsys;
+	strcpy( szhTipTerminal, sthAbo.szhTipTerminal );            
+	strcpy ( szhNumSerieHex, sthAbo.szhNumSerieHex );
+	strcpy ( szhPerfilAbonado, sthAbo.szhPerfilAbonado );
+	strcpy ( szhIndProcequi, sthAbo.szhIndProcequi );
+	strcpy ( szhCodTecnologia, sthAbo.szhCodTecnologia );
+	strcpy ( szhNumSerie, sthAbo.szhNumSerie );
+	strcpy ( szhNumImei, sthAbo.szhNumImei );
+	strcpy ( szhNumImsi, sthAbo.szhNumImsi );
+	strcpy(szhModulo,"CO");
+	strcpy(szhPENDIENTE,"PENDIENTE");
+	strcpy(szhFiller," ");
+
+	if( ihCodProducto == iCodCelular )   	/* si es celular */
+	{
+		/* Obtiene el Min de Al_usos_Min para el codUso */		
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL 
+		SELECT NUM_MIN         
+		  INTO :szhNumMin
+		  FROM AL_USOS_MIN 
+		 WHERE COD_USO =  :ihCodUso
+		   AND FEC_DESDE <= TRUNC(SYSDATE) AND NVL(FEC_HASTA,TRUNC(SYSDATE)) >= TRUNC(SYSDATE);
+	
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] SELECT NUM_MIN FROM AL_USOS_MIN %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}                                                                  
+		
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No existe Prefijo asociado al Uso.", LOG03, lhNumAbonado );
+			return "PND";
+		}                                                                  
+
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL 
+		UPDATE GA_ABOCEL 
+		   SET NUM_MIN 	= :szhNumMin
+		 WHERE NUM_ABONADO = :lhNumAbonado;         
+			
+		if( sqlca.sqlcode != SQLOK )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] UPDATE GA_ABOCEL NUM_MIN Imposible actualizar el prefijo del abonado %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Prefijo de telefono programado OK.", LOG03, lhNumAbonado );		   		
+	}
+	              
+	memset( szhActAbo, '\0', sizeof( szhActAbo ) );
+
+	/* distinguimos si el celular es prepago o postpago */
+
+	iRet = ifnObtieneUsoVenta(&pfLog, ihCodUso, szhCodTecnologia, CXX );
+	
+	/* recuperamos la actuacion de abonado celular */
+	if( !bfnGetActAbodeAccion(&pfLog, szCODRUTINA, szCodTiPlan, 1, szCodActAbo, CXX ) )
+		return "PND";   
+    			
+	strcpy( szhActAbo, szCodActAbo );
+	/* recuperamos el codigo de actuacion de la central, relacionado con la actuacion del abonado */
+	if( ( ihCodActuacion = ifnGetActuacionCentralCelularAcc(&pfLog, szhActAbo, ihCodProducto, szMODULOCOBRANZA, szhCodTecnologia, CXX ) ) < 0 )
+		return "PND";
+	    
+    sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+    EXEC SQL
+    SELECT 	ICC_SEQ_NUMMOV.NEXTVAL
+    INTO 	:lhNumMovimiento1
+    FROM 	DUAL;       
+
+    if( sqlca.sqlcode ) 
+    {  
+    	ifnTrazaHilos( modulo,&pfLog, "SELECT ICC_SEQ_NUMMOV.NEXTVAL 1 Abonado:%ld", LOG00, lhNumAbonado );
+        return "PND";  
+    } 
+
+	if ( ihCodProducto == iCodCelular )   	/* si es celular */
+	{
+		iRet = ifnAplicarAutenticacion(&pfLog, CXX);
+		switch( iRet )
+		{
+			case -1: return "PND";
+			case  1: 
+					/* validar si el ind_usoventa asociado al cod_uso se le aplica akeys */
+					iRet == ifnObtieneUsoVenta(&pfLog, ihCodUso, szhCodTecnologia, CXX );
+					
+					switch( iRet )
+					{
+						case -1: return "PND";
+						case  1: 
+								/* obtenemos el codigo del servicio asociado a la autenticacion */
+								if( !bfnGetServicio(&pfLog, INDAUTENTICACION, ihCodProducto, &stServicios, CXX ) )
+									return "PND";
+										
+								/* llamamos al proceso de autenticacion */
+								if( !bfnAutenticacion(&pfLog, lhNumAbonado, lhNumCelularBeeper, ihCodProducto, 
+													   szhNumSerie , szhIndProcequi, &stServicios, szServicioAkeys, CXX ) )
+								{
+									return "PND";
+								}
+								else
+								{
+									if( strcmp( szServicioAkeys, "000000" ) != 0 )
+									{
+										/* extraemos la cadena de servicios a insertar para consistencia */
+										if( !bfnExtraerServSuplString(&pfLog, szServicioAkeys, szhPerfilAbonado, CXX ) )
+											return "PND";
+										/* agregamos a la cadena perfil abonado el servicio akeys */	
+										sprintf( szhPerfilAbonado, "%s%s\0", szhPerfilAbonado, szServicioAkeys );
+									}
+								}
+					} /* switch( iRet ) */
+		} /* switch( iRet ) */
+
+		if( ihIndPlexsys == 0 )						                                                                               
+		{
+
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			INSERT INTO ICC_MOVIMIENTO
+			(
+				NUM_MOVIMIENTO,		NUM_ABONADO,        COD_ESTADO,
+				COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+				COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+				FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+				NUM_SERIE,          TIP_TERMINAL,       NUM_MIN,            
+				COD_SERVICIOS,		IND_BLOQUEO,		TIP_TECNOLOGIA,		
+				IMEI,				IMSI,				ICC
+			)
+			VALUES
+			(
+				:lhNumMovimiento1,  :lhNumAbonado,		:ihValor_uno,
+				:szhModulo,         :ihValor_cero,     :szhPENDIENTE,
+				:ihCodActuacion,    :szhActAbo,        USER,
+				SYSDATE,            :ihCodCentral,     :lhNumCelularBeeper,
+				:szhNumSerieHex,    :szhTipTerminal,   :szhNumMin,         
+				:szhPerfilAbonado,  :ihValor_cero,		:szhCodTecnologia,	
+				DECODE( :szhNumImei, :szhFiller, NULL, :szhNumImei ),
+				DECODE( :szhNumImsi, :szhFiller, NULL, :szhNumImsi ),
+				DECODE( :szhNumSerie, :szhFiller, NULL, :szhNumSerie )
+			);
+	
+			if( sqlca.sqlcode ) 
+	        {  
+	            ifnTrazaHilos( modulo,&pfLog, "INSERT INTO ICC_MOVIMIENTO 1 Abonado:%ld", LOG00, lhNumAbonado );
+	            return "PND";  
+	        } 
+		}
+	    else
+	    {
+	        sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	        EXEC SQL
+	        SELECT 	ICC_SEQ_NUMMOV.NEXTVAL
+	        INTO 	:lhNumMovimiento1
+	        FROM 	DUAL;       
+	
+	        if( sqlca.sqlcode ) 
+	        {  
+	        	ifnTrazaHilos( modulo,&pfLog, "SELECT ICC_SEQ_NUMMOV.NEXTVAL 2 Abonado:%ld", LOG00, lhNumAbonado );
+	            return "PND";  
+	        } 
+	                                                           
+	        /* Inserta primer movimiento */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			INSERT INTO ICC_MOVIMIENTO
+			(
+				NUM_MOVIMIENTO,		NUM_ABONADO,        COD_ESTADO,
+				COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+				COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+				FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+				NUM_SERIE,          TIP_TERMINAL,       NUM_MIN,            
+				COD_SERVICIOS,      NUM_MOVPOS,			IND_BLOQUEO,		
+				TIP_TECNOLOGIA,		IMEI,				IMSI,
+				ICC
+			)
+			VALUES
+			(
+				:lhNumMovimiento1,  :lhNumAbonado,     :ihValor_uno,
+				:szhModulo,         :ihValor_cero,     :szhPENDIENTE,
+				:ihCodActuacion,    :szhActAbo,        USER,
+				SYSDATE,            :ihCodCentral,     :lhNumCelularBeeper,
+				:szhNumSerieHex,    :szhTipTerminal,   :szhNumMin,         
+				:szhPerfilAbonado,  :lhNumMovimiento2, :ihValor_cero,
+				:szhCodTecnologia,
+				DECODE( :szhNumImei, :szhFiller, NULL, :szhNumImei ),
+				DECODE( :szhNumImsi, :szhFiller, NULL, :szhNumImsi ),
+				DECODE( :szhNumSerie, :szhFiller, NULL,:szhNumSerie )
+			);
+	
+	        if( sqlca.sqlcode ) 
+	        {  
+				ifnTrazaHilos( modulo,&pfLog, "INSERT INTO ICC_MOVIMIENTO 1 Abonado:%ld", LOG00, lhNumAbonado );
+	            return "PND";             	
+	        }
+	
+	        /*Inserta segundo movimiento*/
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			INSERT INTO ICC_MOVIMIENTO
+			(
+				NUM_MOVIMIENTO,     NUM_ABONADO,		COD_ESTADO,
+				COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+				COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+				FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+				NUM_SERIE,          TIP_TERMINAL,       NUM_MIN,            
+				COD_SERVICIOS,      NUM_MOVANT,			IND_BLOQUEO,		
+				TIP_TECNOLOGIA,		IMEI,				IMSI,
+				ICC
+			)
+			VALUES
+			(
+				:lhNumMovimiento2,  :lhNumAbonado,		:ihValor_uno,
+				:szhModulo,         :ihValor_cero,     :szhPENDIENTE,
+				:ihCodActuacion,    :szhActAbo,        USER,
+				SYSDATE,            :ihCodCentralPlex, :lhNumCelularPlex,
+				:szhNumSerieHex,    :szhTipTerminal,   :szhNumMin,         
+				:szhPerfilAbonado,  :lhNumMovimiento1, :ihValor_cero,					
+				:szhCodTecnologia,
+				DECODE( :szhNumImei, :szhFiller, NULL, :szhNumImei ),
+				DECODE( :szhNumImsi, :szhFiller, NULL, :szhNumImsi ),
+				DECODE( :szhNumSerie, :szhFiller, NULL, :szhNumSerie )
+			);
+
+	        if( sqlca.sqlcode ) 
+	        {  
+				ifnTrazaHilos( modulo,&pfLog, "INSERT INTO ICC_MOVIMIENTO 2 Abonado:%ld", LOG00, lhNumAbonado );
+	            return "PND";             	
+	        }
+	
+		} /* if( ihIndPlexsys == 0 ) */
+		iAboCeluLocal ++;
+	}
+   else     /* es beepers */
+   {
+    	iAboBeepLocal ++;
+   } /* if ( ihCodProducto == iCodCelular ) */
+
+	ifnTrazaHilos( modulo,&pfLog, "(Abonado:%ld) lhNumMovimiento1 %ld", LOG03, lhNumAbonado, lhNumMovimiento1 );
+	*plNumMovimiento1 = lhNumMovimiento1;
+	return "OK";
+} /* char *szhInsICMovim ( td_Abonado sthAbo, char *szCodActRehaTotal, int iCodCelular ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bRegMovCControlada(FILE **ptArchLog, td_Abonado sthAbo, long lNumMovimiento, sql_context ctxCont )
+/*-----------------------------------------------------------------------------------------------------
+ Graba un registro en GA_MOVCCONTROL con el tipo de movimiento realizado sobre una cuenta controlada
+    
+     Parametros de entrada:
+       szNumAbonado	: 	Número de Abonado de la cuenta controlada.
+    
+    Parametros de salida:
+       TRUE 	cuando todo va bien
+       FALSE 	en caso contrario 
+-----------------------------------------------------------------------------------------------------*/
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	 lhNumAbonado;
+	int	 ihCodControlada;
+	int    ihCodUso;
+	char   szhCodPlanTarif[4];
+	char   szhCodPlanTarifAux[4];
+	/*char	 szhPlanComverse[3]; 25/07/2006 CPF CO-200607210247 */
+	char	 szhCodCategoria[4];
+	double dhImpCargoBas = 0;          
+	long	 lhNumMovimiento;
+	char	 szhCodActAbo[3];    
+	char	 szhNumSerie[iLENNUMSERIE]; 
+	int	 ihIndTelefono;      
+	long	 lhNumCelularBeeper;
+	char   szhTipTerminal[2];
+	int	 ihCnt = 0;
+	char	 szhValParametro[11];
+	char 	 szComando[2000];
+	char	 szhActAbo[3];
+	int	 ihCodProducto; 
+	int	 ihDiasPeriodo;
+	int	 ihCantDias;
+	int	 ihCodCiclo;
+	char	 szCad[4];               
+	char	 szhFecAlta[9];
+	char	 szhIndProcequi[2];                
+	int    ihValor_uno = 1;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bRegMovCControlada";
+int	iCodControladaCTC = 15;	 /* 'Cuenta segura CTC */
+int	iPos    = 0;
+int	iLong;
+int	rr;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;		    
+	memset ( szhCodPlanTarifAux, '\0', sizeof ( szhCodPlanTarifAux ) ) ;
+	memset ( szhCodPlanTarif   , '\0', sizeof ( szhCodPlanTarif ) ) ;
+	memset ( szhNumSerie   , '\0', sizeof ( szhNumSerie ) ) ;
+	memset ( szhTipTerminal   , '\0', sizeof ( szhTipTerminal ) ) ;
+	memset ( szhFecAlta   , '\0', sizeof ( szhFecAlta ) ) ;
+	
+	lhNumAbonado 				= sthAbo.lhNumAbonado;
+	ihCodUso      				= sthAbo.ihCodUso;
+	strcpy( szhCodPlanTarif		, sthAbo.szhCodPlanTarif );
+	strcpy( szhNumSerie    		, sthAbo.szhNumSerie );
+	strcpy( szhTipTerminal 		, sthAbo.szhTipTerminal );
+	lhNumCelularBeeper     		= sthAbo.lhNumCelularBeeper;
+	ihCodProducto           	= sthAbo.ihCodProducto;
+	strcpy( szhFecAlta 			, sthAbo.szhFecAlta );
+	lhNumMovimiento				= lNumMovimiento;
+
+	iLong = strlen( szhCodPlanTarif ) - 1;
+	for ( rr = iLong; rr >= 0; rr = rr - 1 ) if ( szhCodPlanTarif[rr] != ' ' && szhCodPlanTarif[rr] != '\0' ) break;
+	szhCodPlanTarif[rr + 1] = '\0';
+
+    /* Lee el código de uso de cuenta controlada de GA_DATOSGENER. */
+    sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+    EXEC SQL  
+    SELECT 	COD_USOCONTROLADA 
+    INTO	:ihCodControlada
+    FROM 	GA_DATOSGENER;
+    		  
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select cod_usocontrolada from GA_DATOSGENER %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+    
+    /* No se procesa, no es cuenta segura */
+    if ( ihCodUso != ihCodControlada && ihCodUso != iCodControladaCTC )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No es cuenta Segura, no se procesa por este concepto.", LOG03, lhNumAbonado );
+		return TRUE;
+	}
+			    
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT 	G.IND_PROCEQUI   
+	INTO	:szhIndProcequi
+	FROM 	GA_EQUIPABOSER G
+	WHERE  	G.NUM_ABONADO	= :lhNumAbonado
+	AND     G.NUM_SERIE 	= :szhNumSerie
+	AND		G.FEC_ALTA IN (	SELECT 	MAX( FEC_ALTA )
+							FROM	GA_EQUIPABOSER
+							WHERE  	G.NUM_ABONADO	= NUM_ABONADO
+							AND     G.NUM_SERIE 	= NUM_SERIE );
+
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] al verificar procedencia del equipo en GA_EQUIPABOSER => [%s].", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+                         
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] szhCodPlanTarif [%s].", LOG03, lhNumAbonado, szhCodPlanTarif );
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+	SELECT A.IMP_CARGOBASICO /*, B.COD_PLAN_COMVERSE 25/07/2006 CPF CO-200607210247 */
+	INTO	:dhImpCargoBas
+	      /* ,:szhPlanComverse  25/07/2006 CPF CO-200607210247 */
+	FROM 	TA_CARGOSBASICO A, TA_PLANTARIF B 
+	WHERE B.COD_PLANTARIF = :szhCodPlanTarif
+	AND   A.COD_CARGOBASICO = B.COD_CARGOBASICO 
+	AND   B.COD_PRODUCTO = :ihCodProducto
+	AND   A.COD_PRODUCTO = B.COD_PRODUCTO 
+	AND   SYSDATE BETWEEN A.FEC_DESDE AND NVL(A.FEC_HASTA, SYSDATE);
+	/*AND   B.COD_PLAN_COMVERSE IS NOT NULL;  25/07/2006 CPF CO-200607210247 */
+
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Al leer el IMP_CARGO de TA_CARGOSBASICO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Cargo Basico recuperado %.0f ", LOG03, lhNumAbonado, dhImpCargoBas );
+
+    /* Para Cuenta Segura */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+	SELECT COD_CATEGORIA 
+	INTO	 :szhCodCategoria
+	FROM 	 VE_CATPLANTARIF
+	WHERE  COD_PRODUCTO  = :ihCodProducto
+	AND 	 COD_PLANTARIF = :szhCodPlanTarif;
+			 
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select para Cuenta Segura. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+	
+   dhImpCargoBas *= 1.18;
+   dhImpCargoBas = fnCnvDouble( dhImpCargoBas,0);
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Cargo Basico Final %.0f ", LOG03, lhNumAbonado, dhImpCargoBas );
+
+	memset ( szhActAbo, '\0', sizeof ( szhActAbo ) );
+	sprintf (szhActAbo, "AF\0" );
+
+	memset ( szComando, '\0', sizeof ( szComando ) );			    
+   sprintf( szComando, "m 9 %ld,SERVICE=PPS,STATE=DISABLED,USER=INFOHIA|D 9%ld,SERVICE=PPS,USER=INFOHIA|C 9%ld"
+    					",SERVICE=PPS,COS=%s,SP=A1,TIME_ZONE=:America/Santiago,PP_BALANCE=%.0f,USER=INFOHIA",
+						lhNumCelularBeeper, lhNumCelularBeeper, lhNumCelularBeeper, szhCodPlanTarif, dhImpCargoBas );
+						
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Numero de Movimiento de ICC_MOVIMIENTO [%ld] ", LOG03, lhNumAbonado, lhNumMovimiento );
+    	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL UPDATE ICC_MOVIMIENTO 
+			 /*SET 	PLAN 		= :szhPlanComverse,*/
+			 SET    PLAN            = :szhCodPlanTarif,  /* :szhPlanComverse, 17.08.2004 TM-885 capc*/ /*CH-200408232102 Homologado por PGonzalez 23-11-2004 */
+					VALOR_PLAN 	= :dhImpCargoBas
+			 WHERE 	NUM_MOVIMIENTO = :lhNumMovimiento;
+                
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Actualizando ICC_Movimiento. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+                
+    /* Inserta un registro con los datos en GA_MOVCCONTROL */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL INSERT INTO GA_MOVCCONTROL 
+						(
+						 	NUM_LINEA, 
+						 	FEC_INICIO, 
+						 	COD_PLANTARIF, 
+						 	IND_TIPMOV, 
+						 	IND_PROCESADO, 
+						 	CMD_COMVERSE 
+						) 
+						VALUES 
+						(
+						 	:lhNumCelularBeeper, 
+						 	SYSDATE,
+						 	:szhCodPlanTarif,
+						 	:ihValor_uno,
+						 	:ihValor_uno,
+						 	:szComando
+						); 
+
+	if ( sqlca.sqlcode )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al insertar en GA_MOVCCONTROL. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+    ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] bRegMovCControlada CORRECTA.", LOG03, lhNumAbonado );
+	return TRUE;
+    
+} /* BOOL bRegMovCControlada( TAbonado *sthAbonado, int iTipMov ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bInsertaMovtoSTM(FILE **ptArchLog, td_Abonado sthAbo,  sql_context ctxCont) 
+/*-----------------------------------------------------------------------------------------------------
+ Función que inserta un Movimientos en la tabla GA_CTC_MOVIMIENTOS
+ Autor : Mc M. G.
+ Parametros de entrada :
+    - sthAbonado : Abonado implicado en el Movimiento
+    ////- iTipo 	: Representa el tipo de Movimiento 1=Bajas, 2=Altas y 3= Cambios;
+ Parametros de salida :
+    - Cierto si la inserción ha sido correcta.
+ Comprueba que el Abonado tenga el IND_SUPERTELEFONO = 1 ---> Es STM
+-----------------------------------------------------------------------------------------------------*/
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	ihNumAbonado;
+	int	ihIndTelefono;      
+	char  szhNumTeleFija[16];
+	long	lhNumCelular;
+	long	lhNumAbonado;
+	int	ihIndSupertel;
+	int	ihTipo;
+	int   ihValor_cero = 0;
+	int   ihValor_uno  = 1;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bInsertaMovtoSTM";
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ihIndSupertel = sthAbo.ihIndSupertel;
+	strcpy ( szhNumTeleFija, sthAbo.szhNumTeleFija ); 
+	lhNumCelular = sthAbo.lhNumCelularBeeper;
+	lhNumAbonado = sthAbo.lhNumAbonado;
+		
+    /* Comprobación de STM */
+    if ( ihIndSupertel == 0 )  /* No es STM */
+    {
+    	/* No ha fallado, simplemente no STM, por lo tanto devuelvo TRUE. Todo ha ido bien. */
+       	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No es STM, no se procesa por este concepto.", LOG03, lhNumAbonado );
+		return TRUE;
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL INSERT INTO GA_CTC_MOVIMIENTOS
+						(	
+							NUM_REDFIJA, 
+							FEC_MOVIMIENTO, 
+							TIP_MOVIMIENTO, 
+							NUM_CELULAR1, 
+							NUM_CELULAR2 
+						) 
+						VALUES 
+						(
+							TO_NUMBER( :szhNumTeleFija ),
+							SYSDATE,
+							:ihValor_uno,
+							:lhNumCelular,
+							:ihValor_cero
+						); 
+						
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] INSERT INTO GA_CTC_MOVIMIENTOS. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] bInsertaMovtoSTM Correcta.", LOG03, lhNumAbonado );
+	
+	return TRUE;
+	
+} /* BOOL bInsertaMovtoSTM( td_Abonado sthAbonados, int iTipo) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szfnActivaFF(FILE **ptArchLog, td_Abonado sthAbo, long lCodCliente,  sql_context ctxCont) 
+{ 
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhNumAbonado;
+	long	lhCodCliente;
+	 int	ihIndFamiliar = 0; 
+	long	lhNumAbonado2;
+	long	lhNumCelular2;
+	long	lhNumCelular;
+	char	szhCodFyfcel[4]; 	EXEC SQL VAR szhCodFyfcel IS STRING(4);	/*Homol. a CH-1757 GAC*/	  
+	char	szhCadenaServNivel[256];		
+	int	ihCodServSupl = 0; /* Homol. a XC-0056 GAC*/
+	int	ihCodNivel    = 0; /* Homol. a XC-0056 GAC*/
+	int	ihNumDias;         
+	int	ihCodProducto;
+	char	szRowid[25];
+	long	lhNumDiasNum = 0;                     
+	char	szhNumTelefEsp[13];
+	long	lhNumMovimiento1;
+	char	szhTipTerminal[2] = "";
+	int	ihCodActuacion;               
+	char	szhActAbo[3] = "";                    
+	int	ihCodCentral;
+	char	szhNumSerieHex[9] = "";                        
+	char	szhNumMin[4] = "";
+	char	szNumCelular[13];
+	char	szhCodTecnologia[iLENCODTECNO]    =""  ; 	EXEC SQL VAR szhCodTecnologia IS STRING (iLENCODTECNO);
+	char	szhNumSerie[iLENNUMSERIE] ="" ; EXEC SQL VAR szhNumSerie IS STRING (iLENNUMSERIE);
+	char	szhNumImei[iLENNUMIMEI]   ="" ; EXEC SQL VAR szhNumImei IS STRING (iLENNUMIMEI);
+	char	szhNumImsi[iLENNUMIMSI]   ="" ; EXEC SQL VAR szhNumImsi IS STRING (iLENNUMIMSI);
+   char  szhBAA     [4];
+   char  szhGA      [3];
+   char  szhModulo  [3];
+   char  szhPENDIENTE  [10];
+   int   ihValor_cero = 0;
+   int   ihValor_uno  = 1;
+   int   ihValor_tres = 3;
+   int   ihValor_cinco= 5;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+int    iCntReg  = 0;
+char	 modulo[] = "szfnActivaFF";
+char	 *pszRet;
+static char	szRet[4];
+int	 iError = 0;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;		
+	memset( szhCodTecnologia, '\0', sizeof( szhCodTecnologia ) );
+	memset( szhNumSerie, '\0', sizeof( szhNumSerie ) );
+	memset( szhNumImei, '\0', sizeof( szhNumImei ) );
+	memset( szhNumImsi, '\0', sizeof( szhNumImsi ) );
+	memset( szhCodFyfcel, '\0', sizeof( szhCodFyfcel ) );  /*Homol. a CH-1757 GAC*/
+	
+	lhCodCliente  = lCodCliente;
+	lhNumAbonado  = sthAbo.lhNumAbonado;
+	lhNumCelular  = sthAbo.lhNumCelularBeeper;
+	ihCodProducto = sthAbo.ihCodProducto;
+	ihCodCentral  = sthAbo.ihCodCentral;
+	strcpy ( szhTipTerminal, sthAbo.szhTipTerminal );
+	strcpy ( szhNumSerieHex, sthAbo.szhNumSerieHex );
+	strcpy ( szhCodTecnologia, sthAbo.szhCodTecnologia );
+	strcpy ( szhNumSerie, sthAbo.szhNumSerie );
+	strcpy ( szhNumImei, sthAbo.szhNumImei );
+	strcpy ( szhNumImsi, sthAbo.szhNumImsi );
+	strcpy ( szhBAA , "BAA" );
+	strcpy ( szhGA  , "GA" );
+	strcpy ( szhModulo,"CO");
+	strcpy ( szhPENDIENTE,"PENDIENTE");
+	
+	sprintf( szRet, "PND\0" );
+           
+	/* Busca si tiene plan Familiar */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL 
+	SELECT	NVL(A.IND_FAMILIAR, :ihValor_cero) 
+	INTO	:ihIndFamiliar
+	FROM 	TA_PLANTARIF A, GA_EMPRESA B 
+	WHERE 	B.COD_CLIENTE = :lhCodCliente
+	AND 	A.COD_PLANTARIF = B.COD_PLANTARIF;
+			 
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] SELECT A.IND_FAMILIAR. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+			 
+	if ( ihIndFamiliar == 1 ) 
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Tiene Fyf.", LOG03, lhNumAbonado );
+    else
+    	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No tiene Fyf.", LOG03, lhNumAbonado );
+    
+	if ( ihIndFamiliar == 1 )   /* Indicativo: 1 si es plan familiar */ 
+	{
+		/* Sacar el Código del Serv. Supl. F&F de los Datos Generales */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL 
+		SELECT	COD_FYFCEL   
+		INTO	:szhCodFyfcel	
+		FROM 	GA_DATOSGENER;
+				 
+		if ( sqlca.sqlcode != SQLOK )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error en SELECT COD_FYFCEL Fyf. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		/* se activa Fyf con todos los abonados activos del cliente, porque es Tipo Plan Empresa */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL DECLARE curEmpresa CURSOR FOR 
+		SELECT 	NUM_ABONADO,
+				NUM_CELULAR
+		FROM 	GA_ABOCEL 
+		WHERE 	COD_CLIENTE = :lhCodCliente
+		/*AND 	COD_SITUACION = 'AAA';     Homol. a CH-1757 GAC se cambia por linea siguiente*/
+		AND 	COD_SITUACION != :szhBAA;
+
+		if ( sqlca.sqlcode != SQLOK )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] DECLARE curEmpresa. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL OPEN curEmpresa;
+		if ( sqlca.sqlcode != SQLOK )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] OPEN curEmpresa. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		for ( ; ; )   /* siempre */
+		{
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL FETCH curEmpresa
+			INTO	:lhNumAbonado2,
+					:lhNumCelular2;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] FETCH curEmpresa. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			} 
+			else if ( sqlca.sqlcode == SQLNOTFOUND )
+				break;
+             
+			/* Busco si la relacion esta en la ga_numespabo, para el abonado en proceso */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT 	ROWID
+			INTO	:szRowid 
+			FROM 	GA_NUMESPABO
+			WHERE	NUM_ABONADO  = :lhNumAbonado
+			AND 	NUM_TELEFESP = TO_CHAR(:lhNumCelular2);
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Validando existencia en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+			/* Si no esta la inserto */
+			if ( sqlca.sqlcode == SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fyf [%s].", LOG03, lhNumAbonado, szhNumTelefEsp );
+
+				sprintf( szNumCelular, "%ld", lhNumCelular2 );
+                if ( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado, szNumCelular, lhNumDiasNum, CXX ) )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Insertando Fyf en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					iError = 1;
+					break;
+				}
+			}
+			else  /* si no la actualizo */
+			{
+				sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+				EXEC SQL
+				UPDATE 	GA_NUMESPABO 
+				SET		NUM_DIASNUM  = :lhNumDiasNum
+				WHERE 	NUM_ABONADO  = :lhNumAbonado
+				AND     NUM_TELEFESP = TO_CHAR(:lhNumCelular2);
+		
+				if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al actualizar telefono Friend & Family. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					iError = 1;
+					break;
+				}
+			}
+
+			/* Busco si la relacion esta en la ga_numespabo, para el abonado relacionado */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT 	ROWID
+			INTO	:szRowid 
+			FROM 	GA_NUMESPABO
+			WHERE NUM_ABONADO  = :lhNumAbonado2
+			AND 	NUM_TELEFESP = TO_CHAR(:lhNumCelular);
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Validando existencia en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+			/* Si no esta la inserto */
+			if ( sqlca.sqlcode == SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fyf [%s].", LOG03, lhNumAbonado2, szhNumTelefEsp );
+
+				sprintf( szNumCelular, "%ld", lhNumCelular );
+                if( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado2, szNumCelular, lhNumDiasNum, CXX ) )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fyf GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					iError = 1;
+					break;
+				}
+			}                                    
+			else
+			{
+				sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+				EXEC SQL
+				UPDATE 	GA_NUMESPABO 
+				SET		NUM_DIASNUM  = :lhNumDiasNum
+				WHERE 	NUM_ABONADO  = :lhNumAbonado2
+				AND     NUM_TELEFESP = TO_CHAR(:lhNumCelular);
+
+				if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al actualizar telefono Friend & Family 2. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					iError = 1;
+					break;
+				}
+			} /* if ( sqlca.sqlcode == SQLNOTFOUND ) */
+				
+			/* Actualizando Intarcel para segundo abonado */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL UPDATE GA_INTARCEL 
+					 SET 	IND_FRIENDS = :ihValor_uno
+					 WHERE 	COD_CLIENTE = :lhCodCliente
+					 AND 	NUM_ABONADO = :lhNumAbonado2
+					 AND 	FEC_HASTA   > SYSDATE;
+	
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al actualizar Intarcel. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+	
+	      	/* Activando servicio segundo abonado */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT 	COD_SERVSUPL, 
+					COD_NIVEL      
+			INTO	:ihCodServSupl,
+					:ihCodNivel		
+			FROM 	GA_SERVSUPL 
+			WHERE 	COD_PRODUCTO = :ihCodProducto 
+			AND 	COD_SERVICIO = :szhCodFyfcel;
+				
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Se han producido errores al leer en GA_SERVSUPL.064. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+			if ( sqlca.sqlcode == SQLNOTFOUND )    
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Se han producido errores al leer en GA_SERVSUPL.064. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+	        
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			SELECT 	GA_SEQ_NUMDIASNUM.NEXTVAL 
+			INTO	:ihNumDias
+			FROM 	DUAL;
+			
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Obteniendo Secuencia GA_SEQ_NUMDIASNUM.NEXTVAL. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+	
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			INSERT INTO GA_SERVSUPLABO
+						(
+							NUM_ABONADO, 
+							COD_SERVICIO, 
+							FEC_ALTABD, 
+							COD_SERVSUPL, 
+							COD_NIVEL, 
+							COD_PRODUCTO, 
+							NUM_TERMINAL, 
+							NOM_USUARORA, 
+							IND_ESTADO, 
+							NUM_DIASNUM 
+						)
+			VALUES 
+						( 
+							:lhNumAbonado2,
+							:szhCodFyfcel,
+							SYSDATE,
+							:ihCodServSupl,
+							:ihCodNivel,
+							:ihCodProducto,
+							:lhNumCelular2,
+							USER,
+							:ihValor_uno,
+							:ihNumDias
+						);
+	
+			if ( sqlca.sqlcode != SQLOK )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Actualizando GA_SERVSUPLABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+	
+	       	pszRet = (*szGetCadenaServNivel)(&pfLog, lhNumAbonado, szhCadenaServNivel, CXX );
+			sprintf ( szRet, "%s\0", pszRet );
+			
+			if ( strcmp( szRet, "OK" ) != 0 )
+			{				
+				iError = 1;
+				break;
+			}
+
+	      	/* Actualizar GA_ABOCEL */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			UPDATE 	GA_ABOCEL 
+			SET		CLASE_SERVICIO 	= :szhCadenaServNivel
+			WHERE 	NUM_ABONADO 	= :lhNumAbonado2;
+	
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al actualizar GA_ABOCEL, CLASE_SERVICIO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+    
+            iCntReg++;
+        } /* fin for */
+   		
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL CLOSE curEmpresa;
+		if ( sqlca.sqlcode != SQLOK )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] OPEN curEmpresa. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+		}
+
+		if ( iError == 1 ) 		/* ocurrio un error */
+			return szRet;
+		
+   		if ( iCntReg == 0 )   /* no se procesaron abonados activos */
+   		{
+     		/* No existen abonados F&F, se debe marcar como normal */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			UPDATE GA_INTARCEL 
+			SET 	IND_FRIENDS = :ihValor_cero
+			WHERE COD_CLIENTE = :lhCodCliente
+			AND 	NUM_ABONADO = :lhNumAbonado
+			AND 	FEC_HASTA > SYSDATE;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al actualizar Intarcel 1. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return "PND";
+			}
+
+        	/* Desactivando servicio F&F, segundo abonado */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			UPDATE GA_SERVSUPLABO 
+			SET	FEC_BAJABD = SYSDATE, 
+					IND_ESTADO = :ihValor_tres
+			WHERE NUM_ABONADO  = :lhNumAbonado2
+			AND 	COD_SERVICIO = :szhCodFyfcel
+			AND 	( IND_ESTADO < :ihValor_tres or IND_ESTADO = :ihValor_cinco );
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Desactivando servicio F&F, segundo abonado. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return "PND";
+			}
+
+	       	pszRet = (*szGetCadenaServNivel)(&pfLog, lhNumAbonado, szhCadenaServNivel, CXX );
+			sprintf ( szRet, "%s\0", pszRet );
+			
+			if ( strcmp( szRet, "OK" ) != 0 )
+				return szRet;
+	        
+	        /* Actualizar GA_ABOCEL */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			UPDATE 	GA_ABOCEL 
+			SET		CLASE_SERVICIO = :szhCadenaServNivel
+			WHERE 	NUM_ABONADO  = :lhNumAbonado;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al actualizar GA_ABOCEL, CLASE_SERVICIO 1. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return "PND";
+			}
+
+		    strcpy( szhActAbo, "SS" );
+			
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT 	COD_ACTCEN 
+			INTO	:ihCodActuacion
+			FROM GA_ACTABO 
+			WHERE COD_ACTABO = :szhActAbo 
+			  AND COD_PRODUCTO = :ihCodProducto
+			  AND COD_MODULO  = :szhGA
+     		  AND COD_TECNOLOGIA = :szhCodTecnologia; 
+	
+		    if( sqlca.sqlcode ) 
+		    {  
+		    	ifnTrazaHilos( modulo,&pfLog, "Error al Leer Cod_Actuacion Abonado:%ld",LOG00, lhNumAbonado );
+		        return "PND";  
+		    } 
+
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT NUM_MIN 
+			INTO	:szhNumMin
+			FROM 	GA_ABOCEL 
+			WHERE NUM_ABONADO = :lhNumAbonado;
+	
+		    if( sqlca.sqlcode ) 
+		    {  
+		    	ifnTrazaHilos( modulo,&pfLog, "Error al Leer Cod_Actuacion Abonado:%ld",LOG00, lhNumAbonado );
+		        return "PND";  
+		    } 
+
+	       	pszRet = (*szGetCadenaServNivel1)(&pfLog, ihCodProducto, szhCadenaServNivel, CXX );
+			sprintf ( szRet, "%s\0", pszRet );
+			
+			if ( strcmp( szRet, "OK" ) != 0 )
+				return szRet;
+	
+		    sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		    EXEC SQL
+		    SELECT 	ICC_SEQ_NUMMOV.NEXTVAL
+		    INTO 	:lhNumMovimiento1
+		    FROM 	DUAL;       
+
+		    if( sqlca.sqlcode ) 
+		    {  
+		    	ifnTrazaHilos( modulo,&pfLog, "SELECT ICC_SEQ_NUMMOV.NEXTVAL 1 Abonado:%ld",LOG00, lhNumAbonado );
+		        return "PND";  
+		    } 
+
+			ifnTrazaHilos( modulo,&pfLog, 	"Datos Insert Icc_Movimientos %s\n"
+									"\t\t\tlhNumMovimiento1   = [%ld],\n"  
+									"\t\t\tlhNumAbonado       = [%ld],\n"
+									"\t\t\tihCodActuacion     = [%d],\n"
+									"\t\t\tszhActAbo          = [%s],\n"
+									"\t\t\tihCodCentral       = [%d],\n"
+									"\t\t\tlhNumCelular       = [%ld],\n"
+									"\t\t\tszhNumSerieHex     = [%s],\n"
+									"\t\t\tszhTipTerminal     = [%s],\n"
+									"\t\t\tszhNumMin          = [%s],\n"
+									"\t\t\tszhCadenaServNivel = [%s],\n",
+									LOG03,
+									modulo,
+									lhNumMovimiento1,  
+									lhNumAbonado,
+									ihCodActuacion,
+									szhActAbo,
+									ihCodCentral,       
+									lhNumCelular,
+									szhNumSerieHex,    
+									szhTipTerminal,     
+									szhNumMin,         
+									szhCadenaServNivel );
+
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			INSERT INTO ICC_MOVIMIENTO
+			(
+				NUM_MOVIMIENTO,     NUM_ABONADO,        COD_ESTADO,
+				COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+				COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+				FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+				NUM_SERIE,          TIP_TERMINAL,       NUM_MIN,            
+				COD_SERVICIOS,		TIP_TECNOLOGIA,		IMEI,
+				IMSI,				ICC
+			)
+			VALUES
+			(
+				:lhNumMovimiento1,  	:lhNumAbonado,      :ihValor_uno,
+				:szhModulo,          :ihValor_cero,      :szhPENDIENTE,
+				:ihCodActuacion,    	:szhActAbo,         USER,
+				SYSDATE,            	:ihCodCentral,      :lhNumCelular,
+				:szhNumSerieHex,    	:szhTipTerminal,    :szhNumMin,         
+				:szhCadenaServNivel,	:szhCodTecnologia,	:szhNumImei,
+				:szhNumImsi,			:szhNumSerie
+			);
+	
+			if( sqlca.sqlcode ) 
+	        {  
+	            ifnTrazaHilos( modulo,&pfLog, "INSERT INTO ICC_MOVIMIENTO 1 Abonado:%ld",LOG00, lhNumAbonado );
+	            return "PND";  
+	        } 
+		
+        } /* if ( iCntReg == 0 ) */
+    
+    } /* 	if ( ihIndFamiliar == 1 ) */
+
+	return "OK";
+	
+} /* BOOL bActivaFF( TABONADO sthAbonado, long lCodCliente ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szfnProcesaPlanFrecuente(FILE **ptArchLog, td_Abonado sthAbo, long lCodCliente, sql_context ctxCont) 
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhCodPlanTarif[4];
+	int	ihCodProducto;
+	char	szhCodPlanTar[4];
+	long	lhNumFrecFijos = 0;
+	long	lhNumFrecMovil = 0;
+	int	ihIndFF;   
+	char	szhTipPlantarif[2];
+	char	szhDesPlantarif[31];                           
+	long	lhCodCliente;                                                                                          
+	int	iNumFijos = 0;
+	int	iNumMoviles = 0;
+	long	lhNumDiasNum;
+	long	lhNumAbonado;
+	long	lhNumCelular;
+	int   ihValor_cinco = 5;    	
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;                             
+char		modulo[] = "ifnProcesaPlanFrecuente";
+int		iRet = 0;
+int		iLong = 0;
+int		rr;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;    
+	memset( astNumFijosFrec, 0, sizeof(td_NumFrec) );
+	memset( astNumMovilFrec, 0, sizeof(td_NumFrec) );
+	
+	memset( szhCodPlanTarif, '\0', sizeof( szhCodPlanTarif ) );
+   	memset( szhCodPlanTar, '\0', sizeof( szhCodPlanTar ) );
+   	memset( szhTipPlantarif, '\0', sizeof( szhTipPlantarif ) );
+   	memset( szhDesPlantarif, '\0', sizeof( szhDesPlantarif ) );
+
+	lhCodCliente = lCodCliente; 
+	strcpy( szhCodPlanTarif, sthAbo.szhCodPlanTarif );                                 
+   	lhNumAbonado  = sthAbo.lhNumAbonado;
+	lhNumCelular  = sthAbo.lhNumCelularBeeper;
+	ihCodProducto = sthAbo.ihCodProducto;
+
+	iLong = strlen( szhCodPlanTarif ) - 1;
+	for ( rr = iLong; rr >= 0; rr = rr - 1 ) if ( szhCodPlanTarif[rr] != ' ' && szhCodPlanTarif[rr] != '\0' ) break;
+	szhCodPlanTarif[rr + 1] = '\0';
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] ifnProcesaPlanFrecuente ", LOG03, lhNumAbonado );
+	ifnTrazaHilos( modulo,&pfLog, "lCodCliente 		= [%ld],", LOG03, lhCodCliente ); 
+	ifnTrazaHilos( modulo,&pfLog, "szhCodPlanTarif 	= [%s],", LOG03, szhCodPlanTarif );
+	ifnTrazaHilos( modulo,&pfLog, "lhNumCelular 	= [%ld],", LOG03, lhNumCelular );
+	ifnTrazaHilos( modulo,&pfLog, "ihCodProducto 	= [%d],", LOG03, ihCodProducto );
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT 	A.COD_PRODUCTO, 
+			A.COD_PLANTARIF,
+			A.NUM_FREC_FIJOS, 
+			A.NUM_FREC_MOVIL, 
+			A.IND_FF, 
+			B.TIP_PLANTARIF,
+			B.DES_PLANTARIF
+    INTO	:ihCodProducto,
+    		:szhCodPlanTar,
+    		:lhNumFrecFijos,
+    		:lhNumFrecMovil,
+    		:ihIndFF,   
+    		:szhTipPlantarif,
+    		:szhDesPlantarif
+	FROM 	TA_PLANES_FRECUENTES A, 
+			TA_PLANTARIF B
+	WHERE 	A.COD_PRODUCTO 	= :ihCodProducto
+	AND 	A.COD_PLANTARIF = :szhCodPlanTarif
+	AND 	SYSDATE BETWEEN A.FEC_DESDE AND NVL( A.FEC_HASTA, SYSDATE )
+	AND 	A.COD_PRODUCTO	= B.COD_PRODUCTO
+	AND 	A.COD_PLANTARIF	= B.COD_PLANTARIF;
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Comprobando si es Numero Frecuente. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+    /* no es plan frecuente */
+	if ( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No tiene Plan Numero Frecuente, no se procesa por este concepto.", LOG03, lhNumAbonado );
+		return "OK";
+	}
+	
+	iLong = strlen( szhTipPlantarif ) - 1;
+	for ( rr = iLong; rr >= 0; rr = rr - 1 ) if ( szhTipPlantarif[rr] != ' ' && szhTipPlantarif[rr] != '\0' ) break;
+	szhTipPlantarif[rr + 1] = '\0';
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Del Plan [%s], Num_Fijos [%d], Num_Movil [%d]....", LOG03, lhNumAbonado, szhCodPlanTarif, iNumFijos, iNumMoviles );
+
+	/* solo para planes frecuente */
+	if ( ihIndFF == 0 && ( lhNumFrecFijos == 0 && lhNumFrecMovil == 0 ) )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No es Plan Frecuente. ", LOG03, lhNumAbonado );
+		return "OK";
+	}	
+	else
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Es Plan Frecuente. ", LOG03, lhNumAbonado );
+	
+		/* Obteniendo número de secuencia del Servicio F&f activo */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT 	NUM_DIASNUM 
+		INTO	:lhNumDiasNum
+		FROM 	GA_SERVSUPLABO 
+		WHERE 	NUM_ABONADO  = :lhNumAbonado
+		AND 	COD_SERVICIO = (SELECT COD_FYFCEL FROM GA_DATOSGENER)
+		AND 	IND_ESTADO   = :ihValor_cinco;
+	
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Obteniendo número de secuencia del Servicio F&f activo.... %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return "NDSNU";
+		}
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] No hay numero de secuencia del Servicio F&f activo, para el abonado....", LOG03, lhNumAbonado );
+			return "OK";
+		}
+
+		iNumFijos 	= lhNumFrecFijos;
+		iNumMoviles = lhNumFrecMovil;                                                                           
+
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Numero dias Dias [%ld]....", LOG03, lhNumAbonado, lhNumDiasNum );
+
+		if ( !bfnBuscNumFrecExist (&pfLog, sthAbo, lhCodCliente, &iNumFijos, &iNumMoviles, CXX ) )
+			return "PND";	/* hubo error se sale */
+			
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Frecuentes Recuperados Fijos = [%d], Moviles = [%d].", LOG03, lhNumAbonado, iNumFijos, iNumMoviles );
+		
+		if ( !bfnEliminaFrec(&pfLog, sthAbo.lhNumAbonado, CXX ) )
+			return "PND";	/* hubo error se sale */
+						
+		if ( !bfnIngresaFrecuentes(&pfLog, lhCodCliente, lhNumAbonado, lhNumCelular, iNumFijos, iNumMoviles, szhTipPlantarif, lhNumDiasNum, CXX ) )
+			return "PND";	/* hubo error se sale */
+
+		/* Reconoce si asociacion es a nivel de Agrupacion */
+	    if ( strcmp ( szhTipPlantarif, "E" ) == 0 )
+		{
+	        /* Agrupacion entre abonados del cliente */
+			if ( !bfnAgrFrecEmp(&pfLog, lhNumAbonado, lhCodCliente, lhNumCelular, lhNumDiasNum, CXX ) )
+				return "PND";
+	    else if ( strcmp ( szhTipPlantarif, "I" ) == 0 )
+	    	/* Se asignan celulares de otros abonados del cliente */
+			if ( !bfnbAgrFrecInd(&pfLog, lhCodCliente, lhNumAbonado, lhNumDiasNum, CXX ) )
+				return "PND";
+	    } /* if ( strcmp ( szhTipPlantarif, "E" ) == 0 ) */
+
+	} /* if ( ihIndFF == 1 && ( lhNumFrecFijos == 0 || lhNumFrecMovil == 0 ) ) */
+
+	return "OK";        
+
+} /* BOOL bfnBuscaPlanFrecuente( int	iCodProd, TABONADO sthAbo ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnBuscNumFrecExist(FILE **ptArchLog, td_Abonado sthAbo, long lCodCliente, int *iTotalFijos, int *iTotalMovil, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente;
+	long	lhNumAbonado;
+	char	szhNumTelefEsp[13];
+	char	szhNumTelefEsp2[3];
+	char  szhNumero09    [3];
+	int   ihValor_uno = 1;		
+	int   ihValor_dos = 2;		
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;                             
+char	modulo[] = "bfnBuscNumFrecExist";
+int		iCntFrecFi = 0;
+int		iCntFrecMo = 0;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	
+	lhCodCliente = lCodCliente;
+	lhNumAbonado = sthAbo.lhNumAbonado;              
+	strcpy(szhNumero09,"09");                                                                       
+                                                                                     
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL DECLARE curFrecuentes CURSOR FOR
+	SELECT 	UNIQUE NUM_TELEFESP,
+			SUBSTR( NUM_TELEFESP, :ihValor_uno, :ihValor_dos )
+	FROM 	GA_NUMESPABO A, GA_ABOCEL B 
+	WHERE 	A.NUM_ABONADO = :lhNumAbonado
+	AND 	A.NUM_ABONADO = B.NUM_ABONADO 
+	AND 	B.COD_CLIENTE = :lhCodCliente
+	AND 	A.NUM_TELEFESP NOT IN (	SELECT :szhNumero09 || TO_CHAR( NUM_CELULAR )
+									FROM 	GA_ABOCEL C 
+									WHERE 	COD_CLIENTE = :lhCodCliente 
+									AND     NUM_ABONADO = :lhNumAbonado );
+	
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] DECLARE curFrecuentes. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL OPEN curFrecuentes;	
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] OPEN curFrecuentes. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	for ( ; ; ) /* siempre */
+	{
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL FETCH curFrecuentes
+		INTO	:szhNumTelefEsp,
+				:szhNumTelefEsp2;
+									
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] FETCH curFrecuentes. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+			
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+			break;
+		
+		if ( *iTotalFijos > 0 && strcmp( szhNumTelefEsp2, "09" ) != 0 )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fijo Frecuente. [%s] ", LOG03, lhNumAbonado, szhNumTelefEsp );
+			sprintf ( astNumFijosFrec[iCntFrecFi].szNumFrecuente, "%s", szhNumTelefEsp );
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fijo Frecuente del Arreglo. [%s] ", LOG03, lhNumAbonado, astNumFijosFrec[iCntFrecFi].szNumFrecuente );
+			iCntFrecFi++;					
+		} 
+		if ( *iTotalMovil > 0 && strcmp( szhNumTelefEsp2, "09" ) == 0 )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Movil Frecuente. [%s] ", LOG03, lhNumAbonado, szhNumTelefEsp );
+			sprintf ( astNumMovilFrec[iCntFrecMo].szNumFrecuente, "%s", szhNumTelefEsp );
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Movil Frecuente del Arreglo. [%s] ", LOG03, lhNumAbonado, astNumMovilFrec[iCntFrecMo].szNumFrecuente );
+			iCntFrecMo++;					
+		} 
+	} /* for ( ; ; ) */
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL CLOSE curFrecuentes;	
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] CLOSE curFrecuentes. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	*iTotalFijos = iCntFrecFi;
+	*iTotalMovil = iCntFrecMo;
+
+	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fin bfnBuscNumFrecExist....", LOG03, lhNumAbonado );
+
+	return TRUE;
+} /* BOOL bfnBuscNumFrecExist */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnEliminaFrec(FILE **ptArchLog, long lNumAbonado, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhNumAbonado;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;                             
+char	modulo[] = "bfnEliminaFrec";
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	
+	lhNumAbonado = lNumAbonado;
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	DELETE 	GA_NUMESPABO 
+	WHERE 	NUM_ABONADO = :lhNumAbonado;
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Eliminando Planes Frecuentes. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+   	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fin bfnEliminaFrec....", LOG03, lhNumAbonado );
+
+	return TRUE;
+} /* BOOL bfnEliminaFrec( long lNumAbonado ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnIngresaFrecuentes(FILE **ptArchLog, long lCodCliente, long lNumAbonado, long lNumCelular, int iCntFrecFijo, int iCntFrecMovil, char *sTipPlantarif, long lNumDiasNum, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhNumAbonado;
+	char	szhNumTelefEsp[13];
+	char	szhNumTelefEsp2[3];                
+	char    szhTipPlantarif[2];
+	long	lhNumDiasNum;
+	char	szRowid[25];                                          
+	long	lhNumCelular;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;           
+char	modulo[] = "bfnIngresaFrecuentes";
+int		iInd;
+int		iLong = 0;
+int		rr;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	
+	lhNumAbonado = lNumAbonado;
+	lhNumCelular = lNumCelular;
+	strcpy ( szhTipPlantarif , sTipPlantarif );                    
+	lhNumDiasNum = lNumDiasNum;
+	    
+	iLong = strlen( szhTipPlantarif ) - 1;
+	for ( rr = iLong; rr >= 0; rr = rr - 1 ) if ( szhTipPlantarif[rr] != ' ' && szhTipPlantarif[rr] != '\0' ) break;
+	szhTipPlantarif[rr + 1] = '\0';
+
+	/* Ingreso de Numeros frecuentes Fijos */
+	if ( iCntFrecFijo > 0 )
+	{
+	    for ( iInd = 0; iInd < iCntFrecFijo; iInd++ )
+	    {
+	       	/* Valida que no exista antes de Ingresar */
+        	memset(szhNumTelefEsp, '\0', sizeof(szhNumTelefEsp) );
+        	memcpy(szhNumTelefEsp, astNumFijosFrec[iInd].szNumFrecuente, sizeof( astNumFijosFrec[iInd].szNumFrecuente ) );
+        	
+    		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fijo szhNumTelefEsp [%s] ", LOG03, lhNumAbonado, szhNumTelefEsp );
+
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT 	ROWID
+			INTO	:szRowid 
+			FROM 	GA_NUMESPABO
+			WHERE 	NUM_ABONADO  = :lhNumAbonado
+			AND 	NUM_TELEFESP = :szhNumTelefEsp;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Validando existencia en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+
+			if ( sqlca.sqlcode == SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fijo Ingresado [%s].", LOG03, lhNumAbonado, szhNumTelefEsp );
+
+				if ( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado, szhNumTelefEsp, lhNumDiasNum, CXX ) )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Insertando Fijos en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					return FALSE;
+				}
+			}
+        } /* for ( iInd = 0; iInd < iCntFrecFijo; iInd++ ) */
+	} /* if ( iCntFrecFijo ) > 0 */
+
+	/* Ingreso de Numeros frecuentes Moviles */
+	if ( iCntFrecMovil > 0 )
+	{
+	    for ( iInd = 0; iInd < iCntFrecMovil; iInd++ )
+	    {
+	       	/* Valida que no exista antes de Ingresar */
+        	memset(szhNumTelefEsp, '\0', sizeof(szhNumTelefEsp) );
+        	memcpy(szhNumTelefEsp, astNumMovilFrec[iInd].szNumFrecuente, sizeof( astNumMovilFrec[iInd].szNumFrecuente ) );
+        	
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Movil szhNumTelefEsp [%s] ", LOG03, lhNumAbonado, szhNumTelefEsp );
+
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT 	ROWID                                   
+			INTO	:szRowid
+			FROM 	GA_NUMESPABO
+			WHERE NUM_ABONADO  = :lhNumAbonado
+			AND 	NUM_TELEFESP = :szhNumTelefEsp;
+
+			if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Validando existencia en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+
+			if ( sqlca.sqlcode == SQLNOTFOUND )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Movil Ingresado [%s].", LOG03, lhNumAbonado, szhNumTelefEsp );
+
+				if ( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado, szhNumTelefEsp, lhNumDiasNum, CXX ) )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Insertando Movil en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					return FALSE;
+				}
+			}
+        } /* for ( iInd = 0; iInd < iCntFrecMovil; iInd++ ) */
+	} /* if ( iCntFrecMovil ) > 0 */
+
+	/* Reconoce si la asociacion es a nivel de Agrupacion */
+    if ( strcmp ( szhTipPlantarif, "E" ) == 0 )
+	{
+        /* Agrupacion entre abonados del cliente */
+        if ( !bfnAgrFrecEmp(&pfLog, lhNumAbonado, lCodCliente, lhNumCelular, lhNumDiasNum, CXX ) )
+			return FALSE;
+    	else if ( strcmp ( szhTipPlantarif, "I" ) == 0 )
+    		/* Se asignan celulares de otros abonados del cliente, es individual */
+			if ( !bfnbAgrFrecInd(&pfLog, lCodCliente, lhNumAbonado, lhNumDiasNum, CXX ) )
+				return FALSE;
+    } /*     if ( strcmp ( szhTipPlantarif, "E" ) == 0 ) */
+
+   	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fin bfnIngresaFrecuentes....", LOG03, lhNumAbonado );
+
+	return TRUE;
+} /* BOOL bfnIngresaFrecuentes( td_Abonado sthAbo, char *szhCodFyfCel, td_FrecFijo stFrecFijo, td_FrecMovil stFrecMovil, int iCntFrecFijo, int iCntFrecMovil, char *sTipPlantarif ) ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnAgrFrecEmp(FILE **ptArchLog, long lNumAbonado, long lCodCliente, long lNumCelular, long lSecuencia, sql_context ctxCont ) 
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente;
+	long	lhNumAbonado;
+	long	lhNumAbonado2;
+	long	lhNumCelular2;
+	long	lhSecuencia;                                  
+	long	lhSecuenciaAux;                                  
+	long	lhNumSecAboNue = 0;
+	char	szRowid[25];
+	char  szNumCelular2[10];
+	long	lhNumCelular;
+	char  szhBAA    [4];
+	char  szhBAP    [4];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;           
+char	modulo[] = "bfnAgrFrecEmp";
+int		iError = 0;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;	
+	lhCodCliente = lCodCliente;         
+	lhNumAbonado = lNumAbonado;
+	lhNumCelular = lNumCelular;
+	lhSecuencia  = lSecuencia; 
+	strcpy(szhBAA,"BAA");
+   	strcpy(szhBAP,"BAP");
+
+	                                             
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL DECLARE curAbonadosEmp CURSOR FOR
+	SELECT NUM_ABONADO,
+			NUM_CELULAR 
+	FROM 	GA_ABOCEL
+	WHERE COD_CLIENTE = :lhCodCliente
+	AND 	COD_SITUACION NOT IN (:szhBAA,:szhBAP)
+	AND 	NUM_ABONADO <> :lhNumAbonado;
+	
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] DECLARE curAbonadosEmp. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL OPEN curAbonadosEmp;
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] OPEN curAbonadosEmp. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	for( ; ; ) /* siempre */
+    {
+        sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+        EXEC SQL FETCH 	curAbonadosEmp
+        		 INTO  	:lhNumAbonado2,
+        		 		:lhNumCelular2;
+        		 		
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] FETCH curAbonadosEmp. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+			break;
+		}
+    
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] FETCH curAbonadosEmp, termino de datos.", LOG03, lhNumAbonado );
+			iError = 0;
+			break;                       /* termino de datos */
+        }
+
+		memset( szNumCelular2, 0, sizeof( szNumCelular2 ) );
+		sprintf( szNumCelular2, "09%ld", lhNumCelular2 );
+	
+		/* Valida si para el abonado e proceso, ya existe numero frecuente del abonado 2 */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT 	ROWID 
+		INTO	:szRowid
+		FROM 	GA_NUMESPABO
+		WHERE NUM_ABONADO  = :lhNumAbonado
+		AND 	NUM_TELEFESP = :szNumCelular2;
+
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Validando en GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+			break;
+		}
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{	
+			/* si no existe lo inserta en la GA_NUMESPABO */
+			if ( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado, szNumCelular2, lhSecuencia, CXX ) )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al Insertar GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+
+		} /* if ( sqlca.sqlcode == SQLNOTFOUND ) */              
+                        
+        /* Se valida si abonado anterior posee servicio F&F activo si no es asi se activa
+           bfnAboEmpServ(iCrs, sNumAbonado, sNumCelular, sProducto, sCodCliente) As Boolean */
+		if ( !bfnAboEmpServ(&pfLog, lhNumAbonado2, lhNumCelular2, 1, lhCodCliente, &lhNumSecAboNue, CXX ) )
+		{
+			iError = 1;
+			break;
+        }
+                        
+		memset( szNumCelular2, 0, sizeof( szNumCelular2 ) );
+		sprintf( szNumCelular2, "09%ld", lhNumCelular );
+		
+		/* Valida si para el abonado 2, el abonado en proceso existe como numero frecuente */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT 	ROWID   
+		INTO	:szRowid
+		FROM 	GA_NUMESPABO
+		WHERE NUM_ABONADO  = :lhNumAbonado2
+		AND 	NUM_TELEFESP = :szNumCelular2;
+		
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Validando en GA_NUMESPABO 1. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+			break;
+		}
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+        {
+			
+			lhSecuenciaAux = 0;
+			if ( lhNumSecAboNue == 0 )
+				lhSecuenciaAux = lhSecuencia;
+			else	
+			    lhSecuenciaAux = lhNumSecAboNue;
+			    
+			/* si no existe lo inserta en la GA_NUMESPABO */
+			if ( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado2, szNumCelular2, lhSecuenciaAux, CXX ) )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al Insertar GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				iError = 1;
+				break;
+			}
+		} /* if ( sqlca.sqlcode == SQLNOTFOUND ) */              
+    } /* for( ; ; ) */
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL CLOSE curAbonadosEmp;
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] CLOSE curAbonadosEmp. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+	
+   	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fin bfnAgrFrecEmp....", LOG03, lhNumAbonado );
+	if ( iError == 1 )
+		return FALSE;
+	else
+		return TRUE; 
+		
+} /* BOOL bfnAgrFrecEmp( td_Abonado sthAbo, long lCodCliente, long lSecuencia, char *szhCodFyfCel ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnAboEmpServ(FILE **ptArchLog, long lNumAbonado, long lNumCelular, int iCodProducto, long lCodCliente, long *lNumSecAboNue, sql_context ctxCont) 
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente;
+	long	lhNumAbonado;
+	long	lhNumCelular;
+	int	ihCodProducto;
+	int	ihCodConcepto;
+	int	ihNumSecNue = 0;       
+	int	ihCodServSupl;
+	int	ihCodNivel;
+	char	szhIndEsVenta[3];
+	long	lhNumVenta;
+	char	szhIndEstVenta[3];
+	char	szRowid[25];           
+	char	szhCodFyfCel[4];
+	char  szhNumero2  [2];
+	char  szhFA       [3];
+	int   ihValor_cero = 0;
+	int   ihValor_uno  = 1;
+	int   ihValor_dos  = 2;
+	int   ihValor_tres = 3;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "bfnAboEmpServ";           
+int		iLong = 0, rr;
+FILE *pfLog=*ptArchLog;	
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	
+	memset( szhIndEsVenta, '\0', sizeof(szhIndEsVenta) );
+	memset( szhCodFyfCel , '\0', sizeof(szhCodFyfCel ) );
+
+	lhCodCliente  = lCodCliente;
+	lhNumAbonado  = lNumAbonado;
+	lhNumCelular  = lNumCelular;
+	ihCodProducto = iCodProducto;
+	strcpy(szhNumero2,"2");
+	strcpy(szhFA,"FA");
+	
+	EXEC SQL
+	SELECT 	COD_FYFCEL 
+	INTO    :szhCodFyfCel
+	FROM 	GA_DATOSGENER;
+
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error, al obtener COD_FYFCEL Abonado Anterior.... %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	iLong = strlen( szhCodFyfCel ) - 1;
+	for ( rr = iLong; rr >= 0; rr = rr - 1 ) if ( szhCodFyfCel[rr] != ' ' && szhCodFyfCel[rr] != '\0' ) break;
+	szhCodFyfCel[rr + 1] = '\0';
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT 	B.IND_ESTVENTA, 
+			A.NUM_VENTA  
+	INTO	:szhIndEstVenta,
+			:lhNumVenta
+	FROM 	GA_ABOCEL A,                                                
+			GA_VENTAS B
+	WHERE A.NUM_ABONADO = :lhNumAbonado
+	AND 	A.NUM_VENTA   = B.NUM_VENTA;
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error, al obtener venta Abonado Anterior.... %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	if ( sqlca.sqlcode != SQLNOTFOUND )
+	{
+ 
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT 	ROWID
+		INTO	:szRowid 
+		FROM 	GA_SERVSUPLABO 
+		WHERE NUM_ABONADO  = :lhNumAbonado
+		AND 	COD_SERVICIO = :szhCodFyfCel
+		AND 	IND_ESTADO < :ihValor_tres;
+
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Select GA_SERVSUPLABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+        {
+			/* Obteniendo concepto de facturacion del servicio */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COD_CONCEPTO 
+			INTO	:ihCodConcepto
+			FROM 	GA_ACTUASERV 
+			WHERE COD_PRODUCTO = :ihCodProducto
+			AND 	COD_TIPSERV  = :szhNumero2
+			AND 	COD_SERVICIO = :szhCodFyfCel
+			AND 	COD_ACTABO   = :szhFA;
+
+			if ( sqlca.sqlcode )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al obtener concepto de Facturación.... %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+
+			/* Obteniendo Secuencia de Servicio F&F */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL 
+			SELECT 	GA_SEQ_NUMDIASNUM.NEXTVAL 
+			INTO	:ihNumSecNue 
+			FROM 	DUAL;
+			
+			if ( sqlca.sqlcode )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Obteniendo GA_SEQ_NUMDIASNUM.NEXTVAL. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+
+			/* Obteniendo codigo servsupl, y nivel */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT COD_SERVSUPL,
+					COD_NIVEL 
+			INTO  :ihCodServSupl,
+					:ihCodNivel	
+			FROM 	GA_SERVSUPL 
+			WHERE COD_PRODUCTO = :ihCodProducto
+			AND 	COD_SERVICIO = :szhCodFyfCel
+			AND 	COD_NIVEL <> :ihValor_cero;
+
+			if ( sqlca.sqlcode )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error, al obtener datos del servicio Friend & Family ... %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					return FALSE;
+			}
+
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			INSERT INTO GA_SERVSUPLABO
+							(	
+								NUM_ABONADO, 
+								COD_SERVICIO, 
+								FEC_ALTABD, 
+								COD_SERVSUPL,
+								COD_NIVEL, 
+								COD_PRODUCTO, 
+								NUM_TERMINAL, 
+								NOM_USUARORA,
+								COD_CONCEPTO,
+								NUM_DIASNUM,
+								FEC_ALTACEN,
+								IND_ESTADO
+							)
+					VALUES 
+							(
+								:lhNumAbonado,
+								:szhCodFyfCel,
+								SYSDATE,
+							    :ihCodServSupl,
+								:ihCodNivel,	
+								:ihCodProducto,
+								:lhNumCelular,
+								USER,
+								:ihCodConcepto,
+								:ihNumSecNue, 
+								SYSDATE,
+								:ihValor_dos
+							);
+
+			if ( sqlca.sqlcode )
+			{
+				ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error, al Insertar GA_SERVSUPLABO ... %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+
+			/* Actualiza Intarcel con servicio f&F si abonado ya se encuentra aceptado */
+            if ( strcmp( szhIndEstVenta, "AC" ) == 0 )
+            {
+				sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+				EXEC SQL
+				UPDATE GA_INTARCEL 
+				SET 	IND_FRIENDS = :ihValor_uno
+				WHERE COD_CLIENTE = :lhCodCliente
+				AND 	NUM_ABONADO = :lhNumAbonado
+				AND 	FEC_HASTA >= SYSDATE;
+             
+				if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+				{
+					ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Update GA_INTARCEL. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+					return FALSE;
+				}
+            } /* if ( strcmp( szhEstVenta, "AC" ) == 0 ) */
+
+		} /* if ( sqlca.sqlcode == SQLNOTFOUND ) */
+	} /* if ( sqlca.sqlcode != SQLNOTFOUND ) */
+	
+	*lNumSecAboNue = ihNumSecNue;       
+
+   	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fin bfnAboEmpServ....", LOG03, lhNumAbonado );
+
+	return TRUE;
+} /* BOOL bfnAboEmpServ( long lNumAbonado, long lNumCelular, int iCodProducto, long lCodCliente, char *szhCodFyfCel, long *lNumSecAboNue ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnbAgrFrecInd(FILE **ptArchLog, long lCodCliente, long lNumAbonado, long lSecuencia , sql_context ctxCont) 
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente;
+	long	lhNumAbonado;
+	long	lhNumAbonado2;
+	long	lhNumCelular2;
+	long	lhSecuencia;
+	char	szhNumCelular2[10];                                  
+	char  szhBAA    [4];
+	char  szhBAP    [4];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;           
+char 	modulo[] = "bfnbAgrFrecInd";           
+int	    iError   = 0;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;	
+	lhCodCliente = lCodCliente;         
+	lhNumAbonado = lNumAbonado;
+	lhSecuencia  = lSecuencia;
+	strcpy(szhBAA,"BAA");
+   strcpy(szhBAP,"BAP");
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL DECLARE curAbonadosInd CURSOR FOR 
+	SELECT NUM_ABONADO,
+			NUM_CELULAR 
+	FROM 	GA_ABOCEL
+	WHERE COD_CLIENTE = :lhCodCliente
+	AND 	COD_SITUACION NOT IN ( :szhBAA, :szhBAP ) 
+	AND 	NUM_ABONADO <> :lhNumAbonado;
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] DECLARE curAbonadosInd. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL OPEN curAbonadosInd;
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] OPEN curAbonadosInd. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	for( ; ; ) /* siempre */
+    {
+        sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+        EXEC SQL FETCH 	curAbonadosInd
+        		 INTO :lhNumAbonado2,
+        		 		:lhNumCelular2;
+        		 		
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] FETCH curAbonadosInd. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+			break;
+		}
+    
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+			break;                       /* termino de datos */
+
+		memset( szhNumCelular2, 0, sizeof( szhNumCelular2 ) );
+		sprintf ( szhNumCelular2, "09%ld", lhNumCelular2 );
+		
+		if ( !bfnInsGaNumEspAbo(&pfLog, lhNumAbonado, szhNumCelular2, lhSecuencia, CXX ) )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Error al Insertar GA_NUMESPABO. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+			iError = 1;
+			break;
+		}
+	} /* for( ; ; ) */                    
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL CLOSE curAbonadosInd;
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] CLOSE curAbonadosInd. %s ", LOG00, lhNumAbonado, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+   	ifnTrazaHilos( modulo,&pfLog, "lhNumAbonado:[%ld] Fin bfnbAgrFrecInd....", LOG03, lhNumAbonado );
+
+	if ( iError == 1 )
+		return FALSE;
+	else
+		return TRUE;
+} /* BOOL bfnbAgrFrecInd( long lCodCliente, long lNumAbonado, long lSecuencia ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szGetCadenaServNivel1(FILE **ptArchLog, int iCodProducto, char *szCadena, sql_context ctxCont )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	ihCodProducto;
+	int		ihCodServSupl;
+	int		ihCodNivel;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;       
+char 	modulo[] = "szGetCadenaServNivel1";
+char	szCadenaAux[256];
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX; 	
+	ihCodProducto = iCodProducto;            
+	memset ( szCadenaAux, 0, sizeof( szCadenaAux ) );
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL DECLARE curGaSurple CURSOR FOR
+	SELECT COD_SERVSUPL, 
+			COD_NIVEL 
+	FROM 	GA_SERVSUPL
+	WHERE COD_SERVICIO = (SELECT COD_FYFCEL FROM GA_DATOSGENER)
+	AND   COD_PRODUCTO = :ihCodProducto;
+
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "iCodProducto:[%ld] DECLARE curGaSurple. %s ", LOG00, iCodProducto, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL OPEN curGaSurple;
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "iCodProducto:[%ld] OPEN curGaSurple. %s ", LOG00, iCodProducto, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+	
+	for ( ; ; )
+	{		
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL FETCH curGaSurple INTO
+					:ihCodServSupl,
+					:ihCodNivel;
+
+		if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "iCodProducto:[%ld] FETCH curGaSurple. %s ", LOG00, iCodProducto, sqlca.sqlerrm.sqlerrmc );
+			return "PND";
+		}
+
+		if ( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "iCodProducto:[%ld] Fin Datos curGaSurp.", LOG03, iCodProducto );
+			break;
+		}
+		
+		ihCodNivel = 0;
+		sprintf ( szCadenaAux, "%s%02d%04d", szCadenaAux, ihCodServSupl, ihCodNivel );
+	}
+
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL CLOSE curGaSurple;
+	if ( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "iCodProducto:[%ld] CLOSE curGaSurple. %s ", LOG00, iCodProducto, sqlca.sqlerrm.sqlerrmc );
+		return "PND";
+	}
+
+	sprintf( szCadena, "%s", szCadenaAux );
+	ifnTrazaHilos( modulo,&pfLog, "szGetCadenaServNivel1, ihCodProducto:[%ld] Retorno Cadena. %s ", LOG03, ihCodProducto, szCadena );
+
+	return "OK";
+} /* char *szGetCadenaServNivel1( long lNumAbonado, char *szCadena ) */
+
+/*****************************************************************************************************
+******************************************************************************************************/
+BOOL bfnInsGaNumEspAbo(FILE **ptArchLog, long lNumAbonado, char *szNumTeleEsp, long lNumDiasNum, sql_context ctxCont)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long 	lhNumAbonado;
+	char 	szhNumTeleEsp[13] = "";
+	long 	lhNumDiasNum;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	lhNumAbonado = lNumAbonado;
+	strcpy( szhNumTeleEsp, szNumTeleEsp );
+	lhNumDiasNum = lNumDiasNum;
+
+    sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+    EXEC SQL
+	INSERT INTO GA_NUMESPABO 
+				( 
+					NUM_ABONADO, 
+					NUM_TELEFESP, 
+					NUM_DIASNUM
+				) 
+		VALUES 
+				( 
+					:lhNumAbonado,
+					:szhNumTeleEsp,
+					:lhNumDiasNum
+				);
+
+	if ( sqlca.sqlcode )
+		return FALSE;
+
+	return TRUE;
+} /* BOOL bfnInsGaNumEspAbo( long lNumAbonado, szNumTeleEsp, int iNumDiasNum ) */	
+
+/*****************************************************************************************************
+******************************************************************************************************/
+char *szBorraCargosIndem(FILE **ptArchLog, long lCliente, td_Abonado *sthAbo,  sql_context ctxCont )
+{
+/* Borra los cargos del cliente que se hayan creado por concepto de indemnizacion */
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhFecIniCont[9];
+	int	ihDiffFech = 0;
+	char  szhyyyymmdd  [9];
+	char  szhddmmyy    [7];
+	char  szhFEC_INDEM_ESCAL [16];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;       
+char 	modulo[] = "szBorraCargosIndem";
+long	lCodCliente = 0;
+long	lNumAbonado = 0;
+int	iCodProducto = 0;
+char	szTipoIndem[2];
+int	iEsComodato = 0;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+		
+	ifnTrazaHilos( modulo,&pfLog, "Ingresando Modulo %s", LOG05, modulo );
+
+	lCodCliente = lCliente;
+	lNumAbonado = sthAbo->lhNumAbonado;
+	iCodProducto = sthAbo->ihCodProducto;
+	memset( szhFecIniCont, '\0', sizeof( szhFecIniCont ) );
+	memset( szTipoIndem, '\0', sizeof( szTipoIndem ) );
+	strcpy(szhyyyymmdd,"yyyymmdd");
+	strcpy(szhddmmyy,"ddmmyy");
+	strcpy(szhFEC_INDEM_ESCAL,"FEC_INDEM_ESCAL");
+
+	/* es comodato o interno */
+	if( strcmp( sthAbo->szhIndEqPrestado, "1" ) == 0 || 
+	  ( strcmp( sthAbo->szhIndEqPrestado, "0" ) == 0 && strcmp( sthAbo->szhIndProcequi, "I" ) == 0 ) )
+	{
+		if( strcmp( sthAbo->szhFecProrroga, "00000000" ) != 0 )
+			strcpy( szhFecIniCont, sthAbo->szhFecProrroga );
+		else
+			strcpy( szhFecIniCont, sthAbo->szhFecAlta );
+		
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT TO_DATE( :szhFecIniCont, :szhyyyymmdd) - TO_DATE( VAL_PARAMETRO, :szhddmmyy ) 
+		INTO	:ihDiffFech
+		FROM	GED_PARAMETROS
+		WHERE NOM_PARAMETRO = :szhFEC_INDEM_ESCAL;
+
+		if( ihDiffFech > 0 )
+			strcpy( szTipoIndem, "E" );
+		else
+			strcpy( szTipoIndem, "S" );
+
+		iEsComodato = atoi( sthAbo->szhIndEqPrestado ); 
+		
+		if( !bfnBorrarCargos(&pfLog, lCodCliente, lNumAbonado, iCodProducto, sthAbo->lhCodCuenta, sthAbo->szhNumContrato, 
+								sthAbo->szhNumAnexo, iEsComodato, szTipoIndem, CXX  ) )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Fallo la eliminacion del Cargo", LOG03 );
+			return "PND";
+		}
+	} /* if( strcmp( szhIndEqPrestado, '0' ) == 0 ) */ 
+	
+	return "OK";
+} /* char *szBorraCargosIndem( td_Abonado sthAbo ) */
+
+/*********************************************************************************************************/
+/*********************************************************************************************************/
+BOOL bfnBorrarCargos(FILE **ptArchLog, long lCodCliente, long lNumAbonado, int iCodProducto, long lCodCuenta, 
+						char *szNumContrato, char *szNumAnexo, int iComodato, char *szTipIndem, sql_context ctxCont) 
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente = 0;
+	long	lhNumAbonado = 0;
+	int	ihCodProducto = 0;
+	int	ihCodConcepto = 0;
+	int	ihCodPenaliza = 0;
+	long	lhCodCuenta = 0;
+
+	/*Inicio HM-200505160045 18-05-2005 Soporte RyC PRM. Homologación de incidencia XM-200503100256 CAMBIOS EN ANEXO Y NUMERO DE CONTRATO */
+	/*char	szhNumContrato[20] = ""; 	EXEC SQL VAR szhNumContrato IS STRING (20);
+	char	szhNumAnexo[20] = ""; 		EXEC SQL VAR szhNumAnexo IS STRING (20);*/
+	char	szhNumContrato[22] = ""; 	EXEC SQL VAR szhNumContrato IS STRING (22);
+	char	szhNumAnexo[22] = ""; 		EXEC SQL VAR szhNumAnexo IS STRING (22);
+	/*Fin */
+	
+	int   ihValor_uno  = 1;
+	int   ihValor_unoNEG  = -1;
+	char  szhBA    [3];
+	char  szhCOD_CONCEPTO_INDEM [19];
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bBorrarCargos";
+char	szTipIndemin[2];
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;	
+	
+	ifnTrazaHilos( modulo,&pfLog, "Ingresando Modulo %s", LOG05, modulo );
+	
+	memset( szhNumContrato, '\0', sizeof( szhNumContrato ) );
+	memset( szhNumAnexo, '\0', sizeof( szhNumAnexo ) );
+	memset( szTipIndemin, '\0', sizeof( szTipIndemin ) );
+
+	lhCodCliente = lCodCliente;
+	lhNumAbonado = lNumAbonado;
+	ihCodProducto = iCodProducto;
+	lhCodCuenta = lCodCuenta;
+	strcpy( szhNumContrato, szNumContrato );
+	strcpy( szhNumAnexo, szNumAnexo );
+	strcpy( szTipIndemin, szTipIndem );
+	strcpy( szhBA , "BA");
+	strcpy(szhCOD_CONCEPTO_INDEM,"COD_CONCEPTO_INDEM");
+	
+	ifnTrazaHilos( modulo,&pfLog, 	"lhCodCliente =>   [%ld],\n"
+							"\t\t   lhNumAbonado  =>  [%ld],\n" 
+							"\t\t   ihCodProducto =>  [%d],\n"
+							"\t\t   lCodCuenta    =>  [%ld],\n"
+							"\t\t   szNumContrato =>  [%s],\n"
+							"\t\t   szNumAnexo    =>  [%s],\n" 
+							"\t\t   iEsComodato   =>  [%d].\n" 
+							"\t\t   szTipIndemin  =>  [%d].\n", 
+							LOG03,
+							lhCodCliente,
+							lhNumAbonado,
+							ihCodProducto,
+							lCodCuenta, 
+							szhNumContrato, 
+							szhNumAnexo,
+							iComodato,
+							szTipIndemin );
+
+	if( strcmp( szTipIndemin, "E" ) == 0 )
+	{
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT COD_CONCEPTO
+		INTO	:ihCodConcepto
+		FROM	GA_ACTUASERV
+		WHERE	COD_PRODUCTO = :ihValor_uno
+		AND	COD_ACTABO	= :szhBA
+		AND	COD_TIPSERV	= :ihValor_uno
+		AND	COD_SERVICIO	= ( SELECT	VAL_PARAMETRO 
+									FROM	GED_PARAMETROS 
+									WHERE	NOM_PARAMETRO = :szhCOD_CONCEPTO_INDEM);
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente = [%ld]. Obteniendo codigo de Penalizacion [%s]\n", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+	
+		if( sqlca.sqlcode == SQLNOTFOUND || ihCodPenaliza < 0 )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente = %ld-Abonado = %ld. Abonado no posee cargo por Penalizacion.", LOG03, lhCodCliente, lhNumAbonado );
+			return TRUE;
+		}
+	}	
+	else
+	{
+		if( iComodato == 1 )
+		{
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT	NVL( COD_PENALIZA_COMODATO,:ihValor_unoNEG )
+			INTO	:ihCodPenaliza
+			FROM	GA_DATOSGENER;
+		}
+		else
+		{
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL
+			SELECT	NVL( C.COD_PENALIZA,:ihValor_unoNEG )
+			INTO	:ihCodPenaliza
+			FROM	GA_PERCONTRATO C, GA_CONTCTA B
+			WHERE	B.COD_CUENTA		= :lhCodCuenta
+			AND	B.NUM_CONTRATO(+)	= :szhNumContrato
+			AND	B.NUM_ANEXO(+)		= :szhNumAnexo
+			AND	B.COD_TIPCONTRATO	= C.COD_TIPCONTRATO(+)
+			AND	B.NUM_MESES			= C.NUM_MESES(+)
+			AND	B.COD_PRODUCTO		= C.COD_PRODUCTO(+);
+		} /* if( iEsComodato == 1 ) */
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente = [%ld]. Obteniendo codigo de Penalizacion [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+	
+		if( sqlca.sqlcode == SQLNOTFOUND || ihCodPenaliza < 0 )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente = %ld-Abonado = %ld. Abonado no posee cargo por Penalizacion.", LOG03, lhCodCliente, lhNumAbonado );
+			return TRUE;
+		}
+
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT	B.COD_CONCEPTO
+		INTO	:ihCodConcepto
+		FROM	GA_PENALIZA B, GA_IMPPENALIZA A 
+		WHERE	A.COD_PRODUCTO	= :ihCodProducto
+		AND		A.COD_PENALIZA	= :ihCodPenaliza
+		AND		A.COD_PRODUCTO	= B.COD_PRODUCTO
+		AND		A.COD_PENALIZA	= B.COD_PENALIZA
+		AND		A.COD_PENALIZA	= :ihCodPenaliza
+		AND		SYSDATE BETWEEN A.FEC_DESDE AND NVL(A.FEC_HASTA, SYSDATE);
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente = [%ld]. Obteniendo concepto de Cargo [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+	
+		if( sqlca.sqlcode == SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Cliente = %ld-Abonado = %ld. No posee concepto de Cargo.", LOG03, lhCodCliente, lhNumAbonado );
+			return TRUE;
+		}
+	}				
+
+	ifnTrazaHilos( modulo,&pfLog, "Cliente = [%ld]. Concepto de Cargo [%ld].", LOG03, lhCodCliente, ihCodConcepto );
+
+	/* borramos el concepto de la ge_cargos, si aun no se factura */
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	DELETE	FROM GE_CARGOS
+	WHERE	COD_CLIENTE = :lhCodCliente
+	AND		NUM_ABONADO = :lhNumAbonado
+	AND		COD_CONCEPTO = :ihCodConcepto
+	AND		NOM_USUARORA = USER;
+	
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "Cliente = [%ld]. Al eliminar cargo de Indemnizacion [%s].", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "Cliente = %ld-Abonado = %ld. Cargo ya fue facturado.", LOG03, lhCodCliente, lhNumAbonado );
+		return TRUE;
+	}
+
+	return TRUE;
+} /* Fin BOOL bAplicarIndemEscalonada */
+/*********************************************************************************************************/
+/*********************************************************************************************************/
+BOOL bfnDesHibernaEquipo(FILE **ptArchLog, long lNumEquipo, int iTipoEquip, sql_context ctxCont) 
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	int	ihCnt;
+	int	ihTipoEquip;
+	long	lhNumEquipo;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bfnDesHibernaEquipo";
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	memset( &ihTipoEquip, 0, sizeof( ihTipoEquip ) );
+	memset( &lhNumEquipo, 0, sizeof( lhNumEquipo ) );
+
+	ifnTrazaHilos( modulo,&pfLog, "Ingresando Modulo %s", LOG05, modulo );
+
+	lhNumEquipo  = lNumEquipo;
+	ihTipoEquip = iTipoEquip;
+	
+	if( iTipoEquip == 1 ) /* CELULAR */
+	{  
+		/* revisamos si el celular se encuentra en hibernacion */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT	COUNT(*)
+		INTO	:ihCnt
+		FROM	GA_CELNUM_REUTIL
+		WHERE	NUM_CELULAR = :lhNumEquipo;
+	
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Equipo => [%ld], Verificando existencia en GA_CELNUM_REUTIL => [%s]", LOG00, lhNumEquipo, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+
+		if( ihCnt == 1 )	/* esta en hibernacion */
+		{
+		 /* Elimina el celular de la tabla para que no sea asignado a otro abonado */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL   
+			DELETE 
+			  FROM GA_CELNUM_REUTIL 
+			 WHERE NUM_CELULAR = :lhNumEquipo;
+		
+			if( sqlca.sqlcode )
+			{ 
+				ifnTrazaHilos( modulo,&pfLog, "Equipo => [%ld], DELETE FROM GA_CELNUM_REUTIL => [%s].", LOG00, lhNumEquipo, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+		}
+		else
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Equipo => [%ld], NO SE ENCUENTRA EN GA_CELNUM_REUTIL.", LOG02, lhNumEquipo );
+		}
+	}
+	else
+	{
+		/* revisamos si el beeper se encuentra en hibernacion */
+		sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+		EXEC SQL
+		SELECT	COUNT(*)
+		INTO	:ihCnt
+		FROM	GA_BEEPNUM_REUTIL
+		WHERE	NUM_BEEPER = :lhNumEquipo;
+	
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Equipo => [%ld], Verificando existencia en GA_BEEPNUM_REUTIL => [%s]", LOG00, lhNumEquipo, sqlca.sqlerrm.sqlerrmc );
+			return FALSE;
+		}
+	
+		if( ihCnt == 1 )	/* esta en hibernacion */
+		{
+		 /* Elimina el beeper de la tabla para que no sea asignado a otro abonado */
+			sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+			EXEC SQL   
+			DELETE 
+			  FROM GA_BEEPNUM_REUTIL 
+			 WHERE NUM_BEEPER = :lhNumEquipo;
+		
+			if( sqlca.sqlcode )
+			{ 
+				ifnTrazaHilos( modulo,&pfLog, "Equipo => [%ld], DELETE FROM GA_BEEPNUM_REUTIL => [%s].", LOG00, lhNumEquipo, sqlca.sqlerrm.sqlerrmc );
+				return FALSE;
+			}
+		}
+		else
+		{
+			ifnTrazaHilos( modulo,&pfLog, "Equipo => [%ld], NO SE ENCUENTRA EN GA_BEEPNUM_REUTIL.", LOG02, lhNumEquipo );
+		}
+	}
+	return TRUE;
+} /* BOOL bfnDesHibernaEquipo( long lNumEquipo ) */	
+
+
+/****************************************************************************************************/
+/* bfnExtraerServSuplString  																		*/
+/****************************************************************************************************/
+BOOL bfnExtraerServSuplString(FILE **ptArchLog, char *szpCadenaFind, char *szpCadenaServicios, sql_context ctxCont )
+{
+/*
+	Definicion		:Extrae desde la cadena pasada como parametro el par servicio_suplementario/nivel buscada					parametro.
+	Parametros		:szpCadenaFind		cadena de servicios a eliminar.
+						 szpCadenaServicios  cadena de servicios actuales del abonado.
+	Retorno			:TRUE				todo OK
+						 FALSE				hubo un error
+*/						
+EXEC SQL BEGIN DECLARE SECTION;
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+
+char 	modulo[] = "bfnExtraerServSuplString";
+char	szCadenaServicios[257];
+char	szCadenaServiciosNew[257];
+char	szCadenaFind[7];
+char	szCadenaAux[7];
+int	iPos = 0, iLen = 0;
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+ 	
+ 	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo : [%s].", LOG05, modulo );
+	
+	memset ( szCadenaServicios, 0, sizeof( szCadenaServicios ) );
+	memset ( szCadenaServiciosNew, 0, sizeof( szCadenaServiciosNew ) );
+	memset ( szCadenaFind, 0, sizeof( szCadenaFind ) );
+	memset ( szCadenaAux, 0, sizeof( szCadenaAux ) );
+	
+	sprintf( szCadenaServicios, "%s\0", szpCadenaServicios );
+	sprintf( szCadenaFind, "%s\0", szpCadenaFind );
+	
+	ifnTrazaHilos( modulo,&pfLog, "Cadena Servicios => [%s], Cadena buscada => [%s].", LOG05, szCadenaServicios, szCadenaFind );
+	
+	iLen = strlen( szCadenaServicios );
+	
+	do {
+		strncpy( szCadenaAux, &szCadenaServicios[iPos], 6 );
+	
+		ifnTrazaHilos( modulo,&pfLog, "CadenaAux = [%s]. iPos = [%d].", LOG05, szCadenaAux, iPos );  
+
+		if( strcmp( szCadenaAux, szCadenaFind ) != 0 )
+		{
+			sprintf( szCadenaServiciosNew, "%s%s", szCadenaServiciosNew, szCadenaAux );
+			ifnTrazaHilos( modulo,&pfLog, "szCadenaServiciosNew => [%s].", LOG05, szCadenaServiciosNew );  
+		}
+		
+		iPos += 6;	
+	} while( iPos < iLen ); 
+	
+	strcpy( szpCadenaServicios, szCadenaServiciosNew );
+	return TRUE;
+} /* BOOL bfnExtraerServSuplString( char *szpCadenaFind, char *szpCadenaServicios ) */
+
+/****************************************************************************************************/
+BOOL bfnGetServicio(FILE **ptArchLog,  char *szNomParametro, int iCodProducto, GENSERVICIO *stServicios,  sql_context ctxCont )
+{
+/*
+	Definicion		:	Recupera el codigo de servicio, segun parametro.
+
+	Parametros		:	szNomParametro	Nombre del parametro.
+						
+	Retorno			:	-1		Error
+						 0      No se aplica autenticacion
+						 1		Se aplica autenticacion.		
+*/
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhNomParametro[21];	EXEC SQL VAR szhNomParametro IS STRING(21);
+	char szhCodServicio[4];		EXEC SQL VAR szhCodServicio IS STRING(4);
+	int	 ihCodServSupl;	
+	int	 ihCodProducto;	
+	sql_context CXX;
+EXEC SQL END DECLARE SECTION;
+char	modulo[] = "bfnGetServicio";
+FILE *pfLog=*ptArchLog;
+struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+ 	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo : [%s].", LOG05, modulo );
+
+	memset( szhNomParametro, '\0', sizeof( szhNomParametro ) );
+	sprintf( szhNomParametro, "%s\0", szNomParametro );
+	ihCodProducto = iCodProducto;
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql por brain damage*/
+	EXEC SQL
+	SELECT A.COD_SERVICIO, A.COD_SERVSUPL 
+	  INTO :szhCodServicio, :ihCodServSupl
+	  FROM GA_SERVSUPL A, GED_PARAMETROS B
+	 WHERE A.COD_SERVICIO = B.VAL_PARAMETRO
+	   AND B.NOM_PARAMETRO = :szhNomParametro
+	   AND A.COD_PRODUCTO  = :ihCodProducto;
+	   
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND ) 
+	{  
+		ifnTrazaHilos( modulo,&pfLog, "Parametro => [%s], Error al Recuperar Codigos de Servicio => [%s].", LOG00, sqlca.sqlerrm.sqlerrmc );
+		return FALSE;
+	}  
+	
+	if( sqlca.sqlcode == SQLNOTFOUND ) 
+	{  
+		ifnTrazaHilos( modulo,&pfLog, "No existen datos en GED_PARAMETROS para Parametro => [%s].", LOG01, szhNomParametro );
+		return FALSE;
+	}  
+	
+	sprintf( stServicios->szCodServicio, "%s\0", szhCodServicio );
+	stServicios->iCodServSupl = ihCodServSupl;
+	
+	ifnTrazaHilos( modulo,&pfLog, "Valores retorno modulo => [%s].\n" 
+						  "\t\t   szCodServicio => [%s].\n" 
+						  "\t\t   iCodServSupl  => [%d].", 
+						  LOG03, 
+						  modulo,
+						  stServicios->szCodServicio,
+						  stServicios->iCodServSupl );
+
+	return TRUE;
+} /* BOOL bfnGetServicio( char *szNomParametro, GENSERVICIO *stServicios ) */
+
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

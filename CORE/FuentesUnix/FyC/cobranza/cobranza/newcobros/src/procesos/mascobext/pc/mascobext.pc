@@ -1,0 +1,719 @@
+/* ============================================================================= */
+/*
+    Tipo        :  PROCESO QUE NO ESTA ASOCIADO AL SCHEDULER
+
+    Nombre      :  mascobext.pc
+
+    Descripcion :  Genera un archivo conteniendo todos los documentos de los
+					clientes asociados a una entidad de Cobranza Externa
+
+    Recibe      :  Usuario/Password. ( por defecto asume los de la cuenta )
+                   Nivel de Log ( por defecto asume 3 : Log Normal ) 
+                   Nombre de la Cola (Opcional), para nombrar archivos de log
+                   
+    Devuelve    :  Valor entero para indicar el status de termino.
+                   Interactua con la Base de Datos y el archivo de Log para registrar
+                   como se desarrolla su ejecucion.
+    
+    Autor       :  Jorge Lizama Rojas
+    Fecha       :  16 - Enero - 2001
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+#include "mascobext.h"
+
+#define iLOGNIVEL_DEF     3       /* Define el nivel de Log por Defecto */
+LINEACOMANDO  stLineaComando;     /* Datos con los que se invoco al proceso */
+char szgCodEntidad[6]="";
+char szgCodProceso[6]="MASCE";
+char szArchivoLog[256]="";        /* log */
+
+long lAuxSeqGlobal=0;             /* variable de ambito global ( Auxiliar Secuencia ) */
+
+EXEC SQL INCLUDE sqlca;
+
+int main(int argc,char *argv[])
+{
+   char modulo[]="main";
+    int iResult = 0;
+   char szError[1024]="";
+    
+    fprintf(stdout, "\n%s COBRANZA EXTERNA MASIVA pid(%ld)\n", szGetTime(1),getpid());
+    fflush (stdout);
+
+    /*- Validacion de parametros de entrada -*/
+    memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+    if (ifnValidaParametros(argc,argv,&stLineaComando) != 0)    
+    {
+        fprintf (stdout,"\n\tError >> Fallo la Validacion de Parametros \n");
+        fflush  (stdout);
+        iResult = 1; /* Fallo validacion */
+    }
+    else
+    {    
+        /*- Conexion a la Base de Datos -*/
+        if (ifnConexionDB(&stLineaComando) != 0)   
+        {
+            fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+            fflush  (stdout);
+            iResult = 2; /* Fallo conexion */
+        }
+        else
+        {
+            /*- Prepara Archivo de Log -*/ 
+            if (ifnPreparaArchivoLog() != 0)    
+            {
+                fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+                fflush  (stdout);
+                iResult = 3;  /* Fallo Log */
+            }
+            else
+            {
+                /*- Ejecuta el proceso propiamente tal -*/
+                if (ifnEjecutaProceso(szError) != 0)   
+                {
+                    fprintf (stdout,"\n\tError >> Fallo el proceso \n");
+                    fflush  (stdout);
+                    iResult = 4; /* Fallo Proceso */
+                }
+
+                vfnCierraArchivoLog();
+            }
+        }
+    }
+
+    return iResult;
+   
+} /* end main */    
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    char modulo[]="ifnValidaParametros";
+
+/*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+    extern char  *optarg;
+    extern  int  optind, opterr, optopt;
+            int  iOpt=0;
+           char  opt[] = ":u:l:e:";
+/*-- Variables locales -----------------------------------------------------------*/  
+           char  *psztmp = "";
+/*-- Flags de los valores recibidos ----------------------------------------------*/
+            int  Userflag=0;
+            int  Logflag=0;
+
+/*-- Seteo de Valores Iniciles y por defecto -------------------------------------*/
+    opterr=0;
+    stStatus.iLogNivel = iLOGNIVEL_DEF ;
+    memset(szgCodEntidad,0,sizeof(szgCodEntidad));
+    strcpy(szgCodEntidad,"");
+    
+/*-- En caso de Invocacion sin Parametros ----------------------------------------*/
+    if(argc == 1)
+    {
+        return 0; /* ok asume valores por defecto */
+    }
+
+/*-- Analisis de los argumentos recibidos ----------------------------------------*/
+    while ((iOpt=getopt(argc, argv, opt))!=EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':  /*-- Usuario/Password --*/
+                 if(!Userflag)
+                {
+                    strcpy(pstLC->szUsuarioOra, optarg);                      
+                    Userflag=1;
+                    if ((psztmp=(char *)strchr(pstLC->szUsuarioOra,'/'))==(char *)NULL)
+                    {
+                        fprintf (stderr,"\n\tError >> Usuario no valido. Requiere '/' \n");
+                        fflush  (stderr);
+                        return -1;
+                    }
+                    else
+                    {
+                        strncpy (pstLC->szOraAccount,pstLC->szUsuarioOra,psztmp-pstLC->szUsuarioOra);
+                        strcpy  (pstLC->szOraPasswd, psztmp+1);
+                    }
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+
+            case 'l': /*-- Nivel de Log --*/
+                if(!Logflag)
+                {
+                    stStatus.iLogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=1;
+                }
+                else
+                {
+                    fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                    fflush  (stderr);
+                    return -1;
+                }
+                break;
+            case 'e': /*-- Entidad de Cobranza --*/
+                strcpy(szgCodEntidad,optarg);
+                break;
+            case '?':
+                fprintf (stderr,"\n\tError >> opcion '-%c' es desconocida\n",optopt);
+                fflush  (stderr);
+                return -1;
+
+            case ':':
+                fprintf (stderr,"\n\tError >> falta argumento para opcion '-%c'\n",optopt);
+                fflush  (stderr);
+                return -1;
+        }
+    } 
+    pstLC->iLogLevel=stStatus.iLogNivel;
+    return 0;
+
+} /* bfnValidaParamatros */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB(LINEACOMANDO *pstLC)
+{
+    char modulo[]="ifnConexionDB";
+    
+    if( bfnOraConnect( pstLC->szOraAccount, pstLC->szOraPasswd ) == FALSE  )
+    {
+        fprintf( stderr, "\nNo hay conexion a ORACLE \n" );
+        fflush ( stderr);
+        return -1;
+    }
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog()
+{
+    char modulo[]="ifnPreparaArchivoLog";
+
+    /* char *szAux; */
+    int sts=0;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+    EXEC SQL END DECLARE SECTION;
+ 
+    sprintf(stStatus.szFileName,szgCodProceso);
+
+	sprintf(szhPathLogSched,"%s/CO_SCHEDULER",getenv("XPC_LOG"));
+    
+    sprintf(stStatus.szLogPathGene,"%s",szhPathLogSched);
+    sts = ifnAbreArchivoLog(1); 
+    
+    return sts;
+    
+} /* end ifnPreparaArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* if iCreaDir != 0 : crear directorio antes que el archivo                      */
+/* ============================================================================= */
+int ifnAbreArchivoLog(int iCrearDir)
+{
+    char modulo[]="ifnAbreArchivoLog";
+    char szArchivoErr[256]=""; /* errores */
+    char szArchivoEst[256]=""; /* estadisticas */
+    char szComando[256]="";
+    static char szAux[9];
+    
+    memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log */         
+    memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores */     
+    memset(szArchivoEst,0,sizeof(szArchivoEst)); /* estadisticas */
+
+    strcpy (szAux,(char *)szSysDate("YYYYMMDD"));
+    sprintf(szComando,"mkdir -p %s/%s",stStatus.szLogPathGene,szAux);
+    if (system (szComando)!=0) 
+    {
+        fprintf (stderr,"Error al intentar crear directorio de Log\n");
+        fflush  (stderr);
+        return -1;
+    }
+    sprintf(szArchivoLog,"%s/%s/%s.log",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    sprintf(szArchivoErr,"%s/%s/%s.err",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    sprintf(szArchivoEst,"%s/%s/%s.est",stStatus.szLogPathGene,szAux,stStatus.szFileName);
+    
+    if((stStatus.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Log\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    if((stStatus.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Errores\n");
+        fflush  (stderr);
+        return -1;    
+    }
+
+    if((stStatus.EstFile = fopen(szArchivoEst,"a")) == (FILE*)NULL )
+    {    
+        fprintf (stderr,"Error al crear archivo de Estadisticas\n");
+        fflush  (stderr);
+        return -1;    
+    }
+    
+    ifnTrazasLog(modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n", INFALL
+                       ,szSysDate("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+    return 0;
+    
+}/* end ifnAbreArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs  */
+/* ============================================================================= */
+void vfnCierraArchivoLog(void)
+{
+    char modulo[]="vfnCierraArchivoLog";
+    
+    ifnTrazasLog(modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n", INFALL
+                       ,szSysDate("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+    if ( fclose(stStatus.LogFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Log\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.ErrFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Errores\n");
+        fflush  (stderr);
+    }
+
+    if ( fclose(stStatus.EstFile) != 0 )
+    {    
+        fprintf (stderr,"Error al cerrar archivo de Estadisticas\n");
+        fflush  (stderr);
+    }
+        
+    return;    
+} /* end vfnCierraArchivoLog */
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnEjecutaProceso() : Ejecuta Proceso                                        */
+/* ============================================================================= */
+int ifnEjecutaProceso(char* szDescError)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhCodEntidad[6] = "" ; EXEC SQL VAR szhCodEntidad IS STRING(6);
+    EXEC SQL END DECLARE SECTION;
+
+    char modulo[]="ifnEjecutaProceso";
+    
+    char szError[1024]="";
+    
+    ifnTrazasLog(modulo,"Inicio de Proceso Masivo de %s",LOG03,szgCodEntidad);
+
+	/* Valida el codigo de la entidad */
+	strcpy(szhCodEntidad,szgCodEntidad);
+    EXEC SQL 
+    SELECT COD_ENTIDAD
+    INTO :szhCodEntidad
+    FROM CO_ENTCOB
+	WHERE COD_ENTIDAD = :szhCodEntidad
+	AND TIP_ENTIDAD = 'E'; /* Cobranza Externa */
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        sprintf(szDescError,"Fallo el Select de CO_ENTCOB %s",SQLERRM);
+        ifnTrazasLog(modulo,"Select CO_ENTCOB %s",LOG00,SQLERRM);
+        return -1;/*Mail*/
+    }
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        sprintf(szDescError,"El codigo de Entidad ingresado [%s] no es valido",szhCodEntidad);
+        ifnTrazasLog(modulo,"El codigo de Entidad ingresado [%s] no es valido",LOG00,szhCodEntidad);
+        return -1;/*Mail*/
+	}
+
+    if ( ifnMasCobExt(szError) < 0) 
+        ifnMailAlert(szgCodProceso,"TODOS","%s",szError);
+
+    ifnTrazasLog(modulo,"Termino Proceso Masivo de %s ",LOG03,szgCodEntidad);
+
+    return 0;
+}
+/* ============================================================================= */
+
+/* ============================================================================= */
+/*  ifnMasCobExt() : Proceso Masivo de Cobranza Externa                          */
+/* ============================================================================= */
+int ifnMasCobExt(char* szDescError)
+{
+    char modulo[]="ifnMasCobExt";
+
+      int j,iSqlAuxStatus;
+     long lTotalRows=0,lRowsThisLoop=0,lRowsProcessed=0,lMasterRows=0;
+     
+    char szIniProc[9],szFinProc[9],szTmpProc[9];
+     int iDifSegs=0,ihFlgError=0;
+    char szTipoDia[10];
+    char szComando[512]="";
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhSeqProceso           = 0  ;
+        char szhCodMovimiento[2]    = "M" ; EXEC SQL VAR szhCodMovimiento IS STRING(2);
+    td_Movtos_Clientes  sthMovtosClientes ;   /* host array para los movimientos de los clientes */
+    td_Master_Clientes  sthMasterClientes[300000];   /* array maestro para los movimientos de los clientes */
+        char szhCodEntidad[6] = "" ; EXEC SQL VAR szhCodEntidad IS STRING(6);
+    EXEC SQL END DECLARE SECTION;
+ 
+    ifnTrazasLog(modulo,"entrando en %s",LOG05,modulo);
+
+    sprintf(szIniProc,"%s",szSysDate("HH24:MI:SS"));
+
+    /*-- Genera la Secuencia del Proceso --*/
+    EXEC SQL 
+    SELECT CO_SEQ_COBEXTERNA.NEXTVAL
+    INTO :lhSeqProceso
+    FROM DUAL ;
+    if ( SQLCODE )
+    {
+        sprintf(szDescError,"Fallo el Select de CO_SEQ_COBEXTERNA.NEXTVAL %s",SQLERRM);
+        ifnTrazasLog(modulo,"Select CO_SEQ_COBEXTERNA %s",LOG00,SQLERRM);
+        return -1;/*Mail*/
+    }
+
+    ifnTrazasLog(modulo,"CO_SEQ_COBEXTERNA.NEXTVAL->[%ld]",LOG02,lhSeqProceso);
+    
+    /*-- (3) --*/
+	strcpy(szhCodEntidad,szgCodEntidad);
+    EXEC SQL
+    DECLARE curMOVTOS CURSOR FOR
+    SELECT  NUM_IDENT, COD_TIPIDENT, NUM_IDENT_SANTIAGO, COD_ENTIDAD    
+    FROM CO_COBEXTERNA 
+    WHERE COD_ENTIDAD = :szhCodEntidad
+	AND COD_MOVIMIENTO = 'SM'; /* no se consideran ni las Altas ni las Bajas ni Modificaciones */
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        sprintf(szDescError,"Fallo la declaracion del cursor de rut con movimientos %s",SQLERRM);
+        ifnTrazasLog(modulo,"Declare curMOVTOS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+    else if (SQLCODE == SQLNOTFOUND )
+    {
+        ifnTrazasLog(modulo,"Termino Normal(Anticipado) NO hay Ruts Asociados",LOG03);
+        return 0;    
+    }
+
+    EXEC SQL 
+    OPEN curMOVTOS ;
+    if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        sprintf(szDescError,"Fallo la apertura del cursor de rut con movimientos %s",SQLERRM);
+        ifnTrazasLog(modulo,"Open curMOVTOS %s",LOG00,SQLERRM);
+        return -1; /*Mail*/
+    }
+    else if (SQLCODE == SQLNOTFOUND )
+    {
+        ifnTrazasLog(modulo,"Termino Normal(Anticipado) NO HAY MOVIMIENTOS",LOG03);
+        return 0;    
+    }
+    
+    while (1) 
+    {
+        EXEC SQL 
+        FETCH curMOVTOS
+        INTO :sthMovtosClientes;   /**rbr/13/09/2000**/
+        
+        iSqlAuxStatus=SQLCODE;
+            
+        if(iSqlAuxStatus != SQLOK && iSqlAuxStatus != SQLNOTFOUND)
+        {
+            sprintf(szDescError,"Fallo el fetch del cursor de rut con movimientos");
+            ifnTrazasLog(modulo,"Fetch curMOVTOS [%d] %s",LOG00, iSqlAuxStatus, SQLERRM);
+            ihFlgError = 1; /*NoMail*/
+            break;
+        }
+
+        lTotalRows=SQLROWS;    /* Total de filas recuperadas */
+    	lRowsThisLoop=(lTotalRows-lRowsProcessed);    /* filas recuperadas en esta iteracion (Total-Procesadas) */
+
+        /* procesa solo los clientes recuperados en este fetch */
+        for (j=0; j < lRowsThisLoop; j++) 
+        {
+			/* pasa lo recuperado por el HostArray a el arreglo Maestro */
+			strcpy(sthMasterClientes[lMasterRows].szNumIdent,sthMovtosClientes.szNumIdent[j]);
+			strcpy(sthMasterClientes[lMasterRows].szCodTipIdent,sthMovtosClientes.szCodTipIdent[j]);
+			strcpy(sthMasterClientes[lMasterRows].szRutSantiago,sthMovtosClientes.szRutSantiago[j]);
+			strcpy(sthMasterClientes[lMasterRows].szCodEntidad,sthMovtosClientes.szCodEntidad[j]);
+			lMasterRows++;
+        } /* endfor */
+
+    	lRowsProcessed=lTotalRows;  /* Resetea Contador, Total las filas recuperadas se han procesado */
+    	if(iSqlAuxStatus == SQLNOTFOUND)
+    	{
+            sprintf(szDescError,"Alcanzado el fin de datos");
+            ifnTrazasLog(modulo,"Alcanzado fin de datos [%ld]Procesados ",LOG05,lRowsProcessed );
+            break; /* se terminaron los clientes de este punto de Gestion */
+        }
+
+    } /* End While */
+    
+    EXEC SQL CLOSE curMOVTOS;    
+    if ( SQLCODE )
+    {
+        sprintf(szDescError,"Fallo el cierre del cursor de rut por movimiento");
+        ifnTrazasLog(modulo,"Close curMOVTOS %s",LOG00,SQLERRM);
+        ihFlgError = 1;/*NoMail*/
+    }
+
+    ihFlgError = 0;
+    for (j=0; j < lMasterRows; j++) 
+    {   
+            ihFlgError = ifnProcesaClienteSM ( lhSeqProceso
+                                             , sthMasterClientes[j].szNumIdent
+                                             , sthMasterClientes[j].szCodTipIdent
+                                             , sthMasterClientes[j].szRutSantiago
+                                             , sthMasterClientes[j].szCodEntidad
+                                             , szhCodMovimiento
+                                             , szDescError );
+                                
+            if (ihFlgError < 1 ) /* Si no hay que continuar con el siguiente cliente */
+            {
+                iSqlAuxStatus = SQLNOTFOUND ; /* Lo forzamos a salir del While */
+                break; /* lo forzamos a salir del for con 0 o -1 */
+            }
+            ihFlgError = 0; /* setea termino normal siempre, aunque vaya por otro cliente */
+
+    } /* endfor */
+
+    sprintf(szFinProc,"%s",szSysDate("HH24:MI:SS"));
+    
+    /* Informacion Estadistica */
+    if ( (iDifSegs=ifnRestaHoras(szIniProc,szFinProc,szTmpProc)) >= 0 )
+    {
+        ifnTrazasLog(modulo,"\n\t RESUMEN DEL PROCESO     "
+                            "\n\t       HORA INICIO  : %s "
+                            "\n\t       HORA TERMINO : %s "
+                            "\n\t       TIEMPO TOTAL : %s  (%d segs)"
+                            "\n",EST00
+                            ,szIniProc,szFinProc,szTmpProc,iDifSegs);
+                            
+    }
+
+    ifnTrazasLog(modulo,"saliendo de %s",LOG05,modulo);
+
+    if (ihFlgError) /* !=0 ocurrio un error */
+    {
+        return ihFlgError;
+    }
+
+	if (lMasterRows > 0)
+	{
+/*   MGG_2001.06.12.
+    	memset(szComando,'\0',sizeof(szComando));
+    	sprintf(szComando,"%s/TraspasaCOBEX.sh %d %s >>%s",getenv("XPC_KSH"),stStatus.iLogNivel,szgCodProceso,szArchivoLog);
+    	ifnTrazasLog(modulo,"%s",LOG05,szComando);  
+    	if ( system(szComando) ) 
+    	{
+        	ifnTrazasLog(modulo,"FALLO LA SHELL DE TRASPASO DE ARCHIVOS DE COBRANZA EXTERNA",LOG01,szComando);  
+        	return -1;
+    	}
+*/
+    	ifnTrazasLog(modulo,"Se encontraron Clientes para la Entidad [%s] y se procesaron",LOG03,szgCodEntidad);
+    }
+	else
+	{
+    	ifnTrazasLog(modulo,"NO se encontraron Clientes para la Entidad [%s]",LOG03,szgCodEntidad);
+	}
+
+    return 0; 
+}
+/* ============================================================================= */
+
+int ifnProcesaClienteSM( long Secuencia, char *szNumIdent, char *szCodTipIdent, 
+                         char *szRutSantiago, char *szCodEntidad, char *szMovimiento, char* szDescError )
+{
+    char modulo[]="ifnProcesaClienteSM";
+
+     int ihFlgActiva=0,ihFlgError=0,iRutStgo;
+    long lTotalDocs,lTotalDocsAux,lAux,lAux2;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+
+        char szhCodProceso[6]       = "" ; EXEC SQL VAR szhCodProceso IS STRING(6);
+        long lhSeqProceso           = 0  ;
+        char szhNumIdent[12]        = "" ; EXEC SQL VAR szhNumIdent IS STRING(12);
+        char szhCodTipIdent[3]      = "" ; EXEC SQL VAR szhCodTipIdent IS STRING(3);
+        char szhRutStgo[2]          = "" ; EXEC SQL VAR szhRutStgo IS STRING(2);
+        char szhCodMovimiento[2]    = "" ; EXEC SQL VAR szhCodMovimiento IS STRING(2);
+        char szhCodEntidad[6]       = "" ; EXEC SQL VAR szhCodEntidad IS STRING(6);
+        char szhCodEnvioOrig[2]     = "" ; EXEC SQL VAR szhCodEnvioOrig IS STRING(2);
+        char szhFecMovtoOrig[15]    = "" ; EXEC SQL VAR szhFecMovtoOrig IS STRING(15);
+        
+        long lhCodCliente[ARRAY_DOCS];
+        long lhNumAbonado[ARRAY_DOCS];
+        long lhNumFolio[ARRAY_DOCS];
+         int ihCodTipDocum[ARRAY_DOCS];
+        long lhNumCuota[ARRAY_DOCS];
+         int ihSecCuota[ARRAY_DOCS];
+        char szhFecVencimie[ARRAY_DOCS][9];
+        char szhFecEfectividad[ARRAY_DOCS][9];
+      double dhImporteDebe[ARRAY_DOCS];
+      double dhImporteHaber[ARRAY_DOCS];
+        long lhCodClienteAux[ARRAY_AUX];
+        long lhNumAbonadoAux[ARRAY_AUX];
+        long lhNumFolioAux[ARRAY_AUX];
+         int ihCodTipDocumAux[ARRAY_AUX];
+        long lhNumCuotaAux[ARRAY_AUX];
+         int ihSecCuotaAux[ARRAY_AUX];
+      double dhImporteDebeAux[ARRAY_AUX];
+      double dhImporteHaberAux[ARRAY_AUX];
+         int bInsertar[ARRAY_AUX];
+
+        long lhTotalRegistros  = 0 ; 
+      double dhTotalMonto      = 0.0 ;
+        char szhNomArchivo[31] = ""  ; EXEC SQL VAR szhNomArchivo IS STRING(31);
+        char szhVarAux[9]      = ""  ; EXEC SQL VAR szhVarAux IS STRING(9);
+         int ihCastCont        = 0   ;
+      double dhSaldoVencido    = 0.0 ;
+
+    EXEC SQL END DECLARE SECTION;
+    int ilong=0,rr=0;
+    
+    strcpy(szhCodProceso,szgCodProceso);
+    lhSeqProceso = Secuencia;
+    /* Define el cliente de esta iteracion */        
+    strcpy ( szhNumIdent    , szNumIdent    );
+    strcpy ( szhCodTipIdent , szCodTipIdent ); 
+    strcpy ( szhRutStgo     , szRutSantiago );
+    strcpy ( szhCodEntidad  , szCodEntidad  );
+    strcpy ( szhCodMovimiento  , szMovimiento  );
+
+    ilong=strlen(szhNumIdent) - 1;
+    for (rr=ilong;rr>=0;rr=rr-1 ) if (szhNumIdent[rr] != ' ') break ;
+    szhNumIdent[rr+1]='\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+    ilong=strlen(szhCodTipIdent) - 1;
+    for (rr=ilong;rr>=0;rr=rr-1 ) if (szhCodTipIdent[rr] != ' ') break ;
+    szhCodTipIdent[rr+1]='\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+    ilong=strlen(szhRutStgo) - 1;
+    for (rr=ilong;rr>=0;rr=rr-1 ) if (szhRutStgo[rr] != ' ') break ;
+    szhRutStgo[rr+1]='\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+
+    ilong=strlen(szhCodEntidad) - 1;
+    for (rr=ilong;rr>=0;rr=rr-1 ) if (szhCodEntidad[rr] != ' ') break ;
+    szhCodEntidad[rr+1]='\0'; /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+    
+    /*-(10)--------------------------------------------------------------------------*/
+    iRutStgo=( strcmp(szhRutStgo,"S")==0 )?1:2; /* 1:STGO; 2:REGION */
+
+    lhTotalRegistros = 0 ; 
+    dhTotalMonto = 0.0 ;
+	if ( !bfnGenArchCobExterna( szgCodProceso,lhSeqProceso,szhCodEntidad,szhCodMovimiento,
+								szhNumIdent,szhCodTipIdent,iRutStgo,
+								&lhTotalRegistros, &dhTotalMonto, szhNomArchivo ) )
+    {
+            sprintf(szDescError,"Fallo la Generacion del archivo de salida");
+            ifnTrazasLog(modulo,"Fallo la Generacion del archivo de salida : %s",LOG00,SQLERRM);
+            return (1); /* continue; Toma al Siguiente Cliente */
+    }
+    else /* la generacion del archivo anduvo bien. */
+    {
+        if ( lhTotalRegistros != 0 ) /* Se escribieron registros -> Se registra en la tabla */
+        {
+            EXEC SQL 
+            UPDATE CO_ARCHIVOS
+            SET    TOT_REGISTROS = TOT_REGISTROS + :lhTotalRegistros,
+                   REG_BUENOS    = REG_BUENOS + :lhTotalRegistros,
+                   MTO_BUENOS    = MTO_BUENOS + :dhTotalMonto
+            WHERE  NUM_PROCESO = :lhSeqProceso
+            AND    COD_PROCESO = :szhCodProceso
+            AND    COD_ENTIDAD = :szhCodEntidad
+            ;
+            if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+            {
+                sprintf(szDescError,"Fallo La actualizacion de la tabla CO_ARCHIVOS");
+                ifnTrazasLog(modulo,"actualizacion de la tabla CO_ARCHIVOS %s",LOG00,SQLERRM);
+                return (1); /* continue; Toma al Siguiente Cliente */
+            }
+            else if ( SQLCODE == SQLNOTFOUND )
+            {   /* no existe registro para el archivo en la tabla. Lo creamos ahora */
+                EXEC SQL
+                INSERT INTO CO_ARCHIVOS
+                (
+                	NUM_PROCESO,    COD_PROCESO,         FEC_PROCESO,
+                	COD_ENTIDAD,    NOM_ARCHIVO,         TOT_REGISTROS,
+                	REG_BUENOS,     MTO_BUENOS,          NOM_USUARIO
+                )
+                VALUES
+                (
+                	:lhSeqProceso,      :szhCodProceso,   SYSDATE,
+                	:szhCodEntidad,     :szhNomArchivo,   :lhTotalRegistros,
+                	:lhTotalRegistros,  :dhTotalMonto,    USER
+                )
+                ;
+                if ( SQLCODE )
+                {
+                    sprintf(szDescError,"Fallo La insercion en la tabla CO_ARCHIVOS");
+                    ifnTrazasLog(modulo,"insercion en la tabla CO_ARCHIVOS %s",LOG00,SQLERRM);
+                    return (1); /* continue; Toma al Siguiente Cliente */
+                }
+            }
+        }
+    }
+
+    /*-(11.5)----------------------------------------------------------------------------*/        
+    EXEC SQL COMMIT;
+    if ( SQLCODE )
+    {
+        EXEC SQL ROLLBACK;
+        sprintf(szDescError,"Fallo COMMIT 2");
+        ifnTrazasLog(modulo,"Segundo COMMIT %s",LOG00,SQLERRM);
+        return (1); /* continue; Toma al Siguiente Cliente */
+    }
+    
+    return (2); /* Toma al Siguiente Cliente*/    
+
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

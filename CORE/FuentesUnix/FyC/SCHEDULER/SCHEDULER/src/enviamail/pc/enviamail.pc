@@ -1,0 +1,406 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sqlda.h>
+#include "tol.h"
+
+#define      SqlNotFound   1403
+#define      SqlOk            0
+#define      SqlNull       1405
+
+exec sql include sqlca;
+exec oracle option (MAXOPENCURSORS=60); 
+
+EXEC SQL BEGIN DECLARE SECTION;
+char uid[20];			exec sql var uid is string(20);
+char pwd[20];			exec sql var pwd is string(20);
+char cod_proc[11];		exec sql var cod_proc is string(11);
+char cod_spro[11];		exec sql var cod_spro is string(11);
+char cod_scri[10];		exec sql var cod_scri is string(10);
+char cod_central[10];	exec sql var cod_central is string(10);
+char flg_batch[1];		exec sql var flg_batch is string(1);
+char nombre_tarea[30];	exec sql var nombre_tarea is string(30);
+
+int corr_accion;
+int corr_tipmail;
+char corr_nombre[15];	exec sql var corr_nombre is string(15);
+char corr_apellido[20]; exec sql var corr_apellido is string(20);
+char corr_email[50];	exec sql var corr_email is string(50);
+char corr_fono[20];		exec sql var corr_fono is string(20);
+char f_ini[30];			exec sql var f_ini is string(30);
+char f_ter[30];			exec sql var f_ter is string(30);
+char fec_par[30];		exec sql var fec_par is string(30);
+char gls_param[52];     exec sql var gls_param is string(52);
+char motivo[52];        exec sql var motivo is string(52);
+char tip_ejecucion[11]; exec sql var tip_ejecucion is string(11);
+char nom_proc[30];		exec sql var nom_proc is string(30);
+char str_jobs[11];		exec sql var str_jobs is string(11);
+long int n_regs;
+char comando[80];
+char body[10024];
+FILE *arch;
+long num_jobs=0;
+EXEC SQL END DECLARE SECTION;
+
+
+void fnMsgError(szMsg, iErrNum,bRollCom)
+char *szMsg;
+int  iErrNum;
+int  bRollCom;
+{
+	char msg[200];
+	size_t buf_len, msg_len;
+	buf_len = sizeof (msg);
+	if (iErrNum != SqlNull) 
+	{
+		if ((iErrNum != SqlOk) && (iErrNum != SqlNotFound)) 
+		{
+			printf("ERROR SQL : %d EN %s \n",iErrNum,szMsg);
+			sqlglm(msg, &buf_len, &msg_len);
+			printf("%.*s\n\n", msg_len, msg);
+			if (bRollCom)
+				exec sql rollback work;
+			exit(1);
+		}
+	}
+}
+
+void abrir_emaillst(void)
+{
+	exec sql declare Currelmail cursor for
+        SELECT a.accion, a.tipmail, RTRIM(b.nom_usua), RTRIM(b.app_usua), RTRIM(b.dir_email), nvl(b.fono,0)
+        FROM   sch_rmailproc a, acc_usuario b
+        WHERE  a.cod_proc    = :cod_proc  AND
+               a.cod_subpro  = :cod_spro  AND
+               b.fec_term    > SYSDATE  AND
+               b.flg_mensaje = 'S' AND
+               b.cod_usua    = a.cod_usua;
+
+        exec sql open Currelmail;
+	fnMsgError("Abrir Curr-Email" , sqlca.sqlcode,0);
+}
+
+int qry_email(void)
+{
+	EXEC SQL FETCH Currelmail
+	INTO :corr_accion, :corr_tipmail, :corr_nombre, :corr_apellido, :corr_email, :corr_fono;
+
+	if (sqlca.sqlcode==SqlNotFound)
+		return(0);
+	else
+		return(1);
+}
+
+void muestra_primer_his(void)
+{
+	trim(fec_par,1,strlen(fec_par),fec_par);
+	trim(cod_proc,1,strlen(cod_proc),cod_proc);
+	trim(cod_spro,1,strlen(cod_spro),cod_spro);
+	trim(cod_central,1,strlen(cod_central),cod_central);
+
+	EXEC SQL SELECT num_jobs, TRIM(tip_ejecucion)
+		INTO :str_jobs, :tip_ejecucion
+		FROM sch_hprofile
+		WHERE	cod_proc    = :cod_proc	 AND
+				cod_subpro  = :cod_spro	 AND
+				cod_central = :cod_central AND
+				fecha       = :fec_par;
+
+  	if (sqlca.sqlcode==SqlNotFound) {
+	    num_jobs = 0;
+	    strcpy(str_jobs, "*");
+       }
+    else {
+	    num_jobs = atol(str_jobs);
+
+		/*65638 - HHA - Se agrega NVL a la columna motivo*/
+		exec sql declare Currelhis cursor for
+		SELECT TO_CHAR(TO_DATE(fecha,'yyyymmddhh24miss'),'dd-mon-yyyy hh:mi:ss PM'),
+				TRIM(gls_param), 
+				TRIM(nvl(motivo,'ND')),
+				TRIM(tip_ejecucion)
+		FROM sch_hprofile, sch_codigos
+		WHERE	cod_proc    = :cod_proc	   AND
+				cod_subpro  = :cod_spro	   AND
+				cod_central = :cod_central AND
+				num_jobs	= :num_jobs    AND
+				cod_tipo    = 'ESTAPROCE'  AND
+				cod_param   = cod_estado
+		ORDER BY fecha;
+		exec sql open Currelhis;
+	  }
+	
+}
+
+
+void muestra_historial(char body[10024])
+{
+	char linea[150];
+	char existe='N';
+	exec sql FETCH Currelhis INTO :f_ini, :gls_param, :motivo;
+	if (sqlca.sqlcode != SqlNotFound)
+	{
+		strcat(body,"\n--------------------------------------------------------------------------");
+		existe = 'S';
+	}
+
+	while (sqlca.sqlcode != SqlNotFound)
+	{
+		sprintf(linea,"\n%s -> %s. %s",f_ini, gls_param, motivo);
+		strcat(body,linea);
+		exec sql FETCH Currelhis INTO :f_ini, :gls_param, :motivo;
+	}
+	if (existe = 'S') strcat(body,"\n--------------------------------------------------------------------------\n");
+}
+
+int main (int argc, char **argv)
+{
+int i;
+int cod_ret;
+
+
+    strcpy(cod_proc,argv[1]);
+    strcpy(cod_spro,argv[2]);
+    strcpy(cod_scri,argv[3]);
+	strcpy(cod_central,argv[4]);
+    strcpy(fec_par,argv[5]);
+    strcpy(uid,argv[6]);
+    strcpy(pwd,argv[7]);
+	cod_ret=atoi(argv[8]);
+
+/*	for (i= 1;i<argc ;i++)
+		printf("Argumento %d = %s \n",i,argv[i]); */
+	nombre_tarea[0]='\0';
+
+	EXEC SQL CONNECT :uid IDENTIFIED BY :pwd;
+	fnMsgError("Connect", sqlca.sqlcode, 0);
+/* Busca direciones de Correos asociados */
+
+ 	sqlca.sqlcode = 0;
+	abrir_emaillst();
+	trim(fec_par,1,strlen(fec_par),fec_par);
+	n_regs = sqlca.sqlerrd[2];
+
+/* Busca del nombre del proceso */
+
+	sqlca.sqlcode = 0;
+	EXEC SQL SELECT gls_subproc
+		INTO :nom_proc
+		FROM sch_detalle_proc
+		WHERE	cod_proc    = :cod_proc	   AND
+				cod_subpro  = :cod_spro	   AND
+				fec_term    > SYSDATE;
+
+	fnMsgError("SELECT SCH_DETALLE_PROC" , sqlca.sqlcode,0);
+/* Busca la informacion en la tabla historica */
+	muestra_primer_his();
+
+/* Busca nombre de la tarea */
+    if (strcmp(cod_scri,"N") == 0) /*El procesos no tiene Tareas */
+    {
+		strcpy(nombre_tarea,"N");
+    } 
+	else
+	{
+		EXEC SQL SELECT gls_script 
+		INTO :nombre_tarea
+		FROM sch_script
+		WHERE cod_proc   = :cod_proc   AND
+			  cod_subpro = :cod_spro AND
+			  cod_script = :cod_scri;
+
+        fnMsgError("SELECT SCH_SCRIPT" , sqlca.sqlcode,0);
+	}
+	if (cod_ret == 1) system("sleep 5");
+
+/* Comienza acrear el mail */
+	while (qry_email()) {
+		printf("[%d] [%d] [%s] [%s] [%s] [%s] [%d]\n",corr_accion, corr_tipmail, corr_nombre, corr_apellido, corr_email, corr_fono, sqlca.sqlcode);
+		if ((corr_accion==2 || corr_accion==3) && cod_ret==0) 
+		{
+			if (corr_tipmail==1 || corr_tipmail==3) 
+			{
+				strcpy(body, "Subject: Proceso ");
+				strcat(body, nom_proc);
+				strcat(body, " terminado normalmente\n\n");
+				strcat(body, "Sr(a). ");
+				strcat(body, corr_nombre);
+				strcat(body, " ");
+				strcat(body, corr_apellido);
+				strcat(body, "\n");
+				strcat(body, "Informamos a usted que el proceso ");
+				strcat(body, nom_proc);
+				strcat(body, " ha finalizado correctamente.\n\n");
+				strcat(body, "Su historial es el siguiente:\n\n");
+
+				if (strcmp(tip_ejecucion,"2") == 0)
+				{
+					strcat(body, "\nCentral: ");
+					strcat(body, cod_central);
+				}
+				else
+					if (strcmp(tip_ejecucion,"3") == 0)
+					{
+						strcat(body, "\nBase de calculo N°: ");
+						strcat(body, cod_central);
+					}
+				
+				if (strcmp(str_jobs, "*") == 0) {
+				    strcat(body, "\n\nNo fue posible recuperar el NUM_JOBS, y por lo tanto la historia del proceso.\n");
+				   }
+				else {
+					strcat(body, "\nNúmero de job: ");
+					strcat(body, str_jobs);
+
+					muestra_historial(body);
+				   }
+
+				strcat(body, "\n\nLe saluda atentamente\n");
+				strcat(body, "Administrador de procesos.");
+				arch = fopen("EnviaMail_std.txt","w+");
+				fprintf(arch, body);
+				fclose(arch);
+				strcpy(comando,"mail -tw ");
+				strcat(comando, corr_email);
+				strcat(comando, " < EnviaMail_std.txt");
+				system(comando);
+				printf("\nCOMANDO 1 : <%s>\n",comando);
+			}
+
+			if (corr_tipmail==2 || corr_tipmail==3) 
+			{
+				strcpy(body, "Subject: Proc. finalizado");
+				strcat(body, "Sr(a). ");
+				strcat(body, corr_nombre);
+				strcat(body, " ");
+				strcat(body, corr_apellido);
+				strcat(body, "\n");
+				strcat(body, "Informamos que el proceso ");
+				strcat(body, nom_proc);
+				strcat(body, " terminó OK.\n\n");
+				strcat(body, "\n\nAtte\n");
+				strcat(body, "Adm. de proc.");
+				arch = fopen("EnviaMail_cell.txt","w+");
+				fprintf(arch, body);
+				fclose(arch);
+				strcpy(comando,"mail -tw ");
+				strcat(comando, corr_fono);
+				strcat(comando, " < EnviaMail_cell.txt");
+				system(comando);
+                printf("\nCOMANDO 2 : <%s>\n",comando);
+			}
+		}
+
+		if ((corr_accion==1 || corr_accion==3) && cod_ret!=0) 
+		{
+			if (corr_tipmail==1 || corr_tipmail==3) 
+			{
+				strcpy(body, "Subject: Error en proceso ");
+				strcat(body, nom_proc);
+				strcat(body, "\n\nSr(a). ");
+				strcat(body, corr_nombre);
+				strcat(body, " ");
+				strcat(body, corr_apellido);
+				strcat(body, "\n");
+				strcat(body, "Informamos a usted que el proceso ");
+				strcat(body, nom_proc);
+				strcat(body, " ha finalizado con error.\n\n");
+				strcat(body, "Su historial es el siguiente:\n");
+				strcat(body, "-----------------------------");
+
+				if (strlen(nombre_tarea) > 1)
+				{
+					strcat(body, "\nTarea errónea: ");
+					strcat(body, nombre_tarea);
+				}
+
+				if (strcmp(tip_ejecucion,"2") == 0)
+				{
+					strcat(body, "\nCentral: ");
+					strcat(body, cod_central);
+				}
+				else
+					if (strcmp(tip_ejecucion,"3") == 0)
+					{
+						strcat(body, "\nBase de calculo N°: ");
+						strcat(body, cod_central);
+					}
+				
+				if (strcmp(str_jobs, "*") == 0) {
+				    strcat(body, "\n\nNo fue posible recuperar el NUM_JOBS, y por lo tanto la historia del proceso.\n");
+				   }
+				else {
+					strcat(body, "\nNúmero de job: ");
+					strcat(body, str_jobs);
+
+					muestra_historial(body);
+				   }
+				
+				strcat(body, "\n\nLe saluda atentamente\n");
+				strcat(body, "Administrador de procesos.");
+
+				arch = fopen("EnviaMail_std.txt","w+");
+				fprintf(arch, body);
+				fclose(arch);
+				strcpy(comando,"mail -tw ");
+				strcat(comando, corr_email);
+				strcat(comando, " < EnviaMail_std.txt");
+				system(comando);
+				printf("\nCOMANDO 3 : <%s>\n",comando);
+			}
+
+			if (corr_tipmail==2 || corr_tipmail==3) 
+			{
+				strcpy(body, "Subject: Proc. con error");
+				strcat(body, "Sr(a). ");
+				strcat(body, corr_nombre);
+				strcat(body, " ");
+				strcat(body, corr_apellido);
+				strcat(body, "\n");
+				strcat(body, "Informamos que el proceso ");
+
+				if (strlen(nombre_tarea) > 1)
+					strcat(body, nombre_tarea);
+				else
+					strcat(body, nom_proc);
+
+				strcat(body, " ha finalizado con error.\n\n");
+				strcat(body, "\n\nAtte\n");
+				strcat(body, "Adm. de proc.");
+				arch = fopen("EnviaMail_cell.txt","w+");
+				fprintf(arch, body);
+				fclose(arch);
+				strcpy(comando,"mail -tw ");
+				strcat(comando, corr_fono);
+				strcat(comando, " < EnviaMail_cell.txt");
+				system(comando);
+				printf("\nCOMANDO 4 : <%s>\n",comando);
+			}
+		}
+	}
+	return 0;
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

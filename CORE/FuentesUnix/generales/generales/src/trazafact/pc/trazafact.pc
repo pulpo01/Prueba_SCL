@@ -1,0 +1,1584 @@
+/****************************************************************************/
+/* Funcion     : trazafact.pc                                               */
+/* Descripcion : Declaracion de funciones para Trazas de Facturacion        */
+/* Autor       : Mauricio Villagra Villaobos                                */
+/* Fecha       : 24-05-1999                                                 */
+/*****************************************************************************/
+/* Modificaciones :                                                         */
+/*  03-11-1999 : Se modifica funcionalidad de verificacion de procesos pre- */
+/*           cedentes ya que se creo la tabla FA_PROCFACTPREC que detalla   */
+/*           los procesos precedentes por cada proceso de facturacion, lo   */
+/*           que permite definir mas de un proceso precedente para un       */
+/*           proceso especifico                                             */
+/*                                                                          */
+/****************************************************************************/
+#define _TRAZAFACT_PC_
+
+#include "errores.h"
+#include "trazafact.h"
+#include <ctype.h>
+
+EXEC SQL INCLUDE sqlca;
+
+
+/****************************************************************************/
+/*   funcion BOOL bfnValidaTrazaProc(long CicloFact, long CodProceso)       */
+/****************************************************************************/
+/*   Proceso que valida condiciones para cargar el trafico del ciclo a      */
+/*  facturar en tabla de proceso, controla puntos de retoma.                */
+/****************************************************************************/
+BOOL bfnValidaTrazaProc(long lCiclParam,int iCodProceso, int iIndFacturacion)
+{
+
+    EXEC SQL BEGIN DECLARE SECTION;
+
+    long lhCiclParam            ;
+    int  ihIndFacturacion       ;
+    char szFecHastaLlam   [15]  ;   EXEC SQL VAR szFecHastaLlam     IS STRING(15);
+    char szFecActual      [15]  ;   EXEC SQL VAR szFecActual        IS STRING(15);
+
+    int  ihCodProceso           ;
+    char szhDesProceso    [30]  ;   EXEC SQL VAR szhDesProceso      IS STRING(30);
+    int  ihCodProcesoPrec       ;
+    char szhDesProcesoPrec[30]  ;   EXEC SQL VAR szhDesProcesoPrec  IS STRING(30);
+    int  ihCodEstaPrec          ;
+    int  ihTrazCodEstaProc      ;
+
+    int  ihTrazCodEstaActual;
+
+    int  ihCero                 ;
+    char szhFmtFecha      [17]  ; EXEC SQL VAR szhFmtFecha  IS STRING(17);
+    char szhChar1         [51]  ; EXEC SQL VAR szhChar1  IS STRING(51);
+    EXEC SQL END DECLARE SECTION;
+
+    BOOL bFinCursor_cFaProcTraza=FALSE;
+    static char szExeProceso[1024]="bfnValidaTrazaProc";
+
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada bfnValidaTrazaProc  **"
+                                "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                "\n\t\t=>  Codigo de Proceso        [%d]\n"
+                                ,LOG03,lCiclParam,iCodProceso);
+
+
+    /****************************************************************************/
+    /*   Selecciona el Codigo de Ciclo,IND_FACTURACION y la Fecha del Sistema   */
+    /****************************************************************************/
+    /****************************************************************************/
+    /*  Validar Estado de IND_FACTURACION = iIND_FACT_ENPROCESO                 */
+    /*  Debe estar marcado como EN PROCESO.  Marcado previamnete por el         */
+    /*  proceso de creacion de mascara.                                         */
+    /****************************************************************************/
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando FA_CILCFACT  **",LOG03);
+
+    ihCero = 0;
+    sprintf (szhFmtFecha, "YYYYMMDDHH24MISS");
+
+    lhCiclParam     = lCiclParam                                ;
+
+    EXEC SQL SELECT IND_FACTURACION                             ,
+                    TO_CHAR(FEC_HASTALLAM,:szhFmtFecha)   ,
+                    TO_CHAR(SYSDATE,:szhFmtFecha)
+             INTO   :ihIndFacturacion                           ,
+                    :szFecHastaLlam                             ,
+                    :szFecActual
+             FROM   FA_CICLFACT
+             WHERE  COD_CICLFACT = :lhCiclParam                 ;
+
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  No Existen Datos en FA_CICLFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  No Existen Datos en FA_CICLFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        return (FALSE);
+    }
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error en Select sobre FA_CILCFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  Error en Select sobre FA_CILCFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        return (FALSE);
+    }
+
+
+    if (ihIndFacturacion != iIndFacturacion)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error:   Estado del Proceso FA_CICLFACT **"
+                                    "\n\t\t=>  Cod_CiclFact                 [%ld]"
+                                    "\n\t\t=>  Ind_Facturacion Actual       [%d]"
+                                    "\n\t\t=>  Ind_Facturacion Necesario    [%d]"
+                                    ,LOG01,lCiclParam,ihIndFacturacion,iIndFacturacion);
+        vDTrazasError(szExeProceso, "\n\t**  Error:   Estado del Proceso FA_CICLFACT **"
+                                    "\n\t\t=>  Cod_CiclFact                 [%ld]"
+                                    "\n\t\t=>  Ind_Facturacion Actual       [%d]"
+                                    "\n\t\t=>  Ind_Facturacion Necesario    [%d]"
+                                    ,LOG01,lCiclParam,ihIndFacturacion,iIndFacturacion);
+        return (FALSE);
+    }
+    /****************************************************************************/
+    /*  Selecciona las Condiciones de Procesos Precedentes en la tabla de       */
+    /*  de descripcion de procesos FA_PROCFACT y tabla de traza de Procso       */
+    /*  FA_TRAZAPROC que contiene la definicion de los procesos de Facturacion  */
+    /*  ejecutados.                                                             */
+    /****************************************************************************/
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando Procesos Precedentes en FA_TRAZAPROC - FA_PROCFACT **",LOG03);
+    ihCodProceso    = iCodProceso               ;
+
+    EXEC SQL DECLARE cFaProcTraza CURSOR FOR
+        SELECT  PROC.DES_PROCESO,
+                PROC.COD_PROCPREC,
+                PROC.DES_PROCPREC,
+                PROC.COD_ESTAPREC,
+                NVL(TRAZ.COD_ESTAPROC,:ihCero),
+                TRAZ.FEC_INICIO,
+                TRAZ.FEC_TERMINO
+        FROM    FA_TRAZAPROC  TRAZ,
+                (SELECT A.COD_PROCESO   COD_PROCESO,
+                        B.DES_PROCESO   DES_PROCESO,
+                        A.COD_PROCPREC  COD_PROCPREC,
+                        C.DES_PROCESO   DES_PROCPREC,
+                        A.COD_ESTAPREC  COD_ESTAPREC
+                FROM    FA_PROCFACTPREC A ,
+                        FA_PROCFACT B ,
+                        FA_PROCFACT C
+                WHERE   A.COD_PROCESO  = :ihCodProceso
+                AND     A.COD_PROCESO  = B.COD_PROCESO
+                AND     A.COD_PROCPREC = C.COD_PROCESO) PROC
+        WHERE   TRAZ.COD_CICLFACT (+)  = :lhCiclParam
+        AND     TRAZ.COD_PROCESO  (+)  = PROC.COD_PROCPREC
+        ORDER BY PROC.COD_PROCESO;
+
+    EXEC SQL OPEN cFaProcTraza;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error : Al Crear Cursor de Procesos FA_PROCFACT - FA_TRAZAPROC **"
+                                    "\n\t\t=> Para el Codigo de Proceso [%d]"
+                                    "\n\t\t=> Para el Codigo de Ciclo   [%ld]"
+                                    "\n\t\t=> (No Existe Traza Para el Proceso)\n%s\n"
+                                    ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t**  Error : Al Crear Cursor de Procesos FA_PROCFACT - FA_TRAZAPROC **"
+                                    "\n\t\t=> Para el Codigo de Proceso [%d]"
+                                    "\n\t\t=> Para el Codigo de Ciclo   [%ld]"
+                                    "\n\t\t=> (No Existe Traza Para el Proceso)\n%s\n"
+                                    ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        return (FALSE);
+    }
+    /****************************************************************************/
+    bFinCursor_cFaProcTraza = FALSE ;
+    do
+    {
+        EXEC SQL FETCH cFaProcTraza INTO
+                    :szhDesProceso          ,
+                    :ihCodProcesoPrec       ,
+                    :szhDesProcesoPrec      ,
+                    :ihCodEstaPrec          ,
+                    :ihTrazCodEstaProc      ;
+
+        if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+        {
+            vDTrazasLog  (szExeProceso, "Error en Fetch de Cursor de cFaProcTraza Error-Ora[%ld]: %s"
+                                        ,LOG01, SQLCODE, SQLERRM);
+            vDTrazasError(szExeProceso, "Error en Fetch de Cursor de cFaProcTraza Error-Ora[%ld]: %s"
+                                        ,LOG01, SQLCODE, SQLERRM);
+            return (FALSE);
+        }
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            bFinCursor_cFaProcTraza = TRUE;
+        }
+        else
+        {
+            /****************************************************************************/
+            /*  Valida que el Estado del Proceso Precedente este Actualizado en la      */
+            /*  tabla de Traza  FA_TRAZAPROC.                                           */
+            /****************************************************************************/
+            if(ihCodEstaPrec != ihTrazCodEstaProc)
+            {
+                vDTrazasLog  (szExeProceso, "\n\t** Error: Proceso %s No ha Terminado Para Ejecutar Proceso %s **\n"
+                                            ,LOG01, szhDesProcesoPrec, szhDesProceso);
+                vDTrazasError(szExeProceso, "\n\t** Error: Proceso %s No ha Terminado Para Ejecutar Proceso %s **\n"
+                                            ,LOG01, szhDesProcesoPrec, szhDesProceso);
+                return(FALSE);
+            }
+        }
+    } while(!bFinCursor_cFaProcTraza);
+
+    EXEC SQL CLOSE cFaProcTraza;
+
+    /****************************************************************************/
+    /*  Valida Condiciones del Mismo Proceso.                                   */
+    /*  Valida si puede Retomar el Proceso o simplemente iniciar por primera vez*/
+    /****************************************************************************/
+
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando Proceso Actual en FA_TRAZAPROC  **",LOG03);
+    ihCodProceso    = iCodProceso               ;
+
+    EXEC SQL    SELECT  TRAZ.COD_ESTAPROC   ,PROC.DES_PROCESO
+                INTO   :ihTrazCodEstaActual ,:szhDesProceso
+                FROM   FA_TRAZAPROC    TRAZ ,
+                       FA_PROCFACT     PROC
+                WHERE  TRAZ.COD_CICLFACT = :lhCiclParam
+                AND    TRAZ.COD_PROCESO  = :ihCodProceso
+                AND    TRAZ.COD_PROCESO  = PROC.COD_PROCESO;
+
+    if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error es Select Sobre FA_TRAZAPROC de Proceso Actual **"
+                                    "\n\t\t=>  Proceso                      [%d]"
+                                    "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                    ,LOG01,iCodProceso,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  Error es Select Sobre FA_TRAZAPROC de Proceso Actual **"
+                                    "\n\t\t=>  Proceso                      [%d]"
+                                    "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                    ,LOG01,iCodProceso,lCiclParam);
+
+        return (FALSE);
+    }
+    if (SQLCODE == SQLOK)
+    {
+        /****************************************************************************/
+        /*  Valida que el Proceso Este Terminado Ok                                 */
+        /****************************************************************************/
+        if(ihTrazCodEstaActual == iPROC_EST_OK)
+        {
+            vDTrazasLog  (szExeProceso, "\n\t**  Error Proceso %s Ya Fue Procesado con Estado OK **"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                        "\n\t\t=>  Codigo de Proceso            [%d]"
+                                        "\n\t\t=>  Estado de Proceso            [%d]"
+                                        ,LOG01,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+            vDTrazasError(szExeProceso, "\n\t**  Error Proceso %s Ya Fue Procesado con Estado OK **"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                        "\n\t\t=>  Codigo de Proceso            [%d]"
+                                        "\n\t\t=>  Estado de Proceso            [%d]"
+                                        ,LOG01,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+            return(FALSE);
+        }
+
+        vDTrazasLog  (szExeProceso, "\n\t**  Retomando Proceso  %s **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    "\n\t\t=>  Estado del Proceso       [%d]\n"
+                                    ,LOG03,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+
+    }
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        /****************************************************************************/
+        /*   Proceso NO se ha ejecutado aun para el ciclo de Facturacion.           */
+        /*   Inserta Registro en la Tabla de Traza                                  */
+        /****************************************************************************/
+        ihTrazCodEstaActual = iPROC_EST_RUN;
+        vDTrazasLog  (szExeProceso, "\n\t**  Insertando Proceso de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]\n"
+                                    ,LOG03,lCiclParam,iCodProceso);
+
+		sprintf (szhChar1, "Proceso Iniciado");
+        EXEC SQL INSERT INTO
+                FA_TRAZAPROC(   COD_CICLFACT        ,
+                                COD_PROCESO         ,
+                                COD_ESTAPROC        ,
+                                FEC_INICIO          ,
+                                GLS_PROCESO         ,
+                                COD_CLIENTE         ,
+                                NUM_ABONADO         ,
+                                NUM_REGISTROS       )
+                VALUES      (   :lhCiclParam        ,
+                                :ihCodProceso       ,
+                                :ihTrazCodEstaActual,
+                                sysdate             ,
+                                :szhChar1		    ,
+                                :ihCero             ,
+                                :ihCero             ,
+                                :ihCero             );
+        if ((SQLCODE != SQLOK) && (SQLCODE != SQLUKCONSTRAINT))
+        {
+            vDTrazasLog  (szExeProceso, "\n\t\t**  Error Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  Error Oracle  %s              "
+                                        ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+            vDTrazasError(szExeProceso, "\n\t\t**  Error Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  Error Oracle  %s              "
+                                        ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        }
+        else
+        {
+        	if (SQLCODE == SQLUKCONSTRAINT)
+        	{
+	            vDTrazasLog  (szExeProceso, "\n\t\t**  Warning Insertando Proceso [%d]"
+	                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+	                                        "\n\t\t=>  El registro ya existía!!!     "
+	                                        ,LOG01,iCodProceso,lCiclParam);
+	            vDTrazasError(szExeProceso, "\n\t\t**  Warning Insertando Proceso [%d]"
+	                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+	                                        "\n\t\t=>  El registro ya existía!!!     "
+	                                        ,LOG01,iCodProceso,lCiclParam);
+            return (FALSE);
+			}
+        }
+    }
+    return (TRUE);
+}/**********************   fin  bfnValidaTrazaProc  **************************/
+
+
+
+
+/****************************************************************************/
+/*   funcion BOOL bfnSelectTrazaProc (stTrazaProc *)                        */
+/****************************************************************************/
+/*   Rutina que Selecciona datos des Tabla de Traza de Procesos en la       */
+/*   estructura stTrazaProc                                                 */
+/****************************************************************************/
+BOOL bfnSelectTrazaProc (long lCicloFac,int iCodProc, TRAZAPROC * pstTraza)
+{
+
+    EXEC SQL BEGIN DECLARE SECTION;
+
+    long    lhCodCiclfact       ;
+    int     ihCodProceso        ;
+    int     ihCodEstaProc       ;
+    char    szhFecInicio[15]    ;   EXEC SQL VAR szhFecInicio       IS STRING(15);
+    char    szhFecTermino[15]   ;   EXEC SQL VAR szhFecTermino      IS STRING(15);
+    char    szhGlsProceso[50]   ;   EXEC SQL VAR szhGlsProceso      IS STRING(50);
+    long    lhCodCliente        ;
+    long    lhNumAbonado        ;
+    long    lhNumRegistros      ;
+
+    short   i_szhFecTermino     ;
+    short   i_szhGlsProceso     ;
+    short   i_lhCodCliente      ;
+    short   i_lhNumAbonado      ;
+    short   i_lhNumRegistros    ;
+
+    EXEC SQL END DECLARE SECTION  ;
+
+    static char szExeProceso[1024]="bfnSelectTrazaProc"     ;
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada a (bfnSelectTrazaProc) **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    ,LOG05,lCicloFac,iCodProc);
+
+
+    lhCodCiclfact       = lCicloFac                         ;
+    ihCodProceso        = iCodProc                          ;
+
+
+    EXEC SQL    SELECT  COD_ESTAPROC                        ,
+                        TO_CHAR(FEC_INICIO ,'yyyymmddhh24miss'),
+                        TO_CHAR(FEC_TERMINO,'yyyymmddhh24miss'),
+                        GLS_PROCESO                         ,
+                        COD_CLIENTE                         ,
+                        NUM_ABONADO                         ,
+                        NUM_REGISTROS
+                INTO    :ihCodEstaProc                      ,
+                        :szhFecInicio                       ,
+                        :szhFecTermino     :i_szhFecTermino ,
+                        :szhGlsProceso     :i_szhGlsProceso ,
+                        :lhCodCliente      :i_lhCodCliente  ,
+                        :lhNumAbonado      :i_lhNumAbonado  ,
+                        :lhNumRegistros    :i_lhNumRegistros
+                FROM    FA_TRAZAPROC
+                WHERE   COD_CICLFACT = :lhCodCiclfact
+                AND     COD_PROCESO  = :ihCodProceso;
+
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t\t**  Error en Select de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d]"
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lCicloFac,iCodProc,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t\t**  Error en Select de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d]"
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lCicloFac,iCodProc,SQLERRM);
+        return (FALSE);
+    }
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        pstTraza->lCodCiclFact      = lhCodCiclfact     ;
+        pstTraza->iCodProceso       = ihCodProceso      ;
+        pstTraza->iCodEstaProc      = -1                ;
+        strcpy(pstTraza->szFecInicio ,"")               ;
+        strcpy(pstTraza->szFecTermino,"")               ;
+        strcpy(pstTraza->szGlsProceso,"")               ;
+        pstTraza->lCodCliente       = 0                 ;
+        pstTraza->lNumAbonado       = 0                 ;
+        pstTraza->lNumRegistros     = 0                 ;
+    }
+    if (SQLCODE == SQLOK )
+    {
+        pstTraza->lCodCiclFact      = lhCodCiclfact     ;
+        pstTraza->iCodProceso       = ihCodProceso      ;
+        pstTraza->iCodEstaProc      = ihCodEstaProc     ;
+        strcpy(pstTraza->szFecInicio,szhFecInicio)      ;
+
+        if (i_szhFecTermino != ORA_NULL)
+            strcpy(pstTraza->szFecTermino,szhFecTermino)    ;
+        else
+            strcpy(pstTraza->szFecTermino,"")               ;
+
+        if (i_szhGlsProceso != ORA_NULL)
+            strcpy(pstTraza->szGlsProceso,szhGlsProceso)    ;
+        else
+            strcpy(pstTraza->szGlsProceso,"")               ;
+
+        if (i_lhCodCliente  != ORA_NULL)
+            pstTraza->lCodCliente       = lhCodCliente      ;
+        else
+            pstTraza->lCodCliente       = 0                 ;
+
+        if (i_lhNumAbonado != ORA_NULL)
+            pstTraza->lNumAbonado       = lhNumAbonado      ;
+        else
+            pstTraza->lNumAbonado       = 0                 ;
+
+        if (i_lhNumRegistros != ORA_NULL)
+            pstTraza->lNumRegistros     = lhNumRegistros    ;
+        else
+            pstTraza->lNumRegistros     = 0                 ;
+    }
+    return (TRUE);
+}
+
+
+
+/****************************************************************************/
+/*   funcion BOOL bfnUpdateTrazaProc (stTrazaProc *)                        */
+/****************************************************************************/
+/*   Rutina que Actualiza Tabla de Traza de Procesos desde estructura       */
+/*   stTrazaProc previamente Actualizada.                                   */
+/****************************************************************************/
+BOOL bfnUpdateTrazaProc (TRAZAPROC pstTraza)
+{
+
+   EXEC SQL BEGIN DECLARE SECTION;
+
+    long    lhCodCiclfact       ;
+    int     ihCodProceso        ;
+    int     ihCodEstaProc       ;
+    char    szhFecInicio[15]    ;   EXEC SQL VAR szhFecInicio       IS STRING(15);
+    char    szhFecTermino[15]   ;   EXEC SQL VAR szhFecTermino      IS STRING(15);
+    char    szhGlsProceso[50]   ;   EXEC SQL VAR szhGlsProceso      IS STRING(50);
+    long    lhCodCliente        ;
+    long    lhNumAbonado        ;
+    long    lhNumRegistros      ;
+
+    EXEC SQL END DECLARE SECTION  ;
+
+    static char szExeProceso[1024]="bfnUpdateTrazaProc"     ;
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada a (bfnUpdateTrazaProc) **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    ,LOG05,pstTraza.lCodCiclFact,pstTraza.iCodProceso);
+
+
+
+    lhCodCiclfact   =   pstTraza.lCodCiclFact      ;
+    ihCodProceso    =   pstTraza.iCodProceso       ;
+    ihCodEstaProc   =   pstTraza.iCodEstaProc      ;
+    strcpy(szhFecInicio,pstTraza.szFecInicio)      ;
+    /***************************************************/
+    if (strlen(pstTraza.szFecTermino) == 0)
+    {
+        strcpy(szhFecTermino,"")                    ;
+    }
+    else
+    {
+        strcpy(szhFecTermino,pstTraza.szFecTermino) ;
+    }
+    /***************************************************/
+    if (strlen(pstTraza.szGlsProceso) == 0)
+    {
+        strcpy(szhGlsProceso,"")                    ;
+    }
+    else
+    {
+        strcpy(szhGlsProceso,pstTraza.szGlsProceso);
+    }
+    /***************************************************/
+    if (pstTraza.lCodCliente == 0)
+    {
+        lhCodCliente        = 0                     ;
+    }
+    else
+    {
+        lhCodCliente        = pstTraza.lCodCliente ;
+    }
+    /***************************************************/
+    if (pstTraza.lNumAbonado == 0)
+    {
+        lhNumAbonado        = 0                     ;
+    }
+    else
+    {
+        lhNumAbonado        = pstTraza.lNumAbonado ;
+    }
+    /***************************************************/
+    if (pstTraza.lNumRegistros == 0)
+    {
+        lhNumRegistros      = 0                     ;
+    }
+    else
+    {
+        lhNumRegistros      = pstTraza.lNumRegistros;
+    }
+    /***************************************************/
+
+    EXEC SQL    UPDATE  FA_TRAZAPROC
+                SET     COD_ESTAPROC    = :ihCodEstaProc                                ,
+                        FEC_INICIO      = TO_DATE(:szhFecInicio ,'yyyymmddhh24miss')    ,
+                        FEC_TERMINO     = TO_DATE(:szhFecTermino,'yyyymmddhh24miss')    ,
+                        GLS_PROCESO     = :szhGlsProceso                                ,
+                        COD_CLIENTE     = :lhCodCliente                                 ,
+                        NUM_ABONADO     = :lhNumAbonado                                 ,
+                        NUM_REGISTROS   = :lhNumRegistros
+                WHERE   COD_CICLFACT    = :lhCodCiclfact
+                AND     COD_PROCESO     = :ihCodProceso;
+
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t\t**  Error en Update FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d] "
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lhCodCiclfact,ihCodProceso,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t\t**  Error en Update de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d] "
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lhCodCiclfact,ihCodProceso,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}
+
+
+
+void bPrintTrazaProc(TRAZAPROC stpTraza)
+{
+    vDTrazasLog("bPrintTrazaProc", "\n\t** Traza del Proceso FA_TRAZAPROC **"
+                                "\n\t\t=> Codigo Ciclo      [%ld]"
+                                "\n\t\t=> Codigo Proceso    [%d]"
+                                "\n\t\t=> Estado Proceso    [%d]"
+                                "\n\t\t=> Fecha Inicio      [%s]"
+                                "\n\t\t=> Fecha Termino     [%s]"
+                                "\n\t\t=> Glosa Proceso     [%s]"
+                                "\n\t\t=> Clientes          [%ld]"
+                                "\n\t\t=> Abonado           [%ld]"
+                                "\n\t\t=> Registros         [%ld]",LOG03,
+                                stpTraza.lCodCiclFact    ,
+                                stpTraza.iCodProceso     ,
+                                stpTraza.iCodEstaProc    ,
+                                stpTraza.szFecInicio     ,
+                                stpTraza.szFecTermino    ,
+                                stpTraza.szGlsProceso    ,
+                                stpTraza.lCodCliente     ,
+                                stpTraza.lNumAbonado     ,
+                                stpTraza.lNumRegistros   );
+    return;
+}
+
+
+/****************************************************************************/
+/*   funcion BOOL bfnValidaTrazaProcHost(long CicloFact, long CodProceso)       */
+/****************************************************************************/
+/*   Proceso que valida condiciones para cargar el trafico del ciclo a      */
+/*  facturar en tabla de proceso, controla puntos de retoma.                */
+/****************************************************************************/
+BOOL bfnValidaTrazaProcHost(long lCiclParam,int iCodProceso, int iIndFacturacion, char *szHostId)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+
+    long lhCiclParam            ;
+    int  ihIndFacturacion       ;
+    char szFecHastaLlam   [15]  ; EXEC SQL VAR szFecHastaLlam     IS STRING(15);
+    char szFecActual      [15]  ; EXEC SQL VAR szFecActual        IS STRING(15);
+
+    int  ihCodProceso           ;
+    char szhDesProceso    [30]  ; EXEC SQL VAR szhDesProceso      IS STRING(30);
+    int  ihCodProcesoPrec       ;
+    char szhDesProcesoPrec[30]  ; EXEC SQL VAR szhDesProcesoPrec  IS STRING(30);
+    int  ihCodEstaPrec          ;
+    int  ihTrazCodEstaProc      ;
+    int  ihTrazCodEstaActual    ;
+
+    int  ihCero                 ;
+    char szhFmtFecha      [17]  ; EXEC SQL VAR szhFmtFecha  IS STRING(17);
+    char szhHostId        [21]  ; EXEC SQL VAR szhHostId  IS STRING(21);
+    char szhChar1         [51]  ; EXEC SQL VAR szhChar1  IS STRING(51);
+
+    EXEC SQL END DECLARE SECTION;
+
+    BOOL bFinCursor_cFaProcTraza=FALSE;
+    static char szExeProceso[1024]="bfnValidaTrazaProcHost";
+
+    ihCero = 0;
+    sprintf (szhFmtFecha, "YYYYMMDDHH24MISS");
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada bfnValidaTrazaProcHost  **"
+                                "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                "\n\t\t=>  Codigo de Proceso        [%d]\n"
+                                "\n\t\t=>  Host_ID                  [%s]\n"
+                                ,LOG03,lCiclParam,iCodProceso, szHostId);
+
+    /****************************************************************************/
+    /*   Selecciona el Codigo de Ciclo,IND_FACTURACION y la Fecha del Sistema   */
+    /****************************************************************************/
+    /****************************************************************************/
+    /*  Validar Estado de IND_FACTURACION = iIND_FACT_ENPROCESO                 */
+    /*  Debe estar marcado como EN PROCESO.  Marcado previamnete por el         */
+    /*  proceso de creacion de mascara.                                         */
+    /****************************************************************************/
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando FA_CILCFACT  **",LOG03);
+
+    lhCiclParam     = lCiclParam                                ;
+
+    EXEC SQL SELECT IND_FACTURACION                     ,
+                    TO_CHAR(FEC_HASTALLAM,:szhFmtFecha) ,
+                    TO_CHAR(SYSDATE,:szhFmtFecha)
+             INTO   :ihIndFacturacion                   ,
+                    :szFecHastaLlam                     ,
+                    :szFecActual
+             FROM   FA_CICLFACT
+             WHERE  COD_CICLFACT = :lhCiclParam         ;
+
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  No Existen Datos en FA_CICLFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  No Existen Datos en FA_CICLFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        return (FALSE);
+    }
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error en Select sobre FA_CILCFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  Error en Select sobre FA_CILCFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        return (FALSE);
+    }
+
+
+    if (ihIndFacturacion != iIndFacturacion)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error:   Estado del Proceso FA_CICLFACT **"
+                                    "\n\t\t=>  Cod_CiclFact                 [%ld]"
+                                    "\n\t\t=>  Ind_Facturacion Actual       [%d]"
+                                    "\n\t\t=>  Ind_Facturacion Necesario    [%d]"
+                                    ,LOG01,lCiclParam,ihIndFacturacion,iIndFacturacion);
+        vDTrazasError(szExeProceso, "\n\t**  Error:   Estado del Proceso FA_CICLFACT **"
+                                    "\n\t\t=>  Cod_CiclFact                 [%ld]"
+                                    "\n\t\t=>  Ind_Facturacion Actual       [%d]"
+                                    "\n\t\t=>  Ind_Facturacion Necesario    [%d]"
+                                    ,LOG01,lCiclParam,ihIndFacturacion,iIndFacturacion);
+
+        return (FALSE);
+
+    }
+
+    /****************************************************************************/
+    /*  Selecciona las Condiciones de Procesos Precedentes en la tabla de       */
+    /*  de descripcion de procesos FA_PROCFACT y tabla de traza de Procso       */
+    /*  FA_TRAZAPROC que contiene la definicion de los procesos de Facturacion  */
+    /*  ejecutados.                                                             */
+    /****************************************************************************/
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando Procesos Precedentes en FA_TRAZAPROC - FA_PROCFACT **",LOG03);
+
+    ihCodProceso    = iCodProceso               ;
+    sprintf (szhHostId, "%20s", szHostId);
+
+    EXEC SQL DECLARE cFaProcTrazaHost CURSOR FOR
+        SELECT  PROC.DES_PROCESO,
+                PROC.COD_PROCPREC,
+                PROC.DES_PROCPREC,
+                PROC.COD_ESTAPREC,
+                NVL(TRAZ.COD_ESTAPROC,:ihCero)
+        FROM    FA_TRAZAPROC  TRAZ,
+                (SELECT A.COD_PROCESO   COD_PROCESO,
+                        B.DES_PROCESO   DES_PROCESO,
+                        A.COD_PROCPREC  COD_PROCPREC,
+                        C.DES_PROCESO   DES_PROCPREC,
+                        A.COD_ESTAPREC  COD_ESTAPREC
+                FROM    FA_PROCFACTPREC A ,
+                        FA_PROCFACT B ,
+                        FA_PROCFACT C
+                WHERE   A.COD_PROCESO  = :ihCodProceso
+                AND     A.COD_PROCESO  = B.COD_PROCESO
+                AND     A.COD_PROCPREC = C.COD_PROCESO) PROC
+        WHERE   TRAZ.COD_CICLFACT (+)  = :lhCiclParam
+        AND     TRAZ.COD_PROCESO  (+)  = PROC.COD_PROCPREC
+        AND     NVL(TRAZ.HOST_ID,:szhHostId) = :szhHostId
+        ORDER BY PROC.COD_PROCESO;
+
+    EXEC SQL OPEN cFaProcTrazaHost;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error : Al Crear Cursor de Procesos FA_PROCFACT - FA_TRAZAPROC **"
+                                    "\n\t\t=> Para el Codigo de Proceso [%d]"
+                                    "\n\t\t=> Para el Codigo de Ciclo   [%ld]"
+                                    "\n\t\t=> (No Existe Traza Para el Proceso)\n%s\n"
+                                    ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t**  Error : Al Crear Cursor de Procesos FA_PROCFACT - FA_TRAZAPROC **"
+                                    "\n\t\t=> Para el Codigo de Proceso [%d]"
+                                    "\n\t\t=> Para el Codigo de Ciclo   [%ld]"
+                                    "\n\t\t=> (No Existe Traza Para el Proceso)\n%s\n"
+                                    ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        return (FALSE);
+    }
+    /****************************************************************************/
+    bFinCursor_cFaProcTraza = FALSE ;
+    do
+    {
+        EXEC SQL FETCH cFaProcTrazaHost INTO
+                    :szhDesProceso          ,
+                    :ihCodProcesoPrec       ,
+                    :szhDesProcesoPrec      ,
+                    :ihCodEstaPrec          ,
+                    :ihTrazCodEstaProc      ;
+
+        if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+        {
+            vDTrazasLog  (szExeProceso, "Error en Fetch de Cursor de cFaProcTraza Error-Ora[%ld]: %s"
+                                        ,LOG01, SQLCODE, SQLERRM);
+            vDTrazasError(szExeProceso, "Error en Fetch de Cursor de cFaProcTraza Error-Ora[%ld]: %s"
+                                        ,LOG01, SQLCODE, SQLERRM);
+            return (FALSE);
+        }
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            bFinCursor_cFaProcTraza = TRUE;
+        }
+        else
+        {
+            /****************************************************************************/
+            /*  Valida que el Estado del Proceso Precedente este Actualizado en la      */
+            /*  tabla de Traza  FA_TRAZAPROC.                                           */
+            /****************************************************************************/
+            if(ihCodEstaPrec != ihTrazCodEstaProc )
+            {
+                vDTrazasLog  (szExeProceso, "\n\t** Error: Proceso %s No ha Terminado Para Ejecutar Proceso %s **\n"
+                                            ,LOG01, szhDesProcesoPrec, szhDesProceso);
+                vDTrazasError(szExeProceso, "\n\t** Error: Proceso %s No ha Terminado Para Ejecutar Proceso %s **\n"
+                                            ,LOG01, szhDesProcesoPrec, szhDesProceso);
+                return(FALSE);
+            }
+        }
+    } while(!bFinCursor_cFaProcTraza);
+
+    EXEC SQL CLOSE cFaProcTrazaHost;
+
+    /****************************************************************************/
+    /*  Valida Condiciones del Mismo Proceso.                                   */
+    /*  Valida si puede Retomar el Proceso o simplemente iniciar por primera vez*/
+    /****************************************************************************/
+
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando Proceso Actual en FA_TRAZAPROC  **",LOG03);
+    ihCodProceso    = iCodProceso               ;
+
+    EXEC SQL    SELECT TRAZ.COD_ESTAPROC   ,PROC.DES_PROCESO
+                  INTO :ihTrazCodEstaActual,:szhDesProceso
+                  FROM FA_TRAZAPROC TRAZ,
+                       FA_PROCFACT  PROC
+                 WHERE TRAZ.COD_CICLFACT = :lhCiclParam
+                   AND TRAZ.COD_PROCESO  = :ihCodProceso
+                   AND TRAZ.COD_PROCESO  = PROC.COD_PROCESO
+                   AND TRAZ.HOST_ID      = TRIM (:szhHostId);
+
+    if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error es Select Sobre FA_TRAZAPROC de Proceso Actual **"
+                                    "\n\t\t=>  Proceso               [%d]"
+                                    "\n\t\t=>  Cod.Ciclo Facturacion [%ld]"
+                                    ,LOG01,iCodProceso,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  Error es Select Sobre FA_TRAZAPROC de Proceso Actual **"
+                                    "\n\t\t=>  Proceso               [%d]"
+                                    "\n\t\t=>  Cod.Ciclo Facturacion [%ld]"
+                                    ,LOG01,iCodProceso,lCiclParam);
+
+        return (FALSE);
+    }
+    if (SQLCODE == SQLOK)
+    {
+        /****************************************************************************/
+        /*  Valida que el Proceso Este Terminado Ok                                 */
+        /****************************************************************************/
+        if(ihTrazCodEstaActual == iPROC_EST_OK)
+        {
+            vDTrazasLog  (szExeProceso, "\n\t**  Error Proceso %s Ya Fue Procesado con Estado OK **"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                        "\n\t\t=>  Codigo de Proceso            [%d]"
+                                        "\n\t\t=>  Estado de Proceso            [%d]"
+                                        ,LOG01,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+            vDTrazasError(szExeProceso, "\n\t**  Error Proceso %s Ya Fue Procesado con Estado OK **"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                        "\n\t\t=>  Codigo de Proceso            [%d]"
+                                        "\n\t\t=>  Estado de Proceso            [%d]"
+                                        ,LOG01,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+            return(FALSE);
+        }
+
+        vDTrazasLog  (szExeProceso, "\n\t**  Retomando Proceso  %s **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    "\n\t\t=>  Estado del Proceso       [%d]\n"
+                                    ,LOG03,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+
+    }
+    else if (SQLCODE == SQLNOTFOUND)
+    {
+        /****************************************************************************/
+        /*   Proceso NO se ha ejecutado aun para el ciclo de Facturacion.           */
+        /*   Inserta Registro en la Tabla de Traza                                  */
+        /****************************************************************************/
+        ihTrazCodEstaActual = iPROC_EST_RUN;
+        vDTrazasLog  (szExeProceso, "\n\t**  Insertando Proceso de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]\n"
+                                    ,LOG03,lCiclParam,iCodProceso);
+
+	    sprintf (szhChar1, "Proceso Iniciado");
+
+        EXEC SQL INSERT INTO
+                FA_TRAZAPROC(   COD_CICLFACT        ,
+                                COD_PROCESO         ,
+                                COD_ESTAPROC        ,
+                                FEC_INICIO          ,
+                                GLS_PROCESO         ,
+                                COD_CLIENTE         ,
+                                NUM_ABONADO         ,
+                                NUM_REGISTROS       ,
+                                HOST_ID             )
+                VALUES      (   :lhCiclParam        ,
+                                :ihCodProceso       ,
+                                :ihTrazCodEstaActual,
+                                sysdate             ,
+                                :szhChar1		    ,
+                                :ihCero             ,
+                                :ihCero             ,
+                                :ihCero             ,
+                                TRIM (:szhHostId)    );
+        if ((SQLCODE != SQLOK) && (SQLCODE != SQLUKCONSTRAINT))
+        {
+            vDTrazasLog  (szExeProceso, "\n\t\t**  Error Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  Error Oracle  %s              "
+                                        ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+            vDTrazasError(szExeProceso, "\n\t\t**  Error Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  Error Oracle  %s              "
+                                        ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+            return (FALSE);
+        }
+        else if (SQLCODE == SQLUKCONSTRAINT)
+        {
+            vDTrazasLog  (szExeProceso, "\n\t\t**  Warning Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  El registro ya existía!!!     "
+                                        ,LOG01,iCodProceso,lCiclParam);
+            vDTrazasError(szExeProceso, "\n\t\t**  Warning Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  El registro ya existía!!!     "
+                                        ,LOG01,iCodProceso,lCiclParam);
+            return (FALSE);
+        }
+    }
+    return (TRUE);
+}/**********************   fin  bfnValidaTrazaProc  **************************/
+
+
+/****************************************************************************/
+/*   funcion BOOL bfnValidaTrazaProcHostFirst(long CicloFact, long CodProceso)       */
+/****************************************************************************/
+/*   Proceso que valida condiciones para cargar el trafico del ciclo a      */
+/*  facturar en tabla de proceso, controla puntos de retoma.                */
+/****************************************************************************/
+BOOL bfnValidaTrazaProcHostFirst(long lCiclParam,int iCodProceso, int iIndFacturacion, char *szHostId)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+
+    long lhCiclParam            ;
+    int  ihIndFacturacion       ;
+    char szFecHastaLlam   [15]  ; EXEC SQL VAR szFecHastaLlam     IS STRING(15);
+    char szFecActual      [15]  ; EXEC SQL VAR szFecActual        IS STRING(15);
+
+    int  ihCodProceso           ;
+    char szhDesProceso    [30]  ; EXEC SQL VAR szhDesProceso      IS STRING(30);
+    int  ihCodProcesoPrec       ;
+    char szhDesProcesoPrec[30]  ; EXEC SQL VAR szhDesProcesoPrec  IS STRING(30);
+    int  ihCodEstaPrec          ;
+    int  ihTrazCodEstaProc      ;
+    int  ihTrazCodEstaActual    ;
+
+    int  ihCero                 ;
+    char szhFmtFecha      [17]  ; EXEC SQL VAR szhFmtFecha  IS STRING(17);
+    char szhHostId        [21]  ; EXEC SQL VAR szhHostId  IS STRING(21);
+    char szhChar1         [51]  ; EXEC SQL VAR szhChar1  IS STRING(51);
+
+    EXEC SQL END DECLARE SECTION;
+
+    BOOL bFinCursor_cFaProcTraza=FALSE;
+    static char szExeProceso[1024]="bfnValidaTrazaProc";
+
+    ihCero = 0;
+    sprintf (szhFmtFecha, "YYYYMMDDHH24MISS");
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada bfnValidaTrazaProc  **"
+                                "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                "\n\t\t=>  Codigo de Proceso        [%d]\n"
+                                ,LOG03,lCiclParam,iCodProceso);
+
+    /****************************************************************************/
+    /*   Selecciona el Codigo de Ciclo,IND_FACTURACION y la Fecha del Sistema   */
+    /****************************************************************************/
+    /****************************************************************************/
+    /*  Validar Estado de IND_FACTURACION = iIND_FACT_ENPROCESO                 */
+    /*  Debe estar marcado como EN PROCESO.  Marcado previamnete por el         */
+    /*  proceso de creacion de mascara.                                         */
+    /****************************************************************************/
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando FA_CILCFACT  **",LOG03);
+
+    lhCiclParam     = lCiclParam                                ;
+
+    EXEC SQL SELECT IND_FACTURACION                     ,
+                    TO_CHAR(FEC_HASTALLAM,:szhFmtFecha) ,
+                    TO_CHAR(SYSDATE,:szhFmtFecha)
+             INTO   :ihIndFacturacion                   ,
+                    :szFecHastaLlam                     ,
+                    :szFecActual
+             FROM   FA_CICLFACT
+             WHERE  COD_CICLFACT = :lhCiclParam         ;
+
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  No Existen Datos en FA_CICLFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  No Existen Datos en FA_CICLFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        return (FALSE);
+    }
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error en Select sobre FA_CILCFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  Error en Select sobre FA_CILCFACT **"
+                                    "\n\t\t=> Para el Cod_CiclFact     [%ld]",LOG01,lCiclParam);
+        return (FALSE);
+    }
+
+
+    if (ihIndFacturacion != iIndFacturacion)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error:   Estado del Proceso FA_CICLFACT **"
+                                    "\n\t\t=>  Cod_CiclFact                 [%ld]"
+                                    "\n\t\t=>  Ind_Facturacion Actual       [%d]"
+                                    "\n\t\t=>  Ind_Facturacion Necesario    [%d]"
+                                    ,LOG01,lCiclParam,ihIndFacturacion,iIndFacturacion);
+        vDTrazasError(szExeProceso, "\n\t**  Error:   Estado del Proceso FA_CICLFACT **"
+                                    "\n\t\t=>  Cod_CiclFact                 [%ld]"
+                                    "\n\t\t=>  Ind_Facturacion Actual       [%d]"
+                                    "\n\t\t=>  Ind_Facturacion Necesario    [%d]"
+                                    ,LOG01,lCiclParam,ihIndFacturacion,iIndFacturacion);
+
+        return (FALSE);
+
+    }
+
+    /****************************************************************************/
+    /*  Selecciona las Condiciones de Procesos Precedentes en la tabla de       */
+    /*  de descripcion de procesos FA_PROCFACT y tabla de traza de Procso       */
+    /*  FA_TRAZAPROC que contiene la definicion de los procesos de Facturacion  */
+    /*  ejecutados.                                                             */
+    /****************************************************************************/
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando Procesos Precedentes en FA_TRAZAPROC - FA_PROCFACT **",LOG03);
+
+    ihCodProceso    = iCodProceso               ;
+    sprintf (szhHostId, "%20s", szHostId);
+
+    EXEC SQL DECLARE cFaProcTrazaHostFirst CURSOR FOR
+        SELECT  PROC.DES_PROCESO,
+                PROC.COD_PROCPREC,
+                PROC.DES_PROCPREC,
+                PROC.COD_ESTAPREC,
+                NVL(TRAZ.COD_ESTAPROC,:ihCero)
+        FROM    FA_TRAZAPROC  TRAZ,
+                (SELECT A.COD_PROCESO   COD_PROCESO,
+                        B.DES_PROCESO   DES_PROCESO,
+                        A.COD_PROCPREC  COD_PROCPREC,
+                        C.DES_PROCESO   DES_PROCPREC,
+                        A.COD_ESTAPREC  COD_ESTAPREC
+                FROM    FA_PROCFACTPREC A ,
+                        FA_PROCFACT B ,
+                        FA_PROCFACT C
+                WHERE   A.COD_PROCESO  = :ihCodProceso
+                AND     A.COD_PROCESO  = B.COD_PROCESO
+                AND     A.COD_PROCPREC = C.COD_PROCESO) PROC
+        WHERE   TRAZ.COD_CICLFACT (+)  = :lhCiclParam
+        AND     TRAZ.COD_PROCESO  (+)  = PROC.COD_PROCPREC
+        ORDER BY PROC.COD_PROCESO;
+
+    EXEC SQL OPEN cFaProcTrazaHostFirst;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error : Al Crear Cursor de Procesos FA_PROCFACT - FA_TRAZAPROC **"
+                                    "\n\t\t=> Para el Codigo de Proceso [%d]"
+                                    "\n\t\t=> Para el Codigo de Ciclo   [%ld]"
+                                    "\n\t\t=> (No Existe Traza Para el Proceso)\n%s\n"
+                                    ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t**  Error : Al Crear Cursor de Procesos FA_PROCFACT - FA_TRAZAPROC **"
+                                    "\n\t\t=> Para el Codigo de Proceso [%d]"
+                                    "\n\t\t=> Para el Codigo de Ciclo   [%ld]"
+                                    "\n\t\t=> (No Existe Traza Para el Proceso)\n%s\n"
+                                    ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+        return (FALSE);
+    }
+    /****************************************************************************/
+    bFinCursor_cFaProcTraza = FALSE ;
+    do
+    {
+        EXEC SQL FETCH cFaProcTrazaHostFirst INTO
+                    :szhDesProceso          ,
+                    :ihCodProcesoPrec       ,
+                    :szhDesProcesoPrec      ,
+                    :ihCodEstaPrec          ,
+                    :ihTrazCodEstaProc      ;
+
+        if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+        {
+            vDTrazasLog  (szExeProceso, "Error en Fetch de Cursor de cFaProcTraza Error-Ora[%ld]: %s"
+                                        ,LOG01, SQLCODE, SQLERRM);
+            vDTrazasError(szExeProceso, "Error en Fetch de Cursor de cFaProcTraza Error-Ora[%ld]: %s"
+                                        ,LOG01, SQLCODE, SQLERRM);
+            return (FALSE);
+        }
+        if(SQLCODE == SQLNOTFOUND)
+        {
+            bFinCursor_cFaProcTraza = TRUE;
+        }
+        else
+        {
+            /****************************************************************************/
+            /*  Valida que el Estado del Proceso Precedente este Actualizado en la      */
+            /*  tabla de Traza  FA_TRAZAPROC.                                           */
+            /****************************************************************************/
+            if(ihCodEstaPrec != ihTrazCodEstaProc)
+            {
+                vDTrazasLog  (szExeProceso, "\n\t** Error: Proceso %s No ha Terminado Para Ejecutar Proceso %s **\n"
+                                            ,LOG01, szhDesProcesoPrec, szhDesProceso);
+                vDTrazasError(szExeProceso, "\n\t** Error: Proceso %s No ha Terminado Para Ejecutar Proceso %s **\n"
+                                            ,LOG01, szhDesProcesoPrec, szhDesProceso);
+                return(FALSE);
+            }
+        }
+    } while(!bFinCursor_cFaProcTraza);
+
+    EXEC SQL CLOSE cFaProcTrazaHostFirst;
+
+    /****************************************************************************/
+    /*  Valida Condiciones del Mismo Proceso.                                   */
+    /*  Valida si puede Retomar el Proceso o simplemente iniciar por primera vez*/
+    /****************************************************************************/
+
+    vDTrazasLog  (szExeProceso, "\n\t\t**  Validando Proceso Actual en FA_TRAZAPROC  **",LOG03);
+    ihCodProceso    = iCodProceso               ;
+
+    EXEC SQL    SELECT TRAZ.COD_ESTAPROC   ,PROC.DES_PROCESO
+                  INTO :ihTrazCodEstaActual,:szhDesProceso
+                  FROM FA_TRAZAPROC TRAZ,
+                       FA_PROCFACT  PROC
+                 WHERE TRAZ.COD_CICLFACT = :lhCiclParam
+                   AND TRAZ.COD_PROCESO  = :ihCodProceso
+                   AND TRAZ.COD_PROCESO  = PROC.COD_PROCESO
+                   AND TRAZ.HOST_ID      = TRIM (:szhHostId);
+
+    if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (szExeProceso, "\n\t**  Error es Select Sobre FA_TRAZAPROC de Proceso Actual **"
+                                    "\n\t\t=>  Proceso               [%d]"
+                                    "\n\t\t=>  Cod.Ciclo Facturacion [%ld]"
+                                    ,LOG01,iCodProceso,lCiclParam);
+        vDTrazasError(szExeProceso, "\n\t**  Error es Select Sobre FA_TRAZAPROC de Proceso Actual **"
+                                    "\n\t\t=>  Proceso               [%d]"
+                                    "\n\t\t=>  Cod.Ciclo Facturacion [%ld]"
+                                    ,LOG01,iCodProceso,lCiclParam);
+
+        return (FALSE);
+    }
+    if (SQLCODE == SQLOK)
+    {
+        /****************************************************************************/
+        /*  Valida que el Proceso Este Terminado Ok                                 */
+        /****************************************************************************/
+        if(ihTrazCodEstaActual == iPROC_EST_OK)
+        {
+            vDTrazasLog  (szExeProceso, "\n\t**  Error Proceso %s Ya Fue Procesado con Estado OK **"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                        "\n\t\t=>  Codigo de Proceso            [%d]"
+                                        "\n\t\t=>  Estado de Proceso            [%d]"
+                                        ,LOG01,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+            vDTrazasError(szExeProceso, "\n\t**  Error Proceso %s Ya Fue Procesado con Estado OK **"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion        [%ld]"
+                                        "\n\t\t=>  Codigo de Proceso            [%d]"
+                                        "\n\t\t=>  Estado de Proceso            [%d]"
+                                        ,LOG01,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+            return(FALSE);
+        }
+
+        vDTrazasLog  (szExeProceso, "\n\t**  Retomando Proceso  %s **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    "\n\t\t=>  Estado del Proceso       [%d]\n"
+                                    ,LOG03,szhDesProceso,lhCiclParam,ihCodProceso,ihTrazCodEstaActual);
+
+    }
+    else if (SQLCODE == SQLNOTFOUND)
+    {
+        /****************************************************************************/
+        /*   Proceso NO se ha ejecutado aun para el ciclo de Facturacion.           */
+        /*   Inserta Registro en la Tabla de Traza                                  */
+        /****************************************************************************/
+        ihTrazCodEstaActual = iPROC_EST_RUN;
+        vDTrazasLog  (szExeProceso, "\n\t**  Insertando Proceso de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]\n"
+                                    ,LOG03,lCiclParam,iCodProceso);
+
+	    sprintf (szhChar1, "Proceso Iniciado");
+
+        EXEC SQL INSERT INTO
+                FA_TRAZAPROC(   COD_CICLFACT        ,
+                                COD_PROCESO         ,
+                                COD_ESTAPROC        ,
+                                FEC_INICIO          ,
+                                GLS_PROCESO         ,
+                                COD_CLIENTE         ,
+                                NUM_ABONADO         ,
+                                NUM_REGISTROS       ,
+                                HOST_ID             )
+                VALUES      (   :lhCiclParam        ,
+                                :ihCodProceso       ,
+                                :ihTrazCodEstaActual,
+                                sysdate             ,
+                                :szhChar1		    ,
+                                :ihCero             ,
+                                :ihCero             ,
+                                :ihCero             ,
+                                TRIM (:szhHostId)    );
+        if ((SQLCODE != SQLOK) && (SQLCODE != SQLUKCONSTRAINT))
+        {
+            vDTrazasLog  (szExeProceso, "\n\t\t**  Error Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  Error Oracle  %s              "
+                                        ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+            vDTrazasError(szExeProceso, "\n\t\t**  Error Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  Error Oracle  %s              "
+                                        ,LOG01,iCodProceso,lCiclParam,SQLERRM);
+            return (FALSE);
+        }
+        else if (SQLCODE == SQLUKCONSTRAINT)
+        {
+            vDTrazasLog  (szExeProceso, "\n\t\t**  Warning Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  El registro ya existía!!!     "
+                                        ,LOG01,iCodProceso,lCiclParam);
+            vDTrazasError(szExeProceso, "\n\t\t**  Warning Insertando Proceso [%d]"
+                                        "\n\t\t=>  Cod.Ciclo Facturacion    [%ld]"
+                                        "\n\t\t=>  El registro ya existía!!!     "
+                                        ,LOG01,iCodProceso,lCiclParam);
+            return (FALSE);
+        }
+    }
+    return (TRUE);
+}/**********************   fin  bfnValidaTrazaProc  **************************/
+
+/****************************************************************************/
+/*   funcion BOOL bfnSelectTrazaProcHost (stTrazaProc *)                        */
+/****************************************************************************/
+/*   Rutina que Selecciona datos des Tabla de Traza de Procesos en la       */
+/*   estructura stTrazaProc                                                 */
+/****************************************************************************/
+BOOL bfnSelectTrazaProcHost (long lCicloFac,int iCodProc, TRAZAPROC * pstTraza, char *szHostId)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+
+    long    lhCodCiclfact       ;
+    int     ihCodProceso        ;
+    int     ihCodEstaProc       ;
+    char    szhFecInicio[15]    ;   EXEC SQL VAR szhFecInicio       IS STRING(15);
+    char    szhFecTermino[15]   ;   EXEC SQL VAR szhFecTermino      IS STRING(15);
+    char    szhGlsProceso[50]   ;   EXEC SQL VAR szhGlsProceso      IS STRING(50);
+    long    lhCodCliente        ;
+    long    lhNumAbonado        ;
+    long    lhNumRegistros      ;
+
+    short   i_szhFecTermino     ;
+    short   i_szhGlsProceso     ;
+    short   i_lhCodCliente      ;
+    short   i_lhNumAbonado      ;
+    short   i_lhNumRegistros    ;
+
+    char    szhHostId    [21]   ;   EXEC SQL VAR szhHostId      IS STRING(21);
+    char szhFmtFecha      [17]  ;   EXEC SQL VAR szhFmtFecha    IS STRING(17);
+    EXEC SQL END DECLARE SECTION  ;
+
+    static char szExeProceso[1024]="bfnSelectTrazaProc"     ;
+
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada a (bfnSelectTrazaProc) **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    ,LOG05,lCicloFac,iCodProc);
+
+    sprintf (szhFmtFecha, "YYYYMMDDHH24MISS");
+    lhCodCiclfact       = lCicloFac      ;
+    ihCodProceso        = iCodProc       ;
+    sprintf (szhHostId, "%20s", szHostId);
+
+    EXEC SQL    SELECT  COD_ESTAPROC                     ,
+                        TO_CHAR(FEC_INICIO ,:szhFmtFecha),
+                        TO_CHAR(FEC_TERMINO,:szhFmtFecha),
+                        GLS_PROCESO                      ,
+                        COD_CLIENTE                      ,
+                        NUM_ABONADO                      ,
+                        NUM_REGISTROS
+                INTO    :ihCodEstaProc                   ,
+                        :szhFecInicio                    ,
+                        :szhFecTermino  :i_szhFecTermino ,
+                        :szhGlsProceso  :i_szhGlsProceso ,
+                        :lhCodCliente   :i_lhCodCliente  ,
+                        :lhNumAbonado   :i_lhNumAbonado  ,
+                        :lhNumRegistros :i_lhNumRegistros
+                FROM    FA_TRAZAPROC
+                WHERE   COD_CICLFACT = :lhCodCiclfact
+                AND     COD_PROCESO  = :ihCodProceso
+                AND     HOST_ID      = :szhHostId;
+
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t\t**  Error en Select de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d]"
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lCicloFac,iCodProc,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t\t**  Error en Select de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d]"
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lCicloFac,iCodProc,SQLERRM);
+        return (FALSE);
+    }
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        pstTraza->lCodCiclFact      = lhCodCiclfact     ;
+        pstTraza->iCodProceso       = ihCodProceso      ;
+        pstTraza->iCodEstaProc      = -1                ;
+        strcpy(pstTraza->szFecInicio ,"")               ;
+        strcpy(pstTraza->szFecTermino,"")               ;
+        strcpy(pstTraza->szGlsProceso,"")               ;
+        pstTraza->lCodCliente       = 0                 ;
+        pstTraza->lNumAbonado       = 0                 ;
+        pstTraza->lNumRegistros     = 0                 ;
+    }
+    if (SQLCODE == SQLOK )
+    {
+        pstTraza->lCodCiclFact      = lhCodCiclfact     ;
+        pstTraza->iCodProceso       = ihCodProceso      ;
+        pstTraza->iCodEstaProc      = ihCodEstaProc     ;
+        strcpy(pstTraza->szFecInicio,szhFecInicio)      ;
+
+        if (i_szhFecTermino != ORA_NULL)
+            strcpy(pstTraza->szFecTermino,szhFecTermino)    ;
+        else
+            strcpy(pstTraza->szFecTermino,"")               ;
+
+        if (i_szhGlsProceso != ORA_NULL)
+            strcpy(pstTraza->szGlsProceso,szhGlsProceso)    ;
+        else
+            strcpy(pstTraza->szGlsProceso,"")               ;
+
+        if (i_lhCodCliente  != ORA_NULL)
+            pstTraza->lCodCliente       = lhCodCliente      ;
+        else
+            pstTraza->lCodCliente       = 0                 ;
+
+        if (i_lhNumAbonado != ORA_NULL)
+            pstTraza->lNumAbonado       = lhNumAbonado      ;
+        else
+            pstTraza->lNumAbonado       = 0                 ;
+
+        if (i_lhNumRegistros != ORA_NULL)
+            pstTraza->lNumRegistros     = lhNumRegistros    ;
+        else
+            pstTraza->lNumRegistros     = 0                 ;
+    }
+    return (TRUE);
+}
+
+/****************************************************************************/
+/*   funcion BOOL bfnUpdateTrazaProc (stTrazaProc *)                        */
+/****************************************************************************/
+/*   Rutina que Actualiza Tabla de Traza de Procesos desde estructura       */
+/*   stTrazaProc previamente Actualizada.                                   */
+/****************************************************************************/
+BOOL bfnUpdateTrazaProcHost (TRAZAPROC pstTraza, char *szHostId)
+{
+
+   EXEC SQL BEGIN DECLARE SECTION;
+
+    long    lhCodCiclfact       ;
+    int     ihCodProceso        ;
+    int     ihCodEstaProc       ;
+    char    szhFecInicio[15]    ; EXEC SQL VAR szhFecInicio  IS STRING(15);
+    char    szhFecTermino[15]   ; EXEC SQL VAR szhFecTermino IS STRING(15);
+    char    szhGlsProceso[50]   ; EXEC SQL VAR szhGlsProceso IS STRING(50);
+    long    lhCodCliente        ;
+    long    lhNumAbonado        ;
+    long    lhNumRegistros      ;
+
+    char    szhHostId    [21]   ; EXEC SQL VAR szhHostId    IS STRING(21);
+    char szhFmtFecha      [17]  ; EXEC SQL VAR szhFmtFecha  IS STRING(17);
+    EXEC SQL END DECLARE SECTION;
+
+    static char szExeProceso[1024]="bfnUpdateTrazaProc"     ;
+
+    vDTrazasLog  (szExeProceso, "\n\t**  Parametros de Entrada a (bfnUpdateTrazaProc) **"
+                                    "\n\t\t=>  Ciclo de Facturacion     [%ld]"
+                                    "\n\t\t=>  Codigo de Proceso        [%d]"
+                                    ,LOG05,pstTraza.lCodCiclFact,pstTraza.iCodProceso);
+
+    sprintf (szhFmtFecha, "YYYYMMDDHH24MISS");
+    lhCodCiclfact   =   pstTraza.lCodCiclFact      ;
+    ihCodProceso    =   pstTraza.iCodProceso       ;
+    ihCodEstaProc   =   pstTraza.iCodEstaProc      ;
+    strcpy(szhFecInicio,pstTraza.szFecInicio)      ;
+    sprintf (szhHostId, "%20s", szHostId);
+
+    /***************************************************/
+    if (strlen(pstTraza.szFecTermino) == 0)
+    {
+        strcpy(szhFecTermino,"")                    ;
+    }
+    else
+    {
+        strcpy(szhFecTermino,pstTraza.szFecTermino) ;
+    }
+    /***************************************************/
+    if (strlen(pstTraza.szGlsProceso) == 0)
+    {
+        strcpy(szhGlsProceso,"")                    ;
+    }
+    else
+    {
+        strcpy(szhGlsProceso,pstTraza.szGlsProceso);
+    }
+    /***************************************************/
+    if (pstTraza.lCodCliente == 0)
+    {
+        lhCodCliente        = 0                     ;
+    }
+    else
+    {
+        lhCodCliente        = pstTraza.lCodCliente ;
+    }
+    /***************************************************/
+    if (pstTraza.lNumAbonado == 0)
+    {
+        lhNumAbonado        = 0                     ;
+    }
+    else
+    {
+        lhNumAbonado        = pstTraza.lNumAbonado ;
+    }
+    /***************************************************/
+    if (pstTraza.lNumRegistros == 0)
+    {
+        lhNumRegistros      = 0                     ;
+    }
+    else
+    {
+        lhNumRegistros      = pstTraza.lNumRegistros;
+    }
+    /***************************************************/
+
+    EXEC SQL    UPDATE  FA_TRAZAPROC
+                SET     COD_ESTAPROC    = :ihCodEstaProc                      ,
+                        FEC_INICIO      = nvl(FEC_INICIO,SYSDATE),
+                        FEC_TERMINO     = TO_DATE(:szhFecTermino,:szhFmtFecha),
+                        GLS_PROCESO     = :szhGlsProceso                      ,
+                        COD_CLIENTE     = :lhCodCliente                       ,
+                        NUM_ABONADO     = :lhNumAbonado                       ,
+                        NUM_REGISTROS   = :lhNumRegistros
+                WHERE   COD_CICLFACT    = :lhCodCiclfact
+                AND     COD_PROCESO     = :ihCodProceso
+                AND     HOST_ID         = TRIM(:szhHostId);
+
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (szExeProceso, "\n\t\t**  Error en Update FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d] "
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lhCodCiclfact,ihCodProceso,SQLERRM);
+        vDTrazasError(szExeProceso, "\n\t\t**  Error en Update de FA_TRAZAPROC  **"
+                                    "\n\t\t=>  Codigo Ciclo Facturacion [%ld]"
+                                    "\n\t\t=>  Codigo Proceso           [%d] "
+                                    "\n\t\t=>  Error Oracle  %s              "
+                                    ,LOG01,lhCodCiclfact,ihCodProceso,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}
+
+/*****************************************************************************/
+/* Funcion que recupera los rangos de clientes a procesar en la maquina      */
+/*****************************************************************************/
+int ifnGetHostId (char *szHostID)
+{
+    char pNameFile[255];
+    FILE* pFile;
+    char c;
+    int i=0;
+
+    memset(pNameFile,'\0',sizeof(pNameFile));
+    if(getenv("XPF_CFG"))
+    {
+        sprintf(pNameFile,"%s/%s",getenv("XPF_CFG"),"host_id.dat");
+    }
+
+    if ((pFile = fopen(pNameFile,"rt")) == (FILE *)NULL)
+    {
+       return(-1);
+    }
+
+    c = fgetc(pFile);
+    while((isalnum(c) || ispunct(c)) && (c != EOF) )
+    {
+        szHostID[i] = c;
+        i++;
+        c = fgetc(pFile);
+    }
+
+    szHostID[i] = '\0';
+
+    fclose(pFile);
+
+ return 0;
+
+}
+
+/*****************************************************************************/
+/* Funcion que recupera los rangos de clientes a procesar en la maquina      */
+/*****************************************************************************/
+int	iGetRangosHost (char *szHostID, int iCodCiclFact, long *lCodClienteIni, long *lCodClienteFin)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int	 ihCodCiclFact;
+	char szhHostId [21]; EXEC SQL VAR szhHostId IS STRING (21);
+	long lhCodClienteIni;
+	long lhCodClienteFin;
+	EXEC SQL END DECLARE SECTION;
+
+	ihCodCiclFact = iCodCiclFact;
+	sprintf(szhHostId, "%20s", szHostID);
+
+	EXEC SQL
+		SELECT COD_CLIENTEINI,
+			   COD_CLIENTEFIN
+	      INTO :lhCodClienteIni
+	      	  ,:lhCodClienteFin
+   	      FROM FA_RANGOSHOST_TO
+   		 WHERE COD_CICLFACT = :ihCodCiclFact
+   		   AND HOST_ID 		= TRIM (:szhHostId);
+
+   if(sqlca.sqlcode != SQLOK)
+   {
+   		return(sqlca.sqlcode);
+   }
+
+   *lCodClienteIni  = lhCodClienteIni;
+   *lCodClienteFin  = lhCodClienteFin;
+   return(0);
+}
+
+/*!
+ * ifnBuscarRangosClientesBD: Obtiene Rangos de Clientes desde la base de datos
+ * @param  lCodCiclFact	Ciclo de facturacion
+ * @param  lpClieIni         Rango Cliente inicial
+ * @param  lpClieFin         Rango Cliente Final
+ * @param  ipExisteRango     Indicador existencia Rango
+ * @return 0  No existe host_id
+ *         1  Obtiene Datos BD
+ *        -1  Error: No existen rangos en BD.
+ */
+int ifnBuscarRangosClientesBD(long lCodCiclFact,long *lpClieIni, long *lpClieFin, int *ipExisteRango)
+{
+
+    char szHostId[20]="";
+    long lClieIniBD = 0L;
+    long lClieFinBD = 0L;
+    int iVal        = 0;
+
+    /*** Obtencion de rangos de clientes, si existen ***/
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        iVal = 0;
+    }
+    else
+    {
+        /*** Busqueda de rangos de clientes desde Base de Datos ***/
+        if( (iGetRangosHost(szHostId, lCodCiclFact, &lClieIniBD, &lClieFinBD))==0 )
+        {
+            *lpClieIni  = lClieIniBD;
+            *lpClieFin  = lClieFinBD;
+            *ipExisteRango = 1;
+            iVal = 1;
+        }
+        else
+        {
+        	iVal = -1;
+        }
+    }
+
+    return iVal;
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

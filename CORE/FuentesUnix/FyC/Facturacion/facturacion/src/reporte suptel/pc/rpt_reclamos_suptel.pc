@@ -1,0 +1,920 @@
+/**********************************************************************************
+Programa    : rpt_reclamos_suptel.pc                                                      
+Descripcion : Proceso de Reporte suptel.             
+Fecha       : 22.04.2005                                                        
+version     :                                                                   
+Parametros  : rpt_reclamos_suptel -u usuario/clave -f fecha_inicio/fecha_fin -t Tipo_reporte -l Nivel de Log 
+Salida      : rpt_individual_<ddmmyyyyhhmiss>.dat - rpt_corporativo_<ddmmyyyyhhmiss>.dat 
+Autor       : Luisa Torres.                                                             
+**********************************************************************************/
+/*************************************/
+/* Declaracion de Librerias          */
+/*************************************/
+#include "rpt_reclamos_suptel.h"
+/*#include "geora.h"*/
+#include <md5.h>
+#include <stdio.h>
+#include <ctype.h>
+
+
+/*EXEC SQL INCLUDE sqlda;*/
+
+#define STR_DETALLE 10000
+
+static char szEnvLog[500]="";
+static char szEnvDat[500]="";
+char    szBaseName[100]="";
+
+/*************************************/
+/*  Declaracion de Variables Host    */
+/*************************************/
+
+EXEC ORACLE OPTION (MAXOPENCURSORS=60); 
+EXEC SQL INCLUDE sqlca;
+EXEC SQL BEGIN DECLARE SECTION;
+        char szhFormatoFecha_1  [11];
+        char szhFormatoFecha_2  [20];
+        char szhFormatoFecha_3   [9];
+        char sCodmodulo          [30];
+        char sTabla             [30];
+        char sColumna           [50];
+        int  itipdireccion;
+	char sfecha_desde	[10];
+	char sfecha_hasta	[10];
+	long lnum_terminal	[STR_DETALLE];
+        char sznombre		[STR_DETALLE][90];
+        char szdireccion	[STR_DETALLE][70];
+        char szdes_cuidad	[STR_DETALLE][31];
+        char szdes_incidencia   [STR_DETALLE][30];
+        char szrec_descripcion	[STR_DETALLE][50];
+        char szcod_estado	[STR_DETALLE][5];
+        char szfec_reclamo	[STR_DETALLE][30];
+        char szfec_solucion	[STR_DETALLE][30];
+        char szTime			[15];
+        char sFechaDesde		[11];
+        char sFechaHasta		[11];        
+        int  ihret = 0;
+        int  ihcont= 0;
+        long lRegistros=0;
+        long lTotRegistro=0;
+        int  iretorno    =0;
+	int lhTotCartRows;        
+	int lhTotDetRows;
+       SQL_CURSOR recup_detalle;    /* cursor */
+EXEC SQL END DECLARE SECTION;
+
+FILE *pRReporte;
+LINEACOMANDO    stLineaComando;
+char szError[512]  = "";
+
+int iretorno;
+
+/*************************************************************************************************************/
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene los Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog(char *szhNomLog)
+{
+        char modulo[]="ifnPreparaArchivoLog";
+        int sts=0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+		char szhPathXpc [256];
+        EXEC SQL END DECLARE SECTION;
+
+                sprintf(stStatusB.szFileName,"%s",szhNomLog);
+                sprintf(szhPathLogSched,"%s/suptel",getenv("XPF_LOG"));
+                sprintf(szhPathXpc,"%s/suptel",getenv("XPF_LOG"));
+                sprintf(stStatusB.szLogPathGene,"%s",szhPathLogSched);
+                sts = ifnAbreArchivoLog(1);
+        return sts;
+
+} /* end ifnPreparaArchivoLog */
+/*************************************************************************************************************/
+/* ============================================================================= */
+/* ifnAbreArchivoLog()                                                           */
+/* ============================================================================= */
+int ifnAbreArchivoLog(int iCrearDir)
+{
+        char modulo[]="ifnAbreArchivoLog";
+        char szArchivoLog[256]=""; /* log */
+        char szArchivoErr[256]=""; /* errores */
+        char szComando[256]="";
+        static char szAux[9];
+
+        memset(szArchivoLog,0,sizeof(szArchivoLog)); /* log */
+        memset(szArchivoErr,0,sizeof(szArchivoErr)); /* errores */
+
+        strcpy (szAux,(char *)szSysDateBen("YYYYMMDD")); /* obtiene fecha actual */
+        sprintf(szComando,"/usr/bin/mkdir -p %s/%s",stStatusB.szLogPathGene,szAux);
+	
+        if (system (szComando)!=0)
+        {
+                /* no pudo crear el directorio */
+                fprintf (stderr,"Error al intentar crear directorio de Log\n");
+                fflush  (stderr);
+                return -1;
+        }
+
+        sprintf(szArchivoLog,"%s/%s/%s.log",stStatusB.szLogPathGene,szAux,stStatusB.szFileName);
+        sprintf(szArchivoErr,"%s/%s/%s.err",stStatusB.szLogPathGene,szAux,stStatusB.szFileName);
+
+        if((stStatusB.LogFile = fopen(szArchivoLog,"a")) == (FILE*)NULL )
+        {
+                fprintf (stderr,"Error al crear archivo de Log\n");
+                fflush  (stderr);
+                return -1;
+        }
+
+        if((stStatusB.ErrFile = fopen(szArchivoErr,"a")) == (FILE*)NULL )
+        {
+                fprintf (stderr,"Error al crear archivo de Errores\n");
+                fflush  (stderr);
+                return -1;
+        }
+
+
+        ifnTrazasLog(modulo, "\n\n**************************************************************************",INFALL);
+        ifnTrazasLog(modulo, "**************************************************************************",INFALL);
+        ifnTrazasLog(modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n",LOG03 ,szSysDateBen("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+        return 0;
+
+}/* end ifnAbreArchivoLog */
+/***********************************************************************************************************/
+
+/* ============================================================================= */
+/* ifnTrazasLog (char*,char*,int,...)                                            */
+/* Parametros: szExeNameApp      Nombre del programa que llama a ifnTrazasLog    */
+/*             szTxt          Texto a incluir el el fichero de log               */
+/*             iNivel         Nivel de log                                       */
+/* Modificaciones :                                                              */
+/*    10-ABR-2000 : Agrega valores de retorno para verificar estado de termino   */
+/*    11-ABR-2000 : LOG00-LOG03 anteponen la hora de la base de datos al mensaje */
+/*                  LOG04 en adelante, escribe solo el mensaje tal cual          */
+/* ============================================================================= */
+int ifnTrazasLog (char* szExeNameApp, char* szTxt, int iNivel,...)
+{
+	char  	szhDateTime [32];
+        char 	szMsg[TAMBUFSIZ]="";
+        va_list ap;
+        int 	iAux = 0;
+        FILE 	*fh;    /* file handler generico */
+
+        fh = (stStatusB.LogFile == (FILE *)NULL)?stderr:stStatusB.LogFile;
+
+    	sprintf(szhDateTime,"[%s]","--");
+    	
+
+        va_start (ap,szTxt);
+        vsprintf (szMsg,szTxt,ap);  /* pasa el texto con los formatos ... a un string normal */
+        va_end   (ap);
+
+
+        /* NUEVO CONCEPTO */
+        if (iNivel == INFALL) /* si es un mensaje para todos los archivos abiertos */
+        {
+                iAux = fprintf (fh,"\n%s",szMsg);                                              /* Log */
+                if (stStatusB.ErrFile != (FILE *)NULL)
+                {
+                        fprintf (stStatusB.ErrFile,"\n%s",szMsg); /* Errores */
+                        fflush (stStatusB.ErrFile);
+                }
+                if (stStatusB.EstFile != (FILE *)NULL)
+                {
+                        fprintf (stStatusB.EstFile,"\n%s",szMsg); /* Estadisticas */
+                        fflush (stStatusB.EstFile);
+                }
+
+        }
+
+        if (iNivel == EST00) /* si es un mensaje que va a la estadistica */
+        {
+                iNivel = LOG03 ; /* baja nivel de log, para que tambien vaya al Log */
+                if (stStatusB.EstFile != (FILE *)NULL)
+                {
+                        fprintf(stStatusB.EstFile,"\n%s %s",szhDateTime,szMsg);
+                        fflush (stStatusB.EstFile);
+                }
+        }
+
+
+        if (iNivel <= stStatusB.iLogNivel)
+        {
+                switch (iNivel)
+                {
+                        case LOG00: iAux = fprintf (fh,"\n%s\tError Oracle (%s): %s",szhDateTime,szExeNameApp,szMsg);
+                        if (stStatusB.ErrFile != (FILE *)NULL)
+                        {
+                                fprintf(stStatusB.ErrFile,"\n%s\tError Oracle (%s): %s",szhDateTime,szExeNameApp,szMsg);
+                                fflush (stStatusB.ErrFile);
+                        }
+                        break;
+
+                        case LOG01: iAux = fprintf (fh,"\n%s\tError (%s): %s",szhDateTime,szExeNameApp,szMsg);
+                        if (stStatusB.ErrFile != (FILE *)NULL)
+                        {
+                                fprintf(stStatusB.ErrFile,"\n%s\tError (%s): %s",szhDateTime,szExeNameApp,szMsg);
+                                fflush (stStatusB.ErrFile);
+                        }
+                        break;
+
+                        case LOG02: iAux = fprintf (fh,"\n%s\tAviso (%s): %s",szhDateTime,szExeNameApp,szMsg);
+                        break;
+
+                        case LOG03: iAux = fprintf (fh,"\n%s %s",szhDateTime,szMsg);
+                        break;
+
+                        default:    iAux = fprintf (fh,"\n%s %s",szhDateTime,szMsg);
+                        break;
+
+                }/* end switch */
+
+        }/*end if */
+
+
+        if (iAux < 0) return -1; /* fallo el fprintf del archivo de log */
+
+        if ( fflush(fh) != 0 )  return -2; /* fallo el fflush */
+
+        return 0; /* todo salio bien */
+
+}
+/***********************************************************************************************************/
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs  */
+/* ============================================================================= */
+void vfnCierraArchivoLog(void)
+{
+        char modulo[]="vfnCierraArchivoLog";
+
+        ifnTrazasLog(modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n\n",INFALL ,szSysDateBen("[DD-MON-YYYY][HH24:MI:SS]"),getpid());
+
+        if ( fclose(stStatusB.LogFile) != 0 )
+        {
+                fprintf (stderr,"Error al cerrar archivo de Log\n");
+                fflush  (stderr);
+        }
+
+        if ( fclose(stStatusB.ErrFile) != 0 )
+        {
+                fprintf (stderr,"Error al cerrar archivo de Errores\n");
+                fflush  (stderr);
+        }
+
+        return;
+} /* end vfnCierraArchivoLog */
+/***********************************************************************************************************/
+/* ============================================================================= */
+/* Recibe el formato en el que desea retornar SYSDATE                            */
+/* Asume que se encuentra conectado a Oracle                                     */
+/* ============================================================================= */
+char *szSysDateBen (char *szFmto)
+{
+        static char szDT[32]="";
+        int iSqlCode=0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                char  szhDateTime [32]; EXEC SQL VAR szhDateTime IS STRING(32);
+                char szCadena[128]="";
+        EXEC SQL END DECLARE SECTION;
+
+        memset(szDT,'\0',sizeof(szDT));
+        memset(szhDateTime,'\0',sizeof(szhDateTime));
+        memset(szCadena,'\0',sizeof(szCadena));
+
+        iSqlCode=SQLCODE; /*guarda el estado de oracle antes de entrar*/
+
+        if ( *szFmto == '\0' )
+        {
+                sprintf(szDT,"-nullstring-");
+                return (char *)szDT;
+        }
+
+        sprintf(szCadena,"SELECT TO_CHAR(SYSDATE,'%s') FROM DUAL",szFmto);
+
+        EXEC SQL PREPARE SQL_DINAMICO FROM :szCadena;
+        if ( SQLCODE )
+        {
+                sprintf(szDT,"prepare:%d",SQLCODE);
+                SQLCODE=iSqlCode;
+                return (char *)  szDT;
+        }
+
+        EXEC SQL DECLARE CUR_DINAMICO CURSOR FOR SQL_DINAMICO;
+        if ( SQLCODE )
+        {
+                sprintf(szDT,"declare:%d",SQLCODE);
+                SQLCODE=iSqlCode;
+                return (char *)  szDT;
+        }
+
+        EXEC SQL OPEN CUR_DINAMICO;
+        if ( SQLCODE )
+        {
+                sprintf(szDT,"open:%d",SQLCODE);
+                SQLCODE=iSqlCode;
+                return (char *)  szDT;
+        }
+
+        do
+        {
+                EXEC SQL FETCH CUR_DINAMICO INTO :szhDateTime;
+                if ( SQLCODE == SQLOK )
+                {
+                        sprintf(szDT,"%s\0",szhDateTime);
+                }
+                else
+                {
+                        sprintf(szDT,"Fetch:%d",SQLCODE);
+                }
+        } while( FALSE );
+
+        EXEC SQL CLOSE CUR_DINAMICO;
+        if ( SQLCODE )
+        {
+                sprintf(szDT,"Close:%d",SQLCODE);
+                SQLCODE=iSqlCode;
+                return (char *)  szDT;
+        }
+
+
+        SQLCODE=iSqlCode; /*vuelve al estado de oracle antes de entrar*/
+        return (char *) szDT;
+}
+/***********************************************************************************************************/
+
+
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+        char            modulo[]="ifnValidaParametros";
+        /*-- Definicion de variables para controlar la lista de argumentos recibidos ----*/
+        extern char     *optarg;
+        extern int      optind, opterr, optopt;
+        char            opt[]   = ":u:f:l:t:";
+        char            *psztmp = "";
+        int             iOpt    = 0;
+        int             Userflag= 0;
+        int             Dateflag= 0;
+        int             Logflag = 0;
+
+/*-- Seteo de Valores Iniciales y por defecto -------------------------------------*/
+        opterr = 0;
+        /*stStatusB.iLogNivel = iLOGNIVEL_DEF ;*/
+
+/*-- En caso de Invocacion sin Parametros ----------------------------------------*/
+	if(argc < 6)
+        {
+        	fprintf (stderr,"\n\tError >> Faltan parametros obligatorios \n");	
+        	fprintf (stderr,"\n\tEjemplo >> rpt_reclamos_suptel -u / -f <fec_ini>/<fec_fin> -t<tipo reporte> -l <nivel log> \n");	
+        	return -1;
+        }
+
+        while ((iOpt=getopt(argc, argv, opt))!=EOF)
+        {
+                switch(iOpt)
+                {
+                        case 'u':  /*-- Usuario/Password --*/
+                        if(!Userflag)
+                        {
+                                strcpy(pstLC->szUsuarioOra, optarg);
+                                Userflag=1;
+                                if ((psztmp=(char *)strchr(pstLC->szUsuarioOra,'/'))==(char *)NULL)
+                                {
+                                        fprintf (stderr,"\n\tError >> Usuario no valido. Requiere '/' \n");
+                                        fflush  (stderr);
+					ifnTrazasLog("","\n Error Usuario no valido. Requiere '/' \n", LOG01);
+                                        return -1;
+                                }
+                                else
+                                {
+                                        strncpy (pstLC->szOraAccount,pstLC->szUsuarioOra,psztmp-pstLC->szUsuarioOra);
+                                        strcpy  (pstLC->szOraPasswd, psztmp+1);
+					ifnTrazasLog("","\n Usuario[%s]/Passwd[%s]\n",LOG03,pstLC->szUsuarioOra,pstLC->szOraPasswd);
+	
+        	                }
+                        }
+                        else
+                        {
+                                fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                                fflush  (stderr);
+				ifnTrazasLog("","\n Error opcion '-%c' duplicada\n", LOG01, optopt);
+                                return -1;
+                        }
+                        break;
+
+                        case 'f':  /*-- FechaInicio/FechaFin --*/
+                        if(!Dateflag)
+                        {
+                                strcpy(pstLC->sFechaProceso, optarg);
+                                Dateflag=1;
+                                if ((psztmp=(char *)strchr(pstLC->sFechaProceso,'/'))==(char *)NULL)
+                                {
+                                        fprintf (stderr,"\n\tError >> No ingreso fechas.\n");
+                                        fflush  (stderr);
+                                        return -1;
+                                }
+                                else
+                                {
+                                        strncpy (pstLC->sFechaDesde,pstLC->sFechaProceso,psztmp-pstLC->sFechaProceso);
+                                        strcpy  (pstLC->sFechaHasta, psztmp+1);
+                                }
+                        }
+                        else
+                        {
+                                fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                                fflush  (stderr);
+				ifnTrazasLog("","\n Error opcion '-%c' duplicada \n", LOG01, optopt);
+                                return -1;
+                        }
+                     
+                        break;
+
+
+                        case 't': /*--Tipo de Reporte --*/
+                                strcpy(pstLC->sTipoRpt,optarg);
+                                
+                                if ((strcmp(optarg,"c")==0)||(strcmp(optarg,"C")==0)||(strcmp(optarg,"i")==0)||(strcmp(optarg,"I")==0))
+                                {
+	                                if ((psztmp=(char *)strchr(pstLC->sTipoRpt,'\0'))==(char *)NULL)
+	                                {
+	                                        fprintf (stderr,"\n\tError >> Debe ingresar tipo de Reporte (i:inividual;c:coporativo).\n");
+	                                        fflush  (stderr);
+	                                        return -1;
+	                                }
+	                                else
+	                        	{
+						if ((strcmp(optarg,"C")==0))
+						{
+							strcpy(pstLC->sTipoRpt,"c");
+						}
+						if ((strcmp(optarg,"I")==0))
+						{
+							strcpy(pstLC->sTipoRpt,"i");
+						}
+	                                }
+				}
+				else
+				{
+                                        fprintf (stderr,"\n\tError >> Debe ingresar tipo de Reporte (i:inividual;c:coporativo).\n");
+                                        fflush  (stderr);
+                                        return -1;
+				}
+	
+                        break;
+
+                        case 'l': /*-- Nivel de Log --*/
+                        if(!Logflag)
+                        {
+                        	if (atoi(optarg)>0)
+                        	{
+                                	stStatusB.iLogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                                	Logflag=1;
+                                }
+                                else
+                                {
+	                                fprintf (stderr,"Nivel de log Incorrecto\n",optopt);
+	                                fflush  (stderr);
+	                                return -1;
+                                }
+                        }
+                        else
+                        {
+                                fprintf (stderr,"\n\tError >> opcion '-%c' duplicada\n",optopt);
+                                fflush  (stderr);
+				ifnTrazasLog("","\n Error opcion '-%c' duplicada \n", LOG01, optopt);
+                                return -1;
+                        }
+                        break;
+
+                        case '?':
+                        fprintf (stderr,"\n\tError >> opcion '-%c' es desconocida\n",optopt);
+                        fflush  (stderr);
+			ifnTrazasLog("","\n Error opcion '-%c' es desconocida \n", LOG01, optopt);
+                        return -1;
+
+                        case ':':
+                        fprintf (stderr,"\n\tError >> falta argumento para opcion '-%c'\n",optopt);
+                        fflush  (stderr);
+			ifnTrazasLog("","\n Error falta argumento para opcion '-%c' \n", LOG01, optopt);
+                        return -1;
+                }
+        }
+        pstLC->iLogLevel = stStatusB.iLogNivel;
+        return 0;
+} /* bfnValidaParamatros */
+
+
+int ifnOraConnect( char *szUser, char *szPasw )
+{ 
+	
+  
+  EXEC SQL BEGIN DECLARE SECTION;
+       char hszConnectStr[129]; EXEC SQL VAR hszConnectStr IS STRING(129);
+       char szhUser[30]; EXEC SQL VAR szhUser IS STRING(30);
+  EXEC SQL END DECLARE SECTION;
+
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+
+  strcpy(hszConnectStr,szUser);
+  strcat(hszConnectStr,"/");
+  strcat(hszConnectStr,szPasw);
+  EXEC SQL CONNECT :hszConnectStr;
+  
+  if( sqlca.sqlcode != 0 )
+  {
+      fprintf(stderr, "<< Error Oracle: %s \n",SQLERRM);
+      return -1;
+  }
+
+  
+  EXEC SQL SELECT USER INTO :szhUser FROM DUAL;
+
+  strcpy(szUser,szhUser);
+  fprintf(stderr, "Conectando Oracle[%s]\n",szUser);
+  return 0;
+}
+
+
+int ifnCargaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+        char modulo[]="ifnCargaParametros";
+
+        szTime[0]='\0';
+        EXEC SQL SELECT ge_fn_devvalparam('GE',1,'FORMATO_SEL2') INTO :szhFormatoFecha_1 FROM DUAL;
+        EXEC SQL SELECT ge_fn_devvalparam('GE',1,'FORMATO_SEL6')||ge_fn_devvalparam('GE',1,'FORMATO_SEL20') INTO :szhFormatoFecha_2 FROM DUAL;
+        EXEC SQL SELECT ge_fn_devvalparam('GE',1,'FORMATO_SEL6') INTO :szhFormatoFecha_3 FROM DUAL;
+        EXEC SQL SELECT TO_CHAR(SYSDATE,:szhFormatoFecha_2) INTO :szTime FROM DUAL;
+
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) return -1;
+        itipdireccion =1;
+        sprintf(sCodmodulo,"%s","GA");
+        sprintf(sTabla,"GE_CATEGORIAS");
+
+        if (strncmp(pstLC->sTipoRpt,"i",1)==0)
+	{
+		sprintf(sColumna,"%s","INDIVIDUAL");
+	}
+	else if (strncmp(pstLC->sTipoRpt,"c",1)==0) 
+	{
+		sprintf(sColumna,"%s","CORPORATIVO");
+	}
+	else 
+        {
+	 	ifnTrazasLog(modulo,"\n Error Tipo Reporte\n", LOG01);	
+                return -1;
+        }
+        
+	ifnTrazasLog(modulo,"\n Tipo de Reporte: [%s]\n",LOG03,sColumna);
+	
+    	sprintf(sFechaDesde,"%s",pstLC->sFechaDesde);
+    	sprintf(sFechaHasta,"%s",pstLC->sFechaHasta);
+    	EXEC SQL SELECT  TO_CHAR(TO_DATE(:sFechaDesde,:szhFormatoFecha_3),:szhFormatoFecha_1)
+    		   	,TO_CHAR(TO_DATE(:sFechaHasta,:szhFormatoFecha_3),:szhFormatoFecha_1)
+    	     	INTO  :sFechaDesde,:sFechaHasta
+    	      	FROM  DUAL;	
+    	      	
+    	if( SQLCODE != SQLOK  ) 
+    	{
+    	        ifnTrazasLog(modulo,"\n Error Fechas ingresadas invalidas\n", LOG01);	
+    		return -1;
+    	}
+        return 0;
+} /* ifnCargaParametros */
+
+void ifnGeneraCabecera(int argc, char *argv[], LINEACOMANDO *pstLC )
+{ 
+
+    int i=0;
+
+    fseek(pRReporte,0,0);
+
+    	      
+    fprintf(pRReporte, "\n ||SUPTEL %s|||||| \n", sColumna);
+    fprintf(pRReporte, "|||||FECHA INICIO| %s| ",sFechaDesde);
+    fprintf(pRReporte, "FECHA FINAL| %s| \n", sFechaHasta);
+    fprintf(pRReporte, "No CELULAR     |NOMBRE     |DIRECCION     |CIUDAD     |DESCRIPCION     |DETALLE     |ESTADO     |F CREACION     |F SOLUCION\n"); 
+}
+/* ifnGeneraCabecera */
+
+void ifnGeneraPie(int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+		char sSysdate [20];
+	EXEC SQL END DECLARE SECTION;
+    int i=0;
+    EXEC SQL SELECT TO_CHAR (sysdate,ge_fn_devvalparam('GE',1,'FORMATO_SEL2')) INTO :sSysdate FROM DUAL;
+    
+
+    fprintf(pRReporte, "\n TOTAL| %ld||||||| \n",lhTotCartRows );
+    fprintf(pRReporte, "%s|||||||| ", sSysdate);
+}
+/* ifnGeneraPie */
+
+int ifnGeneraDetalle( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    	char sFechaDefecto [11]= "01-01-1900";
+    EXEC SQL END DECLARE SECTION;
+
+	char modulo[]="ifnGeneraDetalle";
+
+
+    
+             EXEC SQL DECLARE recup_detalle CURSOR for
+             SELECT c.num_terminal, 
+	   		REPLACE(REPLACE(REPLACE(REPLACE(b.nom_cliente||' '||b.nom_apeclien1||' '||b.nom_apeclien2 ,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(e.nom_calle  ||' '||e.num_calle    ||' '||e.num_piso ,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(h.des_ciudad,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	       		REPLACE(REPLACE(REPLACE(REPLACE(f.des_incidencia,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(a.rec_descripcion,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		a.cod_estado, 
+	   		nvl(TO_CHAR(a.fec_reclamo,:szhFormatoFecha_1),' '),
+	   		nvl(TO_CHAR(a.fec_solucion,:szhFormatoFecha_1),' ')
+		FROM 	ga_direccli d,ge_direcciones e,ge_clientes b , re_terminales c,re_reclamos a ,ge_ciudades h, ca_tipincidencias f		
+		WHERE   b.cod_cliente       = a.cod_cliente
+		AND   	a.fec_reclamo BETWEEN to_date(:sFechaDesde,:szhFormatoFecha_1) AND to_date(:sFechaHasta,:szhFormatoFecha_1)		
+		AND   	f.tip_incidencia    = a.tip_reclamo
+		AND   	c.num_reclamo       = a.num_reclamo
+		AND     EXISTS (SELECT i.cod_valor FROM ged_codigos i
+			    	WHERE  i.cod_modulo        = :sCodmodulo
+				AND    i.nom_tabla         = :sTabla
+				AND    i.nom_columna       = :sColumna
+				AND    TO_NUMBER(i.cod_valor)=b.cod_categoria)  
+		AND     d.cod_cliente       = b.cod_cliente
+		AND     d.cod_tipdireccion  =  :itipdireccion
+		AND     e.cod_direccion     = d.cod_direccion 
+		AND     e.cod_region 	    = h.cod_region
+		AND     e.cod_provincia     = h.cod_provincia
+		AND     e.cod_ciudad	    = h.cod_ciudad
+		UNION ALL
+		SELECT 	c.num_terminal, 
+	   		REPLACE(REPLACE(REPLACE(REPLACE(b.nom_cliente||' '||b.nom_apeclien1||' '||b.nom_apeclien2 ,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(e.nom_calle  ||' '||e.num_calle    ||' '||e.num_piso ,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(h.des_ciudad,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	       		REPLACE(REPLACE(REPLACE(REPLACE(f.des_incidencia,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(a.rec_descripcion,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		a.cod_estado, 
+	   		nvl(TO_CHAR(a.fec_reclamo,:szhFormatoFecha_1),' '),
+	   		nvl(TO_CHAR(a.fec_eliminacion,:szhFormatoFecha_1),' ')
+		FROM 	ga_direccli d,ge_direcciones e,ge_clientes b , re_terminales c,re_ereclamos a ,ge_ciudades h, ca_tipincidencias f		
+		WHERE   b.cod_cliente       = a.cod_cliente
+		AND   	a.fec_reclamo BETWEEN to_date(:sFechaDesde,:szhFormatoFecha_1) AND to_date(:sFechaHasta,:szhFormatoFecha_1)
+		AND   	f.tip_incidencia    = a.tip_reclamo
+		AND   	c.num_reclamo       = a.num_reclamo
+		AND     EXISTS (SELECT i.cod_valor FROM ged_codigos i
+			        WHERE  i.cod_modulo        = :sCodmodulo
+				AND    i.nom_tabla         = :sTabla
+				AND    i.nom_columna       = :sColumna		
+				AND    TO_NUMBER(i.cod_valor)=b.cod_categoria)  
+		AND     d.cod_cliente       = b.cod_cliente
+		AND     d.cod_tipdireccion  =  :itipdireccion
+		AND     e.cod_direccion     = d.cod_direccion 
+		AND     e.cod_region 	    = h.cod_region
+		AND     e.cod_provincia     = h.cod_provincia
+		AND     e.cod_ciudad	    = h.cod_ciudad
+		UNION ALL
+		SELECT 	c.num_terminal, 
+	   		REPLACE(REPLACE(REPLACE(REPLACE(b.nom_cliente||' '||b.nom_apeclien1||' '||b.nom_apeclien2 ,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(e.nom_calle  ||' '||e.num_calle    ||' '||e.num_piso ,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(h.des_ciudad,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	       		REPLACE(REPLACE(REPLACE(REPLACE(f.des_incidencia,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		REPLACE(REPLACE(REPLACE(REPLACE(a.rec_descripcion,CHR(13)||CHR(10),''),CHR(9),''),'|',''),CHR(13),''),
+	   		a.cod_estado, 
+	   		nvl(TO_CHAR(a.fec_reclamo,:szhFormatoFecha_1),' '),
+	   		nvl(TO_CHAR(a.fec_solucion,:szhFormatoFecha_1),' ')
+		FROM 	ga_direccli d,ge_direcciones e,ge_clientes b , re_terminales c,re_hreclamos a ,ge_ciudades h, ca_tipincidencias f		
+		WHERE   b.cod_cliente       = a.cod_cliente
+		AND   	a.fec_reclamo BETWEEN to_date(:sFechaDesde,:szhFormatoFecha_1) AND to_date(:sFechaHasta,:szhFormatoFecha_1)
+		AND   	f.tip_incidencia    = a.tip_reclamo
+		AND   	c.num_reclamo       = a.num_reclamo
+		AND     EXISTS (SELECT i.cod_valor FROM ged_codigos i
+			        WHERE  i.cod_modulo        = :sCodmodulo
+				AND    i.nom_tabla         = :sTabla
+				AND    i.nom_columna       = :sColumna		
+				AND    TO_NUMBER(i.cod_valor)=b.cod_categoria)  
+		AND     d.cod_cliente       = b.cod_cliente
+		AND     d.cod_tipdireccion  =  :itipdireccion
+		AND     e.cod_direccion     = d.cod_direccion 
+		AND     e.cod_region 	    = h.cod_region
+		AND     e.cod_provincia     = h.cod_provincia
+		AND     e.cod_ciudad	    = h.cod_ciudad;
+
+
+    	if(( SQLCODE != SQLOK))
+    	{
+	        ifnTrazasLog(modulo,"Fallo en recup_detalle\n\t\t[%s]",LOG06,SQLERRM);
+        	sprintf(szError,"Fallo en recup_detalle\n\t\t[%s]",SQLERRM);
+        	EXEC SQL CLOSE :recup_detalle;
+        	return -1;
+    	}
+    
+        EXEC SQL OPEN recup_detalle;
+        if ( SQLCODE != SQLOK ) 
+        {   
+                ifnTrazasLog(modulo,"en OPEN cursor Benef \n\t\t%s",LOG01,SQLERRM);
+                sprintf(szError,"Fallo en OPEN cursor Benef \n\t\t[%s]",SQLERRM);
+                return -1;  
+        }
+
+    		lRegistros=0;
+    		lTotRegistro=0;
+    		ihcont=0;
+    		
+    		while( 1 )
+    		{
+        		EXEC SQL FETCH recup_detalle
+                  	INTO    :lnum_terminal,
+                          	:sznombre,
+                          	:szdireccion,
+                          	:szdes_cuidad,
+                          	:szdes_incidencia,
+                          	:szrec_descripcion,
+                          	:szcod_estado,
+                          	:szfec_reclamo,
+                          	:szfec_solucion;
+
+			
+    			if(( SQLCODE != 0) && ( SQLCODE != 1403))
+        		{
+                		ihcont = ihcont -1;
+                		break;
+        		}
+        		lhTotCartRows = SQLROWS;
+        		lRegistros = lhTotCartRows - ihcont * STR_DETALLE;
+        		ifnTrazasLog( modulo, "\t\tNumero de Calculado por FETCH. [%ld]",LOG03, lRegistros);
+        		ifnTrazasLog( modulo, "\t\tNumero de Traido por FETCH. [%ld]",LOG03, lhTotCartRows);
+
+        		if (lRegistros <0) lRegistros = 0;
+        		if (lRegistros==0)
+        		{
+            			break;
+        		}
+        		else
+        		{ 
+        			/*Copia cantidad de registros al archivo de Reporte  */
+	    			ifnDetalleReporte(lRegistros);
+	    			ihcont++;
+	    			ini_Arreglo();
+            			ifnTrazasLog( modulo, "\t\tNumero de Registro en Detalle por FETCH. [%ld]",LOG03, lhTotCartRows);
+            			ifnTrazasLog( modulo, "\t\tProcesando Bloque de Detalle, No. [%ld]",LOG03, lRegistros);
+        		}	
+	
+			if( SQLCODE != SQLOK) 
+        		{
+        			if (SQLCODE == SQLNOTFOUND )
+        			{
+            				ifnTrazasLog( modulo, "FETCH cursor recup_detalle.\n\t\t[%s]", LOG01, SQLERRM );
+            				sprintf(szError,"Error FETCH cursor recup_detalle.\n\t\t[%s]",SQLERRM);
+            				iretorno =-1;
+            				break;
+            			}
+        		}
+        		if(( SQLCODE == SQLNOTFOUND ))  break;
+    		}/* while( 1 ) */
+    		EXEC SQL CLOSE :recup_detalle;
+    		if (iretorno != 0 ) return -1;
+    		ifnTrazasLog( modulo, "\t\tTotal de Registro Insertado en Archivo de Reporte.  ===> [%ld]",LOG03,lhTotCartRows);
+    		return 0;
+}
+void ini_Arreglo()
+{
+	memset(lnum_terminal	,  0 ,sizeof(lnum_terminal      ));	           
+	memset(sznombre		,'\0',sizeof(sznombre	       ));
+	memset(szdireccion	,'\0',sizeof(szdireccion	       )); 
+	memset(szdes_cuidad	,'\0',sizeof(szdes_cuidad       ));        
+	memset(szdes_incidencia	,'\0',sizeof(szdes_incidencia   ));
+	memset(szrec_descripcion,'\0',sizeof(szrec_descripcion  ));     
+	memset(szcod_estado	,'\0',sizeof(szcod_estado       ));        
+	memset(szfec_reclamo	,'\0',sizeof(szfec_reclamo      ));        
+	memset(szfec_solucion	,'\0',sizeof(szfec_solucion     ));        
+
+}
+void ifnDetalleReporte(long index)
+{
+    int i=0;
+	
+    for (i=0;i<index;i++)
+    {
+    	fprintf(pRReporte, "\n %ld ", lnum_terminal[i]);
+    	fprintf(pRReporte, "| %s ", sznombre[i]);
+    	fprintf(pRReporte, "| %s ", szdireccion[i]);
+    	fprintf(pRReporte, "| %s ", szdes_cuidad[i]);
+    	fprintf(pRReporte, "| %s ", szdes_incidencia[i]);
+    	fprintf(pRReporte, "| %s ", szrec_descripcion[i]);
+    	fprintf(pRReporte, "| %s ", szcod_estado[i]);
+    	fprintf(pRReporte, "| %s ", szfec_reclamo[i]);	
+    	fprintf(pRReporte, "| %s ", szfec_solucion[i]); 
+    }
+    
+}
+/* ifnDetalleReporte */
+
+/***********************/
+/* Cuerpo del Programa */
+/***********************/
+int  main(argc,argv)
+int     argc ;
+char  **argv ;
+{
+   char szcod_serv[12];
+   char szReporte[512]  = "";
+   char szLog[512]  = "";
+   char szTipoReporte[50]  = "";
+   char  szgCodProceso[5] = "RPTSB";
+   /*--------------------------------------------*/
+   int x=0;
+   memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+   sprintf(szEnvDat,"%s",getenv("XPF_DAT"));
+
+    
+   sprintf(szError,"%s/%s.err", szEnvLog, szBaseName);
+   sprintf(szLog,"%s/%s.log", szEnvLog, szBaseName);
+
+   
+   
+ 
+  if (!ifnValidaParametros(argc,argv,&stLineaComando)!=0)
+  {
+  	
+ 	 if (ifnOraConnect(stLineaComando.szOraAccount,stLineaComando.szOraPasswd  )==0 )
+ 	 {
+
+                if (ifnPreparaArchivoLog(szgCodProceso) != 0) 
+                {
+                        fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+                 } 
+                else 
+		{	 	
+		          printf("Ejecutando programa rpt_reclamos_suptel.pc\n");
+			  ifnTrazasLog("","\n Ejecutando programa rpt_reclamos_suptel.pc\n",LOG03);
+			  if (ifnCargaParametros(argc,argv,&stLineaComando)==0 )
+			  {
+			   	  sprintf(szBaseName, "rpt_%s_%s",sColumna,szTime);
+			   	  sprintf(szReporte, "%s/%s.dat", szEnvDat, szBaseName);
+			  	 
+			  	   if((pRReporte = fopen(szReporte, "wb+")) == NULL )
+				  {
+				        fprintf(stderr,"No pudo crearse archivo de reporte [%s].\n"
+				        			   "Proceso se cancela.\n", szReporte);
+				        ifnTrazasLog("","\n No pudo crearse el archivo de reporte [%s] \n", LOG01,  szReporte);
+				        ifnTrazasLog("","\n No pudo crearse el archivo de reporte [%s] \n", LOG01,szReporte);
+				        
+					fclose(pRReporte);
+				    	pRReporte = NULL ;
+				 
+				   }
+				   ifnGeneraCabecera(argc,argv,&stLineaComando);
+				   ifnGeneraDetalle( argc,argv,&stLineaComando);
+				   ifnGeneraPie(argc,argv,&stLineaComando);
+			  }
+			  else 
+			  {	
+			  	fprintf(stderr,"Error en Cargar Parametros consulte LOG\n");
+				ifnTrazasLog("","\n Error al Cargar Parametros\n", LOG01);      
+				return -1;
+			  }
+			  /********************Generacion del Reporte****************************/
+		 }
+	}
+	else
+	{
+	  	fprintf(stderr,"Error de conexion a Base de Datos rpt_reclamos_suptel.pc\n");
+	    	return -1;		
+	}
+  }
+  else
+  {
+  	fprintf(stderr,"Finalizando NO OK programa rpt_reclamos_suptel.pc\n");
+    	return -1;
+  }
+  ifnTrazasLog("","\n Finalizando OK programa rpt_reclamos_suptel.pc\n",LOG03);
+  fprintf(stderr,"Finalizando OK programa rpt_reclamos_suptel.pc\n");
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

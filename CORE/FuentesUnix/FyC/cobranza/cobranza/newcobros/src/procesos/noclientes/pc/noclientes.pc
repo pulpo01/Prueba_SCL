@@ -1,0 +1,1726 @@
+/* ============================================================================= */
+/*
+    Tipo        :  	COLA DE PROCESO
+
+    Nombre      :  	noclientes.pc
+
+    Descripcion :  	Realiza seleccion de clientes para ser enviados a cobranza de no clientes
+    				
+
+    Recibe      :  	Usuario/Password. ( por defecto asume los de la cuenta )
+                   	Nivel de Log ( por defecto asume 3 : Log Normal ) 
+                   	Nombre de la Cola (Opcional), para nombrar archivos de log
+                   
+    Devuelve    :  	Valor entero para indicar el status de termino.
+                   	Interactua con la Base de Datos y el archivo de Log para registrar
+                   	como se desarrolla su ejecucion.
+    
+    Autor       :  	Manuel Garcia G.
+    Fecha       :  	Julio 2002.
+    
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+
+#include "noclientes.h"
+
+EXEC SQL INCLUDE sqlca;
+LINEACOMANDO	stLineaComando;		/* Datos con los que se invoco al proceso */
+
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhgCodProceso[6]; 			EXEC SQL VAR szhgCodProceso IS STRING (6); /* codigo de proceso */
+	HDATOSPROCESO sthDatosProcesos;
+	HDATOSRUT	  sthRuts;
+	char		  szhEntGestion[21];
+EXEC SQL END DECLARE SECTION;
+
+DATOSPROCESO stDatosProcesos[MAXPROCESO];
+DATOSRUT	 stRuts[MAXRUT];
+DOCTOSNCLI	 stDoctosNCli[MAXDOCTOS];
+
+/****************************************************************************************************/
+/* main																		      					*/
+/****************************************************************************************************/
+int main( int argc, char *argv[] )
+{
+	char  modulo[] = "main";
+	 int  iResult = 0;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhCodEstado[2]; EXEC SQL VAR szhCodEstado IS STRING (2);
+	EXEC SQL END DECLARE SECTION;
+    
+    memset( szhgCodProceso, '\0', sizeof( szhgCodProceso ) );
+	strcpy( szhgCodProceso, szCODPROCESO );
+	
+	fprintf( stdout, "\n%s PROCESO => %s - PID => %ld - VERSION => %s.\n", szGetTime(1), szhgCodProceso, getpid(), szVERSION );
+    fflush ( stdout );
+
+    /*- Validacion de parametros de entrada -*/
+	memset( &stLineaComando, 0, sizeof( LINEACOMANDO ) );
+	if( ifnValidaParametros( argc, argv, &stLineaComando ) != 0 )    
+	{
+		fprintf( stdout, "\n\tError >> Fallo la Validacion de Parametros \n" );
+		fflush ( stdout );
+		iResult = -1; /* Fallo validacion */
+	}
+	else
+	{    
+		if( ifnConexionDB( &stLineaComando ) != 0 ) /* coneccion a la base de datos */   
+		{
+			fprintf( stdout, "\n\tError >> Fallo la Conexion a la Base \n" );
+			fflush ( stdout );
+			iResult = -2; /* Fallo conexion */
+		}
+		else
+		{
+			if( ifnPreparaArchivoLog() != 0 ) /* Prepara Archivo de Log */     
+			{
+				fprintf( stdout, "\n\tError >> Fallo Archivo de Log (Local al proceso) \n" );
+				fflush ( stdout );
+				iResult = -3;  /* Fallo Log */
+			}
+			else
+			{
+				if( ifnEjecutaCola() != 0 ) /* Ejecuta el proceso propiamente tal */   
+				{
+					fprintf( stdout, "\n\tError >> Fallo el proceso.\n" );
+					fflush ( stdout );
+					iResult = -4; /* Fallo Proceso */
+				}
+				else /* proceso salio con 0 ( supuestamente cola de vuelta en wait ) */
+				{
+					if( !bfnRecuperaEstadoCola( szhgCodProceso, szhCodEstado ) )
+					{
+						fprintf( stdout, "\n\tError >> Fallo el proceso ( Validacion Cola Wait ) \n" );
+						fflush ( stdout );
+						ifnMailAlert( szhgCodProceso, "TODOS", "FALLO LA VALIDACION FINAL DE LA COLA." );
+						iResult = -5; /* Fallo Proceso */
+					}
+					else
+					{
+						if( strcmp( szhCodEstado, "W" ) )
+						{
+							if( !bfnCambiaEstadoCola( szhgCodProceso, szhCodEstado, "W" ) ) /*'? -> WAIT'*/
+							{
+								if( !bfnOraRollBack() ) 
+									ifnTrazasLog( modulo, "En Rollback '?->W' : %s", LOG00, SQLERRM );
+								return ERROR;
+							}
+							
+							if( !bfnOraCommit() ) 
+							{
+								fprintf( stdout, "\n\tError >> Fallo el proceso ( Commit Cola Wait ) %s.\n", SQLERRM );
+								fflush ( stdout );
+								ifnMailAlert( szhgCodProceso, "TODOS", "FALLO EL COMMIT DE LA COLA 'WAIT'." );
+								iResult = -6; /* Fallo Proceso */
+							}                            
+							ifnTrazasLog( modulo, "OK. Cola forzada a espera", LOG02 );
+						}
+					} /* if( !bfnRecuperaEstadoCola( szhgCodProceso, szhCodEstado ) ) */
+				} /* if( ifnEjecutaCola() != 0 ) */
+				vfnCierraArchivoLog();
+			} /* if( ifnPreparaArchivoLog() != 0 ) */
+		} /* if( ifnConexionDB( &stLineaComando ) != 0 ) */
+	} /* if( ifnValidaParametros( argc, argv, &stLineaComando ) != 0 ) */
+
+    return iResult;
+} /* int main( int argc, char *argv[] ) */    
+
+/****************************************************************************************************/
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      					*/
+/****************************************************************************************************/
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+	char modulo[] = "ifnValidaParametros";
+
+    /* Definicion de variables para controlar la lista de argumentos recibidos */
+	extern  char  *optarg;
+	extern   int  optind, opterr, optopt;
+			 int  iOpt = 0;
+			char  opt[] = ":u:l:n:";
+	/* Variables locales */  
+	char  *psztmp = "";
+	/* Flags de los valores recibidos */
+	int   iUserflag = 0, iLogflag = 0;
+
+	/* Seteo de Valores Iniciles y por defecto */
+    opterr = 0;
+	stStatus.iLogNivel = iLOGNIVELDEFAULT;
+    
+	/* En caso de Invocacion sin Parametros */
+    if( argc == 1 ) return OK; /*ok asume valores por defecto */
+
+	/* Analisis de los argumentos recibidos */
+    while( ( iOpt = getopt( argc, argv, opt ) ) != EOF )
+    {
+        switch( iOpt )
+        {
+            case 'u':  /*-- Usuario/Password --*/
+                 if( !iUserflag )
+                {
+                    strcpy( pstLC->szUsuarioOra, optarg );                      
+                    iUserflag = 1;
+                    if( ( psztmp = (char *)strchr( pstLC->szUsuarioOra,'/' ) ) == (char *)NULL )
+                    {
+                        fprintf( stderr, "\n\tError >> Usuario no valido. Requiere '/' \n" );
+                        fflush ( stderr );
+                        return ERROR;
+                    }
+                    else
+                    {
+                        strncpy( pstLC->szOraAccount, pstLC->szUsuarioOra, psztmp-pstLC->szUsuarioOra );
+                        strcpy ( pstLC->szOraPasswd, psztmp + 1 );
+                    }
+                }
+                else
+                {
+                    fprintf( stderr, "\n\tError >> opcion '-%c' duplicada\n", optopt );
+                    fflush ( stderr );
+                    return ERROR;
+                }
+                break;
+
+            case 'l': /*-- Nivel de Log --*/
+                if( !iLogflag )
+                {
+                    stStatus.iLogNivel = ( atoi( optarg ) > 0 ) ? atoi( optarg ) : iLOGNIVELDEFAULT;
+                    iLogflag = 1;
+                }
+                else
+                {
+                    fprintf( stderr, "\n\tError >> opcion '-%c' duplicada\n", optopt );
+                    fflush ( stderr );
+                    return ERROR;
+                }
+                break;
+                
+            case 'n': /*-- Nombre de la Cola (codigo del proceso) --*/
+                strcpy( szhgCodProceso, optarg );
+                break;
+                
+            case '?':
+                fprintf( stderr, "\n\tError >> opcion '-%c' es desconocida\n", optopt );
+                fflush ( stderr );
+                return ERROR;
+
+            case ':':
+                fprintf( stderr, "\n\tError >> falta argumento para opcion '-%c'\n", optopt );
+                fflush ( stderr );
+                return ERROR;
+        } /* switch( iOpt ) */
+    } /* while( ( iOpt = getopt( argc, argv, opt ) ) != EOF ) */
+    
+    pstLC->iLogLevel = stStatus.iLogNivel;
+    return OK;
+} /* int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC ) */
+
+/****************************************************************************************************/
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos					      					*/
+/****************************************************************************************************/
+int ifnConexionDB( LINEACOMANDO *pstLC )
+{
+    char modulo[] = "ifnConexionDB";
+    if( bfnOraConnect( pstLC->szOraAccount, pstLC->szOraPasswd ) == FALSE  )
+    {
+        fprintf( stderr, "\nNo hay conexion a ORACLE \n" );
+        fflush ( stderr);
+        return ERROR;
+    }
+    return 0;
+} /* int ifnConexionDB( LINEACOMANDO *pstLC ) */
+
+/****************************************************************************************************/
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log    					*/
+/****************************************************************************************************/
+int ifnPreparaArchivoLog()
+{
+    char modulo[] = "ifnPreparaArchivoLog";
+     int sts = 0;
+    
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhPathLogSched[256]; EXEC SQL VAR szhPathLogSched IS STRING (256);
+	EXEC SQL END DECLARE SECTION;
+	
+	sprintf( stStatus.szFileName, "%s", szhgCodProceso );
+	sprintf( szhPathLogSched, "%s/CO_SCHEDULER", getenv( "XPC_LOG" ) );
+	sprintf( stStatus.szLogPathGene, "%s", szhPathLogSched );
+	sts = ifnAbreArchivoLog( 1 ); 
+	return sts;
+} /* end ifnPreparaArchivoLog */
+
+/****************************************************************************************************/
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append   					*/
+/* if iCreaDir != 0 : crear directorio antes que el archivo						   					*/
+/****************************************************************************************************/
+int ifnAbreArchivoLog( int iCrearDir )
+{
+    char modulo[]="ifnAbreArchivoLog";
+    char szArchivoErr[256], szArchivoEst[256], szArchivoLog[256], szComando[256]; 
+    static char szAux[9];
+
+    memset( szArchivoLog, '\0', sizeof( szArchivoLog ) ); /* log */         
+    memset( szArchivoErr, '\0', sizeof( szArchivoErr ) ); /* errores */     
+    memset( szArchivoEst, '\0', sizeof( szArchivoEst ) ); /* estadisticas */
+
+    strcpy( szAux, (char *)szSysDate( "YYYYMMDD" ) );
+    sprintf( szComando, "/usr/bin/mkdir -p %s/%s", stStatus.szLogPathGene, szAux );
+    if( system( szComando ) != 0 ) 
+    {
+        fprintf( stderr, "Error al intentar crear directorio de Log\n" );
+        fflush ( stderr );
+        return ERROR;
+    }
+    
+    sprintf( szArchivoLog, "%s/%s/%s.log", stStatus.szLogPathGene, szAux, stStatus.szFileName );
+    sprintf( szArchivoErr, "%s/%s/%s.err", stStatus.szLogPathGene, szAux, stStatus.szFileName );
+    sprintf( szArchivoEst, "%s/%s/%s.est", stStatus.szLogPathGene, szAux, stStatus.szFileName );
+    
+    if( ( stStatus.LogFile = fopen( szArchivoLog, "a" ) ) == (FILE*)NULL )
+    {    
+        fprintf( stderr, "Error al crear archivo de Log\n" );
+        fflush ( stderr );
+        return ERROR;    
+    }
+    
+    if( ( stStatus.ErrFile = fopen( szArchivoErr, "a" ) ) == (FILE*)NULL )
+    {    
+        fprintf( stderr, "Error al crear archivo de Errores\n" );
+        fflush ( stderr );
+        ERROR;    
+    }
+
+    if( ( stStatus.EstFile = fopen( szArchivoEst, "a" ) ) == (FILE*)NULL )
+    {     
+        fprintf( stderr, "Error al crear archivo de Estadisticas\n" );
+        fflush ( stderr );
+        ERROR;    
+    }
+    
+    ifnTrazasLog( modulo, "%s - APERTURA DE ARCHIVO <%ld> -\n", INFALL , szSysDate( "[DD-MON-YYYY][HH24:MI:SS]"), getpid() );
+	return OK;
+}/* end ifnAbreArchivoLog */
+
+/****************************************************************************************************/
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs		   					*/
+/****************************************************************************************************/
+void vfnCierraArchivoLog(void)
+{
+    char modulo[] = "vfnCierraArchivoLog";
+    
+    ifnTrazasLog( modulo, "%s -  CIERRE  DE ARCHIVO <%ld> -\n", INFALL, szSysDate( "[DD-MON-YYYY][HH24:MI:SS]" ), getpid() );
+    if( fclose( stStatus.LogFile ) != 0 )
+    {    
+        fprintf( stderr, "Error al cerrar archivo de Log\n" );
+        fflush ( stderr );
+    }
+
+    if( fclose( stStatus.ErrFile ) != 0 )
+    {    
+        fprintf( stderr, "Error al cerrar archivo de Errores\n");
+        fflush ( stderr );
+    }
+
+    if( fclose(stStatus.EstFile) != 0 )
+    {    
+        fprintf( stderr, "Error al cerrar archivo de Estadisticas\n" );
+        fflush ( stderr );
+    }
+        
+    return;    
+} /* end vfnCierraArchivoLog */
+
+/****************************************************************************************************/
+/* ifnEjecutaCola() : Ejecuta la cola de acciones								   					*/
+/****************************************************************************************************/
+int ifnEjecutaCola( void )
+{
+    char modulo[] = "ifnEjecutaCola";
+    
+    char szError[1024];
+    
+    memset( szError, '\0', sizeof( szError ) );
+    
+    ifnTrazasLog( modulo, "Corriendo la cola lanzada ", LOG05 );
+    ifnTrazasLog( modulo, "PROCESO => %s - PID => %ld - VERSION => %s.\n", LOG03, szhgCodProceso, getpid(), szVERSION );
+    
+    if( !bfnCambiaEstadoCola( szhgCodProceso, "L", "R" ) ) /*'Launched->Running'*/
+    {
+        if( !bfnOraRollBack() ) 
+        	ifnTrazasLog( modulo, "En Rollback 'L->R' : %s", LOG00, SQLERRM );
+        return ERROR;
+    }
+    else
+    {    
+        if( !bfnOraCommit() )    
+        {    
+            ifnTrazasLog( modulo, "En Commit 'L->R' : %s", LOG00, SQLERRM );
+            if( !bfnOraRollBack() ) 
+            	ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+            return ERROR;    
+        }
+    }
+    
+   	/* Carga de datos de uso general */
+	if( !bfnObtieneDatosGenerales() )
+	{
+	    ifnTrazasLog( modulo, "Error al realizar carga de bfnObtieneDatosGenerales().", LOG03 );
+	    return -1;
+	}
+
+    if( ifnNoClientes( szError ) < 0 ) 
+		ifnMailAlert( szhgCodProceso, "TODOS", "%s", szError );
+
+    ifnTrazasLog( modulo, "Volviendo la cola a espera ", LOG05 );
+    if( !bfnCambiaEstadoCola( szhgCodProceso, "R", "W" ) ) /*'Running->Wait'*/
+    {
+        if( !bfnOraRollBack() ) 
+        	ifnTrazasLog( modulo, "En Rollback 'R->W' : %s", LOG00, SQLERRM );
+        return ERROR;
+    }
+    
+    if( !bfnCambiaCodActivacionCola( szhgCodProceso, "D" ) )
+    {
+        if( !bfnOraRollBack() ) 
+        	ifnTrazasLog( modulo, "En Rollback 'H->D' : %s", LOG00, SQLERRM );
+        return ERROR;
+    }
+    
+	if( !bfnOraCommit() )    
+	{    
+		ifnTrazasLog( modulo, "En Commit Final de Cola de Proceso : %s", LOG00, SQLERRM );
+		if( !bfnOraRollBack() ) 
+			ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+		return ERROR;    
+	}
+
+    ifnTrazasLog( modulo, "saliendo de %s ( Cola Wait )", LOG02, szhgCodProceso );
+    return OK;
+} /* int ifnEjecutaCola( void ) */
+
+/****************************************************************************************************/
+/* ifnNoClientes() : Ejecuta las acciones que correspondan						   					*/
+/****************************************************************************************************/
+int ifnNoClientes( char *szDescError )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhCadena[4001];			EXEC SQL VAR szhCadena IS STRING (4001);
+		char szhNumIdent[iLENNUMIDENT];	EXEC SQL VAR szhNumIdent IS STRING (iLENNUMIDENT);
+		char szhCodTipIdent[3];			EXEC SQL VAR szhCodTipIdent IS STRING (3);
+		char szhCodCategoria[6];		EXEC SQL VAR szhCodCategoria IS STRING (6);
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "ifnNoClientes";
+	char szIniProc[9], szFinProc[9], szTmpProc[9], szCadenaAux[10];
+	 int iRet, i, j, iDifSegs = 0, iTotalProcesos = 0, iError = 0, iFlgColaActiva, iTotalDoctos;
+	long lCumplenCriterios, lNoCumplenCriterios;
+	long lNoCumplenCriteriosBaja, lNoCumplenCriteriosDocto, lNoCumplenCriteriosMonto, lNoCumplenCriteriosFecha, lNoCumplenCriteriosCateg;
+	long lReg, lTotalRows, lRowsProcessed, lRowsThisLoop;	 
+	BOOL bSalir;
+
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	memset( szIniProc, '\0', sizeof( szIniProc ) );
+	memset( szFinProc, '\0', sizeof( szFinProc ) );
+	memset( szTmpProc, '\0', sizeof( szTmpProc ) );
+	memset( szhCadena, '\0', sizeof( szhCadena ) );
+
+	sprintf( szIniProc, "%s", szSysDate( "HH24:MI:SS" ) );
+
+	memset(  szhEntGestion, '\0', sizeof(  szhEntGestion ) );
+
+    /* obtenemos la entidad a la cual va dirigida la Cobranza Externa */
+    sprintf( szhEntGestion, "%s\0", (char*)szfnRecuperaGedParametro( "ENTIDAD_GESTION_COB", szMODULOCOBRANZA ) );
+
+    if( !strcmp( szhEntGestion, "ERROR" ) )
+    	return ERROR;
+
+	rtrim( szhEntGestion );
+
+	if( !bfnCntDoctosNoCli( &iTotalDoctos ) )
+	{
+		sprintf( szDescError, "Error al Recuperar cuenta de Documentos validos para NO CLIENTES." );
+		return ERROR;
+	}
+		
+	if( !bfnGetDatosProcesos( &iTotalProcesos ) )
+	{
+		sprintf( szDescError, "Error al Recuperar Procesos de trabajo." );
+		return ERROR;
+	}
+	
+	/* recorremos los procesos para seleccionar a los clientes afectados */
+	for( i = 0; i < iTotalProcesos; i++ )
+	{
+		rtrim( stDatosProcesos[i].szCodEstado );
+		
+		/* verificamos que algun proceso, no haya quedado pendiente antes */
+		if( !strcmp( stDatosProcesos[i].szCodEstado, "2ENPR" ) )
+		{
+			ifnTrazasLog( modulo, "\n\t\t   Proceso N° => [%d], esta PND, se marca con error.", LOG03, stDatosProcesos[i].lNumProceso );
+			/* si quedo pendiente asumo error anterior */
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+				return ERROR;
+			continue; /* continuamos con el proximo proceso */
+		}
+	
+		ifnTrazasLog( modulo, "\n\t\t   Inicio de seleccion de clientes para proceso N° => [%d].", LOG03, stDatosProcesos[i].lNumProceso );
+
+		if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "2ENPR" ) )
+			return ERROR;
+		
+		/* query principal donde se aplican filtros determinados y se obtienen datos para posterior validacion */
+		sprintf( szhCadena, "SELECT C.NUM_IDENT,\n" );
+		sprintf( szhCadena, "%s       C.COD_TIPIDENT,\n", szhCadena );
+		
+		if( !strcmp( szhEntGestion, szENTIDADCLIENTE ) )
+			sprintf( szhCadena, "%s       C.COD_CLIENTE,\n", szhCadena );
+		else
+			sprintf( szhCadena, "%s       C.COD_CUENTA,\n", szhCadena );
+			
+		sprintf( szhCadena, "%s       C.COD_ENTIDAD,\n", szhCadena );
+		sprintf( szhCadena, "%s       C.MTO_DEUDA,\n", szhCadena );
+		sprintf( szhCadena, "%s       NVL( TO_NUMBER( TO_CHAR( MIN( C.FEC_DEUDA ), 'YYYYMMDD' ) ), -1 ),\n", szhCadena );
+		sprintf( szhCadena, "%s       ROWIDTOCHAR( C.ROWID )\n", szhCadena );
+		sprintf( szhCadena, "%s  FROM CO_COBEXTERNA C\n", szhCadena );
+		
+			if( !strcmp( stDatosProcesos[i].szTipOrigen, "P" ) ) /* si el proceso es puntual */
+		{
+			sprintf( szhCadena, "%s WHERE C.NUM_PROCESO = %d\n", szhCadena, stDatosProcesos[i].lNumProceso );
+			sprintf( szhCadena, "%s   AND C.COD_MOVIMIENTO = 'SM'\n", szhCadena );
+			sprintf( szhCadena, "%s   AND C.COD_ENVIO = 'I'\n", szhCadena );
+		} 
+		else
+		{
+			sprintf( szhCadena, "%s WHERE C.COD_ENTIDAD = ( SELECT VAL_DATO\n", szhCadena );
+			sprintf( szhCadena, "%s                           FROM CO_NOCLIENTES_DETALLE_TO\n", szhCadena );
+			sprintf( szhCadena, "%s                          WHERE NUM_PROCESO = %d\n", szhCadena, stDatosProcesos[i].lNumProceso );
+			sprintf( szhCadena, "%s                            AND TIP_DATO = 'ENORI'\n", szhCadena );
+			sprintf( szhCadena, "%s                            AND C.COD_ENTIDAD = VAL_DATO )\n", szhCadena );
+			sprintf( szhCadena, "%s   AND NOT EXISTS ( SELECT 1\n", szhCadena );
+			sprintf( szhCadena, "%s    	   		  	     FROM CO_COBEXTERNA CE\n", szhCadena );
+			sprintf( szhCadena, "%s 				    WHERE C.NUM_IDENT = CE.NUM_IDENT\n", szhCadena );
+			sprintf( szhCadena, "%s 				      AND C.COD_TIPIDENT = CE.COD_TIPIDENT\n", szhCadena );
+			sprintf( szhCadena, "%s 				      AND CE.COD_MOVIMIENTO = 'SM'\n", szhCadena );
+			sprintf( szhCadena, "%s 				      AND CE.COD_ENVIO IN ( 'I', 'V' ) )\n", szhCadena );  								    
+			sprintf( szhCadena, "%s   AND NOT EXISTS ( SELECT 1\n", szhCadena );
+			sprintf( szhCadena, "%s    	   		  	     FROM CO_ENTCOB EC\n", szhCadena );
+			sprintf( szhCadena, "%s 				    WHERE C.COD_ENTIDAD = EC.COD_ENTIDAD\n", szhCadena );  								    
+			sprintf( szhCadena, "%s 				      AND EC.TIP_ENTIDAD = '%s' )\n", szhCadena, CODTIPNOCLI );  								    
+		} /* if( !strcmp( stDatosProcesos[i].szTipOrigen, "P" ) */
+
+		if( !strcmp( szhEntGestion, szENTIDADCLIENTE ) )
+			sprintf( szhCadena, "%s   GROUP BY C.NUM_IDENT, C.COD_TIPIDENT, C.COD_CLIENTE, C.COD_ENTIDAD, C.MTO_DEUDA, C.ROWID\n", szhCadena );
+		else
+			sprintf( szhCadena, "%s   GROUP BY C.NUM_IDENT, C.COD_TIPIDENT, C.COD_CUENTA, C.COD_ENTIDAD, C.MTO_DEUDA, C.ROWID\n", szhCadena );
+
+		ifnTrazasLog( modulo, "Cadena Query\n[%s].", LOG07, szhCadena );
+
+		EXEC SQL PREPARE SQLRUT FROM :szhCadena;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			sprintf( szDescError, "Error en PREPARE SQLRUT => [%s]", SQLERRM );
+			ifnTrazasLog( modulo, "Error en PREPARE SQLRUT => [%s].", LOG00, SQLERRM );
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+			return ERROR; 
+		}
+		
+		EXEC SQL DECLARE CURRUTS CURSOR FOR SQLRUT;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			sprintf( szDescError, "Error en DECLARE CURRUT => [%s]", SQLERRM );
+			ifnTrazasLog( modulo, "Error en DECLARE CURRUT => [%s].", LOG00, SQLERRM );
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+				return ERROR;
+			return ERROR; /* Mail */
+		}
+		
+		EXEC SQL OPEN CURRUTS;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			sprintf( szDescError, "Error en OPEN CURRUT => [%s]", SQLERRM );
+			ifnTrazasLog( modulo, "Error en OPEN CURRUT => [%s].", LOG00, SQLERRM );
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+				return ERROR;
+			return ERROR; /* Mail */
+		}
+		
+		lReg = 0; lTotalRows = 0; lRowsProcessed = 0; lRowsThisLoop = 0; bSalir = FALSE;	 
+		
+		while( !bSalir )
+		{
+			EXEC SQL 
+			FETCH CURRUTS 
+			 INTO :sthRuts;
+			 
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			{
+				sprintf( szDescError, "Error en FETCH CURRUTS => [%s]", SQLERRM );
+				ifnTrazasLog( modulo, "Error en FETCH CURRUTS => [%s].", LOG00, SQLERRM );
+				iError = 1;
+				break;
+			}
+			
+			if( SQLCODE == SQLNOTFOUND ) 
+				bSalir = TRUE;
+
+			lTotalRows = SQLROWS;    /* Total de filas recuperadas */
+			lRowsThisLoop = ( lTotalRows - lRowsProcessed );    /* filas recuperadas en esta iteracion (Total-Procesadas) */
+
+			ifnTrazasLog( modulo, "lTotalRows = [%d], lRowsThisLoop = [%d].", LOG03, lTotalRows, lRowsThisLoop );
+
+			/* pasamos los ruts, a la estructura principal de trabajo */
+			for( j = 0; j < lRowsThisLoop; j++ )
+			{
+				sprintf( stRuts[lReg].szNumIdent, "%s\0", sthRuts.szNumIdent[j] );
+				sprintf( stRuts[lReg].szTipIdent, "%s\0", sthRuts.szTipIdent[j] );
+				stRuts[lReg].lCuentaoCliente = sthRuts.lCuentaoCliente[j];
+				sprintf( stRuts[lReg].szCodEntidadOrigen, "%s\0", sthRuts.szCodEntidad[j] );
+				stRuts[lReg].dMontoDeuda = sthRuts.dMontoDeuda[j];
+				stRuts[lReg].lFechaVencimie = sthRuts.lFechaVencimie[j];
+				sprintf( stRuts[lReg].szRowid, "%s\0", sthRuts.szRowid[j] );
+				stRuts[lReg].iCumpleCriterios = 0;
+				strcpy( stRuts[lReg].szCodRechazo, "NULL" );
+				strcpy( stRuts[lReg].szCodEntidadDestino, "NULL" );
+				lReg++;
+			}
+
+			lRowsProcessed = lTotalRows; /* Resetea Contador, Total las filas recuperadas se han procesado */
+
+			if( bSalir )
+				ifnTrazasLog( modulo, "Alcanzando Fin de Datos CURRUTS\n\t", LOG03 );
+
+		} /* while( !bSalir ) */
+		
+		EXEC SQL CLOSE CURRUTS;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			sprintf( szDescError, "Error en CLOSE CURRUT => [%s]", SQLERRM );
+			ifnTrazasLog( modulo, "Error en CLOSE CURRUT => [%s].", LOG00, SQLERRM );
+			return ERROR; /* Mail */
+		}
+		
+		if( iError )
+		{
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+				return ERROR;
+			return ERROR;
+		}
+			
+		ifnTrazasLog( modulo, "Datos recuperados en CURRUTS.", LOG05 );
+
+		lCumplenCriterios = 0; 
+		lNoCumplenCriterios = 0;
+		lNoCumplenCriteriosBaja = 0;
+		lNoCumplenCriteriosDocto = 0;
+		lNoCumplenCriteriosMonto = 0;
+		lNoCumplenCriteriosFecha = 0;
+		lNoCumplenCriteriosCateg = 0;
+
+		/* ciclo principal de trabajo para evaluar segun los criterios del proceso */
+		for( j = 0; j < lReg; j++ )
+		{
+			ifnTrazasLog( modulo, "\n\t\t   Registro N° => [%5d].\n"
+									"\t\t   szNumIdent      => [%s],\n"
+									"\t\t   szTipIdent      => [%s],\n"
+									"\t\t   lCuentaoCliente => [%d],\n"
+									"\t\t   szCodEntidadOri => [%s],\n"
+									"\t\t   szCodEntidadDes => [%s],\n"
+									"\t\t   dMontoDeuda     => [%.4f],\n"
+									"\t\t   lFechaVencimie  => [%d],\n"
+									"\t\t   iCumpleCrit     => [%d],\n"
+									"\t\t   szCodRechazo    => [%s],\n"
+									"\t\t   szRowid         => [%s]\n",
+									LOG06,
+									j,
+									stRuts[j].szNumIdent,
+									stRuts[j].szTipIdent,
+									stRuts[j].lCuentaoCliente,
+									stRuts[j].szCodEntidadOrigen,
+									stRuts[j].szCodEntidadDestino,
+									stRuts[j].dMontoDeuda,
+									stRuts[j].lFechaVencimie, 
+									stRuts[j].iCumpleCriterios,
+									stRuts[j].szCodRechazo,
+									stRuts[j].szRowid );
+
+			/* validamos si el rut tiene todos lo abonados de baja */
+			if( ( iRet = ifnValidaSituacionAbonadosCuenta( stRuts[j].lCuentaoCliente, "!=", "BAA" ) ) < 0 )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback ifnValidaSituacionAbonadosCuenta => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}
+		
+			if( iRet > 0 )
+			{
+				ifnTrazasLog( modulo, "Cuenta => [%d], no tiene todos los abonados de baja.", LOG05, stRuts[j].lCuentaoCliente );
+				stRuts[j].iCumpleCriterios = 0;
+				strcpy( stRuts[j].szCodRechazo, "BAJA" );
+				lNoCumplenCriteriosBaja++;
+				lNoCumplenCriterios++;
+				continue;
+			}	
+
+			/* filtro adicional, solo si existen documentos definidos de no clientes */
+			if( iTotalDoctos > 0 )
+			{
+				if( ( iRet = ifnVerifDoctosNoCli( stRuts[j].lCuentaoCliente ) ) < 0 )
+					return ERROR;
+					
+				if( iRet < 0 )
+				{
+					ifnTrazasLog( modulo, "Cuenta => [%d], no tiene documentos de no clientes.", LOG05, stRuts[j].lCuentaoCliente );
+					stRuts[j].iCumpleCriterios = 0;
+					strcpy( stRuts[j].szCodRechazo, "DOCTO" );
+					lNoCumplenCriteriosDocto++;
+					lNoCumplenCriterios++;
+					continue;
+				}	
+			} /* if( iTotalDoctos > 0 ) */
+
+			/* filtro adicional, si corresponde evaluar la deuda entre un monto */
+			if( stDatosProcesos[i].dMontoDesde != -999999999 )
+			{
+				if( ( stRuts[j].dMontoDeuda < stDatosProcesos[i].dMontoDesde ) ||
+					( stRuts[j].dMontoDeuda > stDatosProcesos[i].dMontoHasta ) )
+				{
+					ifnTrazasLog( modulo, "Cuenta => [%d], no cumple con criterio de Monto de Deuda.", LOG05, stRuts[j].lCuentaoCliente );
+					stRuts[j].iCumpleCriterios = 0;
+					strcpy( stRuts[j].szCodRechazo, "MONTO" );
+					lNoCumplenCriteriosMonto++;
+					lNoCumplenCriterios++;
+					continue;
+				}
+			} /* if( sthDatosProcesos.dMontoDesde[i] != -999999999 ) */
+
+			/* filtro adicional, si corresponde evaluar la fecha entre fechas especificas */
+			if( stDatosProcesos[i].lFechaDesde != -1 )
+			{
+				if( ( stRuts[j].lFechaVencimie < stDatosProcesos[i].lFechaDesde ) ||
+					( stRuts[j].lFechaVencimie > stDatosProcesos[i].lFechaHasta ) )
+				{
+					ifnTrazasLog( modulo, "Cuenta => [%d], no cumple con criterio de Rango de Fecha.", LOG05, stRuts[j].lCuentaoCliente );
+					stRuts[j].iCumpleCriterios = 0;
+					strcpy( stRuts[j].szCodRechazo, "FECHA" );
+					lNoCumplenCriteriosFecha++;
+					lNoCumplenCriterios++;
+					continue;
+				}
+			} /* if( sthDatosProcesos.lFechaDesde[i] != -1 ) */
+			
+			/* filtro por categoria, si estan asociadas al proceso */
+			if( strcmp( stDatosProcesos[i].szFiltroCategoria, "NULL" ) )
+			{
+				memset( szhNumIdent, '\0', sizeof( szhNumIdent ) );
+				memset( szhCodTipIdent, '\0', sizeof( szhCodTipIdent ) );
+				sprintf( szhNumIdent, "%s\0", stRuts[j].szNumIdent );
+				sprintf( szhCodTipIdent, "%s\0", stRuts[j].szTipIdent );
+
+				rtrim( szhNumIdent );
+				rtrim( szhCodTipIdent );
+
+				/* recuperamos la categoria del cliente */
+				EXEC SQL
+				SELECT COD_CATEGORIA
+				  INTO :szhCodCategoria	
+				  FROM CO_MOROSOS
+				 WHERE NUM_IDENT = :szhNumIdent
+				   AND COD_TIPIDENT = :szhCodTipIdent
+				   AND COD_CLIENTE = DECODE( :szhEntGestion, 'C', :stRuts[j].lCuentaoCliente, COD_CLIENTE )
+				   AND ROWNUM < 2;
+
+				if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+				{
+					sprintf( szDescError, "Error al recuperar Categoria => [%s]", SQLERRM );
+					ifnTrazasLog( modulo, "Error al recuperar Categoria => [%s].", LOG00, SQLERRM );
+					return ERROR;
+				}
+
+				rtrim( szhCodCategoria );
+				memset( szCadenaAux, '\0', sizeof( szCadenaAux ) );
+				sprintf( szCadenaAux, "|%s|\0", szhCodCategoria );
+				rtrim( szCadenaAux );
+
+				if( strstr( stDatosProcesos[i].szFiltroCategoria, szCadenaAux ) == NULL ) /* no se encuentra dentro de las categorias */
+				{			
+					ifnTrazasLog( modulo, "Cuenta => [%d], no cumple con criterio de Categoria.", LOG05, stRuts[j].lCuentaoCliente );
+					stRuts[j].iCumpleCriterios = 0;
+					strcpy( stRuts[j].szCodRechazo, "CATEG" );
+					lNoCumplenCriteriosCateg++;
+					lNoCumplenCriterios++;
+					continue;
+				}			
+			} /* if( !strcmp( stDatosProcesos[i].szFiltroCategoria, "NULL" ) ) */
+
+			stRuts[j].iCumpleCriterios = 1;
+			lCumplenCriterios++;
+
+		} /* for( j = 0; j < lReg; j++ ) */
+
+		ifnTrazasLog( modulo, "\n\t\t   Estadisticas Proceso N° => [%d].\n"
+							"\t\t   Registros Revisados               => [%d].\n"
+							"\t\t   Registros cumplen condiciones     => [%d].\n"
+							"\t\t   Registros no cumplen condiciones  => [%d].\n"
+							"\t\t         por Baja                    => [%d].\n"
+							"\t\t         por Documentos              => [%d].\n"
+							"\t\t         por Monto                   => [%d].\n"
+							"\t\t         por Fecha                   => [%d].\n"
+							"\t\t         por Categoria               => [%d].\n",
+							LOG05,
+							stDatosProcesos[i].lNumProceso,
+							lReg,
+							lCumplenCriterios,
+							lNoCumplenCriterios,
+							lNoCumplenCriteriosBaja,
+							lNoCumplenCriteriosDocto,
+							lNoCumplenCriteriosMonto,
+							lNoCumplenCriteriosFecha,
+							lNoCumplenCriteriosCateg );
+
+		stDatosProcesos[i].lCumplenCriterios = lCumplenCriterios;
+		stDatosProcesos[i].lTotalProcesados = lReg;
+
+		if( stDatosProcesos[i].lCumplenCriterios > 0 )
+		{
+			/* despues de la evaluacion, debemos repartir  los clientes segun las entidades de cobranza de destino */
+			if( !bfnAsignaPorcentajes( i ) )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback bfnAsignaPorcentajes => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}
+		}
+
+		/* marcamos los clientes en las tablas correspondientes */
+		if( !strcmp( stDatosProcesos[i].szTipOrigen, "P" ) ) /* si el proceso es puntual */
+		{
+			if( !bfnUpdateEstadoCobExterna( i ) )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback bfnUpdateEstadoCobExterna => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}
+		}
+		else /* si el proceso es masivo */
+		{
+			if( !bfnInsertaProcesadosCobExterna( i ) )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback bfnInsertaProcesadosCobExterna => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}
+		
+			if( !bfnCambiaUniversoProceso( stDatosProcesos[i].lNumProceso, stDatosProcesos[i].lCumplenCriterios ) )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback bfnCambiaUniversoProceso => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}
+
+		} /* if( !strcmp( stDatosProcesos[i].szTipOrigen, "P" ) ) */
+
+		if( stDatosProcesos[i].lCumplenCriterios > 0 ) /* si se generaron registros, se marca el proceso como generado */
+		{
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "3GENE" ) )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback bfnCambiaUniversoProceso => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}
+		}
+		else											/* si no hay registros, se marca el proceso como rechazado */
+		{
+			if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "7RECH" ) )
+			{
+				if( !bfnOraRollBack() ) /* deshacemos las operaciones realizadas */
+					ifnTrazasLog( modulo, "En Rollback bfnCambiaUniversoProceso => [%s]", LOG00, SQLERRM );
+				if( !bfnCambiaEstadoProceso( stDatosProcesos[i].lNumProceso, "8ERRO" ) )
+					return ERROR;
+				return ERROR;
+			}	
+		}
+
+		/* grabamos si el proceso termina */
+		if( !bfnOraCommit() )    
+		{    
+			ifnTrazasLog( modulo, "En Commit Cierre Proceso : %s", LOG00, SQLERRM );
+			if( !bfnOraRollBack() ) 
+				ifnTrazasLog( modulo, "En Rollback Cierre Proceso : %s", LOG00, SQLERRM );
+			return ERROR;    
+		}
+
+		/* despues de procesar cada proceso debemos verificar si la cola esta activa */
+		if( !bfnValidaColaActiva( szhgCodProceso, &iFlgColaActiva ) )
+		{
+			ifnTrazasLog( modulo, "Fallo la Verificacion de la cola activa.", LOG01 );
+			sprintf( szDescError, "Fallo la Verificacion de la cola activa." );
+			iFlgColaActiva = ERROR; /*Mail*/
+		}
+
+		if( iFlgColaActiva == 0 )
+			break;
+						
+	} /* for( i = 0; i < iTotalProcesos; i++ ) */
+
+	sprintf( szFinProc, "%s", szSysDate( "HH24:MI:SS" ) );    
+
+	/* Informacion Estadistica */
+	if( ( iDifSegs = ifnRestaHoras( szIniProc, szFinProc, szTmpProc ) ) >= 0 )
+	{
+		ifnTrazasLog( modulo, "\n\t\t    RESUMEN DEL PROCESO     "
+		"\n\t\t\t       HORA INICIO  : %s "
+		"\n\t\t\t       HORA TERMINO : %s "
+		"\n\t\t\t       TIEMPO TOTAL : %s  (%d segs)\n", EST00, szIniProc, szFinProc, szTmpProc, iDifSegs );
+	}
+	
+	ifnTrazasLog( modulo, "saliendo de %s", LOG05, modulo );
+    
+	if( iFlgColaActiva < 0 )
+		return ERROR;
+	else	
+    	return 0; 
+    	
+} /* int ifnNoClientes( char *szDescError ) */
+
+/****************************************************************************************************/
+/* bfnCntDoctosNoCli()															   					*/
+/****************************************************************************************************/
+BOOL bfnCntDoctosNoCli( int *iTotalRowsLeidas )
+/*
+	Definicion		:	Cuenta los documentos definidos para no clientes.
+	
+	Parametros		:	iTotalRows		Indice para arreglo de documentos(OUT) .
+	
+	Retorno			:	TRUE	OK.
+						FALSE   Error.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int ihCntDoctos;
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "bfnCntDoctosNoCli";
+
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	/* obtenemos los documentos asociados */
+	EXEC SQL 
+	SELECT COUNT(*)
+	  INTO :ihCntDoctos
+	  FROM GED_CODIGOS
+	 WHERE NOM_TABLA = 'DOCU_NOCLIENTES'
+	   AND NOM_COLUMNA = 'COD_TIPDOCUM'
+	   AND COD_MODULO = 'CO';
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Select para cuenta de Documentos => [%s].", LOG00, SQLERRM );
+		return FALSE;
+	}
+
+	if( ihCntDoctos > 0 )
+		ifnTrazasLog( modulo, "Existen => [%d], Documentos definidos para no clientes.", LOG03, ihCntDoctos );
+	else	
+		ifnTrazasLog( modulo, "No existen Documentos definidos para no clientes.", LOG03 );
+	
+	*iTotalRowsLeidas = ihCntDoctos;
+	return TRUE;
+} /* BOOL bfnCntDoctosNoCli( int *iTotalRowsLeidas ) */
+
+/****************************************************************************************************/
+/* ifnVerifDoctosNoCli()															   					*/
+/****************************************************************************************************/
+int ifnVerifDoctosNoCli( long lCuentaoCliente )
+/*
+	Definicion		:	Verifica si el cliente tiene doctos definidos para no clientes.
+	
+	Retorno			:	!= -1	OK.
+						-1      Error.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	   long lhCuentaoCliente;	
+		int inCntDoctos;
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "ifnVerifDoctosNoCli";
+
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	lhCuentaoCliente = lCuentaoCliente;
+
+	/* obtenemos los documentos asociados */
+	if( !strcmp( szhEntGestion, szENTIDADCLIENTE ) )
+	{
+		EXEC SQL 
+		SELECT COUNT(*) 
+		  INTO :inCntDoctos
+		  FROM GED_CODIGOS P, CO_CARTERA C 
+		 WHERE C.COD_CLIENTE = :lhCuentaoCliente
+		   AND C.COD_TIPDOCUM = TO_NUMBER( P.COD_VALOR )
+		   AND P.NOM_TABLA = 'DOCU_NOCLIENTES'
+		   AND P.NOM_COLUMNA = 'COD_TIPDOCUM'
+		   AND P.COD_MODULO = 'CO';
+	}
+	else
+	{
+		EXEC SQL 
+		SELECT COUNT(*) 
+		  INTO :inCntDoctos
+		  FROM GED_CODIGOS P, CO_CARTERA C, 
+			   ( SELECT GE.COD_CLIENTE  FROM GE_CLIENTES GE WHERE GE.COD_CUENTA = :lhCuentaoCliente ) G
+		 WHERE G.COD_CLIENTE = C.COD_CLIENTE 
+		   AND C.COD_TIPDOCUM = TO_NUMBER( P.COD_VALOR )
+		   AND P.NOM_TABLA = 'DOCU_NOCLIENTES'
+		   AND P.NOM_COLUMNA = 'COD_TIPDOCUM'
+		   AND P.COD_MODULO = 'CO';
+	}
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error al obtener Documentos No Clientes => [%s].", LOG00, SQLERRM );
+		return ERROR;
+	}
+
+	return inCntDoctos;
+} /* int ifnVerifDoctosNoCli() */
+
+/****************************************************************************************************/
+/* bfnGetDatosProcesos()														   					*/
+/****************************************************************************************************/
+BOOL bfnGetDatosProcesos( int *iTotalRowsLeidas )
+/*
+	Definicion		:	Recupera los procesos pendientes para trabajo.
+	
+	Parametros		:	iTotalRows		Indice para arreglo de procesos(OUT) .
+	
+	Retorno			:	TRUE	OK.
+						FALSE   Error.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhCodCategoria[6];		EXEC SQL VAR szhCodCategoria IS STRING (6);
+		char szhEntDestino[6];			EXEC SQL VAR szhEntDestino IS STRING (6);
+		char szhPorcentaje[6];			EXEC SQL VAR szhPorcentaje IS STRING (6);
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "bfnGetDatosProcesos";
+	char szCadenaCategorias[101];
+	long iTotalRows;
+	BOOL bSalir;
+	 int iCntAlgo, i, j;
+
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	memset( szhCodCategoria, '\0', sizeof( szhCodCategoria ) );
+
+	/* obtenemos los procesos pendientes de ejecucion */
+	EXEC SQL 
+	DECLARE PROCNOCLI CURSOR FOR
+	SELECT NUM_PROCESO,
+	       NVL( COD_ESTADO, 'X' ),
+	       TIP_ORIGEN,
+	       NVL( MTO_DESDE, -999999999 ),
+	       NVL( MTO_HASTA, -999999999 ),
+	       NVL( TO_NUMBER( TO_CHAR( FEC_DESDE, 'YYYYMMDD' ) ), -1 ),
+	       NVL( TO_NUMBER( TO_CHAR( FEC_HASTA, 'YYYYMMDD' ) ), -1 )
+	  FROM CO_NOCLIENTES_TO
+	 WHERE COD_ESTADO IN ( '1INGR', '2ENPR' );
+
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en DECLARE PROCNOCLI => [%s].", LOG00, SQLERRM );
+		return FALSE;
+	}
+
+	EXEC SQL OPEN PROCNOCLI;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en OPEN PROCNOCLI => [%s].", LOG00, SQLERRM );
+		return FALSE;
+	}
+
+	EXEC SQL 
+	FETCH PROCNOCLI
+	 INTO :sthDatosProcesos;
+	 
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en FETCH PROCNOCLI => [%s].", LOG00, SQLERRM );
+		return FALSE;
+	}
+
+	iTotalRows = SQLROWS;
+
+	EXEC SQL CLOSE PROCNOCLI;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en CLOSE PROCNOCLI => [%s].", LOG00, SQLERRM );
+		return FALSE;
+	}
+
+	for( i = 0; i < iTotalRows; i++ )
+	{
+		/* traspasamos los datos del host array a la estructura de trabajo de procesos */
+		stDatosProcesos[i].lNumProceso = sthDatosProcesos.lNumProceso[i];
+		strcpy( stDatosProcesos[i].szCodEstado, sthDatosProcesos.szCodEstado[i] );
+		strcpy( stDatosProcesos[i].szTipOrigen, sthDatosProcesos.szTipOrigen[i] );
+		stDatosProcesos[i].dMontoDesde = sthDatosProcesos.dMontoDesde[i];
+		stDatosProcesos[i].dMontoHasta = sthDatosProcesos.dMontoHasta[i];
+		stDatosProcesos[i].lFechaDesde = sthDatosProcesos.lFechaDesde[i];
+		stDatosProcesos[i].lFechaHasta = sthDatosProcesos.lFechaHasta[i];
+
+		/* recuperamos datos adicionales para aplicar filtros de los procesos */
+		
+		/* recuperamos codigos de categorias asociadas al proceso */
+
+		ifnTrazasLog( modulo, "Vamos a recuperar categorias de filtro.", LOG05 );
+
+		EXEC SQL DECLARE CURCATEGORIAS CURSOR FOR
+		SELECT VAL_DATO
+		  FROM CO_NOCLIENTES_DETALLE_TO
+		 WHERE NUM_PROCESO = :sthDatosProcesos.lNumProceso[i]
+		   AND TIP_DATO = 'CATEG';
+
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Error en DECLARE CURCATEGORIAS => [%s].", LOG00, SQLERRM );
+			return FALSE;
+		}
+
+		EXEC SQL OPEN CURCATEGORIAS;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Error en OPEN CURCATEGORIAS => [%s].", LOG00, SQLERRM );
+			return FALSE;
+		}
+
+		bSalir = FALSE;
+		iCntAlgo = 0;
+		memset( szCadenaCategorias, '\0', sizeof( szCadenaCategorias ) );
+
+		while( !bSalir )
+		{
+			EXEC SQL
+			FETCH CURCATEGORIAS
+			 INTO :szhCodCategoria;
+
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "Error en FETCH CURCATEGORIAS => [%s].", LOG00, SQLERRM );
+				break;
+			}
+
+			if( SQLCODE == SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "Fin de datos CURCATEGORIAS.", LOG03 );
+				bSalir = TRUE;
+			}
+			else
+			{
+				sprintf( szCadenaCategorias, "%s|%s\0", szCadenaCategorias, szhCodCategoria );
+				iCntAlgo++;
+			}	
+		} /* while( !bSalir ) */
+
+		EXEC SQL CLOSE CURCATEGORIAS;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Error en CLOSE CURCATEGORIAS => [%s].", LOG00, SQLERRM );
+			return FALSE;
+		}
+		
+		if( !bSalir )
+			return FALSE;
+		
+		if( iCntAlgo > 0 )
+			sprintf( stDatosProcesos[i].szFiltroCategoria, "%s|\0", szCadenaCategorias );
+		else	
+			sprintf( stDatosProcesos[i].szFiltroCategoria, "NULL\0" );
+		
+		/* recuperamos las entidades de destino y sus porcentajes definidos */
+		ifnTrazasLog( modulo, "Vamos a recuperar Entidades destino y Porcentajes.", LOG05 );
+
+		EXEC SQL DECLARE CURENTDESTINO CURSOR FOR
+		SELECT D.VAL_DATO, C.VAL_DATO
+		  FROM CO_NOCLIENTES_DETALLE_TO C, ( SELECT VAL_DATO, SEC_DATO 
+											   FROM CO_NOCLIENTES_DETALLE_TO 
+											  WHERE NUM_PROCESO = :sthDatosProcesos.lNumProceso[i]
+											    AND TIP_DATO = 'ENDES' ) D
+		 WHERE C.NUM_PROCESO = :sthDatosProcesos.lNumProceso[i]
+		   AND C.TIP_DATO = 'PORCE'
+		   AND C.SEC_DATO = D.SEC_DATO;
+
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Error en DECLARE CURENTDESTINO => [%s].", LOG00, SQLERRM );
+			return FALSE;
+		}
+
+		EXEC SQL OPEN CURENTDESTINO;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Error en OPEN CURENTDESTINO => [%s].", LOG00, SQLERRM );
+			return FALSE;
+		}
+
+		bSalir = FALSE;
+		j = 0;
+		
+		while( !bSalir )
+		{
+			EXEC SQL
+			FETCH CURENTDESTINO
+			 INTO :szhEntDestino,
+			 	  :szhPorcentaje;
+
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "Error en FETCH CURENTDESTINO => [%s].", LOG00, SQLERRM );
+				break;
+			}
+
+			if( SQLCODE == SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "Fin de datos CURENTDESTINO.", LOG03 );
+				bSalir = TRUE;
+			}
+			else
+			{
+				strcpy( stDatosProcesos[i].stDatEntDestino[j].szEntidadDestino, szhEntDestino );
+				stDatosProcesos[i].stDatEntDestino[j].iPorcentaje = atoi( szhPorcentaje );
+				stDatosProcesos[i].stDatEntDestino[j].lNumClientesAsignados = 0;
+				j++;
+			}	
+		} /* while( !bSalir ) */
+
+		stDatosProcesos[i].iCntEntDest = j;
+		
+		EXEC SQL CLOSE CURCATEGORIAS;
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Error en CLOSE CURCATEGORIAS => [%s].", LOG00, SQLERRM );
+			return FALSE;
+		}
+		
+		if( !bSalir )
+			return FALSE;
+
+		stDatosProcesos[i].lCumplenCriterios = 0;
+		stDatosProcesos[i].lTotalProcesados = 0;
+	} /* for( i = 0; i < iTotalRows; i++ ) */
+
+
+	/* mostramos los datos de los procesos */
+	for( i = 0; i < iTotalRows; i++ )
+	{
+		ifnTrazasLog( modulo, "\n\t\t   Proceso pendiente en CO_NOCLIENTES_TO.\n"
+								"\t\t   lNumProceso   => [%d],\n"
+								"\t\t   szCodEstado   => [%s],\n"
+								"\t\t   szTipOrigen   => [%s],\n"
+								"\t\t   dMontoDesde   => [%.4f],\n"
+								"\t\t   dMontoHasta   => [%.4f],\n"
+								"\t\t   lFechaDesde   => [%d],\n"
+								"\t\t   lFechaHasta   => [%d],\n"
+								"\t\t   FiltroCateg   => [%s],\n"
+								"\t\t   Entid. Dest   => [%d],",
+								LOG05,	
+								stDatosProcesos[i].lNumProceso,
+								stDatosProcesos[i].szCodEstado,
+								stDatosProcesos[i].szTipOrigen,
+								stDatosProcesos[i].dMontoDesde,
+								stDatosProcesos[i].dMontoHasta,
+								stDatosProcesos[i].lFechaDesde,
+								stDatosProcesos[i].lFechaHasta,
+								stDatosProcesos[i].szFiltroCategoria,
+								stDatosProcesos[i].iCntEntDest );
+
+		for( j = 0; j < stDatosProcesos[i].iCntEntDest; j++ )
+		{
+			ifnTrazasLog( modulo, "Entidad Destino => [%s], Porcent => [%d].",
+									LOG05,	
+									stDatosProcesos[i].stDatEntDestino[j].szEntidadDestino,
+									stDatosProcesos[i].stDatEntDestino[j].iPorcentaje );
+									
+		} /* for( j = 0; j < stDatosProcesos[i].iCntEntDest; j++ ) */	
+	} /* for( i = 0; i < iTotalRows; i++ ) */	
+
+	*iTotalRowsLeidas = iTotalRows;
+	return TRUE;
+}
+
+/****************************************************************************************************/
+/* ifnValidaSituacionAbonadosCuenta()																*/
+/****************************************************************************************************/
+int ifnValidaSituacionAbonadosCuenta( long lCuentaoCliente, char *szOperador,  char *szCodSituacion )
+/*
+	Definicion		:	Valida si todos los abonados de una cuenta se encuentran en un estado dado.
+	
+	Parametros		:	lCodCuenta		Cuenta a evaluar.
+						szOperador		Operador de comparacion.
+						szCodSituacion	Situacion a evaluar.
+	
+	Retorno			:	-1		ERROR.
+						!=1     Retorno.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhCadena[4001];			EXEC SQL VAR szhCadena IS STRING (4001);
+		 int ihCntAbonados;
+	EXEC SQL END DECLARE SECTION;
+
+    char modulo[] = "ifnValidaSituacionAbonadosCuenta";
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	sprintf( szhCadena, "SELECT COUNT(*) FROM GA_ABOCEL WHERE %s = %d AND COD_SITUACION %s '%s'",
+						!strcmp( szhEntGestion, szENTIDADCLIENTE ) ? "COD_CLIENTE" : "COD_CUENTA",
+						lCuentaoCliente, szOperador,  szCodSituacion );
+
+	ifnTrazasLog( modulo, "Query construida [%s].", LOG05, szhCadena );
+
+	EXEC SQL PREPARE SQLSITUAABO FROM :szhCadena;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en PREPARE SQLSITUAABO => [%s].", LOG00, SQLERRM );
+		return ERROR; /* Mail */
+	}
+
+	EXEC SQL DECLARE CURSITUAABO CURSOR FOR SQLSITUAABO;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en DECLARE CURSITUAABO => [%s].", LOG00, SQLERRM );
+		return ERROR; /* Mail */
+	}
+
+	EXEC SQL OPEN CURSITUAABO;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en OPEN CURSITUAABO => [%s].", LOG00, SQLERRM );
+		return ERROR; /* Mail */
+	}
+
+	EXEC SQL 
+	FETCH CURSITUAABO
+	 INTO :ihCntAbonados;
+		 
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en FETCH CURSITUAABO => [%s].", LOG00, SQLERRM );
+		return ERROR; /* Mail */
+	}
+		
+	EXEC SQL CLOSE CURSITUAABO;
+	if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Error en OPEN CURSITUAABO => [%s].", LOG00, SQLERRM );
+		return ERROR; /* Mail */
+	}
+	
+	return ihCntAbonados;
+} /* int ifnValidaSituacionAbonadosCuenta( long lCodCuenta, char *szOperador,  char *szCodSituacion ) */
+
+/****************************************************************************************************/
+/* bfnCambiaEstadoProceso() 																		*/
+/****************************************************************************************************/
+BOOL bfnCambiaEstadoProceso( long lNumProceso, char *szCodEstado )
+/*
+	Definicion		:	Cambia codigo de estado de un proceso determinado.
+	
+	Parametros		:	lNumProceso		Codigo de proceso.
+						szCodEstado		Nuevo estado.
+	
+	Retorno			:	TRUE	OK.
+						FALSE	ERROR.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhNumProceso;
+		char szhCodEstado[6];			EXEC SQL VAR szhCodEstado IS STRING(6);
+	EXEC SQL END DECLARE SECTION;
+
+    char modulo[] = "bfnCambiaEstadoProceso";
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	memset( szhCodEstado, '\0', sizeof( szhCodEstado ) );
+	lhNumProceso = lNumProceso;
+	sprintf( szhCodEstado, "%s\0", szCodEstado );
+	
+	EXEC SQL
+	UPDATE CO_NOCLIENTES_TO
+	   SET COD_ESTADO = :szhCodEstado,
+	   	   FEC_ESTADO = SYSDATE	
+	 WHERE NUM_PROCESO = :lhNumProceso;  
+	
+	if( SQLCODE != SQLOK )
+	{
+		ifnTrazasLog( modulo, "Proceso => [%d], Error al actualizar estado de proceso a => [%s].\nError => [%s].", LOG00, lhNumProceso, szhCodEstado, SQLERRM );
+		return FALSE;
+	}
+	
+	if( !bfnOraCommit() ) 
+	{
+		ifnTrazasLog( modulo, "Proceso => [%d], Error al realizar COMMIT => [%s].", LOG00, lhNumProceso, SQLERRM );
+		return FALSE;
+	}                            
+
+	return TRUE;
+} /* BOOL bfnCambiaEstadoProceso( long lNumProceso, char *szCodEstado ) */
+
+/****************************************************************************************************/
+/* bfnCambiaUniversoProceso() 																		*/
+/****************************************************************************************************/
+BOOL bfnCambiaUniversoProceso( long lNumProceso, long lCntUniverso )
+/*
+	Definicion		:	Cambia codigo de estado de un proceso determinado.
+	
+	Parametros		:	lNumProceso		Codigo de proceso.
+						lCntUniverso	Valor a actualizar.
+	
+	Retorno			:	TRUE	OK.
+						FALSE	ERROR.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhNumProceso;
+		long lhCntUniverso;
+	EXEC SQL END DECLARE SECTION;
+
+    char modulo[] = "bfnCambiaUniversoProceso";
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	lhNumProceso = lNumProceso;
+	lhCntUniverso = lCntUniverso;
+		
+	EXEC SQL
+	UPDATE CO_NOCLIENTES_TO
+	   SET NUM_UNIVERSO = :lhCntUniverso
+	 WHERE NUM_PROCESO = :lhNumProceso;  
+	
+	if( SQLCODE != SQLOK )
+	{
+		ifnTrazasLog( modulo, "Proceso => [%d], Error al actualizar universo de proceso => [%s].", LOG00, lhNumProceso, SQLERRM );
+		return FALSE;
+	}
+	
+	return TRUE;
+} /* BOOL bfnCambiaUniversoProceso( long lNumProceso, long lCntUniverso ) */
+
+/****************************************************************************************************/
+/* bfnAsignaPorcentajes()														   					*/
+/****************************************************************************************************/
+BOOL bfnAsignaPorcentajes( int iIndProc )
+/*
+	Definicion		:	Asigna los clientes segun porcentajes definidos para las entidades de destino 
+						asignadas al proceso.
+	
+	Parametros		:	
+	
+	Retorno			:	TRUE	OK.
+						FALSE   Error.
+*/
+{
+	  char modulo[] = "bfnAsignaPorcentajes";
+	  char szClientesAsignados[21];
+	  long lClientesAsignados, lClientesAcumulados = 0;
+	double dClientesAsignados;
+	   int i, j;
+	  BOOL bSalir = FALSE;
+	  
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	/* repartimos los clientes que cumplieron los criterios, segun porcentajes */
+	for( i = 0; i < stDatosProcesos[iIndProc].iCntEntDest; i++ )
+	{
+		lClientesAsignados = 0;
+		dClientesAsignados = 0;
+		ifnTrazasLog( modulo, "Inicio asignacion para entidad => [%s].", LOG05, stDatosProcesos[iIndProc].stDatEntDestino[i].szEntidadDestino );
+		
+		memset( szClientesAsignados, '\0', sizeof( szClientesAsignados ) );
+		
+		ifnTrazasLog( modulo, "lCumplenCriterios => [%d], iPorcentaje => [%d].", LOG05, stDatosProcesos[iIndProc].lCumplenCriterios, stDatosProcesos[iIndProc].stDatEntDestino[i].iPorcentaje );
+		dClientesAsignados = ( stDatosProcesos[iIndProc].lCumplenCriterios *  stDatosProcesos[iIndProc].stDatEntDestino[i].iPorcentaje ) / 100;
+		sprintf( szClientesAsignados, "%.0f\0", dClientesAsignados );
+		ifnTrazasLog( modulo, "dClientesAsignados => [%.4f], szClientesAsignados => [%s].", LOG05, dClientesAsignados, szClientesAsignados );
+		lClientesAsignados = atol( szClientesAsignados );
+				
+		/* manejamos el caso, del descuadre, propio de los calculos en la ultima entidad de destino */
+		if( ( i + 1 ) == stDatosProcesos[iIndProc].iCntEntDest )
+		{
+			/* revisamos si hay diferencia entre lo asignado por calculos y los que cumplieron los criterios */
+			if( ( lClientesAcumulados + lClientesAsignados ) != stDatosProcesos[iIndProc].lCumplenCriterios )
+			{
+				/* siempre se asigna la diferencia, entre la cantidad de clientes y lo calculado */
+				lClientesAsignados = stDatosProcesos[iIndProc].lCumplenCriterios - lClientesAcumulados;
+			}
+		}
+
+		/* manejamos la situacion pocos clientes, muchas entidades de destino */
+		if( ( lClientesAcumulados + lClientesAsignados ) >= stDatosProcesos[iIndProc].lCumplenCriterios ) 
+		{
+			lClientesAsignados = stDatosProcesos[iIndProc].lCumplenCriterios - lClientesAcumulados;
+			bSalir = TRUE;
+		}
+		
+		lClientesAcumulados += lClientesAsignados;
+		ifnTrazasLog( modulo, "Se le asignaron => [%d], acumulados => [%d].", LOG05, lClientesAsignados, lClientesAcumulados );
+		stDatosProcesos[iIndProc].stDatEntDestino[i].lNumClientesAsignados = lClientesAsignados;
+		
+		if( bSalir )
+			break;
+
+	} /* for( i = 0; i < stDatosProcesos[i].iCntEntDest; i++ ) */
+
+	/* marcamos los clientes, segun la operacion anterior */
+	j = 0;
+	for( i = 0; i < stDatosProcesos[iIndProc].iCntEntDest; i++ )
+	{
+		lClientesAsignados = 0;
+		
+		while( j < stDatosProcesos[iIndProc].lTotalProcesados )
+		{
+			if( lClientesAsignados == stDatosProcesos[iIndProc].stDatEntDestino[i].lNumClientesAsignados )
+				break; /* se asigno lo que corresponde a la entidad destino */
+
+			if( stRuts[j].iCumpleCriterios == 1 ) /* solo para los que cumplieron los criterios */
+			{
+				sprintf( stRuts[j].szCodEntidadDestino, "%s\0", stDatosProcesos[iIndProc].stDatEntDestino[i].szEntidadDestino );
+				lClientesAsignados++;
+			}	
+			j++;
+		}
+	} /* for( i = 0; i < stDatosProcesos[iIndProc].iCntEntDest; i++ ) */
+
+	/* mostramos los datos de la repartija */
+	ifnTrazasLog( modulo, "Porcentajes de clientes asignados a las Entidades de Destino.", LOG05 );
+	for( i = 0; i < stDatosProcesos[iIndProc].iCntEntDest; i++ )
+	{
+		ifnTrazasLog( modulo, "Entidad Destino => [%s], Porcent => [%d], Clientes Asig => [%d].",
+								LOG05,	
+								stDatosProcesos[iIndProc].stDatEntDestino[i].szEntidadDestino,
+								stDatosProcesos[iIndProc].stDatEntDestino[i].iPorcentaje,
+								stDatosProcesos[iIndProc].stDatEntDestino[i].lNumClientesAsignados );
+	} /* for( i = 0; i < stDatosProcesos[iIndProc].iCntEntDest; i++ ) */	
+
+	return TRUE;
+} /* BOOL bfnAsignaPorcentajes( int iIndProc ) */
+
+/****************************************************************************************************/
+/* bfnUpdateEstadoCobExterna()													   					*/
+/****************************************************************************************************/
+BOOL bfnUpdateEstadoCobExterna( int iIndProc )
+/*
+	Definicion		:	Actualiza el estado del cliente en la tabla co_cobexterna, con el resultado 
+						del proceso
+						
+	Parametros		:	iIndProc	Indice del arreglo del proceso
+	
+	Retorno			:	TRUE	OK.
+						FALSE   Error.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhCodEntidad[6];			EXEC SQL VAR szhCodEntidad IS STRING(6);
+		char szhCodRechazo[6];			EXEC SQL VAR szhCodRechazo IS STRING(6);
+		char szhRowid[19];				EXEC SQL VAR szhRowid IS STRING(19);
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "bfnUpdateEstadoCobExterna";
+	 int i;
+	long lCnt; 
+	
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	memset( szhCodEntidad, '\0', sizeof( szhCodEntidad ) );
+	memset( szhCodRechazo, '\0', sizeof( szhCodRechazo ) );
+	memset( szhRowid, '\0', sizeof( szhRowid ) );
+	
+	/* repartimos los clientes que cumplieron los criterios, segun porcentajes */
+	for( i = 0; i < stDatosProcesos[iIndProc].lTotalProcesados; i++ )
+	{
+		strcpy( szhRowid, stRuts[i].szRowid );
+		if( stRuts[i].iCumpleCriterios == 1 ) /* cumplio con los criterios */
+		{
+			strcpy( szhCodEntidad, stRuts[i].szCodEntidadDestino );
+			
+			EXEC SQL
+			UPDATE CO_COBEXTERNA
+			   SET COD_ENTIDAD = :szhCodEntidad,
+			       COD_ENVIO = 'G',
+			       FEC_MOVIMIENTO = SYSDATE
+			 WHERE ROWID = CHARTOROWID( :szhRowid );
+		}
+		else
+		{
+			strcpy( szhCodRechazo, stRuts[i].szCodRechazo );
+	
+			EXEC SQL
+			UPDATE CO_COBEXTERNA
+			   SET COD_ENVIO = 'E',
+				   COD_RECHAZO = :szhCodRechazo,
+			       FEC_MOVIMIENTO = SYSDATE
+			 WHERE ROWID = CHARTOROWID( :szhRowid );
+			 
+		} /* if( stRuts[i].iCumpleCriterios == 1 ) */		
+		
+		if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+		{
+			ifnTrazasLog( modulo, "Rowid => [%s], Error actualizando CO_COBEXTERNA => [%s].", LOG00, szhRowid, SQLERRM );
+			return FALSE;
+		}
+
+		lCnt++;
+		
+		if( ( lCnt % 1000 ) == 0 )
+			ifnTrazasLog( modulo, "Registros actualizados en CO_COBEXTERNA => [%d].", LOG03, lCnt );
+
+	} /* for( i = 0; i < stDatosProcesos[i].iCntEntDest; i++ ) */
+
+	ifnTrazasLog( modulo, "Registros actualizados en CO_COBEXTERNA => [%d].", LOG03, lCnt );
+	return TRUE;
+} /* BOOL bfnUpdateEstadoCobExterna( int iIndProc ) */
+
+/****************************************************************************************************/
+/* bfnInsertaProcesadosCobExterna()												   					*/
+/****************************************************************************************************/
+BOOL bfnInsertaProcesadosCobExterna( int iIndProc )
+/*
+	Definicion		:	Inserta un registro en la co_cobexterna
+						
+	Parametros		:	iIndProc	Indice del arreglo del proceso
+	
+	Retorno			:	TRUE	OK.
+						FALSE   Error.
+*/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhNumProceso;
+		char szhCodEntidad[6];			EXEC SQL VAR szhCodEntidad IS STRING(6);
+		char szhCodRechazo[6];			EXEC SQL VAR szhCodRechazo IS STRING(6);
+		char szhRowid[19];				EXEC SQL VAR szhRowid IS STRING(19);
+	EXEC SQL END DECLARE SECTION;
+
+	char modulo[] = "bfnInsertaProcesadosCobExterna";
+	 int i;
+	long lCnt = 0;	 
+	
+	ifnTrazasLog( modulo, "Ingreso modulo => [%s].", LOG05, modulo );
+
+	memset( szhCodEntidad, '\0', sizeof( szhCodEntidad ) );
+	memset( szhCodRechazo, '\0', sizeof( szhCodRechazo ) );
+	memset( szhRowid, '\0', sizeof( szhRowid ) );
+	
+	lhNumProceso = stDatosProcesos[iIndProc].lNumProceso;
+	ifnTrazasLog( modulo, "Total procesados => [%d].", LOG05, stDatosProcesos[iIndProc].lTotalProcesados );
+	
+	/* repartimos los clientes que cumplieron los criterios, segun porcentajes */
+	for( i = 0; i < stDatosProcesos[iIndProc].lTotalProcesados; i++ )
+	{
+		if( stRuts[i].iCumpleCriterios == 1 ) /* cumplio con los criterios */
+		{
+			strcpy( szhCodEntidad, stRuts[i].szCodEntidadDestino );
+			strcpy( szhRowid, stRuts[i].szRowid );
+			
+  			ifnTrazasLog( modulo, "Ingresando ROWID => [%s], szhCodEntidad => [%s].", LOG05, szhRowid, szhCodEntidad );
+			EXEC SQL
+			INSERT INTO CO_COBEXTERNA ( NUM_IDENT,
+										COD_TIPIDENT,
+										COD_CUENTA,
+										COD_ENTIDAD,
+										TIP_COBRANZA,
+										FEC_INGRESO,
+										NUM_PROCESO,
+										COD_MOVIMIENTO,
+										FEC_MOVIMIENTO,
+										MTO_DEUDA,
+										MTO_VENCIDO,
+										CNT_CLIENTES,
+										COD_ENVIO,
+										NUM_IDENT_SANTIAGO,
+										NOM_USUARIO,
+										MTO_ENVIOANT,
+										DIA_PRORROCOM,
+										COD_RECHAZO,
+										FEC_DEUDA,
+										COD_CLIENTE )
+								 SELECT NUM_IDENT,     
+										COD_TIPIDENT,  
+										COD_CUENTA,    
+										:szhCodEntidad,   
+										'N',
+										FEC_INGRESO,   
+										:lhNumProceso,   
+										'SM',
+										SYSDATE,
+										MTO_DEUDA,     
+										MTO_VENCIDO,   
+										CNT_CLIENTES,  
+										'G',     
+										NUM_IDENT_SANTIAGO,  
+										NOM_USUARIO,   
+										MTO_ENVIOANT,  
+										DIA_PRORROCOM, 
+										COD_RECHAZO,
+										FEC_DEUDA,
+										COD_CLIENTE
+								   FROM CO_COBEXTERNA 
+								  WHERE ROWID = CHARTOROWID( :szhRowid );
+                                        
+			if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+			{
+				ifnTrazasLog( modulo, "Rowid => [%s], Error al insertar CO_COBEXTERNA => [%s].", LOG00, szhRowid, SQLERRM );
+				return FALSE;
+			}
+	
+			lCnt++;
+			
+			if( ( lCnt % 1000 ) == 0 )
+				ifnTrazasLog( modulo, "Registros insertados CO_COBEXTERNA => [%d].", LOG03, lCnt );
+
+		} /* if( stRuts[i].iCumpleCriterios == 1 ) */		
+	} /* for( i = 0; i < stDatosProcesos[i].iCntEntDest; i++ ) */
+
+	ifnTrazasLog( modulo, "Registros insertados CO_COBEXTERNA => [%d].", LOG03, lCnt );
+
+	return TRUE;
+} /* BOOL bfnInsertaProcesadosCobExterna( int iIndProc ) */
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

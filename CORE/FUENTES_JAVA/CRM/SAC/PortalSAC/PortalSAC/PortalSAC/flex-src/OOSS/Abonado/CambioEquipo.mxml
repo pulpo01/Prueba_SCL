@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module backgroundImage="../recursosInterfaz/imagenes/otros/fondoLogin.jpg" xmlns:mx="http://www.adobe.com/2006/mxml"
+		   layout="absolute" width="980" height="468" initialize="init();" verticalAlign="top" backgroundColor="#FCFCFC"
+		   x="196" y="17" xmlns:ns1="user.libreria.componentes.*">
+	<mx:Script>
+		<![CDATA[
+			import mx.logging.Log;
+			import mx.collections.ArrayCollection;
+			import mx.messaging.messages.HTTPRequestMessage;
+			import mx.controls.Alert;
+			import mx.events.ModuleEvent;
+			import mx.modules.ModuleManager;
+			import mx.modules.IModuleInfo;
+			import mx.rpc.events.FaultEvent;
+			import mx.events.ValidationResultEvent;
+			import mx.controls.AdvancedDataGrid;
+			import mx.managers.PopUpManager;
+			import mx.core.IFlexDisplayObject;
+			import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+			import generated.webservices.orquestador.*;
+			import user.libreria.componentes.DatosEncabezadoOOSS;
+			import user.libreria.clases.StringUtil;
+			import user.libreria.clases.ParamCargos;
+			public var info : IModuleInfo;
+			public var grillaGlobal : AdvancedDataGrid = new AdvancedDataGrid();
+			public var popUpWindow : IFlexDisplayObject;
+			public var popUpParent : DisplayObject;
+			public var searchingPopUpView : Class = BarraDeProgreso2;
+			import OOSS.General.ServicioCargos;
+			public var srvCargos : Class = ServicioCargos;
+			public var DatosCargos : ParamCargos = new ParamCargos;
+			public var wsORQ : WSSEGPortal = new WSSEGPortal();
+			public var datoDTO : EjecucionCambioEquipoGSMDTO = new EjecucionCambioEquipoGSMDTO;
+			public var numTransaccion : String;
+
+			[Embed(source="../../recursosInterfaz/imagenes/iconos/alert/warning.png")]
+			public var iconWarning : Class;
+
+			include "../../user/includes/datosEncabezadoOOSS.as";
+			include "../../user/includes/registroConsulOoss.as";
+
+			private function getError(event : FaultEvent) : void
+			{
+				var mensaje : String = new String();
+				PopUpManager.removePopUp(popUpWindow);
+				mensaje = "Ha ocurrido un error en la petición a los servicios.";
+				Alert.show(mensaje, "Error en la aplicación");
+				cerrar();
+			}
+
+			private function getDataCarga(event : CargarCambioEquipoGSMResultEvent) : void
+			{
+				var Comdata : ArrayCollection = new ArrayCollection();
+				var Comdata2 : ArrayCollection = new ArrayCollection();
+				var Comdata3 : ArrayCollection = new ArrayCollection();
+				//var Comdata4:ArrayCollection	 = new  ArrayCollection();
+				var numcant : int;
+				var oItem : Object;
+				var oItem2 : Object;
+				var oItem3 : Object;
+				//var oItem4 : Object;
+				var mensaje : String = new String();
+				if (event.result.codError == null)
+				{
+					numTransaccion = event.result.numTransaccion;
+					numcant = event.result.arrayBloqueArticulosVO.length;
+					for (var i : int = 0; i < numcant; i++)
+					{
+						oItem = new Object();
+						oItem.label = event.result.arrayBloqueArticulosVO[i].desArt.toString();
+						oItem.data = event.result.arrayBloqueArticulosVO[i].codArt.toString();
+						Comdata.addItem(oItem);
+					}
+					//llenado de combo-box
+					codArtComboBox.dataProvider = Comdata;
+					codArtComboBox.selectedIndex = -1;
+					numcant = event.result.arrayBloqueUsosVO.length;
+					for (var j : int = 0; j < numcant; j++)
+					{
+						oItem2 = new Object();
+						oItem2.label = event.result.arrayBloqueUsosVO[j].desUso.toString();
+						oItem2.data = event.result.arrayBloqueUsosVO[j].codUso.toString();
+						Comdata2.addItem(oItem2);
+					}
+					//llenado de combo-box
+					codUso.dataProvider = Comdata2;
+					codUso.selectedIndex = -1;
+					numcant = event.result.arrayCausasCambioVO.length;
+					for (var k : int = 0; k < numcant; k++)
+					{
+						oItem3 = new Object();
+						oItem3.label = event.result.arrayCausasCambioVO[k].desCauCambio.toString();
+						oItem3.data = event.result.arrayCausasCambioVO[k].codCauCambio.toString();
+						Comdata3.addItem(oItem3);
+					}
+					//llenado de combo-box
+					codCausaCambio.dataProvider = Comdata3;
+					codCausaCambio.selectedIndex = -1;
+//			        oItem4 = new Object();
+//			        oItem4.label= "Interno";
+//			        oItem4.data ="I";
+//					Comdata4.addItem(oItem4);
+//					oItem4 = new Object();
+//			        oItem4.label= "Externo";
+//			        oItem4.data ="E";
+//					Comdata4.addItem(oItem4);
+					//llenado de combo-box
+					//indProcedencia.dataProvider=Comdata4;
+					indProcedencia.text = "EXTERNO"
+					desTipContrato.text = event.result.desTipContrato;
+					numSerieActual.text = event.result.numSerie;
+					desEquipoTextInput.text = event.result.desEquipo;
+					desProcedEqui.text = event.result.desProcedEqui;
+					//	tipTerminal.text=event.result.desTipTerminal;
+					PopUpManager.removePopUp(popUpWindow);
+				}
+				else
+				{
+					PopUpManager.removePopUp(popUpWindow);
+					mensaje = event.result.desError;
+					Alert.show(mensaje, "No se puede ejecutar la OOSS");
+					cerrar();
+				}
+			}
+
+			private function getDataEjecuta(event : EjecutarCambioEquipoGSMResultEvent) : void
+			{
+				var mensaje : String = new String();
+				PopUpManager.removePopUp(popUpWindow);
+				if (event.result.desError == null)
+				{
+					mensaje = "Numero de la OOSS.: " + event.result.nroOOSS.toString();
+					Alert.show(mensaje, "OOSS Cambio Equipo");
+					
+					cerrar();
+					
+					//Se levanta la pantalla de registro
+		     		//levantaRegistroIngOoss('Abonado'); //Se comenta funcionalidad(No certificada) AF resposable : Ruben Araya
+					
+				}
+				else
+				{
+					mensaje = event.result.desError;
+					Alert.show(mensaje, "No se puede ejecutar la OOSS");
+				}
+
+				var codigosNoFatales:String = new String();
+				var flagCerrar:Boolean = true;
+
+				codigosNoFatales = StringUtil.getValor("codigosErrorNoCerrarPantalla", "VALOR");
+				flagCerrar = StringUtil.errorWSNoInvalidante(event.result.codError); 
+				if (!flagCerrar)
+					cerrar();
+			}
+
+			private function executeWSCarga() : void
+			{
+				popUpParent = parentApplication.document;
+				popUpWindow = PopUpManager.createPopUp(popUpParent, searchingPopUpView, true);
+				PopUpManager.centerPopUp(popUpWindow);
+				wsORQ.addWSSEGPortalFaultEventListener(getError);
+				wsORQ.addcargarCambioEquipoGSMEventListener(getDataCarga);
+				var codEvento : String = parentApplication.codEvento;
+				wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL", "VALOR") + StringUtil.getValor("endpointORQ", "VALOR"));
+				wsORQ.cargarCambioEquipoGSM(parentApplication.aboSelect, parentApplication.usuario.username, codEvento);
+			}
+
+			private function executeWSEjecuta() : void
+			{
+				popUpParent = parentApplication.document;
+				popUpWindow = PopUpManager.createPopUp(popUpParent, searchingPopUpView, true);
+				PopUpManager.centerPopUp(popUpWindow);
+				wsORQ.addWSSEGPortalFaultEventListener(getError);
+				wsORQ.addejecutarCambioEquipoGSMEventListener(getDataEjecuta);
+				wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL", "VALOR") + StringUtil.getValor("endpointORQ", "VALOR"));
+				datoDTO.numTransaccion = numTransaccion;
+				datoDTO.comentario = txtComentario.text;
+				datoDTO.nomUsuarioSCL = parentApplication.usuario.username;
+				datoDTO.codError = "1";
+				datoDTO.desError = "N";
+				datoDTO.codArt = this.codArtComboBox.selectedItem.data.toString();
+				datoDTO.codCauCambio = this.codCausaCambio.selectedItem.data.toString();
+				datoDTO.codUso = this.codUso.selectedItem.data.toString();
+				datoDTO.codTipTerminal = "T";
+				datoDTO.indProcedencia = "E";
+				datoDTO.numSerie = numImeiNuevo.text;
+				datoDTO.nroOOSS = 1;
+				datoDTO.iLargoSerie = numImeiNuevo.text.length.toString();
+				wsORQ.ejecutarCambioEquipoGSM(datoDTO);
+			}
+
+			private function ejecutar() : void
+			{
+				if (validaRequeridos())
+				{
+					executeWSEjecuta();
+				}
+			}
+
+			private function validaRequeridos() : Boolean
+			{
+				if (codUso.selectedIndex == -1 || indProcedencia.text == "" || codArtComboBox.selectedIndex == -1 || codCausaCambio.selectedIndex == -1 || numImeiNuevo.text == "" || txtComentario.text == "")
+				{
+					Alert.show("Debe ingresar todos los datos requeridos identificados con (*).", "Advertencia", mx.controls.Alert.OK, this, null, iconWarning, mx.controls.Alert.OK);
+					return false;
+				}
+				
+				if (numImeiNuevo.length != 15)
+				{
+					Alert.show("La longitud del nro. IMEI debe ser de 15 caracteres.", "Advertencia", mx.controls.Alert.OK, this, null, iconWarning, mx.controls.Alert.OK);
+					return false;
+				}
+				
+				return true;
+			}
+
+			private function init() : void
+			{
+				datosCuenta(parentApplication.ctaSelect);
+				datosCliente(parentApplication.cliSelect);
+				executeWSCarga();
+			}
+
+			private function cerrar() : void
+			{
+				this.visible = false;
+				parentDocument.vbOOSS.enabled = false;
+				parentDocument.vb1.enabled = true;
+				parentDocument.tab1.selectedIndex = 0;
+				return;
+			}
+
+			private function fnMuestra() : void
+			{
+				var mensaje : String = new String();
+				mensaje = "Ha Seleccionado Label.";
+				Alert.show(codArtComboBox.selectedLabel.toString(), mensaje);
+				mensaje = "Ha Seleccionado Item.";
+				Alert.show(codArtComboBox.selectedItem.data.toString(), mensaje);
+			}
+
+			private function cargos() : void
+			{
+				popUpParent = parentApplication.document;
+				popUpWindow = PopUpManager.createPopUp(popUpParent, srvCargos, true);
+				PopUpManager.centerPopUp(popUpWindow);
+			}
+		]]>
+
+	</mx:Script>
+	<mx:StringValidator id="valObservacion" requiredFieldError="Ingrese el comentario de la OOSS"
+						source="{txtComentario}" property="text"/>
+
+	<mx:Panel width="961" height="438" layout="absolute" title="&gt;&gt; Cambio de Serie Externo" fontSize="12"
+			  borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0"
+			  verticalCenter="-4">
+		<mx:backgroundImage>@Embed(source='../../recursosInterfaz/imagenes/otros/fondo.jpg')</mx:backgroundImage>
+		<mx:Button label="Ejecutar" click="ejecutar()" x="379.5" y="363" fontFamily="Verdana" fontSize="10"/>
+
+		<mx:Button label="Cerrar" width="84" click="cerrar()" x="477.5" y="363" fontFamily="Verdana" fontSize="10"/>
+		<ns1:DatosEncabezadoOOSS x="13.85" y="10" id="DatosEncabezadoOOSS" fontSize="10"/>
+		<mx:Label text="Tipo de Contrato" styleName="TituloCampo" width="114.3" x="25" y="170" fontSize="10" height="18"/>
+		<mx:TextInput styleName="TextoCampo" width="329.9" id="desTipContrato" x="163.05" y="170" fontSize="10"
+					  editable="false"/>
+		<mx:Label text="Nuevo Número IMEI" styleName="TituloCampo" width="124.3" x="511" y="294" fontSize="10"
+				  height="18"/>
+		<mx:TextInput styleName="TextoCampo" width="244" id="numSerieActual" x="666" y="170" fontSize="10"
+					  editable="false" maxChars="15"/>
+		<mx:Label text="Equipo Actual" styleName="TituloCampo" width="97" x="25" y="200" fontSize="10" height="18"/>
+		<mx:TextInput styleName="TextoCampo" width="329.94998" id="desEquipoTextInput" x="163.05" y="200" fontSize="10"
+					  editable="false"/>
+		<mx:Label text="Procedencia Actual" styleName="TituloCampo" width="110.13333" x="511" y="202" fontSize="10"
+				  height="18"/>
+		<mx:TextInput styleName="TextoCampo" width="244" id="desProcedEqui" x="666" y="200" fontSize="10"
+					  editable="false"/>
+		<mx:Label text="Uso" styleName="TituloCampo" width="32.333332" x="25" y="230" fontSize="10" height="18"/>
+		<mx:ComboBox width="330" id="codUso" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" fontFamily="Verdana"
+					 x="163" y="230" height="22" styleName="TextoCampo">
+		</mx:ComboBox>
+		<mx:Label text="Cambio de Equipo" styleName="TituloCampo" width="108" x="511" y="232" fontSize="10" height="18"/>
+		<mx:TextInput width="244" id="indProcedencia" fontSize="10" fontWeight="normal" themeColor="#CBDEEB"
+					  fontFamily="Verdana" x="666" y="230" editable="false" enabled="true" styleName="TextoCampo"/>
+		<mx:Label text="Nuevo Equipo" styleName="TituloCampo" width="85" x="25" y="260" fontSize="10" height="18"/>
+		<mx:ComboBox width="330" id="codArtComboBox" fontSize="10" fontWeight="bold" themeColor="#CBDEEB"
+					 fontFamily="Verdana" x="163" y="260" styleName="TextoCampo">
+		</mx:ComboBox>
+		<mx:Label text="Causa del Cambio" styleName="TituloCampo" width="111.5" x="25" y="290" fontSize="10" height="18"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="133" y="290" width="31" color="#FF0000" fontSize="10"/>
+		<mx:ComboBox width="330.05" id="codCausaCambio" fontSize="10" fontWeight="bold" themeColor="#CBDEEB"
+					 fontFamily="Verdana" x="162.95" y="290" styleName="TextoCampo">
+		</mx:ComboBox>
+		<mx:Label text="Número IMEI Actual" styleName="TituloCampo" width="124.3" x="511" y="174" fontSize="10"
+				  height="18"/>
+		<mx:TextInput width="244" id="numImeiNuevo" editable="true" enabled="true" maxChars="15" x="666" y="288"
+					  fontSize="10" restrict="0-9" styleName="TextoCampo"/>
+		<mx:Label text="Comentario" styleName="TituloCampo" width="83.3" x="25" y="322" fontSize="10" height="18"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="95" y="322" width="31" color="#FF0000" fontSize="10"/>
+		<mx:TextInput width="747.05005" id="txtComentario" editable="true" enabled="true" maxChars="256"
+					  displayAsPassword="false" x="162.95" y="320" fontSize="10" restrict="0-9A-Za-zñáéíóúÁÉÍÓÚü \-_@"
+					  styleName="TextoCampo"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="630" y="294" width="28" color="#FF0000" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="104.5" y="260" width="31" color="#FF0000" fontSize="10"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="50.8" y="230" width="31" color="#FF0000" fontSize="10"/>
+	</mx:Panel>
+</mx:Module>

@@ -1,0 +1,37 @@
+CREATE OR REPLACE PROCEDURE        P_ACTUALIZA_ESTADO
+IS
+V_ESTADO 		NUMBER;
+V_COD_TIPDOCUM 	NUMBER;
+V_NUM_FOLIO  	NUMBER;
+V_FECHA     	DATE;
+--
+   CURSOR C1 IS
+   	SELECT COD_ESTADODEV,max(fec_estado_dh), COD_TIPDOCUM, NUM_FOLIO
+	from  crh_estadodevoluciones A
+	WHERE A.fec_estado_dh IN (SELECT max(fec_estado_dh)
+		  				     FROM   crh_estadodevoluciones
+		  				 	 WHERE  COD_TIPDOCUM = A.COD_TIPDOCUM
+							 AND	NUM_FOLIO    = A.NUM_FOLIO)
+	group by cod_tipdocum, num_folio, COD_ESTADODEV;
+--
+BEGIN
+--
+   OPEN C1;
+   LOOP
+--
+      FETCH C1 INTO V_ESTADO,V_FECHA, V_COD_TIPDOCUM, V_NUM_FOLIO;
+      EXIT WHEN C1%NOTFOUND;
+      UPDATE CRH_DEVOLUCIONES A
+      SET COD_ESTADODEV 	=V_ESTADO
+      WHERE A.COD_TIPDOCUM 	=V_COD_TIPDOCUM
+	AND    A.NUM_FOLIO    	=v_NUM_FOLIO;
+   END LOOP;
+   CLOSE C1;
+--EXCEPTION
+--   WHEN OTHERS THEN
+--        VP_SQLCODE := SQLCODE;
+ --       VP_SQLERRM := SQLERRM;
+ --       VP_ERROR := '4';
+END;
+/
+SHOW ERRORS

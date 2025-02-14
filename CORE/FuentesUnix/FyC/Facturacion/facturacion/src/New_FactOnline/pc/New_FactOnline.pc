@@ -1,0 +1,1054 @@
+/* ******************************************************************************** */
+/*	New_FactOnline ('máscara sobre FacturaC')				    */
+/*										    */
+/*  Parametros : -u usuario/password  ; -l loglevel ; -m codmodgener		    */
+/*	 13 de Diciembre de 1999						    */
+/********************************************************************************** */
+
+/* inclusion de archivos */
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <string.h>
+#include <deftypes.h>
+#include <predefs.h>
+#include <unistd.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include "New_FactOnline.h"
+
+EXEC SQL INCLUDE sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCodModGener    [4];
+     int  ihCodEstaDocEnt  =  0;
+     int  ihIngrOk  	   =  0;
+     char szhCodAplic       [4];
+     int  ihNumDeltaHoras  =  1;
+     int  ihNumHorasDia    = 24;
+EXEC SQL END DECLARE SECTION;
+
+long pid;
+FILE *fpShell;
+char szCodModGenerGlobal[4] ="" ;
+
+/* ******************************************************************************** */
+/* modulo principal                                                                 */
+/* ******************************************************************************** */
+int main(int argc,char *argv[])
+{
+    char modulo[]="main";
+    int sts;
+    int iLogLevel          =3  ;
+    char szOraAccount   [32]="" ;
+    char szOraPasswd    [32]="" ;
+    char szCodModGener  [4] ="" ;
+
+/* Versionamiento */
+    fprintf (stderr, "\n New_FactOnline Version  [%s] " __DATE__ " " __TIME__ " TGE MC\n",szVersionActual);
+
+    pid=getpid();
+    fprintf( stdout, "\n***** New_FactOnline. *****\n"
+	             "%s\n** pid : [ %8ld ] **\n"
+	             "************************\n"
+	           , cfnGetTime(1),pid );
+	              
+	           
+    sts = ifnValidaParametros   (argc,argv
+	                        ,szOraAccount
+	                        ,szOraPasswd
+	                        ,&iLogLevel
+	                        ,szCodModGener);
+
+    vDTrazasLog(modulo, "\n%s[%ld] << Retorno ifnValidaParametros : %d >>"
+	              , LOG03, cfnGetTime(1),pid,sts);
+
+    if ( sts != 0 ) return sts;
+
+    sts = ifnAbreArchivosLog    (iLogLevel, szCodModGener);
+    
+    if ( sts != 0 ) return sts;
+
+    vDTrazasLog(modulo, "\n%s[%ld] << Inicia  Ejecucion >>", LOG03, cfnGetTime(1),pid);
+    
+    sprintf(szCodModGenerGlobal,"%s",szCodModGener);
+
+    sts = ifnFacturacionOnline  (szOraAccount
+	                        ,szOraPasswd
+	                        ,iLogLevel
+	                        ,szCodModGener);	                       
+
+    vDTrazasLog(modulo, "%s[%ld] << Termina Ejecucion >>", LOG03, cfnGetTime(1),pid);
+
+    fprintf(stdout,"\n");
+    
+    return sts;
+
+} /* main */
+
+/* ****************************************************************************** */
+/* ifnAbreArchivosLog : Crea para escritura o append archivos de Log y de Errores */
+/* ****************************************************************************** */
+int ifnAbreArchivosLog(int iLogLevel, char *szCodModGener)
+{
+    char modulo[]="ifnAbreArchivosLog";
+    char *pathDir;
+    char szArchivo  [32]    ="";
+    char szPath     [128]   ="";
+    char szComando  [128]   ="";
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"New_FactOnline_%s", szCodModGener); /* 'New_FactOnline' */
+
+    pathDir=szGetEnv("XPF_LOG");
+    sprintf(szPath,"%s/New_FactOnline/%s",pathDir,cfnGetTime(2)); /* '....log/New_FactOnline/YYYYMMDD/' */
+    free(pathDir);
+
+    fprintf(stdout, "\nCrea Directorio Log  : %s\n", szPath);
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    fprintf(stdout, "\nCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+    stStatus.LogNivel = iLogLevel;
+
+    sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+    
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )/* "wb+" */
+    {	fprintf(stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+	return -7;    
+    }
+
+    vDTrazasError(modulo, "\n%s[%ld] << Abre Archivo de Errores >>", LOG04, cfnGetTime(1),pid);
+
+    sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+	
+    if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) /* "wb+" */
+    {	fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+	vDTrazasError(modulo, "\n<< No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+	return -8;    
+    }
+
+    vDTrazasLog(modulo, "\n\nNew_FactOnline Version [%s] " __DATE__ " " __TIME__ " TGE MC\n", LOG03,szVersionActual);
+    vDTrazasError(modulo, "\n\nNew_FactOnline Version [%s] " __DATE__ " " __TIME__ " TGE MC\n", LOG03,szVersionActual);
+    vDTrazasLog(modulo, "\n%s[%ld] << Abre Archivo de Log >>", LOG04, cfnGetTime(1),pid);
+
+    return 0; /* Validacion ok */
+}
+
+/****************************************************************************/
+int  iShellEjecucion(char *szLineaComando,char *szNombreLog)
+{
+     char modulo[]="iShellEjecucion";
+     char *pathDir;
+     char szArchivo  [256]   ="";
+     char szArchivoCompleto [312] ="";
+     char szComando  [350]   ="";
+     char szRaya		[51]	="";
+
+     strcpy (szRaya , "--------------------------------------------------");
+
+     vDTrazasLog(modulo, "\n\t%s\n\t%s\n",LOG04,modulo,szRaya);
+
+     memset(szArchivo,'\0',sizeof(szArchivo));
+     sprintf(szArchivo,"New_FactOnline_%ld_%s_%s.ksh",pid, szCodModGenerGlobal, cfnGetTime(5));
+
+     pathDir=szGetEnv("XPF_KSH");
+
+     sprintf(szArchivoCompleto,"%s/%s",pathDir,szArchivo);
+
+     free(pathDir);
+     vDTrazasLog(modulo, "\tCrea Archivo Ksh : %s", LOG04, szArchivoCompleto);
+
+     if((fpShell = fopen(szArchivoCompleto,"w")) == (FILE*)NULL )
+     {
+	 vDTrazasLog(modulo, "\t<< No pudo crearse el archivo de shell %s \n\t%s\n>>",LOG04,szArchivoCompleto,szRaya);
+	 vDTrazasError(modulo,"\t<< No pudo crearse el archivo de shell %s >>",LOG04,szArchivoCompleto);
+	 return (1);
+     }
+
+     fprintf(fpShell,"echo '\tEjecución de Comando : %s' >> %s 2>&1\n", szLineaComando, szNombreLog);
+     fprintf(fpShell,"echo '+++++++++++++++++++++++++'`date`'+++++++++++++++++++++++++' >> %s 2>&1\n",szNombreLog);
+     fprintf(fpShell,"%s >> %s 2>&1 &\n", szLineaComando, szNombreLog);
+     fprintf(fpShell,"echo ' ' >> %s 2>&1\n", szNombreLog);
+     fprintf(fpShell,"echo ' ' >> %s 2>&1\n", szNombreLog);
+     fprintf(fpShell,"echo '+++++++++++++++++++++++++'`date`'+++++++++++++++++++++++++' >> %s 2>&1\n",szNombreLog);
+     fprintf(fpShell,"echo '\tFin de Ejecución de Comando' >> %s 2>&1\n", szNombreLog);
+
+     fclose(fpShell);
+
+     sprintf(szComando,"/usr/bin/chmod 777 %s", szArchivoCompleto);
+     vDTrazasLog(modulo, "\tComando : %s",LOG04,szComando);
+
+     if (system (szComando))
+     {
+	 vDTrazasLog(modulo,"\t<< Fallo en cambios de permisos del Archivo [%s] >>"
+        		    "\n\t<< Error Numero: %d     %s >>"
+			    "\n\t%s\n",LOG04,szArchivoCompleto,errno,strerror(errno),szRaya);
+	 vDTrazasError(modulo,"\t<< Fallo en cambios de permisos del Archivo [%s] >>"
+        		      "\n\t<< Error Numero: %d     %s >>"
+        		     ,LOG04,szArchivoCompleto,errno,strerror(errno));
+         return (1);
+    }
+
+    memset(szComando,'\0',sizeof(szComando));
+
+    sprintf(szComando,"%s", szArchivoCompleto);
+    vDTrazasLog(modulo, "\tComando : %s",LOG04,szArchivoCompleto);
+
+    if (system (szComando))
+    {
+	vDTrazasLog(modulo, "\t<< Fallo en la ejecucion de [%s] >>"
+    			    "\n\t<< Error Numero: %d     %s >>\n\t%s"
+        		  , LOG04,szComando,errno,strerror(errno),szRaya);
+    	vDTrazasError(modulo,"\t<< Fallo en la ejecucion de [%s] >>"
+        		     "\n\t<< Error Numero: %d     %s >>"
+        		    ,LOG04,szComando,errno,strerror(errno));
+	return (1);
+    }
+
+    memset(szComando,'\0',sizeof(szComando));
+
+    sprintf(szComando,"rm -f %s", szArchivoCompleto);
+
+    vDTrazasLog(modulo, "\tComando : %s",LOG04,szComando);
+
+    if (system (szComando))
+    {
+	vDTrazasLog(modulo, "\tFallo en el borrado de shell [%s]"
+    			    "\t<< Error Numero: %d     %s >>\n\t%s\n"
+        		  , LOG04,szArchivo,errno,strerror(errno),szRaya);
+	vDTrazasError(modulo,"\tFallo en el borrado de shell [%s]"
+        		     "\t<< Error Numero: %d     %s >>"
+        		    ,LOG04,szArchivo,errno,strerror(errno));
+        return (1);
+    }
+
+    vDTrazasLog(modulo, "\t%s\n",LOG04,szRaya);
+    return (0); /* Validacion ok */
+}
+/* **************************************************************************** */
+
+BOOL bfnCargaFaInterfac(INTQUEUEPROC    stIntQueueProc)
+{
+    stFAINTERFACT       * paux;
+    long   iCantidad    = 0;
+    int    i;
+    long   iLastRows    = 0;
+    int    iFetchedRows = SIZE_HOSTARRAY_INTERFACT;
+    int    iRetrievRows = SIZE_HOSTARRAY_INTERFACT;
+    char   modulo[]     = "bfnCargaFaInterfac";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+         long lMaxFetch ;
+         long lhNumProceso[SIZE_HOSTARRAY_INTERFACT];
+    EXEC SQL END DECLARE SECTION;
+
+    lMaxFetch             = SIZE_HOSTARRAY_INTERFACT;
+    paux                  = NULL;
+    ihCodEstaDocEnt       = stIntQueueProc.iCodEstaDocEnt;
+    ihNumDeltaHoras       = stIntQueueProc.iNumDeltaHoras;
+    strcpy(szhCodModGener , stIntQueueProc.szCodModGener);
+    strcpy(szhCodAplic    , stIntQueueProc.szCodAplic);
+
+    vDTrazasLog (modulo,"\n%s[%ld] Carga Documentos a Procesar desde FA_INTERFACT"
+		        "\tCodModGener [%s]\n"
+			"\tCodEstadoc  [%d]\n"
+			"\tCodEstProc  [%d]\n"
+			"\tCodAplic    [%s]\n"
+			"\tDeltaHoras  [%d]\n"
+			"\tHorasDia    [%d]\n"
+	               ,LOG04, cfnGetTime(1)
+	               ,pid
+	               ,szhCodModGener
+	               ,ihCodEstaDocEnt
+	               ,ihIngrOk
+	               ,szhCodAplic
+	               ,ihNumDeltaHoras
+	               ,ihNumHorasDia);
+
+    EXEC SQL DECLARE Cur_FaInterFact CURSOR FOR
+			 SELECT NUM_PROCESO
+	                 FROM   FA_INTERFACT
+			 WHERE  COD_MODGENER = :szhCodModGener
+			 AND    COD_ESTADOC  = :ihCodEstaDocEnt
+			 AND    COD_ESTPROC  = :ihIngrOk
+			 AND    COD_APLIC    = :szhCodAplic
+			 AND    FEC_INGRESO  < (SYSDATE - (:ihNumDeltaHoras / :ihNumHorasDia));
+
+    if (SQLCODE)
+    {
+	vDTrazasLog(modulo,"En DECLARE de Cursor Cur_FaInterFact \n\t%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+	return FALSE;
+    }
+
+    EXEC SQL OPEN Cur_FaInterFact;
+	
+    if (SQLCODE)
+    {
+	if (SQLCODE == SQLNOTFOUND)
+	{
+	    vDTrazasLog(modulo,"No hay datos para procesar. Termina la Ejecucion \n\t%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+	}
+	else
+	{
+	    vDTrazasError(modulo,"En OPEN de Cursor Cur_FaInterFact \n\t%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+	    return FALSE;
+	}
+    }
+
+    while (iFetchedRows == iRetrievRows)
+    {
+    	   EXEC SQL for :lMaxFetch FETCH Cur_FaInterFact INTO :lhNumProceso;
+    	   
+	   iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+           iLastRows    = sqlca.sqlerrd[2];
+
+           for (i=0; i < iRetrievRows; i++)
+           {
+                paux = (stFAINTERFACT *) malloc(sizeof(stFAINTERFACT));
+                paux->lNumProceso = lhNumProceso[i];
+                paux->sgte        = lstFAINTERFACT;
+                lstFAINTERFACT    = paux;
+                iCantidad++;
+	   }
+    }
+	
+    EXEC SQL CLOSE Cur_FaInterFact;
+	
+    vDTrazasLog (modulo,"\n%s[%ld] Documentos cargador desde FA_INTERFACT\n "
+	                " TOTAL: [%d]\n"
+	               ,LOG04, cfnGetTime(1),pid,iCantidad);
+
+    return TRUE;
+}/* **** FIN bfnCargaFaInterfac *********************************************** */
+
+/* **************************************************************************** */
+/* ifnFacturacionOnline()                                                       */
+/* **************************************************************************** */
+int ifnFacturacionOnline( char  *szAccount
+                    	, char  *szPasswd
+                    	, int   iLogLevel
+                    	, char  *szCodModGener)
+{
+    char    modulo      []  ="FacturacionOnline";
+    int    iStatusFin      =iESTAQUEUE_WAIT;
+    char    szUsuario   [64]="";
+    char    szAux       [16]="";
+    char    *psztmp         ="";
+    int    num_rows        =0;
+    int    tnumrows        =0;
+    stFAINTERFACT 	* paux;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+	 int ihCodNivLog                ;
+         char szhNomUsuarOra     [32]    ;
+         char szhPasUsuarOra     [32]    ;
+	 int ihCodProceso               ;
+	 reg_FaInterFact ha_FaInterFact  ;
+    EXEC SQL END DECLARE SECTION;
+
+    /* ****************************** */
+    /* REALIZA LA CONEXION CON ORACLE */
+    /* ****************************** */
+    strcpy (szhNomUsuarOra  ,szAccount);
+    strcpy (szhPasUsuarOra  ,szPasswd);
+    ihCodNivLog     =iLogLevel;
+    ihCodProceso    =iPROCESO_INT_FACTURACION; 	/* 200 */
+
+    memset(szUsuario,0,sizeof(szUsuario));
+
+    if ( (psztmp=(char *)strstr(szhNomUsuarOra,"\\$") )!=(char *)NULL )
+    {
+	  sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+    else if ((psztmp=(char *)strchr(szhNomUsuarOra,'$') )!=(char *)NULL )
+	 {
+	      memset(szAux,0,sizeof(szAux));
+	      strncpy (szAux,szhNomUsuarOra,psztmp-szhNomUsuarOra);
+	      sprintf (szUsuario,"%s\\%s/%s",szAux,psztmp,szhPasUsuarOra);
+	 }
+	 else
+	 {
+	      sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+	 }
+
+    vDTrazasLog (modulo,"%s Usuario : [%s] "
+	               ,LOG04, cfnGetTime(1),szUsuario);
+
+    if (!fnOraConnect(szAccount,szPasswd))
+    {	 
+    	 vDTrazasError(modulo, "%s No Hay Conexion a la Base de Datos"
+	                     , LOG01,cfnGetTime(3));
+	 return -10;	
+    }
+
+    vDTrazasLog (modulo,"%s[%ld] Conectado a la Base de Datos"
+	               ,LOG04, cfnGetTime(1),pid);	                              
+
+   /* ****************************** */
+   /* Fa_IntQueueProc                */
+   /* ****************************** */
+    vDTrazasLog(modulo,"%s[%ld] Obtencion datos cola  ", LOG04, cfnGetTime(1),pid);
+
+    memset(&stIntQueueProc,0,sizeof(INTQUEUEPROC)      );
+    strcpy( stIntQueueProc.szCodModGener , szCodModGener);
+    stIntQueueProc.lCodProceso   = iPROCESO_INT_FACTURACION;
+    strcpy(stIntQueueProc.szCodAplic, "FAC");
+
+    if(!bfnGetIntQueueProc(&stIntQueueProc))
+	return -14;
+
+    ihNumDeltaHoras        = stIntQueueProc.iNumDeltaHoras ;
+    ihCodEstaDocEnt	       = stIntQueueProc.iCodEstaDocEnt ;
+    strcpy (szhCodModGener , szCodModGener);
+    ihIngrOk               = iESTAPROC_TERMINADO_OK ;
+    strcpy (szhCodAplic    , "FAC");
+    
+    /* ****************************** */
+    /* Recupera FA_INTERFACT          */
+    /* ****************************** */
+    if (!bfnCargaFaInterfac( stIntQueueProc))
+    {
+	 vDTrazasLog  (modulo,"Error en Carga de datos desde FA_INTERFACT\n"
+	                      "\tCambia Estado de Cola y Sale.",LOG01);
+	 vDTrazasError(modulo,"Error en Carga de datos desde FA_INTERFACT\n"
+	                      "\tCambia Estado de Cola y Sale.",LOG01);
+         if (!bfnCambiaEstCola(szhCodModGener, ihCodProceso, iESTAQUEUE_RUNNING, iESTAQUEUE_ERROR, "FAC" ))
+         {
+	     vDTrazasError(modulo,"Al declarar Cursor\n\t%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+	 }
+         else
+         {
+             if (!bfnOraCommit())
+	     {
+	    	  vDTrazasError(modulo,"En Commit \n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+		  if (!fnOraRollBackRelease())
+		    	    vDTrazasError(modulo,"En Rollback release\n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+			    return -11;
+	     }
+        }
+	return -15;
+    }
+
+    /* ****************************** */
+    /* Genera y Ejecuta Comandos      */
+    /* ****************************** */
+    vDTrazasLog(modulo,"%s[%ld] Recorriendo Cursor y formando Comandos ", LOG04, cfnGetTime(1),pid);
+	
+    if (!bfnEjeComando  (szUsuario, ihCodNivLog, stIntQueueProc.iCodEstaDocSal))
+    {
+	 if (!bfnCambiaEstCola (szhCodModGener, ihCodProceso, iESTAQUEUE_RUNNING, iESTAQUEUE_ERROR, "FAC" ))
+	 {
+	     if (!fnOraRollBackRelease())
+	         vDTrazasError   (modulo,"En Rollback release\n\t%s\n",LOG01, sqlca.sqlerrm.sqlerrmc);
+		 return -11;
+	  }
+	  else
+	  {
+		if (!bfnOraCommit())
+		{
+    	            vDTrazasError(modulo,"En Commit \n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+		    if (!fnOraRollBackRelease())
+	    		vDTrazasError(modulo,"En Rollback release\n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+		    	return -11;
+		}
+	   }
+		return -19;
+    }
+    else
+    {
+        if (!bfnOraCommit())
+	{
+    	    vDTrazasError(modulo,"En Commit \n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+	    if (!fnOraRollBackRelease())
+	        vDTrazasError(modulo,"En Rollback release\n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+		return -11;
+	}
+    }
+	
+    /* ****************************** */
+    /* Cambia Estado de la Cola       */
+    /* ****************************** */
+    if (!bfnCambiaEstCola(szhCodModGener, ihCodProceso, iESTAQUEUE_RUNNING,  iStatusFin, "FAC" ))
+    {
+	 if (!fnOraRollBackRelease())
+	     vDTrazasError(modulo,"En Rollback release\n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+	     return -11;
+    }
+    else
+    {	
+    	 if (!bfnOraCommit())
+	 {
+	     vDTrazasError(modulo,"En Commit \n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+	     if (!fnOraRollBackRelease())
+	      	 vDTrazasError(modulo,"En Rollback release\n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+		 return -11;
+	 }
+    }
+
+    return 0; /* ok */
+} /* FacturacionOnline() */
+
+/* ******************************************************************************************** */
+/* ifnValidaParametros ()                                                                       */
+/*												*/
+/* ******************************************************************************************** */
+int ifnValidaParametros (   int     argc            ,
+                            char    *argv[]         ,
+                            char    *szOraAccount   ,
+                            char    *szOraPasswd    ,
+                            int     *iLogLevel      ,
+                            char    *szCodModGener  )
+
+{
+    extern char     *optarg;
+    extern int      optind, opterr, optopt;
+    char            opt         []  = ":u:l:e:";
+    int             iOpt=0;
+    char            *psztmp         = "";
+    char            szUser      [64]= "";
+    int             Userflag        =FALSE;
+    int             Logflag         =FALSE;
+    int             Modflag         =FALSE;
+
+    opterr=0;
+
+    if(argc == 1)
+    {
+       fprintf (stderr,"\n\t<< Error : Parametros insuficientes >>\n%s\n",szUsage);
+       return -1;
+    }
+
+    while ( (iOpt = getopt(argc, argv, opt) ) != EOF)
+    {
+		switch(iOpt)
+		{
+			case 'u':
+				if(Userflag==FALSE)
+				{
+				   strcpy(szUser, optarg);
+				   Userflag=TRUE;
+				}
+				else
+				{
+				   fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+				   return -2;
+				}
+				break;
+			case 'l':
+				if(Logflag==FALSE)
+				{
+				   *iLogLevel=atoi(optarg);
+				   Logflag=TRUE;
+				}
+				else
+				{
+				   fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+				   return -2;
+				}
+				break;
+			case 'e':
+				if(Modflag==FALSE)
+				{
+				   strcpy(szCodModGener,optarg);
+				   Modflag=TRUE;
+				}
+				else
+				{
+				   fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+				   return -2;
+				}
+				break;
+			case '?':
+				fprintf(stdout,"\n\t<< Error: opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+				return -3;
+			case ':':
+				fprintf(stdout,"\n\t<< Error: falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+				return -4;
+		}/* endswitch */
+
+    } /* enwhile */
+
+    if  ( Modflag==FALSE ||  Logflag==FALSE )
+    {
+	  fprintf (stderr,"\n\t<< Error : falta opcion '-%c' >>\n%s\n",optopt,szUsage);
+	  return -1;
+    }
+
+    if(Userflag==TRUE)
+    {
+	if ( (psztmp=(char *)strstr(szUser,"/") )==(char *)NULL )
+	{
+	      fprintf (stderr,"\n\t<< Error : usuario no valido. Requiere \"/\" >>\n%s\n",szUsage);
+	      return -5;
+	}
+	else
+	{
+	      strncpy (szOraAccount,szUser,psztmp-szUser);
+	      strcpy  (szOraPasswd, psztmp+1);
+	}
+    }
+
+    return 0; /* Validacion ok */
+
+} /* ifnValidaParamatros */
+
+/********************************************************/
+/*  Compone y ejecuta el comando de facturacion         */
+/********************************************************/
+BOOL bfnEjeComando  (char *pszUsuario
+                    ,int ihCodNivLog
+                    ,int iCodEstaDocSal)
+{
+
+    char          modulo[]       = "bfnEjeComando";
+    char          szComando [256]= "";
+    int           x;
+    int           iIngrPrc       = iESTAPROC_PROCESANDO;
+    int           iEstDocIngr    = iESTADOC_INGRESADA ;
+    int           iEstProcTer    = iESTAPROC_TERMINADO_OK;
+    stFAINTERFACT * paux = NULL;
+    stFAINTERFACT * paux2 = NULL;
+    INTERFACT     stInterFact;
+    char          szCmd[99];
+    int           iCodTipMovimienAux;
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+         int  ihCod_Param = 307;
+         int  ihCantProc = 0;   
+	 int  iIntInstans = 0;
+    EXEC SQL END DECLARE SECTION;
+
+    sprintf(szCmd, "facturaC");
+ 
+    vDTrazasLog(modulo, "\nPID[%d]Cantidad de Instancias del Facturador a Levantar[%d]", LOG04, pid,ihCantProc);
+
+    for (paux=lstFAINTERFACT; paux!=NULL;)/*CH-3719*/
+    {
+		EXEC SQL
+		     SELECT NVL(VAL_NUMERICO,5)
+		     INTO   :iIntInstans
+		     FROM   FAD_PARAMETROS
+		     WHERE  COD_PARAMETRO = :ihCod_Param;
+		
+         memset(&stInterFact,0,sizeof(INTERFACT));
+         stInterFact.lNumProceso     = paux->lNumProceso;
+         strcpy(stInterFact.szCodAplic,"FAC");
+         /* ********************************************************** */
+         /* Toma el registro a procesar, validando que esté disponible */
+         /* Si no esta disponible, continua con el siguiente...        */
+         /* ********************************************************** */
+         if (!bfnGetInterFactUpNoWait(&stInterFact))
+         {
+             vDTrazasError(modulo,"Documento no será PROCESADO:[%d]",LOG01, stInterFact.lNumProceso);
+             vDTrazasLog  (modulo,"Documento no será PROCESADO:[%d]",LOG01, stInterFact.lNumProceso);
+         }
+         else
+         {
+	     if (SQLCODE == SQLOK)
+	     {
+		 vDTrazasLog (modulo,"%s Usuario : [%s] ",LOG04, cfnGetTime(1),pszUsuario);
+		 sprintf(szComando,"%s -u%s -l%d -n%ld \0","facturaC", pszUsuario, ihCodNivLog, stInterFact.lNumProceso);
+
+/* P-MIX-09003 */
+
+                iCodTipMovimienAux = stInterFact.iCodTipMovimien;
+
+                if ( iCodTipMovimienAux != VENTA && iCodTipMovimienAux != NOTACRED )
+                {
+                     if (bfnBuscaTipoMovimiento(iCodTipMovimienAux))
+                     {
+                         iCodTipMovimienAux = MISCELANEA;
+                     }
+                } 
+
+                switch (iCodTipMovimienAux) 
+/* P-MIX-09003 */
+		{
+			case VENTA      :
+				         sprintf(szComando,"%s -contado -composicion\0",szComando);
+				         break;
+			case MISCELANEA	:
+					 sprintf(szComando,"%s -miscelanea\0",szComando);
+					 break;
+			case NOTACRED	:
+					 sprintf(szComando,"%s -notac\0",szComando);
+					 break;
+			default		:
+					 vDTrazasError   (modulo,"Tipo Movimiento [%d] inesperado"
+								,LOG01,stInterFact.iCodTipMovimien );
+					 vDTrazasLog     (modulo,"Tipo Movimiento [%d] inesperado"
+							        ,LOG01,stInterFact.iCodTipMovimien );
+					 return FALSE;
+		} /* end switch */
+
+		/**************************************************************** */
+		/* Marca FA_INTERFACT como procesando							  */
+		/**************************************************************** */
+		stInterFact.iCodEstaDoc     =   iCodEstaDocSal;
+	        stInterFact.iCodEstaProc    =   iIngrPrc;
+		strcpy(stInterFact.szCodAplic,"FAC");
+		
+		vDTrazasLog  (modulo,"Se Actualiza documento :[%d] en FA_INTERFACT.",LOG01, stInterFact.lNumProceso);
+		if (!bfnUpdInterFact(stInterFact))
+		{
+		    vDTrazasError(szExeName,"Error en marca de FA_INTERFACT [%ld] [%s]", LOG01, SQLCODE, szfnORAerror());
+		    vDTrazasLog  (szExeName,"Error en marca de FA_INTERFACT [%ld] [%s]" ,LOG01, SQLCODE, szfnORAerror());
+		    fnGrabaAnomalia(stInterFact.lNumProceso, 0,"New_FactOnline", strcat(cfnGetTime(1), "=> Error en marca de FA_INTERFACT " ));
+		    return FALSE;
+		}
+		else
+		{
+		    if (!bfnOraCommit())
+		    {
+			vDTrazasError(modulo,"En Commit \n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+			if (!fnOraRollBackRelease())
+			{
+			     vDTrazasError(modulo,"En Rollback release\n\t%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+			     return -11;
+			}
+		    }
+		}
+
+								
+		do
+		{
+                  ihCantProc = iBuscaProceso(szCmd);
+                } while (ihCantProc >= iIntInstans);
+                
+                if (iShellEjecucion(szComando,stStatus.LogName)!=0)
+		{
+		    vDTrazasError (modulo,"%s[%ld] Falló Comando:[ %s ]" ,LOG03,cfnGetTime(1),pid,szComando);
+		    return FALSE;
+		}
+				
+	     }
+	     else
+	     {
+		 vDTrazasLog (modulo, "%s[%ld] Estado del documento en FA_INTERFACT "
+				      " CodModGener [%s]\n"
+				      " CodEstadoc  [%d]\n"
+				      " CodEstProc  [%d]\n"
+				    , LOG03, cfnGetTime(1),pid,stInterFact.szCodModGener,stInterFact.iCodEstaProc,stInterFact.iCodEstaProc);
+	     }
+	 }
+	 
+	 paux2 = lstFAINTERFACT->sgte;
+	 paux = lstFAINTERFACT->sgte;
+	 free(lstFAINTERFACT);
+	 lstFAINTERFACT = paux;
+    }/*For*/
+    
+    return TRUE;
+}
+
+/****************************************************************************/
+/*                      funcion : bfnBuscaTipoMovimiento                   */
+/****************************************************************************/
+
+BOOL bfnBuscaTipoMovimiento ( int iCodTipMovimienAux )
+{
+    char  modulo[]       = "bfnBuscaTipoMovimiento";
+    char  szSqlQuery     [256];	
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+         int ihCodTipMovimienAux;
+         int ihNumOcurrencias   ;
+    EXEC SQL END DECLARE SECTION;    
+
+    vDTrazasLog (modulo, "\n\t\t\t* Parametro de Entrada (bfnBuscaTipoMovimiento)"
+                         "\n\t\t\t=> Tipo Movimiento   [%d]"
+                       , LOG05
+                       , iCodTipMovimienAux);                       
+                       
+    ihCodTipMovimienAux = iCodTipMovimienAux;
+    memset(szSqlQuery,'\0',sizeof(szSqlQuery));
+    
+    sprintf(szSqlQuery, "SELECT COUNT(1) \n"
+                        "FROM   FAD_PARAMETROS \n"
+                        "WHERE  DES_PARAMETRO LIKE 'DOC.ESP%%' \n"
+                        "AND    COD_MODULO = 'FA' \n"
+                        "AND    VAL_CARACTER LIKE '%%%d%%'"
+                      , ihCodTipMovimienAux);
+                      
+    vDTrazasLog  (modulo, "\n\t** Query FAD_PARAMETROS [%s]**"
+		        , LOG05
+		        , szSqlQuery);                                            
+                   
+    EXEC SQL PREPARE sql_Fad_Parametros FROM :szSqlQuery;
+    
+    if( SQLCODE )
+    {
+	vDTrazasLog  (modulo, "\n\t**  Error en SQL-PREPARE sql_Fad_Parametros **"
+		                  "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+	vDTrazasError(modulo, "\n\t**  Error en SQL-PREPARE sql_Fad_Parametros **"
+		                  "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+	return(FALSE);
+    }  
+    
+    EXEC SQL DECLARE Cur_FadParametros CURSOR FOR sql_Fad_Parametros;
+    
+    if( SQLCODE )
+    {
+	vDTrazasLog  (modulo, "\n\t**  Error en SQL-DECLARE Cur_FadParametros  **"
+		                  "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+	vDTrazasError(modulo, "\n\t**  Error en SQL-DECLARE Cur_FadParametros  **"
+		                  "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+	return(FALSE);
+    }      
+    
+    EXEC SQL OPEN Cur_FadParametros;
+	
+    if( SQLCODE )
+    {
+	vDTrazasLog  (modulo, "\n\t**  Error en SQL-OPEN CURSOR Cur_FadParametros **"
+		                  "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+	vDTrazasError(modulo, "\n\t**  Error en SQL-OPEN CURSOR Cur_FadParametros **"
+		                  "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+	return(FALSE);
+    }
+
+    EXEC SQL 
+         FETCH Cur_FadParametros INTO  :ihNumOcurrencias;
+         
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+	vDTrazasLog  (modulo, "\n\t**  Error en FETCH sobre CURSOR Cur_FadParametros  [%s] **",LOG01,SQLERRM);
+	vDTrazasError(modulo,  "\n\t**  Error en FETCH sobre CURSOR Cur_FadParametros  [%s] **",LOG01,SQLERRM);
+	return(FALSE);
+    }     
+    
+    EXEC SQL CLOSE Cur_FadParametros;
+
+    if( SQLCODE != SQLOK )
+    {
+	vDTrazasLog  (modulo, "\n\t**  Error en CLOSE sobre CURSOR Cur_FadParametros  [%s] **",LOG01,SQLERRM);
+	vDTrazasError(modulo,  "\n\t**  Error en CLOSE sobre CURSOR Cur_FadParametros  [%s] **",LOG01,SQLERRM);    	
+	return(FALSE);
+    }        
+        
+    return TRUE;
+}
+
+/****************************************************************************/
+/*                      funcion : bfnGetInterFactUpNoWait                   */
+/****************************************************************************/
+/* - Copia de funcion bfnGetInterFact ubicada en New_Interfact, se le agrega*/
+/*   el bloqueo para el update                                              */
+/*   Error->FALSE, !Error->TRUE                                             */
+/****************************************************************************/
+
+BOOL bfnGetInterFactUpNoWait (INTERFACT *stpInterFact)
+{
+    char  modulo[]       = "bfnGetInterFactUpNoWait";
+    
+    EXEC SQL BEGIN DECLARE SECTION;
+         long    lhNumProceso         ;
+         int     lhNumVenta           ;
+         int     ihCodEstaDoc         ;
+         int     ihCodEstaProc        ;
+         int     ihCodTipMovimien     ;
+         char    szhCodCaTribut   [2] ;EXEC SQL VAR szhCodCaTribut       IS STRING(2);
+         int     ihTipImpositiva      ;
+         int     ihCodModVenta        ;
+         int     ihNumCuotas          ;
+         int     ihCodTipDocum        ;
+         long    lhNumFolio           ;
+         long    lhNumFolioRel        ;
+         char    szhFecIngreso    [20];EXEC SQL VAR szhFecIngreso        IS STRING(20);
+         char    szhFecFacturacion[20];EXEC SQL VAR szhFecFacturacion    IS STRING(20);
+         char    szhFecImpresion  [20];EXEC SQL VAR szhFecImpresion      IS STRING(20);
+         char    szhFecFoliacion  [20];EXEC SQL VAR szhFecFoliacion      IS STRING(20);
+         char    szhFecVisacion   [20];EXEC SQL VAR szhFecVisacion       IS STRING(20);
+         char    szhFecPasoCobro  [20];EXEC SQL VAR szhFecPasoCobro      IS STRING(20);
+         char    szhFecCierre     [20];EXEC SQL VAR szhFecCierre         IS STRING(20);
+         char    szhFecVencimiento[20];EXEC SQL VAR szhFecVencimiento    IS STRING(20);
+         char    szhPrefPlaza   [25+1];EXEC SQL VAR szhPrefPlaza        IS STRING(25+1);
+         char    szhPrefPlazaRel[25+1];EXEC SQL VAR szhPrefPlazaRel     IS STRING(25+1);
+         short   s_ihNumVenta        ;
+         short   s_ihNumFolio        ;
+         short   s_ihNumFolioRel     ;
+         short   s_ihTipImpositiva   ;
+         short   s_ihFecIngreso      ;
+         short   s_ihFecFacturacion  ;
+         short   s_ihFecImpresion    ;
+         short   s_ihFecFoliacion    ;
+         short   s_ihFecVisacion     ;
+         short   s_ihFecPasoCobro    ;
+         short   s_ihFecCierre       ;
+         short   s_ihFecVencimiento  ;
+         short   s_ihPrefPlaza	;
+         short   s_ihPrefPlazaRel    ;
+    EXEC SQL END DECLARE SECTION;
+    
+    lhNumProceso    = stpInterFact->lNumProceso;
+    sprintf(szhCodAplic,"%s\0",stpInterFact->szCodAplic);
+
+    vDTrazasLog (modulo, "\n\t\t\t* Parametro de Entrada (bfnGetInterFact)"
+                         "\n\t\t\t=> Num Proceso             [%ld]"
+                         "\n\t\t\t=> Codigo Aplicacion       [%s]"
+                       , LOG04, lhNumProceso, szhCodAplic);
+
+    EXEC SQL
+         SELECT  NUM_VENTA           ,
+                 COD_MODGENER        ,
+                 COD_CATRIBUT        ,
+                 COD_CATIMPOSITIVA   ,
+                 COD_MODVENTA        ,
+                 NUM_CUOTAS          ,
+                 COD_TIPDOCUM        ,
+                 NUM_FOLIO           ,
+                 NUM_FOLIOREL        ,
+                 TO_CHAR(FEC_INGRESO    ,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_FACTURACION,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_IMPRESION  ,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_FOLIACION  ,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_VISACION   ,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_PASOCOBRO  ,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_CIERRE     ,'YYYYMMDDHH24MISS'),
+                 TO_CHAR(FEC_VENCIMIENTO,'YYYYMMDDHH24MISS'),
+                 COD_ESTADOC         ,
+                 COD_ESTPROC         ,
+                 COD_TIPMOVIMIEN		,
+                 PREF_PLAZA			,
+                 PREF_PLAZAREL
+         INTO    :lhNumVenta         :s_ihNumVenta       ,
+                 :szhCodModGener                         ,
+                 :szhCodCaTribut                         ,
+                 :ihTipImpositiva    :s_ihTipImpositiva  ,
+                 :ihCodModVenta                          ,
+                 :ihNumCuotas                            ,
+                 :ihCodTipDocum                          ,
+                 :lhNumFolio         :s_ihNumFolio       ,
+                 :lhNumFolioRel      :s_ihNumFolioRel    ,
+                 :szhFecIngreso      :s_ihFecIngreso     ,
+                 :szhFecFacturacion  :s_ihFecFacturacion ,
+                 :szhFecImpresion    :s_ihFecImpresion   ,
+                 :szhFecFoliacion    :s_ihFecFoliacion   ,
+                 :szhFecVisacion     :s_ihFecVisacion    ,
+                 :szhFecPasoCobro    :s_ihFecPasoCobro   ,
+                 :szhFecCierre       :s_ihFecCierre      ,
+                 :szhFecVencimiento  :s_ihFecVencimiento ,
+                 :ihCodEstaDoc                           ,
+                 :ihCodEstaProc                          ,
+                 :ihCodTipMovimien			,
+                 :szhPrefPlaza	    :s_ihPrefPlaza	,
+		 :szhPrefPlazaRel    :s_ihPrefPlazaRel
+         FROM    FA_INTERFACT
+         WHERE   NUM_PROCESO  = :lhNumProceso
+         AND     COD_APLIC 	 = :szhCodAplic
+         FOR UPDATE;
+
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo ,"Error en Select bfnGetInterFact [%ld] [%s]",LOG01,SQLCODE,szfnORAerror());
+        vDTrazasLog  (modulo ,"Error en Select bfnGetInterFact [%ld] [%s]",LOG01,SQLCODE,szfnORAerror());
+    	return FALSE;
+    }
+
+    if (SQLCODE == SQLOK)
+    {
+        /* ********************************************************** */
+        /* Valida que el documento esté disponible para ser facturado */
+        /* ********************************************************** */
+        vDTrazasLog(modulo ,"\n[bfnGetInterFactUpNoWait]Validacion  de Disponibilidad"
+                            "\n\tihCodEstaDoc [%d] == ihCodEstaDocEnt[%d]"
+                            "\n\tihCodEstaProc[%d] == ihIngrOk       [%d]"
+                            ,LOG05, ihCodEstaDoc, ihCodEstaDocEnt, ihCodEstaProc, ihIngrOk);
+        if (! ((ihCodEstaDoc == ihCodEstaDocEnt)&&(ihCodEstaProc == ihIngrOk)) )
+        {
+        	vDTrazasError(modulo ,"El documento [%ld] ha sido procesado ya, en otra instancia. Se OMITE.\n", LOG01, lhNumProceso);
+        	vDTrazasLog  (modulo ,"El documento [%ld] ha sido procesado ya, en otra instancia. Se OMITE.\n", LOG01, lhNumProceso);
+        	return FALSE;
+	}
+    
+        sprintf(stpInterFact->szCodModGener     ,"%s\0" ,szhCodModGener   );
+
+        stpInterFact->lNumVenta      = ((s_ihNumVenta == ORA_NULL)?0:lhNumVenta);
+
+        sprintf(stpInterFact->szCodCaTribut     ,"%s\0" , szhCodCaTribut  );
+
+        stpInterFact->iTipImpositiva = ((s_ihTipImpositiva == ORA_NULL)?0:ihTipImpositiva);
+
+        stpInterFact->iCodModVenta   = ihCodModVenta                       ;
+        stpInterFact->iNumCuotas     = ihNumCuotas                         ;
+        stpInterFact->iCodTipDocum   = ihCodTipDocum                       ;
+
+        stpInterFact->lNumFolio      = ((s_ihNumFolio == ORA_NULL)?0:lhNumFolio);
+        stpInterFact->lNumFolioRel   = ((s_ihNumFolioRel == ORA_NULL)?0:lhNumFolioRel);
+
+        if (s_ihFecIngreso      == ORA_NULL)    sprintf(stpInterFact->szFecIngreso     ,"\0" );
+        else                                    sprintf(stpInterFact->szFecIngreso     ,"%s\0" ,szhFecIngreso     );
+        if (s_ihFecFacturacion  == ORA_NULL)    sprintf(stpInterFact->szFecFacturacion ,"\0" );
+        else                                    sprintf(stpInterFact->szFecFacturacion ,"%s\0" ,szhFecFacturacion );
+        if (s_ihFecImpresion    == ORA_NULL)    sprintf(stpInterFact->szFecImpresion   ,"\0" );
+        else                                    sprintf(stpInterFact->szFecImpresion   ,"%s\0" ,szhFecImpresion   );
+        if (s_ihFecFoliacion    == ORA_NULL)    sprintf(stpInterFact->szFecFoliacion   ,"\0" );
+        else                                    sprintf(stpInterFact->szFecFoliacion   ,"%s\0" ,szhFecFoliacion   );
+        if (s_ihFecVisacion     == ORA_NULL)    sprintf(stpInterFact->szFecVisacion    ,"\0" );
+        else                                    sprintf(stpInterFact->szFecVisacion    ,"%s\0" ,szhFecVisacion    );
+        if (s_ihFecPasoCobro    == ORA_NULL)    sprintf(stpInterFact->szFecPasoCobro   ,"\0" );
+        else                                    sprintf(stpInterFact->szFecPasoCobro   ,"%s\0" ,szhFecPasoCobro   );
+        if (s_ihFecCierre       == ORA_NULL)    sprintf(stpInterFact->szFecCierre      ,"\0" );
+        else                                    sprintf(stpInterFact->szFecCierre      ,"%s\0" ,szhFecCierre      );
+        if (s_ihFecVencimiento  == ORA_NULL)    sprintf(stpInterFact->szFecVencimiento ,"\0" );
+        else                                    sprintf(stpInterFact->szFecVencimiento ,"%s\0" ,szhFecVencimiento );
+
+        stpInterFact->iCodEstaDoc       = ihCodEstaDoc                      ;
+        stpInterFact->iCodEstaProc      = ihCodEstaProc                     ;
+        stpInterFact->iCodTipMovimien   = ihCodTipMovimien                  ;
+
+        if (s_ihPrefPlaza  	    == ORA_NULL)    sprintf(stpInterFact->szPrefPlaza      ,"\0" );
+        else                                    sprintf(stpInterFact->szPrefPlaza      ,"%s\0" ,szhPrefPlaza 	  );
+        if (s_ihPrefPlazaRel    == ORA_NULL)    sprintf(stpInterFact->szPrefPlazaRel   ,"\0" );
+        else                                    sprintf(stpInterFact->szPrefPlazaRel   ,"%s\0" ,szhPrefPlazaRel   );
+
+    }
+    return TRUE;
+}
+/*********************** Final bfnGetInterFact ******************************/
+int iBuscaProceso(char *szComando)
+{
+    char cmd[99];
+    char buf[BUFSIZ];
+    FILE *ptr;
+    int cnt=0;
+	
+    sprintf(cmd, "ps -fea|grep -w '%s'|grep -v grep",szComando);
+    
+    if ((ptr = popen(cmd, "r")) != NULL)
+    {
+	 while (fgets(buf, BUFSIZ, ptr) != NULL)
+	 {
+		cnt++;
+	 }
+    }
+	
+    pclose(ptr);
+    
+    return(cnt);
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

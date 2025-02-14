@@ -1,0 +1,23 @@
+CREATE OR REPLACE PROCEDURE        P_ESTADO_ABOROA(
+  VP_ABONADO IN NUMBER ,
+  VP_INDSUSP IN NUMBER )
+IS
+--
+-- Procedimiento de Actualizacion de la situacion de los abonados roaming
+-- visitantes.
+--
+   V_PROCED VARCHAR2(25) := NULL;
+BEGIN
+   V_PROCED := 'P_ESTADO_ABOROA';
+   UPDATE GA_ABOROAVIS
+      SET COD_SITUACION = DECODE(COD_SITUACION,'STP','SAA',
+            'RTP',
+      DECODE(VP_INDSUSP,1,'SAA',
+            'AAA'))
+    WHERE NUM_ABONADO   = VP_ABONADO;
+EXCEPTION
+   WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR (-20225,V_PROCED||' '||SQLERRM);
+END;
+/
+SHOW ERRORS

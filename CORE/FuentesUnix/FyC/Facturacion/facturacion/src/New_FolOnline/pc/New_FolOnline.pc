@@ -1,0 +1,882 @@
+/* **********************************************************************/
+/* *  Fichero : New_Folonline.pc                                        */
+/* *  Foliacion ONLINE de Documentos                                    */
+/* *  Autor    : Roy Barrera R.						*/
+/* *  Complice : Mauricio Villagra V.                                   */
+/* ******************************************************************** */
+/*	Incorporacion del campo COD_APLIC en las condiciones de las 	*/
+/*	sentencias SQL.							*/
+/*	Patricio Gonzalez G.  25-01-2002				*/
+/************************************************************************/
+
+#define _FOLIACION_PC_
+#include <deftypes.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include "New_FolOnline.h"
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+EXEC SQL INCLUDE sqlca;
+long pid=0;
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+int main(int argc, char *argv[])
+{
+	char modulo[]="main";
+	char prueba[254];
+	pid =getpid();
+
+	fprintf( stdout, "\n***** Foliacion OnLine *****\n"
+					 "**%s**\n**** pid : [ %8ld ] ****"
+	                 "\n****************************\n",
+	         		 cfnGetTime(1),pid );
+
+
+    memset(&stLineaComando,0,sizeof(FOLIACIONLINEACOMANDO));
+    memset(&stStatus,'\0',sizeof(STATUS));
+    
+
+    if (!bfnValidaParametros(argc,argv,&stLineaComando)) return 1;
+
+
+    if(!bfnConnectORA(stLineaComando.szOraAccount,stLineaComando.szOraPasswd))
+    {
+        vDTrazasError(modulo, "<< Usuario/Password Invalido >>", LOG01);
+        return 2;
+    }
+
+    if (!bfnAbreArchivos(&stLineaComando,szSysDate)) 	return 4;
+
+    if(!bfnFoliacionOnline(&stLineaComando))
+    {
+        vDTrazasError(modulo, " \n------------------------------------"
+                              " \nProceso Terminado de Forma Irregular"
+                              " \n------------------------------------"
+                              ,LOG03);
+        vDTrazasLog  (modulo, " \n------------------------------------"
+                              " \nProceso Terminado de Forma Irregular"
+                              " \n------------------------------------"
+                              ,LOG03);
+        return 5;
+    }
+    else
+    {
+        vDTrazasLog  (modulo, " \n------------------------------------"
+                              " \nProceso Terminado Correctamente"
+                              " \n------------------------------------"
+                              ,LOG03);
+        if (!bfnOraCommit())
+        {
+
+            vDTrazasLog  (modulo, " \n------------------------------------"
+                                  " \nFallo en el Commit"
+                                  " \n------------------------------------"
+                                  ,LOG03);
+            vDTrazasError(modulo, " \n------------------------------------"
+                                  " \nFallo en el Commit"
+                                  " \n------------------------------------"
+                                  ,LOG03);
+            return 6;
+        }
+    }
+
+    if(!bfnDisconnectORA(0))
+    {
+    }
+    else
+    {
+      vDTrazasLog  (modulo, "\n------------------------------------"
+                            "\nDesconectado de  ORACLE"
+                            "\n------------------------------------"
+                            ,LOG04);
+
+      vDTrazasError(modulo, "\n------------------------------------"
+                            "\nDesconectado de  ORACLE"
+                            "\n------------------------------------"
+                            ,LOG04);
+	}
+
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+	/*fprintf(stdout,"\nTermino de la foliacion Online \n\n");*/
+    return 0;
+
+} /* Main */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnValidaParametros                                           * */
+/* ************************************************************************* */
+/* * Realiza la validacion de los Parametros de Entrada                    * */
+/* ************************************************************************* */
+BOOL bfnValidaParametros( int argc, char *argv[], FOLIACIONLINEACOMANDO *pstLineaCom )
+{
+
+	       char modulo[]="bfnValidaParametros";
+
+	extern char *optarg;
+	extern  int optind, opterr, optopt;
+
+	       char opt[] = ":u:l:e:";
+	        int iOpt=0;
+
+  	       char *psztmp = "";
+
+	        int Userflag=FALSE;
+ 	        int Logflag=FALSE;
+ 	        int MGenflag=FALSE;
+
+
+    vDTrazasLog (modulo , "\n*** Entrada en %s ***",LOG04,modulo);
+
+	opterr=0;
+
+	if(argc == 1)
+	{
+		/*vDTrazasError (modulo,"\n<< Parametros Insuficientes >>\n%s\n",LOG01,szUsage);*/
+		fprintf (stderr,"\n<< Error : Parametros insuficientes >>\n%s\n",szUsage);
+		return FALSE;
+	}
+
+	while ( (iOpt = getopt(argc, argv, opt) ) != EOF)
+	{
+		switch(iOpt)
+		{
+			case 'u':
+				if(Userflag==FALSE)
+				{
+	                strcpy(pstLineaCom->szUsuarioOra, optarg);
+    	            Userflag=TRUE;
+       	            vDTrazasLog (modulo, " -u %s ", LOG03, pstLineaCom->szUsuarioOra);
+				}
+				else
+				{
+					/*vDTrazasError (modulo,"\n<< Opcion '-%c' duplicada >>\n%s\n",LOG01,optopt,szUsage);*/
+					fprintf (stderr,"\n<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+					return FALSE;
+				}
+				break;
+
+			case 'l':
+				if(Logflag==FALSE)
+				{
+                    stStatus.LogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=TRUE;
+				}
+				else
+				{
+					/* vDTrazasError (modulo,"\n<< Opcion '-%c' duplicada >>\n%s\n",LOG01,optopt,szUsage); */
+					fprintf (stderr,"\n<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+					return FALSE;
+				}
+				break;
+
+			case 'e':
+				if(MGenflag==FALSE)
+				{
+	                strcpy(pstLineaCom->szCodModGener, optarg);
+                    MGenflag=TRUE;
+				}
+				else
+				{
+					/*vDTrazasError (modulo,"\n<< Opcion '-%c' duplicada >>\n%s\n",LOG01,optopt,szUsage);*/
+					fprintf (stderr,"\n<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+					return FALSE;
+				}
+				break;
+
+			case '?':
+				/*vDTrazasError (modulo,"\n<< Opcion '-%c' es desconocida >>\n%s\n",LOG01,optopt,szUsage);*/
+				fprintf (stderr,"\n<< Error : opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+				return FALSE;
+
+			case ':':
+				/*vDTrazasError (modulo,"\n<< Falta parametro para opcion '-%c' >>\n%s\n",LOG01,optopt,szUsage);*/
+				fprintf (stderr,"\n<< Error : Falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+				return FALSE;
+		}
+
+	}
+
+
+	if(Logflag==FALSE)
+	{
+       stStatus.LogNivel = iLOGNIVEL_DEF ; /* asume nivel de log por defecto */
+       vDTrazasLog ( modulo, "Log : -l %d (default)", LOG03, stStatus.LogNivel );
+	}
+
+    pstLineaCom->iNivLog=stStatus.LogNivel ;
+
+	if(MGenflag==FALSE)
+	{
+		/*vDTrazasError (modulo,"\n<< Falta definir opcion '-m' >>\n%s\n",LOG01,szUsage);*/
+		fprintf (stderr,"\n<< Error : Falta definir opcion '-m' >>\n%s\n",szUsage);
+		return FALSE;
+	}
+
+	if(Userflag==TRUE)
+	{
+        if ( (psztmp=(char *)strstr(pstLineaCom->szUsuarioOra,"/"))==(char *)NULL)
+		{
+			fprintf (stderr,"\n<< Error : Usuario Oracle no valido. Requiere '/' >>\n%s\n",szUsage);
+			return FALSE;
+		}
+		else
+		{
+            strncpy (pstLineaCom->szOraAccount,pstLineaCom->szUsuarioOra,psztmp-pstLineaCom->szUsuarioOra);
+            strcpy  (pstLineaCom->szOraPasswd, psztmp+1)                 ;
+		}
+	}
+
+
+	return TRUE;
+
+} /* bfnValidaParamatros */
+
+
+
+/* ************************************************************************* */
+/* * Funcion bfnAbreArchivos                                               * */
+/* ************************************************************************* */
+/* * Realiza la apertura de archivos de Logs, Errores y Datos              * */
+/* ************************************************************************* */
+BOOL bfnAbreArchivos(FOLIACIONLINEACOMANDO *pstLineaCom, char *szDate)
+{
+ 	char modulo[]="bfnAbreArchivos";
+
+    char    *szDirLogs               ;
+    char    *szNomArchivo            ;
+    char    szComando[1024] = ""     ;
+
+    /*vDTrazasLog ( modulo, "\n*** Entrada en %s ***", LOG04, modulo); */
+
+    szDirLogs    = (char *)malloc(1024);
+    szNomArchivo = (char *)malloc(128);
+
+    if ((szDirLogs = szGetEnv("XPF_LOG")) == (char *)NULL) return FALSE;
+
+   	sprintf (pstLineaCom->szDirLogs,"%s/New_FolOnline/%s",szDirLogs,cfnGetTime(2));
+    sprintf (szComando, "/usr/bin/mkdir -p %s",pstLineaCom->szDirLogs );
+
+   	fprintf (stdout, "\nCrea Directorio Log  : %s\n", pstLineaCom->szDirLogs);
+
+    if (system (szComando))
+    {
+        vDTrazasError(modulo,"*** Fallo mkdir de Directorio Logs : %s",LOG01,szComando);
+        return FALSE;
+    }
+
+	fprintf(stdout, "\nCrea Archivo Log/Err : New_FolOnline_%s_%s\n\n",pstLineaCom->szCodModGener, szDate );
+
+    sprintf(szNomArchivo,"%s/New_FolOnline_%s_%s",
+    					pstLineaCom->szDirLogs,
+    					pstLineaCom->szCodModGener,
+    					szDate);
+ 
+    sprintf(stStatus.ErrName,"%s.err",szNomArchivo);
+    if( (stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )
+    {
+        vDTrazasError(modulo,"*** No puede abrirse el fichero de error %s",LOG01, stStatus.ErrName);
+        return FALSE;
+    }
+
+    sprintf(stStatus.LogName, "%s.log",szNomArchivo);
+    if ((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL)
+    {
+        vDTrazasError(modulo,"*** No puede abrirse el fichero de log %s",LOG01, stStatus.LogName);
+        fclose(stStatus.ErrFile);
+        return FALSE;
+    }
+
+    vDTrazasLog  (modulo,"\n*************************************"
+                         "\n****        Log   Foliacion        **"
+                         "\n*************************************"
+                         ,LOG03);
+
+    vDTrazasLog(modulo, "\n***  Parametro de Entrada Foliacion  ***"
+                        "\n=> Usuario               [%s]"
+                        "\n=> Password              [************]"
+                        "\n=> Cod.ModGener          [%s]"
+                        "\n=> Niv.Log               [%d]"
+                        ,LOG05
+                        ,pstLineaCom->szOraAccount
+                        ,pstLineaCom->szCodModGener
+                        ,pstLineaCom->iNivLog);
+
+    return TRUE;
+
+} /* bfnAbreArchivos */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnFoliacionOnline                                            * */
+/* ************************************************************************* */
+/* * Realiza la asignacion de folios legales por tipo de dopcumento        * */
+/* * por rangos de clientes segun el orden generado                        * */
+/* ************************************************************************* */
+BOOL bfnFoliacionOnline ( FOLIACIONLINEACOMANDO *pstLineaCom )
+{
+	char modulo[]="bfnFoliacionOnline";
+
+    char    szFecha [20]    =   ""  ;   /*  Fecha de Sistema Para Update de Traza   */
+    long    lFolioUpdate    = 0     ;   /*  Folio Asignado para Update              */
+    int     iSql            = 0     ;   /*  Retorno de Fetch de Documentos          */
+    BOOL    bFinCursor = FALSE		;
+    BOOL    bTerminoOK = TRUE		;
+    int     iCont = 0, iFol = 0 	;
+    int     iStatusFin = iESTAQUEUE_WAIT; /* Estado de la cola de procesos */
+    char    *szStatusFin			;
+
+    vDTrazasLog ( modulo,"\n*** Entrada en %s ***"
+                         "%s[%ld] Obtencion datos cola  "
+                		,LOG04, modulo,cfnGetTime(1),pid);
+                
+    memset(&stIntQueueProc,0,sizeof(INTQUEUEPROC)      );
+    strcpy( stIntQueueProc.szCodModGener , pstLineaCom->szCodModGener);
+    stIntQueueProc.lCodProceso   = iPROCESO_INT_FOLIACION;
+    strcpy(stIntQueueProc.szCodAplic,"FAC");  /* Incorporado por PGonzaleg 25-01-2002 */            
+            
+    if(!bfnGetIntQueueProc(&stIntQueueProc))
+    {
+		return FALSE;
+	}
+     												/* IMPRESA */                    /* TERM_OK */
+    if (!bfnOpenInterfaz(stIntQueueProc, iESTAPROC_TERMINADO_OK))
+	{
+        vDTrazasError(modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+        vDTrazasLog  (modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+		return FALSE;
+	}
+
+    iCont=0;
+    iFol=0;
+    do
+    {
+		memset(&stRegDocumFoli,0,sizeof(FOLIACIONREGINTERFAZ));
+
+		iSql=ifnFetchInterfaz(&stRegDocumFoli);
+
+		if(iSql !=SQLOK && iSql !=SQLNOTFOUND)
+		{
+	        vDTrazasError(modulo, " Oracle Inesperado [%d] " ,LOG01,iSql);
+	        vDTrazasLog  (modulo, " Oracle Inesperado [%d] " ,LOG01,iSql);
+			return FALSE;
+		}
+
+		
+        	if(iSql == SQLNOTFOUND)
+		{
+			bFinCursor = TRUE;
+            		bTerminoOK = TRUE;
+            		iStatusFin = iESTAQUEUE_WAIT;
+        	}
+		else
+		{
+			if(!bfnUpdateFolios(&stRegDocumFoli,stLineaComando.szOraAccount, &iFol))
+			{
+				vDTrazasLog  ( modulo, "**Al Marcar Folio a Documento ",LOG01);
+				vDTrazasError( modulo, "**Al Marcar Folio a Documento ",LOG01);
+				bFinCursor = TRUE;
+				bTerminoOK = FALSE;
+	            		iStatusFin = iESTAQUEUE_ERROR;
+			}
+			iCont++;
+		}
+	}while (!bFinCursor);
+
+    vDTrazasLog  (modulo, "Total de Registros Verificados : %d"
+    					  "Total de Registros Foliados    : %d"
+    					  , LOG03, iCont, iFol);
+
+    if(!bfnCloseInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       /*return FALSE;*/
+    }
+
+	if (!bfnCambiaEstCola(pstLineaCom->szCodModGener, iPROCESO_INT_FOLIACION, iESTAQUEUE_RUNNING, iStatusFin,"FAC"))
+	{
+		if (!fnOraRollBack())
+	    	vDTrazasError(modulo,"En Rollback \n%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+	    return FALSE;
+	}
+	else
+	{	if (!fnOraCommit())
+		{	vDTrazasError(modulo,"En Commit \n%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+			if (!fnOraRollBack())
+	    		vDTrazasError(modulo,"En Rollback \n%s\n", LOG01, sqlca.sqlerrm.sqlerrmc);
+			return FALSE;
+		}
+	}
+
+	szStatusFin = (bTerminoOK==TRUE)? "TRUE":(bTerminoOK==FALSE)?"FALSE":"???";
+    vDTrazasLog  (modulo, "Terminando Foliacion Online con '%s'", LOG05,szStatusFin );
+
+	return bTerminoOK;
+
+}/* bfnFoliacionOnline */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnOpenInterfaz                                               * */
+/* ************************************************************************* */
+/* * Crea y Abre un Cursor sobre los documentos a Foliar de FA_INTERFACT   * */
+/* ************************************************************************* */
+BOOL bfnOpenInterfaz(INTQUEUEPROC stIntQueueProc, int iCodEstProc)
+{
+    char modulo[]="bfnOpenInterfaz";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	char szhCodModGener[4]  ="";
+    	 int ihCodEstaDocEnt    =0;
+    	 int ihCodEstProc       =0;
+    	 int ihCodProceso       =0;
+ 	     int ihNumDeltaHoras;
+    EXEC SQL END DECLARE SECTION;
+
+	ihCodProceso    = iPROCESO_INT_FOLIACION;
+    strcpy( szhCodModGener  ,stIntQueueProc.szCodModGener);
+   	ihCodEstaDocEnt = stIntQueueProc.iCodEstaDocEnt;
+   	ihCodEstProc    = iCodEstProc  ;
+   	ihNumDeltaHoras = stIntQueueProc.iNumDeltaHoras;
+
+	vDTrazasLog (modulo,"\n*** Entrada en %s ***"
+						"COD_ESTADOC  = :ihCodEstaDocEnt [%d] "
+						"COD_ESTPROC  = :ihCodEstProc    [%d] "
+						"DELTAHORAS   = :ihNumDeltaHoras [%d] "
+						,LOG04, modulo, ihCodEstaDocEnt, ihCodEstProc, ihNumDeltaHoras);
+
+	EXEC SQL DECLARE  Cur_Interfaz  CURSOR FOR
+			  SELECT  NUM_FOLIO,
+			  	  	  NUM_PROCESO,
+			  	  	  PREF_PLAZA
+			    FROM  FA_INTERFACT
+			   WHERE  COD_MODGENER = :szhCodModGener
+			     AND  COD_ESTADOC  = :ihCodEstaDocEnt	/* impresa */
+			     AND  COD_ESTPROC  = :ihCodEstProc		/* ok */
+			     AND  NUM_FOLIO > 0
+			     AND  NUM_FOLIO IS NOT NULL
+			     AND  COD_APLIC    = 'FAC' 			/* Incorporado por PGonzaleg 31-01-2002 */			     
+   			     AND  FEC_IMPRESION  < (SYSDATE - (:ihNumDeltaHoras / 24))  /* nuevo delta de tiempo */
+ 			ORDER BY  NUM_FOLIO ;
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo , "\n** En SQL-DECLARE Cur_Interfaz **"
+                               "\n=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo , "\n**  En SQL-DECLARE Cur_Interfaz **"
+                               "\n=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cur_Interfaz ;
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo,"**  En SQL-OPEN CURSOR Cur_Interfaz **"
+                             "\n=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo,"**  En SQL-OPEN CURSOR Cur_Interfaz **"
+                             "\n=> Detale : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    return TRUE;
+
+}/* bfnOpenInterfaz */
+
+
+/* ************************************************************************* */
+/* * Funcion ifnFetchInterfaz                                              * */
+/* ************************************************************************* */
+/* * Lee Un Registro de los documentos a Foliar                            * */
+/* ************************************************************************* */
+int ifnFetchInterfaz(FOLIACIONREGINTERFAZ *pstRegDocumFoli)
+{
+	char modulo[]="ifnFetchInterfaz";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+ 	   	long  lhNumFolio	;
+		long  lhNumProceso	;
+		 int  ihCodTipDocum ;
+		char  szhPrefPlaza    [11];  EXEC SQL VAR szhPrefPlaza IS STRING(11);
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo , "\n*** Entrada en %s ***",LOG04,modulo);
+
+    EXEC SQL FETCH Cur_Interfaz INTO
+	 	   		   :lhNumFolio,
+				   :lhNumProceso,
+				   :szhPrefPlaza;
+
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        vDTrazasLog  (modulo,  "En FETCH sobre CURSOR Cur_Interfaz [%s]",LOG01,SQLERRM);
+        vDTrazasError(modulo,  "En FETCH sobre CURSOR Cur_Interfaz [%s]",LOG01,SQLERRM);
+        return SQLCODE ;
+    }
+
+    if( SQLCODE == SQLNOTFOUND )
+    {
+        vDTrazasLog  (modulo, " No Existen Mas Documentos en CURSOR Cur_FacturFolios ",LOG04);
+        return SQLCODE ;
+    }
+    else
+    {
+        pstRegDocumFoli->lNumFolio   = lhNumFolio;
+        pstRegDocumFoli->lNumProceso = lhNumProceso;
+        strcpy(pstRegDocumFoli->szPrefPlaza, szhPrefPlaza);
+    }
+
+    vDTrazasLog (modulo , "\n=> Num Folio   [%ld]"
+                          "\n=> Num Proceso [%ld]"
+                          ,LOG05
+					      ,pstRegDocumFoli->lNumFolio
+        				  ,pstRegDocumFoli->lNumProceso );
+    return SQLCODE ;
+
+} /* ifnFetchInterfaz */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnUpdateFolios                                               * */
+/* ************************************************************************* */
+/* * Modifica el Folio de un Documento                                     * */
+/* ************************************************************************* */
+BOOL bfnUpdateFolios(FOLIACIONREGINTERFAZ *pstRegDocumFoli,char *szOraUser, int *iFol)
+{
+	char modulo[]="bfnUpdateFolios";
+
+	BOOL bContinuar =TRUE;
+	BOOL bVerSgte   =TRUE;
+
+    vDTrazasLog (modulo , "\n*** Entrada en %s ***",LOG04,modulo);
+
+    memset(&stInterFact,0,sizeof(INTERFACT));
+    stInterFact.lNumProceso     = pstRegDocumFoli->lNumProceso ;
+    strcpy(stInterFact.szCodAplic,"FAC");  /* Incorporado por PGonzaleg 25-01-2002 */
+    
+    
+    if (!bfnGetInterFact(&stInterFact))
+    {
+        vDTrazasError(szExeName,"Error obtencion de FA_INTERFACT [%ld] [%s]"
+                     ,LOG01,SQLCODE,szfnORAerror());
+        vDTrazasLog  (szExeName,"Error obtencion de FA_INTERFACT [%ld] [%s]"
+                     ,LOG01,SQLCODE,szfnORAerror());
+        return FALSE;
+    }
+
+	memset(&stRegAlConDoc,0,sizeof(FOLIACIONALCONSUDOCUM)) ;
+
+	stInterFact.iCodEstaDoc = stIntQueueProc.iCodEstaDocSal;/* FOLIADA */
+	stInterFact.iCodEstaProc= iESTAPROC_PROCESANDO ;        /* PROCESANDO */
+	strcpy(stInterFact.szCodAplic,"FAC");  /* Incorporado por PGonzaleg 25-01-2002 */	
+	
+	if (!bfnUpdInterFact(stInterFact))
+	{
+		vDTrazasLog  ( modulo, " Al Marcar registro como 'Procesando' ",LOG01);
+		vDTrazasError( modulo, " Al Marcar registro como 'Procesando' ",LOG01);
+        fnOraRollBack();
+	}
+	else
+	{
+		if (!bfnOraCommit())
+		{
+			vDTrazasLog  ( modulo, " Al hacer Commit ",LOG01);
+			vDTrazasError( modulo, " Al hacer Commit ",LOG01);
+			bContinuar=FALSE;
+			bVerSgte=TRUE;
+		}
+		else
+		{
+    		if (!bfnUpdateFactDocuNoCiclo   (pstRegDocumFoli->lNumFolio
+    		                                ,pstRegDocumFoli->szPrefPlaza
+    		                                ,pstRegDocumFoli->lNumProceso))
+	    	{
+		    	vDTrazasLog  ( modulo, " Al hacer Update sobre FA_FACTDOCU_NOCICLO ",LOG01);
+			    vDTrazasError( modulo, " Al hacer Update sobre FA_FACTDOCU_NOCICLO ",LOG01);
+	            fnOraRollBack();
+	            stInterFact.iCodEstaProc= iESTAPROC_TERMINADO_ERROR ;/* ERROR   */
+	            strcpy(stInterFact.szCodAplic,"FAC");  /* Incorporado por PGonzaleg 25-01-2002 */
+	            
+			    bfnUpdInterFact(stInterFact);
+			    bfnOraCommit();
+			    bContinuar=FALSE;
+		    }
+		    else
+		    {
+		        stInterFact.iCodEstaProc    = iESTAPROC_TERMINADO_OK ;   /* OK      */
+		        strcpy(stInterFact.szFecFoliacion, cfnGetTime(7));
+		        strcpy(stInterFact.szCodAplic,"FAC");  /* Incorporado por PGonzaleg 25-01-2002 */
+		        
+    			if (!bfnUpdInterFact(stInterFact))
+			    {
+    				vDTrazasLog  ( modulo, " Al marcar registro como 'terminado ok' ",LOG01);
+				    vDTrazasError( modulo, " Al marcar registro como 'terminado ok' ",LOG01);
+			        fnOraRollBack();
+				    bContinuar=FALSE;
+			    }
+			    else
+			    {
+			        if (!bfnOraCommit())
+        			{
+		    	    	vDTrazasLog  ( modulo, " Al hacer Commit ",LOG01);
+			    	    vDTrazasError( modulo, " Al hacer Commit ",LOG01);
+            		    fnOraRollBack();
+				        bContinuar=FALSE;
+			        }
+			        else
+			        {
+				        *iFol=*iFol+1;
+			        }
+			    }
+		    }
+        }
+	}
+
+	if (!bContinuar)
+	{
+		vDTrazasLog  ( modulo, "\n********* No sigue con este registro pasa al siguiente ******** ",LOG04);
+		vDTrazasError( modulo, "\n********* No sigue con este registro pasa al siguiente ******** ",LOG04);
+	}
+
+
+	return TRUE;
+
+}/* bfnUpdateFolios */
+
+
+
+/* ************************************************************************* */
+/* * Funcion bfnUpdateFactDocuNoCiclo					                   * */
+/* ************************************************************************* */
+/* * Modifica el Folio de un Documento en la Fa_FactDocu_NoCiclo           * */
+/* ************************************************************************* */
+BOOL bfnUpdateFactDocuNoCiclo   ( long lNumFolio
+								, char *szPrefPlaza
+								, long lNumProceso)
+{
+    char modulo[]="bfnUpdateFactDocuNoCiclo";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+	long lhFolio         		;
+	long lhNumProceso    		;
+	int ihCodTipDocum   		;
+	char szhRowid[20]="" 		;	EXEC SQL VAR szhRowid IS STRING(20);
+	int ihCodCentrEmi   		;
+	char szhFecEmision[15]	=""	;	EXEC SQL VAR szhFecEmision IS STRING(15);
+	long lhCodTipDocum		;
+	long lhCodVendedorAgente	;
+	char szhCodOficina  [3]     	;
+	char szhCodOperadora[6]	=""	;	EXEC SQL VAR szhCodOperadora IS STRING(15);
+	char szhPrefPlaza[11]	=""	;	EXEC SQL VAR szhPrefPlaza IS STRING(11);
+	long lhFolioAux =0              ;
+    EXEC SQL END DECLARE SECTION;
+
+	lhFolio = lNumFolio           ;
+	lhNumProceso = lNumProceso    ;
+
+    vDTrazasLog (modulo , "\n*** Entrada en %s ***"     
+                          "\n*** Parametros ***"        
+                          "\n*** lNumFolio    [%ld]***" 
+                          "\n*** lNumProceso  [%ld]***" 
+                          , LOG03
+                          , modulo
+                          , lNumFolio
+                          , lNumProceso);
+
+	EXEC SQL SELECT ROWID,
+					COD_CENTREMI ,
+					TO_CHAR(FEC_EMISION,'YYYYMMDD'),
+ 					COD_TIPDOCUM,
+				    COD_VENDEDOR_AGENTE,
+				    COD_OPERADORA,
+				    NUM_FOLIO
+			   INTO :szhRowid,
+			   		:ihCodCentrEmi,
+			   		:szhFecEmision,
+			   		:lhCodTipDocum,
+			   		:lhCodVendedorAgente,
+			   		:szhCodOperadora,
+			   		:lhFolioAux
+			   FROM FA_FACTDOCU_NOCICLO
+		      WHERE NUM_PROCESO = :lhNumProceso
+				AND IND_ANULADA  = 0
+				AND IND_IMPRESA  > 0
+				/*AND NUM_FOLIO    = 0    PRS - TM-200505041394*/
+		 FOR UPDATE ;
+
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo," En SQL-SELECT "
+                                "\n=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+
+        vDTrazasError(modulo," En SQL-SELECT FA_FACTDOCU_NOCICLO WHERE"
+        					 "\n NUM_PROCESO = %ld AND IND_ANULADA = 0  AND IND_IMPRESA > 0 AND NUM_FOLIO = 0"
+        					 "\n=> Error : [%d]  [%s] ",
+        					 LOG01,lhNumProceso,SQLCODE,SQLERRM);
+        fnGrabaAnomalia(lhNumProceso
+                        , 0
+                        ,"New_FolOnline"
+                        , strcat(cfnGetTime(1), "=> select FA_FACTDOCU_NOCICLO err:") );
+        return FALSE;
+    }
+
+    /* Inicio PRS - TM-200505041394 */
+    /* Si el doc. ya tiene folio ( en FA_FACTDOCU_NOCICLO ) entonces salir de la funcion bfnUpdateFactDocuNoCiclo y dejar en estado 400-3*/
+    if (lhFolioAux > 0)
+    {
+      return TRUE; 
+    }/* Fin PRS - TM-200505041394 */
+
+    /* Carga Codigo de Oficina segun Folio y Tipo de Documento*/
+    if (!bfnCargaOficinaAlAsigDocumento(lhFolio, lhCodTipDocum, szhCodOperadora, szPrefPlaza, szhCodOficina))
+        return FALSE;
+
+	strcpy (szhPrefPlaza, szPrefPlaza);
+	
+    vDTrazasLog  (modulo ,"Valores a actualizar en Fa_Factdocu_Nociclo"
+    					  "Folio [%ld] - Codigo Oficina [%s] - Pref. Plaza [%s] "
+    					  ,LOG04,lhFolio,szhCodOficina,szhPrefPlaza);
+/*AGREGAR PREFIOJO PLAZA*/
+	EXEC SQL UPDATE FA_FACTDOCU_NOCICLO
+		        SET NUM_FOLIO   = :lhFolio,
+		            COD_OFICINA = :szhCodOficina,
+		            PREF_PLAZA  = :szhPrefPlaza
+		      WHERE ROWID = :szhRowid;
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo," En SQL-UPDATE "
+                                "\n=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo," En SQL-UPDATE "
+                                "\n=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        fnGrabaAnomalia(lhNumProceso
+                        , 0
+                        ,"New_FolOnline"
+                        , strcat(cfnGetTime(1), "=> update FA_FACTDOCU_NOCICLO err:") );
+
+        return FALSE;
+    }
+
+    return TRUE;
+
+} /* bfnUpdateFactDocuNoCiclo */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnCargaOficinaAlAsigDocumento                                * */
+/* * Carga Codigo de Oficina segun Num. Folio y Tipo de Docum.             * */
+/* ************************************************************************* */
+BOOL bfnCargaOficinaAlAsigDocumento ( long lFolio
+									, long lTip_Docum
+									, char *szCodOperadora
+									, char *szPrefPlaza
+									, char *szCodOficina)
+{
+char modulo[]="bfnCargaOficinaAlAsigDocumento";
+
+EXEC SQL BEGIN DECLARE SECTION ;
+     long lhFolio            ;
+     long lhTip_Docum        ;
+     char szhCod_Oficina  [3];  EXEC SQL VAR szhCod_Oficina IS STRING(3);
+     char szhCodOperadora [6];  EXEC SQL VAR szhCodOperadora IS STRING(6);
+     char szhPrefPlaza    [11];  EXEC SQL VAR szhPrefPlaza IS STRING(11);
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo ,"Parametros en bfnCargaOficinaAlAsigDocumento: "
+    					  "Folio [%ld] - Tipo Docum [%ld] - Cod. Oper. [%s] - Pref. Plaza [%s]"
+    					 ,LOG04,lFolio, lTip_Docum, szCodOperadora, szPrefPlaza);
+
+    lhFolio = lFolio         ;
+    lhTip_Docum = lTip_Docum ;
+    strcpy (szhCodOperadora,szCodOperadora);
+    strcpy (szhPrefPlaza,szPrefPlaza);
+
+
+    EXEC SQL
+    SELECT DISTINCT COD_OFICINA
+    INTO   :szhCod_Oficina
+    FROM   AL_ASIG_DOCUMENTOS
+    WHERE  COD_OPERADORA = :szhCodOperadora
+      AND  :lhFolio BETWEEN RAN_DESDE AND RAN_HASTA
+      AND  COD_TIPDOCUM = (SELECT COD_TIPDOCUM  FROM FA_TIPDOCUMEN
+                           WHERE  COD_TIPDOCUMMOV = :lhTip_Docum)
+	  AND  PREF_PLAZA = :szhPrefPlaza ;
+
+
+    if (SQLCODE == SQLNOTFOUND) 
+    {
+        vDTrazasLog  ( modulo ,"\n**  No Existe Codigo de Oficina para Tipo de Documento [%ld] Folio [%ld] **",
+                               LOG01,lhTip_Docum,lhFolio);
+        vDTrazasLog  ( modulo ,"\n**  No Existe Codigo de Oficina para Tipo de Documento [%ld] Folio [%ld] **",
+                               LOG01,lhTip_Docum,lhFolio);
+        return FALSE;
+    }
+
+    if (SQLCODE != SQLOK) {
+        vDTrazasLog  ( modulo ,"\n**  Error en Select Al_Asig_Documentos (Codigo Oficina) **"
+                               "\n=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError( modulo ,"\n**  Error en Select Al_Asig_Documentos (Codigo Oficina) **"
+                               "\n=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    strcpy(szCodOficina,szhCod_Oficina);
+    vDTrazasLog  (modulo ,"Codigo de Oficina [%s] ",LOG04,szCodOficina);
+
+    return TRUE;
+
+}/* Fin bfnCargaOficinaAlAsigDocumento*/
+
+
+/* ************************************************************************* */
+/* * Funcion bfnCloseInterfaz                                              * */
+/* ************************************************************************* */
+/* * Cierra el Cursor de documentos a Foliar                               * */
+/* ************************************************************************* */
+BOOL bfnCloseInterfaz()
+{
+	char modulo[]="bfnCloseInterfaz";
+    vDTrazasLog  (modulo, "\n** Entrada en %s",LOG04,modulo);
+
+    EXEC SQL CLOSE Cur_Interfaz;
+
+    if (SQLCODE != SQLOK)
+        return FALSE;
+
+    return TRUE;
+}
+
+
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

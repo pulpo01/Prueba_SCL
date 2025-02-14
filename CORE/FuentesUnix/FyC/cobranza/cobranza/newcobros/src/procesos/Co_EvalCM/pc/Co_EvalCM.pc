@@ -1,0 +1,1352 @@
+/*==================================================================================
+   Nombre      : Co_EvalCM.pc
+   Programa    : Proceso evaluador de clientes morosos primerizos, los cuales van ingresando
+                     a Co_morosos y Co_acciones con un solo registro.
+                     Se ejecuta en : instancias paralelas, en paralelo con el proceso Co_EvalMO
+                     y una vez terminado el proceso Co_saldocons.
+   Autor       : GAC
+   Creado      : Diciembre-2003
+==================================================================================*/
+#define _COLIBGENERALES_PC_
+#define _COLIBPROCESOS_PC_
+#include "Co_EvalCM.h"
+#include <sched.h>
+
+EXEC SQL INCLUDE sqlca;
+LINEACOMANDO stLineaComando;        /* Datos con los que se invoco al proceso */
+
+int  iNumeroHilos= 0, iContinue=0;
+int  iResult     = 0, iError   =0;
+int  iSec_Padre  = 0;
+int  iSec_Hijo   = 0;
+long lTotalRows  = 0;
+/* Identificador del thread hijo */
+thread_t     idHilo[25];
+lista_Pto    lsPto;
+struct stCliente iLB;
+
+EXEC SQL BEGIN DECLARE SECTION;
+     char  szhCodEstado[2]; EXEC SQL VAR szhCodEstado IS STRING (2);
+     char  szhProceso  [6];
+     float fhPorcentajeMem;
+     long  lhCpu        ;
+     int   ihNUM_INSTAN ;
+     int   ihRAN_LISTAS ;
+     long  lhSecMoroso   ;
+
+     TCLIENTES sthClientes;
+
+     char  szhUser_Cobros[15]; EXEC SQL VAR szhUser_Cobros IS STRING(15);
+     char  szhWait       [2];
+     char  szhVigente    [2];
+     char  szhErr        [4];
+     char  szhPnd        [4];
+     char  szhEje        [4];
+     char  szhCO         [3];
+     char  szhUSER       [15];
+     int   ihValor_Cero = 0;
+     int   ihValor_Uno  = 1;
+     int   ihValor_Dos  = 2;
+     int   ihValor_Tres = 3;
+     
+EXEC SQL END DECLARE SECTION;
+
+/* ============================================================================= */
+/* Funcion: main                                                                 */
+/* Objetivo: Funcion principal del programa                                      */
+/* ============================================================================= */
+int main( int argc, char *argv[] )
+{
+char modulo[] = "main";
+int iResProc = STATUS_OK;
+int iRes=0;
+
+    /*- Validacion de parametros de entrada -*/
+    memset(&stLineaComando,0,sizeof(LINEACOMANDO));
+    sprintf(szPROCESO,"EVACM\0");
+    rtrim(szPROCESO);
+    sprintf(szhProceso,"%s\0",szPROCESO);
+    rtrim(szhProceso);
+    strcpy(szhWait,WAIT);
+
+    if (ifnValidaParametros(argc,argv,&stLineaComando) != 0) {
+        fprintf (stdout,"\n\tError >> Fallo la Validacion de Parametros \n");
+        fflush  (stdout);
+        iResult = -1;
+    } else {
+        /*- Conexion a la Base de Datos -*/
+        if (ifnConexionDB(&stLineaComando) != 0)   {
+            fprintf (stdout,"\n\tError >> Fallo la Conexion a la Base \n");
+            fflush  (stdout);
+            iResult = -2; 
+
+        } 
+        else
+        {
+             /* Chequea que la cola de Saldos Consolidados este en wait */
+             while (1) 
+             {
+                 iRes = ifnVerFinColaAnterior(1);
+                 if (iRes < 0) {
+                   fprintf (stdout,"\n\tError >> Fallo el proceso \n");
+                   fflush  (stdout);
+                   iResult = -4; /* Fallo Proceso */
+                   return iResult;
+                
+                } else if (iRes > 0) {
+                   fprintf (stdout,"\n\tEl Proceso de Saldos aun se esta ejecutando.....!!!\n\n\n");
+                   fflush  (stdout);
+                   iResult = 0; /* Fallo Proceso */
+                   sleep(10);
+                    } else
+                        break;
+             }
+            /*fprintf (stdout,"PASA POR ACA \n");*/
+            fflush  (stdout);
+            /*- Prepara Archivo de Log - */
+            if (ifnPreparaArchivoLog() != 0)
+            {
+                fprintf (stdout,"\n\tError >> Fallo Archivo de Log (Local al proceso) \n");
+                fflush  (stdout);
+                iResult = -3;  
+            } 
+            else 
+            {
+                    /*fprintf (stdout,"PASA POR ACA \n");*/
+                    fflush  (stdout);
+                /*- Ejecuta el proceso propiamente tal -*/
+                    if (ifnEjecutaCola() != 0)   {
+                    fprintf (stdout,"\n\tError >> Fallo el proceso \n");
+                    fflush  (stdout);
+                    iResult = -4; /* Fallo Proceso */
+
+                    } else {
+                   
+                    EXEC SQL 
+                    SELECT COD_ESTADO 
+                    INTO :szhCodEstado
+                    FROM CO_COLASPROC 
+                    WHERE COD_PROCESO=:szhProceso;
+                    
+                    if (SQLCODE)  {
+                        ifnTrazasLog(modulo,"Fallo el proceso ( Validacion Cola Wait ) - %s",LOG02,SQLERRM);
+                        fprintf (stdout,"\n\tError >> Fallo el proceso ( Validacion Cola Wait ) \n");
+                        fflush  (stdout);
+                        /*ifnMailAlert(szhProceso,"TODOS","FALLO LA VALIDACION FINAL DE LA COLA.");*/
+                        iResult = -5; /* Fallo Proceso */
+
+                    } else {
+
+                        if ( strcmp(szhCodEstado,"W")!=0 ) {
+                            /* LA COLA ESTA EN UN ESTADO DISTINTO DE WAIT */
+                            /* SEÒALAR ESTO COMO ERROR E INTENTAR FORZARLA A WAIT */
+                            ifnTrazasLog(modulo,"Regresando la Cola a Espera (%s)",LOG02,szhCodEstado);
+                            EXEC SQL 
+                            UPDATE CO_COLASPROC
+                            SET COD_ESTADO = :szhWait
+                            WHERE COD_PROCESO = :szhProceso ;
+
+                            if (SQLCODE) {
+                                ifnTrazasLog(modulo,"Fallo el proceso ( Update Cola Wait ) - %s",LOG02,SQLERRM);
+                                fprintf (stdout,"\n\tError >> Fallo el proceso ( Update Cola Wait ) %s\n",SQLERRM );
+                                fflush  (stdout);
+                                /*ifnMailAlert(szhProceso,"TODOS","FALLO AL ACTUALIZAR LA COLA A 'WAIT'.");*/
+                                iResult = -6; /* Fallo Proceso */
+                            }                            
+
+                            EXEC SQL COMMIT;
+                            if (SQLCODE) {
+                                          ifnTrazasLog(modulo,"Fallo el proceso ( Commit Cola Wait ) - %s",LOG02,SQLERRM);
+                                fprintf (stdout,"\n\tError >> Fallo el proceso ( Commit Cola Wait ) %s\n", SQLERRM );
+                                fflush  (stdout);
+                                iResult = -7; 
+                            }                            
+                            ifnTrazasLog(modulo,"COMMIT OK. Cola forzada a espera",LOG02);
+                        }
+                    }
+                    }
+
+               vfnCierraArchivoLog();
+                
+            }
+        }
+    }
+
+     return iResult;
+}
+
+
+/* ============================================================================= */
+/* ifnValidaParametros : Realiza la validacion de los Parametros de Entrada      */
+/* ============================================================================= */
+int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC )
+{
+char modulo[] = "ifnValidaParametros";
+
+extern  char  *optarg;
+extern  int  optind, opterr, optopt;
+int     iOpt = 0;
+char    opt[] = ":u:l:n:";
+char   *psztmp = "";
+int     iUserflag = 0, iLogflag = 0, iError = 0;
+
+   opterr = 0;
+    stStatus.iLogNivel = iLOGDEFAULT;
+
+    /* Analisis de los argumentos recibidos */
+    while( ( iOpt = getopt( argc, argv, opt ) ) != EOF )
+    {
+        switch( iOpt )
+        {
+            case 'u':  /* Usuario/Password */
+                    if( !iUserflag )
+                    {
+                        strcpy( pstLC->szUsuarioOra, optarg );
+                        iUserflag = 1;
+                        printf("USUARIO [%s]",pstLC->szUsuarioOra);
+                        if( ( psztmp = (char *)strchr( pstLC->szUsuarioOra,'/' ) ) == (char *)NULL )
+                        {
+                            fprintf( stderr, "\n\tError >> Usuario no valido. Requiere '/' \n" );
+                            fflush( stderr );
+                            return STATUS_ERR;
+                        }
+                        else
+                        {
+                            strncpy( pstLC->szOraAccount, pstLC->szUsuarioOra, psztmp-pstLC->szUsuarioOra );
+                            strcpy( pstLC->szOraPasswd, psztmp + 1 );
+                        }
+                    }
+                    else
+                    {
+                        fprintf( stderr, "\n\tError >> opcion '-%c' duplicada\n", optopt );
+                        fflush( stderr );
+                        return STATUS_ERR;
+                    }
+                    break;
+
+            case 'l': /*-- Nivel de Log --*/
+                    if( !iLogflag )
+                    {
+                        stStatus.iLogNivel = ( atoi( optarg ) > 0 ) ? atoi( optarg ) : iLOGDEFAULT;
+                        iLogflag = 1;
+                    }
+                    else
+                    {
+                        fprintf( stderr, "\n\tError >> opcion '-%c' duplicada\n", optopt );
+                        fflush( stderr );
+                        return STATUS_ERR;
+                    }
+                    break;
+
+         case 'n': /*-- Nombre de la Cola (codigo del proceso) --*/
+              strcpy(szPROCESO,optarg);
+              break;
+
+            case '?':
+                    fprintf( stderr, "\n\tError >> opcion '-%c' es desconocida\n", optopt );
+                    fflush( stderr );
+                    return STATUS_ERR;
+
+            case ':':
+                    fprintf( stderr, "\n\tError >> falta argumento para opcion '-%c'\n", optopt );
+                    fflush( stderr );
+                    return STATUS_ERR;
+        } /* switch( iOpt ) */
+    } /* while( ( iOpt = getopt( argc, argv, opt ) ) != EOF ) */
+
+    pstLC->iLogLevel = stStatus.iLogNivel;
+
+    if( !iUserflag )    {
+        fprintf( stderr, "\n\nFalta parametro Usuario/Password.\n" );    
+        fflush( stderr );
+        iError = 1;
+    }        
+
+    if( iError )    {
+        fprintf( stderr, "\n\nUso de Programa.\n" );    
+        fprintf( stderr, "Co_EvalCM -u<usuario/password> -l<Nivel Log>.\n" );    
+        fflush( stderr );
+        return STATUS_ERR;
+    }
+
+    return STATUS_OK;
+} /* int ifnValidaParametros( int argc, char *argv[], LINEACOMANDO *pstLC ) */
+
+/* ============================================================================= */
+/* ifnConexionDB() : Intenta Conectarse a la Base de Datos                       */
+/* ============================================================================= */
+int ifnConexionDB( LINEACOMANDO *pstLC )
+{
+char modulo[] = "ifnConexionDB";
+
+    printf("[%s]",pstLC->szOraAccount);
+    printf("[%s]",pstLC->szOraPasswd);
+    if ( bfnOraConnect(pstLC->szOraAccount,pstLC->szOraPasswd) == FALSE  )    {
+        fprintf( stderr, "\nNo hay conexion a ORACLE \n" );
+        fflush( stderr );
+        return STATUS_ERR;
+    }
+
+    return STATUS_OK;
+}
+
+/* ============================================================================= */
+/* ifnPreparaArchivoLog(): Obtiene las Paths y define el nombre del archivo log  */
+/* ============================================================================= */
+int ifnPreparaArchivoLog()
+{
+char modulo[] = "ifnPreparaArchivoLog";
+int sts = 0;
+
+    /*fprintf (stdout,"PASA POR ACA1 \n");*/
+    fflush  (stdout);
+
+    if(!getenv("XPC_LOG"))
+    {
+        fprintf (stdout,"VARIABLE DE AMBIENTE XPC_LOG NO FUE SETEADA \n");
+        fflush  (stdout);
+        exit(1);
+    }
+
+    sprintf( stStatus.szFileName, "%s", szPROCESO );
+    sprintf( stStatus.szLogPathGene, "%s/CO_SCHEDULER", getenv( "XPC_LOG" ) );
+
+    sts = ifnAbreArchivoLog( 1 ); 
+    return sts;
+} /* end ifnPreparaArchivoLog */
+
+/* ============================================================================= */
+/* ifnAbreArchivoLog(): Abre archivos de log, errores y estadisticas modo append */
+/* ============================================================================= */
+int ifnAbreArchivoLog()
+{
+char modulo[] = "ifnAbreArchivoLog";
+char szArchivoErr[256], szArchivoLog[256], szComando[256]; 
+static char szAux[9];
+
+   memset( szArchivoLog, '\0', sizeof( szArchivoLog ) ); /* log */         
+   memset( szArchivoErr, '\0', sizeof( szArchivoErr ) ); /* errores */     
+
+   strcpy( szAux, (char *)szSysDate( "YYYYMMDD" ) );
+   sprintf( szComando, "/usr/bin/mkdir -p %s/%s", stStatus.szLogPathGene, szAux );
+   if( system( szComando ) != 0 )    {
+        fprintf( stderr, "Error al intentar crear directorio de Log\n" );
+        fflush ( stderr );
+        return STATUS_ERR;
+   }
+    
+   sprintf( szArchivoLog, "%s/%s/%s.log", stStatus.szLogPathGene, szAux, stStatus.szFileName );
+   sprintf( szArchivoErr, "%s/%s/%s.err", stStatus.szLogPathGene, szAux, stStatus.szFileName );
+    
+   if( ( stStatus.LogFile = fopen( szArchivoLog, "a" ) ) == (FILE*)NULL )   {    
+        fprintf( stderr, "Error al crear archivo de Log.\n" );
+        fflush( stderr );
+        return STATUS_ERR;    
+   }
+    
+   if( ( stStatus.ErrFile = fopen( szArchivoErr, "a" ) ) == (FILE*)NULL )   {    
+        fprintf( stderr, "Error al crear archivo de Errores.\n" );
+        fflush( stderr );
+        STATUS_ERR;    
+   }
+
+   fprintf( stStatus.LogFile, "\n\n\t%s - APERTURA DE ARCHIVO SEGUN UNIX <%ld> -\n", szGetTime(1), getpid() );
+
+    return STATUS_OK;
+}/* end ifnAbreArchivoLog */
+
+/* ============================================================================= */
+/* vfnCierraArchivoLog(): cierra los descriptores de los archivos de logs        */
+/* ============================================================================= */
+void vfnCierraArchivoLog(void)
+{
+char modulo[] = "vfnCierraArchivoLog";
+
+    fprintf( stStatus.LogFile, "\n\n\t%s - CIERRE DE ARCHIVO SEGUN UNIX <%ld> -\n\n", szGetTime(1), getpid() );
+
+    if( fclose( stStatus.LogFile ) != 0 )    {    
+        fprintf( stderr,"Error al cerrar archivo de Log\n" );
+        fflush( stderr );
+    }
+
+    if( fclose( stStatus.ErrFile ) != 0 )    {    
+        fprintf( stderr, "Error al cerrar archivo de Errores\n" );
+        fflush( stderr );
+    }
+
+    return;
+} /* end vfnCierraArchivoLog */
+
+/* ============================================================================= */
+/* ifnEjecutaCola(): Ejecuta las acciones propias del proceso                 */
+/* ============================================================================= */
+int ifnEjecutaCola()
+{
+char modulo[] = "ifnEjecutaCola";
+char szIniProc[9], szFinProc[9], szTmpProc[9];
+int  iDifSegs = 0;
+int  i, j, k, ierror;
+
+    memset( szIniProc, '\0', sizeof( szIniProc ) );
+    memset( szFinProc, '\0', sizeof( szFinProc ) );
+    memset( szTmpProc, '\0', sizeof( szTmpProc ) );
+    mutex_init(&bufferlock, NULL, NULL );
+    sema_init (&semaflock , 1, NULL, NULL );
+    strcpy(szhVigente,VIGENTE);
+    strcpy(szhCO  ,CO);
+    strcpy(szhUSER,USUARIO_COBROS);
+
+    
+    sprintf( szIniProc, "%s", szSysDate( "HH24:MI:SS" ) );
+    ifnTrazasLog( modulo, "===>>> %s VERSION => [%s].\n", LOG03, szPROCESO, szVERSION );
+    ifnTrazasLog( modulo, "Corriendo la cola lanzada", LOG03 );
+
+    /*'Launched->Running'*/
+    if( !bfnCambiaEstadoCola( szPROCESO, "L", "R" ) ) 
+    {
+        if( !bfnOraRollBack() ) ifnTrazasLog( modulo, "En Rollback 'L->R' : %s", LOG00, SQLERRM );
+        return STATUS_ERR;
+
+    }
+    else
+    {
+        if( !bfnOraCommit() )
+        {
+            ifnTrazasLog( modulo, "En Commit 'L->R' : %s", LOG00, SQLERRM );
+            if( !bfnOraRollBack() ) 
+                ifnTrazasLog( modulo, "En Rollback : %s", LOG00, SQLERRM );
+            return STATUS_ERR;    
+        }
+    }
+
+    /* Calcula porcentaje de memoria libre y usada */
+    if (ifnMemoriaUsada(&lhCpu)!=0) return STATUS_ERR;
+    /* Carga categorias , acciones y criterios */
+    if (ifnPtosCateg (&lsCat) != 0) return STATUS_ERR;
+
+    /* Rescatamos cantidad maxima de instancias en ejecucion */
+    /* definidas por el usuario                                     */
+    EXEC SQL
+    SELECT  NVL(TO_NUMBER(CNT_INSTANCIA_USR),:ihValor_Uno)
+    INTO    :ihNUM_INSTAN
+    FROM    CO_INSTANCIA_TO         
+    WHERE   COD_PROCESO = :szhProceso
+    AND     ESTADO       = :szhVigente;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "Error INSTANCIAS_EVAL %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+    
+    if (ihNUM_INSTAN==0) ihNUM_INSTAN=1;
+    ifnTrazasLog( modulo, "\n\tINSTANCIAS_EVAL  [%d].", LOG03, ihNUM_INSTAN);  
+
+    EXEC SQL
+    SELECT VAL_PARAMETRO
+    INTO   :szhUser_Cobros
+    FROM   GED_PARAMETROS
+    WHERE  NOM_PARAMETRO= :szhUSER
+    AND    COD_MODULO   = :szhCO
+    AND    COD_PRODUCTO = :ihValor_Uno;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "Error SELECT VAL_PARAMETRO (USUARIO_COBROS) %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+
+    /* Insertando estadisticas del proceso padre. Secuencia de este corresponde a 0 */
+    if (ifnInsertaEstadisticas(iSec_Padre, szhProceso) != 0 ) return STATUS_ERR;
+
+    /* seleccion de candidatos a morosos */
+    if (ifnCandidatosMorosos() != 0) return STATUS_ERR;    
+    /* verificamos que hayan registros por procesar*/
+    if (lTotalRows > 0 ) 
+    {
+         /****************************************************************************************/
+         /*Calculamos la cantidad de nodos a pasar por cada hilo*/
+         if ( (lTotalRows % ihNUM_INSTAN) ==0 ) 
+             ihRAN_LISTAS=(lTotalRows/ihNUM_INSTAN);
+         else
+             ihRAN_LISTAS=(lTotalRows/ihNUM_INSTAN)+1;
+
+        ifnTrazasLog( modulo, "Cantidad Clientes a Evaluar por Hilo [%d]\n", LOG03,ihRAN_LISTAS);  
+        /****************************************************************************************/
+        /* De acuerdo al rango se segmenta la lista     */
+        if (ifnSeccionaLista(lTotalRows) !=0 ) 
+            return STATUS_ERR;
+
+        /* Rescatamos la secuencia para el ult_proceso de la co_morosos
+        para que todos los hilos queden con el mismo valor                */
+           EXEC SQL SELECT CO_SEQ_EVALUADOR.NEXTVAL INTO :lhSecMoroso FROM DUAL; 
+        /****************************************************************************************/
+        /* ejecutamos los hilos de acuerdo a la vble ihNUM_INSTAN*/
+        if (ifnEjecutaHilos() != 0) 
+            return STATUS_ERR;
+
+    }
+    else 
+    {
+        ifnTrazasLog( modulo, "No existen clientes por procesar.", LOG02);  
+    }
+
+    vfnEliminaNodoAccion(&stListaAcCM);
+    Destruir_lista(&stListaClientes);
+    vfnBorraListaCateg(&lsCat);
+
+    /****************************************************************************************/
+    /* Informacion Estadistica */
+    sprintf( szFinProc, "%s", szSysDate( "HH24:MI:SS" ) );        
+    if( ( iDifSegs = ifnRestaHoras( szIniProc, szFinProc, szTmpProc ) ) >= 0 )    {
+
+        if (ifnUpdateEstadisticas( szhProceso, iDifSegs , lTotalRows, iSec_Padre) !=0 ) return STATUS_ERR;
+        if (ifnInsertaParamUnix(szhProceso, ihNUM_INSTAN, lhCpu)!=0) return STATUS_ERR;
+
+        ifnTrazasLog( modulo, "\n\n   RESUMEN DEL PROCESO SEGUN ORACLE.\n"
+                              "   ==============================================================\n"
+                              "   HORA INICIO  => [%s]\n"
+                              "   HORA TERMINO => [%s]\n"
+                              "   TIEMPO TOTAL => [%s] [%d segs]\n" 
+                              "   TOTAL REGISTROS PROCESADOS => [%ld]\n"
+                              "   ==============================================================\n",
+                              LOG03, szIniProc, szFinProc, szTmpProc, iDifSegs, lTotalRows );
+    }
+    
+    return STATUS_OK;
+}
+
+int ifnUpdateExcluidosAcciones(int cod_cliente)
+{
+
+    char modulo[] = "ifnUpdateExcluidosAcciones";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    int bind_cod_cliente;
+    EXEC SQL END DECLARE SECTION;
+
+    bind_cod_cliente = cod_cliente;
+    EXEC SQL UPDATE CO_EXCLUIDOS_ACCIONES_TO SET FEC_INI_EXCLUSION = SYSDATE WHERE COD_CLIENTE = :bind_cod_cliente ;
+
+    if( SQLCODE != SQLOK)
+    {
+        ifnTrazasLog( modulo, "Error UPDATE CO_EXCLUIDOS_ACCIONES_TO %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }
+
+    return STATUS_OK;
+}
+
+/* ============================================================================= */
+/* Funcion que selecciona los candidatos a morosos                              */
+/* ============================================================================= */
+int ifnCandidatosMorosos()
+{
+char modulo[] = "ifnCandidatosMorosos";
+long lRowsThisLoop = 0, lRowsProcessed = 0;
+int  iRetSQLCODE = 0;
+char szIniProc[9], szFinProc[9];
+EXEC SQL BEGIN DECLARE SECTION;
+    char szhCadena [2048];
+    int  ihFec_saldo     ;
+    char szhCo_cartera   [11];     
+    char szhCod_tipdocum [13];
+    char szhME            [3];
+    char szhMR            [3];
+    char szhNatur         [6];
+    char szhLetra_e       [2];
+EXEC SQL END DECLARE SECTION;
+
+    ifnTrazasLog( modulo, "\n\t------ EVALUACION DE CANDIDATOS A MOROSOS. ------\n", LOG03);
+    sprintf( szIniProc, "%s", szSysDate( "HH24:MI:SS" ) );
+    ifnTrazasLog( modulo, "\tHora Inicio Carga de Datos (Lista) [%s].\n", LOG03 ,szIniProc);
+    strcpy(szhLetra_e    ,LETRA_E    );
+    strcpy(szhMR ,MR );
+    strcpy(szhME ,ME);
+    strcpy(szhNatur,NATUR);
+    strcpy(szhCo_cartera  ,CO_CARTERA  );
+    strcpy(szhCod_tipdocum,COD_TIPDOCUM);
+   
+    EXEC SQL
+    SELECT TO_NUMBER(TO_CHAR(TRUNC(SYSDATE),'yyyymmdd')) - nvl(TO_NUMBER(TO_CHAR(MAX(TRUNC(FEC_SALDO)),'yyyymmdd')),to_number(to_char(sysdate-:ihValor_Uno,'yyyymmdd')))
+      INTO   :ihFec_saldo
+      FROM CO_SALDOCONS_TO
+    WHERE  ROWNUM < :ihValor_Dos;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+    {
+        ifnTrazasLog( modulo, "\tEn Fec_saldo  CO_SALDOCONS_TO\n\t %s", LOG01, SQLERRM );
+        return STATUS_ERR;
+    }
+    
+    /* Variable utilizada en funcion general del calculo del saldo no vencido */
+    iFec_Saldo=ihFec_saldo;
+    /* Si es 0 se asume que el proceso de saldo ya fue ejecutado para este dia por   */
+    /*    lo que se selecciona de la CO_SALDOCONS_TO                                                     */
+    /*    En caso contrario se asume que no se ejecuto y se selecciona de la co_cartera    */
+    if (ihFec_saldo == 0 )  {    
+
+        sprintf(szhCadena,"SELECT C.COD_CLIENTE ,\n"
+                                "       NVL(TO_CHAR(TRUNC(C.FEC_VENCIMIE),'YYYYMMDD'),' '),\n"
+                                "       NVL(TO_CHAR(TRUNC(SYSDATE),'YYYYMMDD'),' '),\n"
+                                "       :v1  COD_GESTION,\n"
+                                "       C.SALDO_VENCIDO,\n"
+                                "       TO_NUMBER(:v2)   SEC_MOROSO,\n"
+                                "       :v3 COD_CATEGORIA,\n"
+                                "       DECODE(E.FEC_INI_EXCLUSION,NULL,DECODE(E.FEC_INGRESO,NULL,0,1),2) \n" /*P-COL-08006 RLM*/
+                                "FROM   CO_SALDOCONS_TO C ,\n"
+                                "       CO_EXCLUIDOS_ACCIONES_TO E\n" /*P-COL-08006 RLM*/
+                                "WHERE  C.FEC_VENCIMIE < TRUNC(SYSDATE)\n"    
+                                "AND    NOT EXISTS (SELECT TO_NUMBER(:v4) FROM  CO_MOROSOS N WHERE N.COD_CLIENTE = C.COD_CLIENTE)\n"
+                                "AND    C.COD_CLIENTE = E.COD_CLIENTE(+) \n" /*P-COL-08006 RLM*/
+                                "AND    E.FEC_INGRESO(+) IS NOT  NULL \n"  /*P-COL-08006 RLM*/
+                                "UNION ALL\n"
+                                "SELECT C.COD_CLIENTE,\n"
+                                "       TO_CHAR(C.FEC_VENCIMIE,'YYYYMMDD'),\n"
+                                "       NVL(TO_CHAR(TRUNC(M.FEC_PRORROGA),'YYYYMMDD'),' '),\n"
+                                "       :v5 AS COD_GESTION,\n"
+                                "       C.SALDO_VENCIDO,\n"
+                                "       M.SEC_MOROSO,\n"
+                                "       :v6  COD_CATEGORIA,\n"
+                                "       DECODE(E.FEC_INI_EXCLUSION,NULL,DECODE(E.FEC_INGRESO,NULL,0,1),2) \n" /*P-COL-08006 RLM*/
+                                "FROM   CO_MOROSOS M,\n"
+                                "       CO_SALDOCONS_TO C,\n"
+                                "       CO_EXCLUIDOS_ACCIONES_TO E\n" /*P-COL-08006 RLM*/
+                                "WHERE  M.COD_CLIENTE = C.COD_CLIENTE\n"
+                                "AND    M.TIP_MOROSO = :v7 \n"
+                                "AND    C.COD_CLIENTE = E.COD_CLIENTE(+) " /*P-COL-08006 RLM*/
+                                "AND    E.FEC_INGRESO(+) IS NOT  NULL \n"); /*P-COL-08006 RLM*/
+    } else  {
+
+        sprintf(szhCadena,"SELECT C.COD_CLIENTE,\n"
+                                "       NVL(TO_CHAR(MIN(TRUNC(C.FEC_VENCIMIE)),'YYYYMMDD'),' '),\n"
+                                "       NVL(TO_CHAR(TRUNC(SYSDATE),'YYYYMMDD'),' '),\n"
+                                "       :v1  COD_GESTION,\n"
+                                "       SUM(C.IMPORTE_DEBE - C.IMPORTE_HABER),\n"
+                                "       TO_NUMBER(:v2)  SEC_MOROSO,\n"
+                                "       :v3  COD_CATEGORIA,\n"
+                                "       DECODE(E.FEC_INI_EXCLUSION,NULL,DECODE(E.FEC_INGRESO,NULL,0,1),2) \n" /*P-COL-08006 RLM*/
+                                "FROM   CO_CARTERA C,\n"
+                                "       CO_EXCLUIDOS_ACCIONES_TO E \n" /*P-COL-08006 RLM*/
+                                "WHERE  C.COD_CLIENTE > TO_NUMBER(:v4)\n"
+                                "AND    C.FEC_VENCIMIE < TRUNC(SYSDATE)\n"
+                                "AND    C.IND_FACTURADO = TO_NUMBER(:v5)\n"
+                                "AND    C.COD_TIPDOCUM NOT IN (SELECT TO_NUMBER(COD_VALOR)\n"
+                                "                              FROM CO_CODIGOS\n"
+                                "                              WHERE NOM_TABLA = :v6\n"
+                                "                              AND   NOM_COLUMNA = :v7)\n"
+                                "AND   NOT EXISTS (SELECT TO_NUMBER(:v8) FROM  CO_MOROSOS N WHERE N.COD_CLIENTE = C.COD_CLIENTE)\n"
+                                "AND   C.COD_CLIENTE = E.COD_CLIENTE(+) \n"  /*P-COL-08006 RLM*/
+								        "AND   E.FEC_INGRESO(+) IS NOT  NULL\n"  /*P-COL-08006 RLM*/
+                                "GROUP BY C.COD_CLIENTE , E.FEC_INGRESO, E.FEC_INI_EXCLUSION \n" /*P-COL-08006 RLM*/
+                                "HAVING SUM(IMPORTE_DEBE - IMPORTE_HABER) > TO_NUMBER(:v9)\n"
+                                "UNION ALL\n"
+                                "SELECT C.COD_CLIENTE,\n"
+                                "       TO_CHAR(MIN(C.FEC_VENCIMIE),'YYYYMMDD'),\n"
+                                "       NVL(TO_CHAR(MIN(TRUNC(M.FEC_PRORROGA)),'YYYYMMDD'),' '),\n"
+                                "       :v10  COD_GESTION,\n"
+                                "       SUM(C.IMPORTE_DEBE - C.IMPORTE_HABER) ,\n"
+                                "       M.SEC_MOROSO ,\n"
+                                "       :v11  COD_CATEGORIA, \n"
+                                "       DECODE(E.FEC_INI_EXCLUSION,NULL,DECODE(E.FEC_INGRESO,NULL,0,1),2) \n" /*P-COL-08006 RLM*/
+                                "FROM   CO_MOROSOS M, CO_CARTERA C , \n"
+                                "       CO_EXCLUIDOS_ACCIONES_TO E\n"  /*P-COL-08006 RLM*/
+                                "WHERE  M.COD_CLIENTE = C.COD_CLIENTE\n"
+                                "AND    C.FEC_VENCIMIE < TRUNC(SYSDATE)\n" /* XO-200508090319  09-08-2005 Soporte RyC PRM. Homologacin de incidencia XM-200412200216 */
+                                "AND    C.IND_FACTURADO = TO_NUMBER(:v12)\n"
+                                "AND    C.COD_TIPDOCUM NOT IN (SELECT TO_NUMBER(COD_VALOR)\n"
+                               "                              FROM CO_CODIGOS\n"
+                                  "                              WHERE NOM_TABLA = :v13\n"
+                                  "                              AND   NOM_COLUMNA = :v14)\n"
+                                "AND   M.TIP_MOROSO = :v15\n"
+                                "AND   C.COD_CLIENTE = E.COD_CLIENTE(+) \n" /*P-COL-08006 RLM*/
+								        "AND    E.FEC_INGRESO(+) IS NOT  NULL\n"  /*P-COL-08006 RLM*/
+                                "GROUP BY C.COD_CLIENTE,M.SEC_MOROSO,M.COD_CATEGORIA,E.FEC_INGRESO,E.FEC_INI_EXCLUSION \n"  /*P-COL-08006 RLM*/
+                                "HAVING SUM(IMPORTE_DEBE - IMPORTE_HABER) > TO_NUMBER(:v16)\n");
+    }
+
+    /*printf("    szhCadena : \n%s\n",szhCadena);*/
+    ifnTrazasLog( modulo, "szhCadena : \n%s", LOG06, szhCadena);  
+    EXEC SQL PREPARE SqlDinamico FROM :szhCadena;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "Error PREPARE SqlDinamico - %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+
+    EXEC SQL DECLARE c_ClientesCM CURSOR FOR SqlDinamico;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "Error DECLARE c_ClientesCM - %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+
+    if (ihFec_saldo == 0 ) {
+        EXEC SQL OPEN c_ClientesCM USING :szhMR, :ihValor_Cero, :szhNatur, :ihValor_Uno, :szhME, :szhNatur, :szhLetra_e;
+    } else {
+        EXEC SQL OPEN c_ClientesCM USING :szhMR  , :ihValor_Cero, :szhNatur , :ihValor_Cero,  :ihValor_Uno, :szhCo_cartera , 
+                                                   :szhCod_tipdocum, :ihValor_Uno  , :ihValor_Cero, :szhME, :szhNatur, :ihValor_Uno, 
+                                                :szhCo_cartera, :szhCod_tipdocum, :szhLetra_e  , :ihValor_Cero ;
+   }
+                                                    
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "Error OPEN c_ClientesCM %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+
+    /* Creo una lista con datos */
+    Inicializar_lista(&stListaClientes);
+    
+    lRowsProcessed=0;
+    while( 1 ) 
+    {
+        EXEC SQL 
+        FETCH c_ClientesCM
+         INTO :sthClientes;
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) {
+            ifnTrazasLog( modulo, "\tEn FETCH c_ClientesCM\n\t %s", LOG01, SQLERRM );
+            iError = STATUS_ERR;
+            break;
+        }
+
+        lTotalRows = SQLROWS;    /* Total de filas recuperadas */
+         iRetSQLCODE = SQLCODE;
+         lRowsThisLoop = ( lTotalRows - lRowsProcessed );    /* filas recuperadas en esta iteracion (Total-Procesadas) */
+        ifnTrazasLog( modulo, "\tlTotalRows = [%ld], lRowsThisLoop = [%ld]\n\t", LOG03, lTotalRows, lRowsThisLoop );
+
+        if (ifnCargaLista(lRowsThisLoop)!=0) return STATUS_ERR;
+
+      lRowsProcessed = lTotalRows; /* Resetea Contador, Total las filas recuperadas se han procesado */
+        if( iRetSQLCODE == SQLNOTFOUND )  {
+            ifnTrazasLog( modulo, "\tFin de Datos c_ClientesCM.\n", LOG03 );
+            break;
+        }
+    } 
+
+
+    EXEC SQL CLOSE c_ClientesCM;
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "Error CLOSE c_ClientesCM %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+
+    sprintf( szFinProc, "%s", szSysDate( "HH24:MI:SS" ) );
+    ifnTrazasLog( modulo, "\tHora Fin Carga de Datos (Lista) [%s].\n", LOG03 ,szFinProc); 
+    return STATUS_OK;
+}
+
+
+/* ============================================================================= */
+/* Funcion que carga la lista con los campos de la estructura                            */
+/* ============================================================================= */
+int ifnCargaLista(long lFilas) 
+{
+char modulo[] = "ifnCargaLista";
+int  i, j;
+char szCateg [6];
+
+    for( i = 0; i < lFilas; i++ ) {
+        
+        if (!bfnGetPerfil(sthClientes.lCod_Cliente[i], sthClientes.szCod_Categoria[i]))   return STATUS_ERR;
+        iLB.lCod_Cliente  =sthClientes.lCod_Cliente[i];
+        iLB.dSaldo_Vencido=sthClientes.dSaldo_Vencido[i];
+        iLB.lSec_Moroso   =sthClientes.lSec_Moroso[i];
+        iLB.iflg_reclamo  =sthClientes.iflg_reclamo[i];
+        sprintf(iLB.szFec_Vencimiento,"%s\0",sthClientes.szFec_Vencimiento[i]);
+        sprintf(iLB.szFec_Prorroga   ,"%s\0",sthClientes.szFec_Prorroga[i]);
+        sprintf(iLB.szCod_Gestion    ,"%s\0",sthClientes.szCod_Gestion [i]);
+        sprintf(iLB.szCod_Categoria  ,"%s\0",sthClientes.szCod_Categoria[i]);
+        rtrim(iLB.szFec_Vencimiento);
+        rtrim(iLB.szFec_Prorroga);
+        rtrim(iLB.szCod_Gestion);
+        rtrim(iLB.szCod_Categoria);
+        stListaClientes->Accion_sgte=NULL;
+        if (Insertar_pos(stListaClientes , iLB,1)) {
+            puts("\n\aERROR: No existe memoria suficiente.");
+           ifnTrazasLog( modulo, "No existe memoria suficiente.", LOG01);
+            return STATUS_ERR;
+        }
+
+       ifnTrazasLog( modulo, "\n\t[%03d] sthClientes.lCod_Cliente           [%ld]", LOG06, i, sthClientes.lCod_Cliente[i] );
+       ifnTrazasLog( modulo, "[%03d] iLB.lCod_Cliente                   [%ld]", LOG06, i, iLB.lCod_Cliente );
+       ifnTrazasLog( modulo, "[%03d] iLB.szFec_Vencimiento              [%s]", LOG06, i, iLB.szFec_Vencimiento );
+       ifnTrazasLog( modulo, "[%03d] iLB.szFec_Prorroga                 [%s]", LOG06, i, iLB.szFec_Prorroga );
+       ifnTrazasLog( modulo, "[%03d] iLB.szCod_Gestion                  [%s]", LOG06, i, iLB.szCod_Gestion );
+       ifnTrazasLog( modulo, "[%03d] iLB.dSaldo_Vencido                 [%f]", LOG06, i, iLB.dSaldo_Vencido );
+       ifnTrazasLog( modulo, "[%03d] iLB.szCod_Categoria                [%s]", LOG06, i, iLB.szCod_Categoria );
+       ifnTrazasLog( modulo, "[%03d] iLB.lSec_Moroso                    [%ld]", LOG06, i, iLB.lSec_Moroso );
+       ifnTrazasLog( modulo, "[%03d] iLB.iflg_reclamo                   [%ld]", LOG06, i, iLB.iflg_reclamo );
+       ifnTrazasLog( modulo, "************************************************************************", LOG06);
+
+    }
+
+    return 0;
+
+}
+/* ============================================================================= */
+/* Funcion que actualiza el cod_categoria de la estructura general               */
+/* ============================================================================= */
+int ifnInsertaCategoria(int x) 
+{
+char modulo[]="ifnInsertaCategoria";
+EXEC SQL BEGIN DECLARE SECTION;
+    char  szDes_Valor [6]; EXEC SQL VAR szDes_Valor IS STRING(6); 
+    char  szhGe_Clientes [12];
+    char  szhCategoria   [14];
+EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhGe_Clientes,GE_CLIENTES);
+    strcpy(szhCategoria,CATEGORIA);
+
+    EXEC SQL
+    SELECT DES_VALOR 
+    INTO   :szDes_Valor
+    FROM   CO_CODIGOS  
+    WHERE  NOM_TABLA   = :szhGe_Clientes
+    AND    NOM_COLUMNA = :szhCategoria
+    AND    COD_VALOR   = ( SELECT TO_CHAR(COD_CATEGORIA) FROM GE_CLIENTES WHERE COD_CLIENTE = :sthClientes.lCod_Cliente[x]) ;
+    
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+        ifnTrazasLog( modulo, "SELECT DES_VALOR FROM CO_CODIGOS  -  %s.", LOG00, SQLERRM );  
+        return STATUS_ERR;
+    }    
+
+    sprintf(sthClientes.szCod_Categoria[x],"%s\0",szDes_Valor);
+    ifnTrazasLog( modulo, "\t\t sthClientes.szCod_Categoria[x]   [%s].", LOG05, sthClientes.szCod_Categoria[x]);  
+    
+    return 0;
+
+}
+
+/* ================================================================================ */
+/* Funcion que segmenta en n partes la lista de acuerdo al valor obtenido entre     */
+/* el total de clientes y la cantidad de instancias ingresadas por el usuario       */
+/* cuyo resultado se guarda en la variable ihRAN_LISTAS con la cual se podra tener  */
+/* la cantidad de hilos    a ejecutar                                                                     */
+/* ================================================================================ */
+int ifnSeccionaLista(long lTotalReg)
+{
+char modulo[] = "ifnSeccionaLista";
+int  i, j;
+stLista pf;
+
+    iNumeroHilos=0;
+    if (((pInicio)=(stLista *) malloc(ihNUM_INSTAN * sizeof(stLista))) == NULL)    exit(STATUS_ERR);
+    if (((pFinal) =(stLista *) malloc(ihNUM_INSTAN * sizeof(stLista))) == NULL)    exit(STATUS_ERR);
+
+   ifnTrazasLog( modulo, "Comienza segmentacion a lista...lTotalReg [%ld]", LOG03,lTotalReg);
+    for(i = 0, j = 0, pf = stListaClientes->sgte; pf && i < lTotalReg; i++ ) {
+
+        if (i == 0) {
+            pInicio[j] = stListaClientes;
+            iNumeroHilos++;
+            
+        } else if (i >= ihRAN_LISTAS) {
+
+                if ((i % ihRAN_LISTAS) == 0) {
+                    iNumeroHilos++;
+                    pFinal[j++]->sgte = NULL;
+                    Inicializar_lista(&pInicio[j]);
+                    pInicio[j]->sgte = pf;
+                }
+        }
+        pFinal[j] = pf;
+        pf = pf->sgte;
+    }
+
+
+    ifnTrazasLog( modulo, "NumeroHilos a Ejecutar [%d]\n\n", LOG03,iNumeroHilos);  
+
+    return 0;
+}
+
+/* ============================================================================= */
+/* Funcion que ejecuta los hilos que se hayan generado de acuerdo al tama±o de   */
+/*    la lista que guarda los clientes a procesar                                      */
+/* ============================================================================= */
+int ifnEjecutaHilos()
+{
+char modulo[] = "ifnEjecutaHilos";
+int  i, j, error=0; 
+long iDiffSeg=0;
+char szIniHilo[9], szFinHilo[9], szTmpHilo[9];
+stLista lstClies;
+
+    memset( szIniHilo, '\0', sizeof( szIniHilo ) );
+    memset( szFinHilo, '\0', sizeof( szFinHilo ) );
+    memset( szTmpHilo, '\0', sizeof( szTmpHilo ) );
+
+    sprintf( szIniHilo, "%s", szSysDate( "HH24:MI:SS" ) );
+    thr_setconcurrency(iNumeroHilos+1);
+
+    for(i = 0; i < iNumeroHilos; i++)    
+    {
+        iSec_Hijo++;
+        lCliesxHilo[i]=0;
+        if (ifnInsertaEstadisticas(iSec_Hijo , szhProceso) != 0 ) 
+            return STATUS_ERR;
+
+        error = thr_create (NULL, NULL, vfnEvaluaCM, (void *) &i, NULL, &idHilo[i] );
+        if (error != 0)    
+        {
+            /* Comprobamos el error al arrancar el thread */
+            ifnTrazasLog( modulo, "No puedo crear thread", LOG01);  
+            exit (STATUS_ERR);
+        } 
+        sleep(1);
+    }
+    for(i = 0; i < iNumeroHilos; i++)
+    {
+      thr_join(idHilo[i], NULL, NULL );
+    } 
+
+    for(i = 0; i < iNumeroHilos; i++)
+    {
+        sprintf( szFinHilo, "%s", szSysDate( "HH24:MI:SS" ) );
+        iDiffSeg = ifnRestaHoras( szIniHilo, szFinHilo, szTmpHilo );
+
+        if (ifnUpdateEstadisticas( szPROCESO, iDiffSeg , lCliesxHilo[i], i+1) !=0 ) 
+        {
+            ifnTrazasLog( modulo, "Ocurrio un error en la funcion ifnUpdateEstadisticas.", LOG01);
+        }
+    }
+
+    for(i = 0; i < iNumeroHilos; i++)
+    {
+        lstClies = pInicio[i];
+        ifnTrazasLog( modulo, "\n\t**** Envio Segmento [%d] de la Lista para Grabar ****", LOG03,i);  
+        ifnGrabaDatosLista(lstClies);
+    }
+
+    sema_destroy(&semaflock);
+    mutex_destroy(&bufferlock);
+
+    return 0;
+}
+
+/* ============================================================================= */
+/* Funcion que INSERTA o ACTUALIZA Morosos y Acciones                                        */
+/* ============================================================================= */
+int ifnGrabaDatosLista (stLista lstClientes)
+{
+char modulo[] = "ifnGrabaDatosLista";
+int i=0, iRet=0 , iRetE=0;
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente;
+    long lhCodCuenta;
+    double dhSaldoVencido;
+    double dhSaldoNoVencido;
+    int ihCntAboCelu;
+    int ihCntAboBeep;
+    char szhNumIdent[21];
+    char szhCodTipIdent[3];
+    char szhPtoGestion[6];
+    char szhCodComuna[6];
+    char szhFecVencimie[11];
+    char szhCodGestion[6];
+    char szhCodCategoria[6];
+    int    iFlagGrabar;
+    /* Acciones */
+    char   szhCodAccion     [6];
+    char   szhFecAccion[9];
+    char   szhIndDuplicable[2];
+    long   lhNumSeq  ;
+    char   szhCodParam   [16];
+    int    ihNumProceso;
+    long   lhNumEjecutadas;
+    char   szhNoasignado [12];
+    char   szhLetra_n    [8];
+    int    iflg_reclamo;
+EXEC SQL END DECLARE SECTION;
+stLista lstCli;
+struct stCliente lstGral;
+lstAccCM  lstAccion = NULL;
+
+    ifnTrazasLog( modulo, "* En Funcion %s\n", LOG03, modulo);
+    strcpy(szhErr,ERR);
+    strcpy(szhPnd,PND);
+    strcpy(szhEje,EJE);
+    strcpy(szhNoasignado,NO_ASIGNADO);
+    strcpy(szhLetra_n,LETRA_N);
+
+    lstCli= lstClientes->sgte;
+    while (lstCli != NULL )
+    {
+        iRet=0;
+        iFlagGrabar=lstCli->Campo.iFlagGraba;
+        lhCodCliente = lstCli->Campo.lCod_Cliente;
+        lhCodCuenta = lstCli->Campo.lCod_Cuenta;
+        dhSaldoVencido = lstCli->Campo.dSaldo_Vencido;
+        dhSaldoNoVencido = lstCli->Campo.dSaldo_NoVencido;
+        ihCntAboCelu = lstCli->Campo.iCnt_Abocelu;
+        ihCntAboBeep = lstCli->Campo.iCnt_Abobeep;
+        iflg_reclamo = lstCli->Campo.iflg_reclamo;
+        strcpy(szhNumIdent,lstCli->Campo.szNum_Ident);
+        strcpy(szhCodTipIdent,lstCli->Campo.szCod_Tipident);
+        strcpy(szhPtoGestion,lstCli->Campo.szCod_Ptogest);
+        strcpy(szhCodComuna,lstCli->Campo.szCod_Comuna);
+        strcpy(szhFecVencimie,lstCli->Campo.szFec_Vencimiento);
+        strcpy(szhCodGestion,lstCli->Campo.szCod_Gestion);
+        strcpy(szhCodCategoria,lstCli->Campo.szCod_Categoria);
+
+        ifnTrazasLog( modulo, "<<<<< ======================================================================================= >>>>>", LOG03);
+        ifnTrazasLog( modulo, "iFlagGrabar      [%d]", LOG05, iFlagGrabar);
+        ifnTrazasLog( modulo, "lhCodCliente     [%ld]", LOG04, lhCodCliente);
+        ifnTrazasLog( modulo, "lhCodCuenta      [%ld]", LOG05, lhCodCuenta);
+        ifnTrazasLog( modulo, "dhSaldoVencido   [%f]", LOG05, dhSaldoVencido);
+        ifnTrazasLog( modulo, "dhSaldoNoVencido [%f]", LOG05, dhSaldoNoVencido);
+        ifnTrazasLog( modulo, "ihCntAboCelu     [%d]", LOG05, ihCntAboCelu);
+        ifnTrazasLog( modulo, "ihCntAboBeep     [%d]", LOG05, ihCntAboBeep);
+        ifnTrazasLog( modulo, "szhNumIdent      [%s]", LOG05, szhNumIdent);
+        ifnTrazasLog( modulo, "szhCodTipIdent   [%s]", LOG05, szhCodTipIdent);
+        ifnTrazasLog( modulo, "szhPtoGestion    [%s]", LOG05, szhPtoGestion);
+        ifnTrazasLog( modulo, "szhCodComuna     [%s]", LOG05, szhCodComuna);
+        ifnTrazasLog( modulo, "szhFecVencimie   [%s]", LOG05, szhFecVencimie);
+        ifnTrazasLog( modulo, "szhCodGestion    [%s]", LOG05, szhCodGestion);
+        ifnTrazasLog( modulo, "szhCodCategoria  [%s]", LOG04, szhCodCategoria);
+        ifnTrazasLog( modulo, "iflg_reclamo     [%ld]\n", LOG04, iflg_reclamo);
+
+        ifnTrazasLog( modulo, "lhSecMoroso      [%d]\n", LOG04, ihValor_Cero); /* XO-200508090319  09-08-2005 Soporte RyC PRM. Homologacin de incidencia TM-200505201419 */
+
+        if (iFlagGrabar == 1 ) 
+        { /*  Inserta Nuevo Moroso */
+            ifnTrazasLog(modulo, "\t*** Inserta Nuevo Moroso *** [%ld]\n",LOG03,lhCodCliente);  
+
+            EXEC SQL 
+            INSERT  INTO CO_MOROSOS
+                     (COD_CLIENTE         , COD_CUENTA       , NUM_IDENT    ,
+                      COD_TIPIDENT        , COD_PTOGEST      , FEC_PTOGEST  , 
+                      FEC_INGRESO        , DIA_PRORROGA     , DEU_INICIAL  , 
+                      COD_AGENTE          , ULT_PROCESO      , SEC_MOROSO   ,
+                      TIP_MOROSO          , FEC_PRORROGA     , COD_CATEGORIA,
+                      COD_COMUNA          , FEC_DEUDVENC     , DEU_VENCIDA  ,
+                      DEU_NOVENC          , COD_GESTION      , FEC_GESTION  ,
+                      CNT_ABOCELU         , CNT_ABOBEEP      , NOM_USUARIO  ) 
+            VALUES (:lhCodCliente    , :lhCodCuenta     , :szhNumIdent ,
+                      :szhCodTipIdent , :szhPtoGestion    , 
+                      SYSDATE            , SYSDATE            , :ihValor_Cero,           
+                      :dhSaldoVencido , :szhNoasignado  , :lhSecMoroso    , 
+                      :ihValor_Cero    , :szhLetra_n        , NULL            ,
+                      RTRIM( :szhCodCategoria ),
+                      :szhCodComuna    , TO_DATE(:szhFecVencimie,'YYYYMMDD'),
+                      :dhSaldoVencido    , :dhSaldoNoVencido,
+                      :szhCodGestion    , SYSDATE            ,
+                      :ihCntAboCelu    , :ihCntAboBeep    , USER            );
+
+            if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)  
+            {
+                ifnTrazasLog(modulo, "Insert CO_MOROSOS - %s",LOG00,SQLERRM);  
+                iRet= -1;    
+            }
+
+            if (iRet==0) 
+            {
+                strcpy( szhCodGestion,( ( !strcmp( szhCodGestion, "MR" ) ) ? "CO" : szhCodGestion ) );    /* en la Morosos no va CO, va MR */
+                ifnTrazasLog(modulo, "\t Update GA_ABOCEL szhCodGestion [%s]\n",LOG03,szhCodGestion);  
+                EXEC SQL
+                UPDATE    GA_ABOCEL
+                SET        COD_ESTADO  = :szhCodGestion
+                WHERE    COD_CLIENTE = :lhCodCliente
+                AND        COD_USO != :ihValor_Tres;
+
+                if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+                {
+                    ifnTrazasLog(modulo, "Update de GA_ABOCEL del Cliente:'%ld' Cod_estado:'%s' > %s\n" ,LOG00,lhCodCliente,szhCodGestion,SQLERRM);
+                    iRet = -1;
+                }
+            
+                if (iRet==0)
+                {
+                    EXEC SQL
+                    UPDATE    GA_ABOBEEP
+                    SET        COD_ESTADO  = :szhCodGestion
+                    WHERE    COD_CLIENTE = :lhCodCliente;
+                    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+                    {
+                        ifnTrazasLog(modulo, "Update de GA_ABOBEEP del Cliente:'%ld' Cod_estado:'%s' > %s\n",LOG00,lhCodCliente,szhCodGestion,SQLERRM);
+                        iRet = -1;
+                    }
+                }
+            }
+    
+        } 
+        else if (iFlagGrabar == 0 ) { /* Actualiza datos del Cliente Moroso */
+            ifnTrazasLog(modulo, "\t*** Actualiza Saldo y Fecha Nuevo Moroso *** [%ld]\n",LOG03,lhCodCliente);  
+            EXEC SQL
+            UPDATE CO_MOROSOS SET 
+                   FEC_DEUDVENC = TO_DATE( :szhFecVencimie, 'YYYYMMDD' ),
+                   DEU_VENCIDA  = :dhSaldoVencido  ,
+                   DEU_NOVENC   = :dhSaldoNoVencido,
+                   TIP_MOROSO   = :szhLetra_n,
+                   SEC_MOROSO   = :ihValor_Cero ,
+                   COD_AGENTE   = :szhNoasignado
+            WHERE COD_CLIENTE  = :lhCodCliente;
+            if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+                ifnTrazasLog( modulo, "Error a actualizar cliente en CO_MOROSOS => [%ld].\n", LOG00, SQLERRM );
+                iRet = -1;
+            }
+        }    
+
+        if(iflg_reclamo==1)
+        {
+            iRetE=ifnUpdateExcluidosAcciones(lhCodCliente);
+        }
+
+        if ((iFlagGrabar != -1 ) && (iflg_reclamo==0))
+        { /*  Graba Acciones del Cliente */
+            lstAccion=lstCli->Accion_sgte;
+            while (lstAccion != NULL )  
+            {
+                ifnTrazasLog( modulo, "\t** Graba Acciones del Cliente  => [%ld]\n", LOG03, lhCodCliente);
+                strcpy(szhCodAccion,lstAccion->szCod_Accion);
+                strcpy(szhFecAccion,lstAccion->szFec_Accion);
+                strcpy(szhIndDuplicable,lstAccion->szIndDuplicable);
+                strcpy(szhCodParam,lstAccion->szCodParam);
+                ihNumProceso    = lstAccion->iNumProceso;
+                ifnTrazasLog( modulo, "\t****************************************", LOG05);
+                ifnTrazasLog( modulo, "\t** szhCodAccion     => [%s]", LOG04, szhCodAccion);
+                ifnTrazasLog( modulo, "\t** szhFecAccion     => [%s]", LOG04, szhFecAccion);
+                ifnTrazasLog( modulo, "\t** szhIndDuplicable => [%s]", LOG05, szhIndDuplicable);
+                ifnTrazasLog( modulo, "\t** szhCodParam      => [%s]", LOG05, szhCodParam);
+                ifnTrazasLog( modulo, "\t** ihNumProceso     => [%d]", LOG05, ihNumProceso);
+                ifnTrazasLog( modulo, "\t** iFlagRutinas     => [%d]", LOG05, lstAccion->iFlagRutinas);
+    
+                EXEC SQL
+                SELECT NUM_EJECUTADAS
+                INTO     :lhNumEjecutadas
+                FROM     CO_RUTINAS_DIA
+                WHERE     COD_RUTINA    = :szhCodAccion
+                AND     FEC_RUTINA    = TO_DATE( :szhFecAccion, 'YYYYMMDD' );        
+                if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+                    ifnTrazasLog( modulo, "Error SELECT NUM_EJECUTADAS  => [%s].\n", LOG00, SQLERRM );
+                    iRet = -1;
+                } else  if( SQLCODE == SQLNOTFOUND ) {
+    
+                        ifnTrazasLog( modulo, "\t\tInsertando en CO_RUTINAS_DIA\n", LOG05);
+                        EXEC SQL
+                        INSERT INTO CO_RUTINAS_DIA 
+                                 (COD_RUTINA   , FEC_RUTINA, NUM_EJECUTADAS )
+                        VALUES (:szhCodAccion, TO_DATE( :szhFecAccion, 'YYYYMMDD' ), :ihValor_Uno );
+                        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+                            ifnTrazasLog( modulo, "Error INSERT INTO CO_RUTINAS_DIA  => [%s].\n", LOG00, SQLERRM );
+                            iRet = -1;
+                        }
+                } else {
+    
+                    ifnTrazasLog( modulo, "\t\tUpdateando en CO_RUTINAS_DIA\n", LOG05);
+                    EXEC SQL
+                    UPDATE CO_RUTINAS_DIA  SET        
+                             NUM_EJECUTADAS = NUM_EJECUTADAS + :ihValor_Uno
+                    WHERE     COD_RUTINA    = :szhCodAccion
+                    AND     FEC_RUTINA    = TO_DATE( :szhFecAccion, 'YYYYMMDD' );        
+                    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+                        ifnTrazasLog( modulo, "Error UPDATE CO_RUTINAS_DIA  => [%s].\n", LOG00, SQLERRM );
+                        iRet = -1;
+                    }
+                }
+    
+                ifnTrazasLog( modulo, "\tDeleteando FROM CO_ACCERR", LOG04);
+                EXEC SQL
+                DELETE FROM CO_ACCERR
+               WHERE NUM_SECUENCIA IN (SELECT NUM_SECUENCIA
+                                                    FROM CO_ACCIONES
+                                                  WHERE COD_CLIENTE = :lhCodCliente
+                                              AND COD_RUTINA IN  ( SELECT R.REV_RUTINA
+                                                                              FROM CO_RUTINAS R
+                                                                             WHERE COD_RUTINA = :szhCodAccion )
+                                                                          AND COD_ESTADO IN ( :szhErr, :szhPnd )
+                                                                          AND NOM_USUARIO = :szhUser_Cobros);
+               
+               if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+                    ifnTrazasLog( modulo, "Error DELETE FROM CO_ACCERR => [%s].\n", LOG00, SQLERRM );
+                    iRet = -1;
+                }
+    
+                ifnTrazasLog( modulo, "\tDeleteando FROM CO_ACCIONES", LOG04);
+                
+                EXEC SQL
+                DELETE FROM CO_ACCIONES
+                WHERE  NUM_SECUENCIA IN (SELECT NUM_SECUENCIA
+                                                  FROM CO_ACCIONES
+                                                WHERE COD_CLIENTE = :lhCodCliente
+                                                  AND COD_RUTINA IN (  SELECT R.REV_RUTINA
+                                                                             FROM CO_RUTINAS R
+                                                                            WHERE COD_RUTINA = :szhCodAccion )
+                                                                               AND COD_ESTADO IN ( :szhErr, :szhPnd )
+                                                                               AND NOM_USUARIO = :szhUser_Cobros );
+               
+               if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    {
+                    ifnTrazasLog( modulo, "Error DELETE FROM CO_ACCIONES => [%s].\n", LOG00, SQLERRM );
+                    iRet = -1;
+                }
+    
+                /* se obtiene secuencia para id de accion */
+               
+               EXEC SQL SELECT CO_SEQ_ACCION.NEXTVAL INTO :lhNumSeq FROM DUAL; 
+               
+               if( SQLCODE != SQLOK )    {
+                    ifnTrazasLog( modulo, "Error al Obtener Secuencia => [%s].\n", LOG00, SQLERRM );
+                    iRet = -1;
+               }
+    
+                if( !strcmp( szhIndDuplicable, "S" ) )  
+                {
+                    ifnTrazasLog( modulo, "\t Insert into CO_ACCIONES Duplicable=S", LOG03);
+
+                    EXEC SQL 
+                    INSERT INTO CO_ACCIONES
+                    (
+                        COD_CLIENTE        , NUM_SECUENCIA ,
+                        COD_RUTINA            , COD_ESTADO     ,
+                        FEC_ESTADO            , FEC_EJECPROG  ,
+                        NOM_USUARIO        , CNT_ABOCELU   ,
+                        CNT_ABOBEEP        , NUM_IDENT     ,
+                        COD_TIPIDENT        , DEU_VENCIDA   ,
+                        DEU_NOVENC            
+                    )    
+                    SELECT :lhCodCliente    ,
+                           :lhNumSeq        ,
+                           :szhCodAccion    ,
+                           :szhPnd          ,
+                           SYSDATE          ,
+                           TO_DATE(:szhFecAccion,'YYYYMMDD') ,
+                           USER                  ,
+                           :ihValor_Cero      ,
+                           :ihValor_Cero      ,
+                           NUM_IDENT        , 
+                           COD_TIPIDENT     ,
+                           DEU_VENCIDA      ,
+                           DEU_NOVENC       
+                      FROM CO_MOROSOS
+                     WHERE COD_CLIENTE = :lhCodCliente;
+
+                    if( SQLCODE != SQLOK )    
+                    {
+                        ifnTrazasLog( modulo, "Error al insertar nueva accion => [%s].\n", LOG00, SQLERRM );
+                        iRet = -1;
+                    }
+                }  
+                else  
+                { 
+                    ifnTrazasLog( modulo, "\t Insert into CO_ACCIONES Duplicable != S", LOG03);
+
+                    EXEC SQL 
+                    INSERT INTO CO_ACCIONES
+                    (
+                        COD_CLIENTE       , NUM_SECUENCIA ,
+                        COD_RUTINA        , COD_ESTADO    ,
+                        FEC_ESTADO        , FEC_EJECPROG  ,
+                        NOM_USUARIO       , CNT_ABOCELU   ,
+                        CNT_ABOBEEP       , NUM_IDENT     ,
+                        COD_TIPIDENT      , DEU_VENCIDA   ,
+                        DEU_NOVENC           
+                    )
+                    SELECT :lhCodCliente        ,                        
+                           :lhNumSeq        ,                 
+                           :szhCodAccion    ,                 
+                           :szhPnd          ,                 
+                           SYSDATE          ,                 
+                           TO_DATE(:szhFecAccion,'YYYYMMDD'), 
+                           USER             ,
+                           :ihValor_Cero    ,
+                           :ihValor_Cero    ,
+                           M.NUM_IDENT      ,
+                           M.COD_TIPIDENT   ,
+                           M.DEU_VENCIDA    ,
+                           M.DEU_NOVENC
+                      FROM CO_MOROSOS M
+                     WHERE M.COD_CLIENTE = :lhCodCliente
+                       AND M.COD_CLIENTE NOT IN ( SELECT A.COD_CLIENTE
+                                                    FROM CO_ACCIONES A
+                                                   WHERE A.COD_CLIENTE = M.COD_CLIENTE
+                                                     AND A.NUM_SECUENCIA > 0
+                                                     AND A.COD_RUTINA = :szhCodAccion
+                                                     AND A.COD_ESTADO = :szhEje    );
+
+                    if( SQLCODE && SQLCODE != SQLNOTFOUND )  
+                    {
+                        ifnTrazasLog( modulo, "Error al insertar nueva accion Ind=S => [%s].\n", LOG00, SQLERRM );
+                        iRet = -1;
+                    }
+                }                
+                
+                if( strcmp( szhCodParam, "N" ) != 0 )  
+                {
+                    EXEC SQL
+                    INSERT INTO CO_PARAM_ACCIONES 
+                    (
+                        NUM_SECUENCIA  , COD_PARAM 
+                    )
+                    VALUES 
+                    (
+                        :lhNumSeq, :szhCodParam 
+                    );
+
+                    if( SQLCODE != SQLOK )    
+                    {
+                        ifnTrazasLog( modulo, "Error al insertar en tabla CO_PARAM_ACCIONES, Secuencia ==> [%ld].", LOG00, lhNumSeq );  
+                        iRet=-1;        
+                    }                    
+                }
+
+                ifnTrazasLog( modulo, "\t Actualizando CO_MOROSOS (Pto de Gestion [%s])", LOG03,szhPtoGestion);
+                ifnTrazasLog( modulo, "\t Actualizando CO_MOROSOS (Sec_Moroso     [%d])\n", LOG03, ihNumProceso); /* XO-200508090319  09-08-2005 Soporte RyC PRM. Homologacin de incidencia TM-200505201419 */
+
+                EXEC SQL 
+                UPDATE CO_MOROSOS 
+                   SET COD_PTOGEST = :szhPtoGestion, 
+                       FEC_PTOGEST = SYSDATE,
+                       SEC_MOROSO  = :ihNumProceso
+                 WHERE COD_CLIENTE = :lhCodCliente;
+                
+                if ( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )    
+                {
+                    ifnTrazasLog(modulo, "al actualizar nuevo pto gestion (%ld) - %s" ,LOG00,lhCodCliente ,SQLERRM);
+                    iRet=1; /* Pasar al siguiente Cliente de este mismo punto de Gestion, deshacer cambios */
+                }
+                else if ( SQLCODE == SQLNOTFOUND)
+                {
+                    /* No lo encontro. Significa que el excluidor lo excluyo. Debe hacer Rollback para no generar la accin. */
+                    ifnTrazasLog( modulo, "Cliente (%ld) fue Excluido mientras era evaluado.", LOG02, lhCodCliente );
+                    iRet=1; /* Pasar al siguiente Cliente, pero deshacer lo hecho para este */
+                }
+
+                lstAccion=lstAccion->sgte;
+            } /* while (lstAccion != NULL )  */
+        }
+        if ((iRet==0) && (iFlagGrabar!=-1) && (iRetE==0)) {
+            ifnTrazasLog( modulo, "COMMIT al Cliente => [%ld]. iFlagGraba  [%ld]\n\n", LOG04, lhCodCliente,iFlagGrabar );
+            EXEC SQL COMMIT;
+            
+        } else {
+            ifnTrazasLog( modulo, "\tROLLBACK al Cliente => [%ld]. iFlagGraba [%d]\n\n", LOG04, lhCodCliente , iFlagGrabar);
+           EXEC SQL ROLLBACK;
+
+        }
+        
+        lstCli=lstCli->sgte;
+
+    } /* end while */
+
+    ifnTrazasLog( modulo, "**** Fin del Recorrido del Segmento de la Lista ****\n\n", LOG03);
+    return 0;
+}
+
+
+
+/******************************************************************************************/
+/** Informacin de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisin                                            : */
+/**  %PR% */
+/** Autor de la Revisin                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisin ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creacin de la Revisin                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

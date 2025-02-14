@@ -1,0 +1,1321 @@
+/* ============================================================================= 
+   Tipo        : Aplicacion  
+   Nombre      : Gen_Ajustes.pc
+   Descripcion : Genera Ajustes a los Clientes con Saldo comprendido
+                 entre un valor dado.	( ajustes menores a 100 pesos )
+                 Se basa en funcion ajustes.pc (JLR 27-05-99 , ult mod 11-12-00)
+   Recibe      : -u [Usuario]/[Password] (necesarios)
+                 -m Monto del Saldo 
+                 -l [NivelLog]
+   Asume       : Nivel de Log por defecto = 3
+   Devuelve    : == 0 Termino Ok
+                 <> 0 Termino con Error 
+   Autor       : Roy Barrera Richards
+   Fecha       : 25 - Julio - 2001
+   Modificaciones:
+   2003.02.05	Se modifica programa por proyecto Prefijo Plaza.
+   				Se genera VERSION 1.00
+   2003.07.02	Se modifica programa por Incidencia CH-982.
+   				Se genera VERSION 1.01
+ ============================================================================= 
+   21-12-2004  Modificado por Proyecto MAS_03043 Mejoras Cancelacion de Credito.
+ ============================================================================= */
+#define _PASOC_PC_
+#include <pasoc.h>
+#include <math.h>
+#include "gen_ajustes.h"
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                    -- Declaracion de Variables Globales --                */
+/*****************************************************************************/
+EXEC SQL BEGIN DECLARE SECTION; 
+	char szPrefPlazaDefault[26];
+	int  ihValor_cero   = 0;
+	int  ihValor_uno    = 1;
+EXEC SQL END DECLARE SECTION;
+
+static char szExeAjustes [1024];
+static AJUSTE stAjuste;
+double	dTotCredito = 0;
+double	dTotDebito = 0;
+int   iTipoAjuste = 0;
+static char szUsage [] =
+   "\nUso : gen_ajustes -u [Usuario]/[Password] "
+   "\n\t-m Monto del Saldo -l [NivelLog]\n";
+
+/*****************************************************************************/
+/*                       funcion : main                                      */
+/* -Lanza el proceso							     */
+/* -Valores de Retorno : 0 => Todo OK                                        */
+/*                      !0 => Error en algunas de las funciones que ejecuta  */
+/*                           el main.                                        */
+/*****************************************************************************/
+int main (int argc, char* argv[])
+{
+/* Primero valida los parámetros de entrada */
+extern int   opterr;
+extern int   optopt;
+extern char *optarg;
+
+char opt[]  = "u:m:l:";
+int  iOpt          = 0    ;
+
+char szUsuario[61] = ""   ;
+char *pszTmp       = ""   ;
+
+    memset (&stAjuste,0,sizeof (AJUSTE));
+    memset (&stStatus,0,sizeof (STATUS));
+
+    /* asigna valores por Default definidas en .h   */
+    strcpy( szPrefPlazaDefault, szPREF_PLAZA_DEFAULT );
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF)
+    {
+          switch (iOpt)
+             {
+		case 'u':   /* usuario/password */
+  		if ( strlen (optarg) )
+  		{
+           		strcpy (szUsuario,optarg)  ;
+           		stAjuste.bOptUsuario = TRUE;
+  		}
+  		break;
+                 case 'm': /* monto ( $100 ) */
+                   if ( strlen (optarg) )
+                   {
+                        stAjuste.bOptMonto = TRUE           ;
+                        stAjuste.lDiferencia = atol (optarg); 
+                   }
+                   break;
+                 case 'l': /* nivel de log */
+                   if ( strlen (optarg) )
+                   {
+                        stAjuste.bOptNivelLog = TRUE         ;
+                        stAjuste.iNivelLog    = atoi (optarg);
+                   }
+                   break;   
+             }/* fin switch */
+    }/* fin While de Opciones */
+
+    if (!stAjuste.bOptUsuario)
+    {
+         fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: \n%s\n",szUsage);
+         return  (1)      ;
+    }
+    else
+    {
+       if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL)
+       {
+             fprintf (stderr,"\n\t=>Formato Usuario Oracle Incorrecto:\n%s\n",szUsage);
+             return (1)       ;
+       }
+       else
+       {
+             strncpy (stAjuste.szUsuario ,szUsuario,pszTmp-szUsuario);
+             strcpy  (stAjuste.szPassWord, pszTmp+1)                 ;
+       }
+    }
+    if (!stAjuste.bOptNivelLog)
+         stAjuste.iNivelLog = iNIVEL_DEF;
+
+    if (!stAjuste.bOptMonto)
+    {
+           fprintf (stderr,"\n\tERROR Faltan parametros de Entrada : %s",szUsage);
+           bfnExitAjustes ();
+           return (3);
+    }
+    if (stAjuste.lDiferencia < 1)
+    {
+           fprintf (stderr,"\n\tERROR Monto Ingresado No es valido : %s",szUsage);
+           bfnExitAjustes ()                                           ;
+           return (3)                                                     ;
+    }
+
+/* Verificados los parametros de entrada, procede a conectarse a Oracle      */
+
+    if (!bfnInitAjustes (&stAjuste,&stStatus))
+         return (2);
+
+/* Se conectó, abrió archivos de Log y capturó FA_DATOSGENER. Genera Ajustes */
+
+	if (!bfnGenAjustes (stAjuste))
+	{
+		/* si fallo la generacion de ajustes termina con error */
+		iDError (szExeAjustes,ERR042,vInsertarIncidencia);
+		bfnExitAjustes ()                           ;
+		vDTrazasLog (szExeAjustes,"\n\n\tTotal Importe por Notas de Credito = [%f]",LOG03,dTotCredito);
+		vDTrazasLog (szExeAjustes,"\tTotal Importe por Notas de Debito  = [%f]\n",LOG03,dTotDebito);
+		fclose(stStatus.LogFile);
+		fclose(stStatus.ErrFile);
+		return (4)                                     ;
+	}
+
+	/* si la generacion de ajustes termino Ok, termina Ok tambien la aplicacion */
+	vDTrazasLog (szExeAjustes,"\n\n\tTotal Importe por Notas de Credito = [%f]",LOG03,dTotCredito);
+	vDTrazasLog (szExeAjustes,"\tTotal Importe por Notas de Debito  = [%f]\n",LOG03,dTotDebito);
+	vDTrazasLog (szExeAjustes,"\n\n\t*** Proceso Termino OK ***\n",LOG03);
+	bfnExitAjustes ()                           ;
+	fclose(stStatus.LogFile);
+	fclose(stStatus.ErrFile);
+	
+	return (0); 
+}/***************************** Final main ***********************************/
+
+/*****************************************************************************/
+/*                           funcion : bfnInitAjustes                        */
+
+/* -Funcion que se conecta a Oracle, abre fichero de Errores y de Trazas,car-*/
+/*  ga Fa_DatosGener en stDatosGener, ...                                    */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+
+static BOOL bfnInitAjustes ( AJUSTE *stAjuste, STATUS *pstStatus )
+{
+char szFuncion [25] = "";
+char szFechDesde [15]= "";
+char szFechHasta [15]= "";
+	
+	if (!bfnConnectORA (stAjuste->szUsuario,stAjuste->szPassWord))
+	{
+		fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+		return   FALSE ;
+	}
+	
+	/* Datos Iniciales de Tiempo */
+	
+	cpu_ini = clock();
+	time (&real_ini) ;
+	pstStatus->OraConnected = 1;
+	
+	if (!bGetDatosGener (&stDatosGener,szSysDate)) return  FALSE;
+	
+	if (!bfnDBCreaDirPath("PATHLOG", stDatosGener.szDirLogs)) return FALSE;
+	
+	sprintf (pstStatus->LogName,"%s/Gen_Ajustes%d.log", stDatosGener.szDirLogs,stAjuste->lDiferencia);
+	sprintf (pstStatus->ErrName,"%s/Gen_Ajustes%d.err", stDatosGener.szDirLogs,stAjuste->lDiferencia); 
+	unlink (pstStatus->LogName);
+	unlink (pstStatus->ErrName);
+	
+	if (!bOpenLog (pstStatus->LogName))
+	{
+		vDTrazasError (szExeAjustes,"\n\t=> No se puede Abrir el archivo de Log\n",LOG01);
+		return FALSE ; 
+	}
+
+	if( !bOpenError( pstStatus->ErrName ) )
+	{
+		vDTrazasError (szExeAjustes,"\n\t=> No se puede Abrir el archivo de Err\n",LOG01);
+		return FALSE ; 
+	}
+	strcpy( szExeAjustes, "Generacion de Ajustes" );
+	
+	pstStatus->LogNivel = stAjuste->iNivelLog;
+	
+	vDTrazasLog( szExeAjustes,	"\n     *******************************************************************"
+								"\n     *                           AJUSTES     %s                          *"
+								"\n     *******************************************************************", LOG03,szVersion );
+	
+	vDTrazasError(szExeAjustes,	"\n     *******************************************************************"
+								"\n     *                           AJUSTES      %s                         *"
+								"\n     *******************************************************************", LOG03, szVersion );
+	
+	return TRUE;
+}/************************** Final bfnInitAjustes *************************/ 
+
+/*****************************************************************************/
+/*                           funcion : bfnExitAjustes                     */
+/* -Funcion que cierra Logs, libera memoria, se desconecta de Oracle,...     */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnExitAjustes (void)
+{
+	/* Desconexion Oracle */
+	if (!bfnDisconnectORA(0))
+	{
+		iDError(szExeAjustes,ERR000,vInsertarIncidencia,"Desconexion",szfnORAerror());
+		return FALSE;
+	}
+	stStatus.OraConnected = FALSE;
+	vDTrazasLog (szExeAjustes,"\n\t\t*** Desconexion a Oracle ***\n",LOG04);
+	
+	/* Datos Fin de Tiempo */
+	times (&tms)     ;
+	cpu_fin = clock();
+	time (&real_fin) ;
+	
+	real = (real_fin-real_ini)                ;
+	cpu  =(float)cpu_fin/(float)CLOCKS_PER_SEC;
+	
+	vDTrazasLog( szExeAjustes,	"\n\t=> Tiempo de CPU : [%g]"
+								"\n\t=> Tiempo Real   : [%g]",LOG03, cpu, real ); 
+}/*************************** Final bfnExitAjustes ************************/
+
+/*****************************************************************************/
+/*                          funcion : bfnGenAjustes                          */
+/*****************************************************************************/
+static BOOL bfnGenAjustes (AJUSTE stAjuste)
+{
+int	iRes		= 0;
+int iRetorno    = 0;
+int	i			= 0;
+int	j			= 0;
+int	iCodAbono	= 0;
+int   iCantDoc = 0;
+CARTERA		stCartera;
+DATCON		stCobros;
+FACTCOBR	   stFactCobr;
+DATDOC		stDatDoc;
+DATPAG		stDatPag;
+DATCON		stConc;
+EXEC SQL BEGIN DECLARE SECTION;
+	long lhNum_Transaccion     ;
+	long lhCodCliente          ;
+	char szhFec_Pago       [20]; EXEC SQL VAR szhFec_Pago IS STRING(20);
+	int  ihRetorno             ;
+	char szhGlosa         [500]; 
+	int  ihCarrier  = 0        ;
+	int  ihCodConcepto         ;
+	char szhYYYYMMDD        [9];
+EXEC SQL END DECLARE SECTION;
+
+	
+	vDTrazasLog( szExeAjustes, "\n\t\t* Generacion de Ajustes *\n", LOG03 );
+	
+	memset( &stFactCobr, 0, sizeof( FACTCOBR ) );
+	
+	/* 
+	Invoca a bfnDBObtConCreFA : /unix/src/factura/venta/fac.pc (paso a cobros)  (2)
+	para obtener el codigo de concepto de credito from co_conceptos y co_tipconcep where ind_abono = 1.
+	*/   
+	EXEC SQL
+	SELECT A.COD_CONCEPTO
+	INTO  :ihCodConcepto
+	FROM  CO_CONCEPTOS A, CO_TIPCONCEP B
+	WHERE A.COD_TIPCONCE = B.COD_TIPCONCE
+	AND   B.IND_ABONO = :ihValor_uno;
+	if (SQLCODE != SQLOK) {
+	   iDError(szExeAjustes,ERR000,vInsertarIncidencia,"En SELECT A.COD_CONCEPTO\n ",SQLERRM);
+	   return -1;
+	}
+
+	/*
+	Invoca a ifnDBOpenCartera ( SI != 0 : error  SI == 0 : ok )
+	Abre Cursor de los clientes de la Co_cartera con documentos que no sean :
+	Castigo Contable,Pagare,Cheque,Protesto,Prorroga o Letra, donde la diferencia entre el debe y el haber
+	sea distinto de cero ( mayor o igual a 1  o menos o igual a -1)
+	Agrupado por cliente donde además la suma de las diferencia entre el debe y el haber de todos los documentos
+	este entre el valor ingresado ( positivo y negativo )
+	*/
+	if( ifnDBOpenCartera( stAjuste ) ) 
+		return FALSE;
+
+	/* Una vez abierto el cursor, lo recorre */
+	while( 1 ) 
+	{
+		iRes = 0;
+
+		memset( &stCartera, 0, sizeof( CARTERA ) );
+		/* obtiene cliente y saldo para esta iteracion */	
+		iRes = ifnDBFetchCartera (stAjuste, &stCartera);
+
+		if( iRes == SQLNOTFOUND )
+		{
+			vDTrazasLog (szExeAjustes,"\n\t\tNO EXISTEN MAS CLIENTES CON ESTE SALDO", LOG03 );
+			fprintf( stdout, "NO EXISTEN MAS CLIENTES CON ESTE SALDO\n" );
+			iRes=0;
+			break;
+		}
+
+		if( iRes == SQLOK )
+		{
+			/* se valida que los conceptos a ajustar esten consistentes */
+			iRetorno = ifnValidaConceptos( stCartera.lCodCliente );
+			
+			if( iRetorno <= 0 ) /* si se produjo un error o el cliente tiene registros inconsistentes */
+			{
+				if ( iRetorno <= 0 )
+				{
+					vDTrazasLog( szExeAjustes, "\n\t\t!! NO SE GENERA AJUSTE ¡¡ CLIENTE => [%ld].", LOG03, stCartera.lCodCliente );
+					iRes = 1;	/* el cliente tiene registros inconsistentes */
+				}
+				else
+				{
+					iRes = 2;	/* se produjo un error de oracle */
+				}
+			}
+			else
+			{
+				/* se intenta realizar el ajuste (generar el documento y tipo de ajuste adecuados) */
+				if( !bfnAjuCobros( &stCobros, iCodAbono, stCartera ) )
+				{
+					/* Si falla , se termina la ejecucion por error */
+					iDError( szExeAjustes, ERR043, vInsertarIncidencia, 0, "bfnAjuCobros" );
+					/*return FALSE;*/
+					iRes = 1;
+				}
+				else
+				{
+					/* si se realizo el ajuste ( se generó el documento ), se llenan las estructuras 
+					de datos correspondientes */
+					
+					memset( &stDatDoc ,0, sizeof( DATDOC ) );
+					memset( &stDatPag ,0, sizeof( DATPAG ) );
+					memset( &stConc   ,0, sizeof( DATCON ) );
+					
+					stDatDoc.iCodTipDocum = stCobros.iCodTipDocum;
+					stDatDoc.iCodCentrEmi = 1;
+					stDatDoc.lNumSecuenci = stCobros.lNumSecuenci;
+					stDatDoc.lCodAgente   = stDatosGener.lAgenteInterno;
+					strcpy( stDatDoc.szLetra, stDatosGener.szLetraCobros );
+					strcpy( stDatDoc.szDesPago, "AJUSTE MASIVO CTA. CTE." );
+					
+					strcpy( stDatPag.szNomUsu, stAjuste.szUsuario ) ;
+					stDatPag.iCodSisPago = stDatosGener.iSisPagoRegalo;
+					stDatPag.iCodCauPago = 22;
+					stDatPag.iCodOriPago = stDatosGener.iOriPagoRegalo;
+					stDatPag.iCodForPago = 0;
+					stDatPag.lCodCliente = stCartera.lCodCliente;
+					stDatPag.dImpPago    = fabs( stCartera.dMtoSaldo );
+				
+					/* Intenta aplicar el ajuste ( el documento generado ) en las distintas tablas pertinente */
+					if( !bfnPagoAjuste( &stDatDoc, &stDatPag, &stCobros ) ) 
+					{
+						iDError( szExeAjustes, ERR043, vInsertarIncidencia, 0, "bfnPagoAjuste" );
+						iRes = 1;
+					}
+					else
+					{
+						/* Intenta insertar en la co_cartera el concepto generado */
+						if( !bfnDBIntCartera( &stCobros, stCartera.lCodCliente ) )
+						{
+							iDError( szExeAjustes, ERR043, vInsertarIncidencia, 0, "bfnDBIntCarteraFac" );
+							iRes = 1;
+						}
+						else
+						{
+	
+							memset(szhGlosa,'\0',sizeof(szhGlosa));
+							ihRetorno=99;
+							iCantDoc++;				
+							
+							EXEC SQL
+							SELECT GA_SEQ_TRANSACABO.NEXTVAL
+							INTO   :lhNum_Transaccion
+							FROM   DUAL;
+							if (SQLCODE != SQLOK) {
+							    iDError(szExeAjustes,ERR000,vInsertarIncidencia,"En SELECT GA_SEQ_TRANSACABO.NEXTVAL.\n ",SQLERRM);
+							    return -1;
+							}
+	
+							vDTrazasLog( szExeAjustes, "\n\t\tLlamando a CO_CANCELACION_PG.CO_CANCELACREDITOS_PR.", LOG03 );
+							lhCodCliente=stCartera.lCodCliente;
+							strcpy(szhYYYYMMDD,"YYYYMMDD");
+	
+							EXEC SQL EXECUTE
+								BEGIN
+										:szhFec_Pago:=TO_CHAR(SYSDATE ,:szhYYYYMMDD);
+								END;
+							END-EXEC;
+							
+							
+							vDTrazasLog ( szExeAjustes,"\n\t\t****** Registro No : [%d] ******"
+															   "\n\t\t=> lhCodCliente      [%ld]"
+															   "\n\t\t=> szFecPago         [%s] "
+															   "\n\t\t=> lhNum_Transaccion [%ld]\n\n",
+															   LOG03,iCantDoc ,lhCodCliente ,szhFec_Pago, lhNum_Transaccion );
+					
+							/* Intenta cancelar los creditos del cliente 
+							iRes = ifnCancelacionCreditos( stCartera.lCodCliente, &stCobros, iCodAbono, szSysDate, 0 );*/
+							EXEC SQL EXECUTE
+								BEGIN
+										CO_CANCELACION_PG.CO_CANCELACREDITOS_PR(:lhCodCliente, TO_DATE(:szhFec_Pago,:szhYYYYMMDD), :lhNum_Transaccion , :ihCarrier , NULL , NULL , NULL, :ihRetorno , :szhGlosa );
+								END;
+							END-EXEC;
+							
+							if (SQLCODE != SQLOK ) 
+							{
+						   		iDError(szExeAjustes,ERR000,vInsertarIncidencia,"En CO_CANCELACREDITOS_PR.\n ",SQLERRM);
+						   	}
+						   	if (ihRetorno == 99) 
+						   	{
+						   		iDError(szExeAjustes,ERR000,vInsertarIncidencia,"Valor de Retorno es 99. Posible error en la PL\n ",SQLERRM);
+						   		iRes = -1;
+							}
+						   	else if (ihRetorno != 0)   
+						   	{
+						   		rtrim(szhGlosa);
+						   		vDTrazasLog (szExeAjustes, "\t\tValor ihRetorno [%d]\n\t\tszhGlosa    [%s]\n",LOG03,ihRetorno,szhGlosa);
+						   		iRes = -1;
+						   
+						   	}
+							else
+							{
+						   		vDTrazasLog (szExeAjustes, "\t\tCANCELACION DE CREDITOS !! OK ¡¡.", LOG03 );
+
+								if (!bfnOraCommit ())
+								{
+									iDError( szExeAjustes, ERR000, vInsertarIncidencia, "CommitWork", szfnORAerror() );
+									iRes = 2;
+									break; /* error grave */
+								}
+								else
+								{
+									if( stCartera.dMtoSaldo > 0.0 )
+										dTotCredito = dTotCredito + stCartera.dMtoSaldo;
+									else
+										dTotDebito = dTotDebito + stCartera.dMtoSaldo;
+								}
+							} /* if( iRes != 0 ) */
+						} /* if( !bfnDBIntCartera( &stCobros, stCartera.lCodCliente ) ) */
+					} /* if( !bfnPagoAjuste( &stDatDoc, &stDatPag, &stCobros ) ) */
+				} /* if( !bfnAjuCobros( &stCobros, iCodAbono, stCartera ) ) */
+			} /* fin if( iRetorno <= 0 ) */
+		} /* fin if sqlok */
+		
+		if( iRes != SQLOK ) /* es error anterior */
+		{
+			if( !bfnOraRollBack () )
+			{
+				iDError( szExeAjustes, ERR000, vInsertarIncidencia, "RollBackWork", szfnORAerror() );
+				iRes = 2; /* error grave */
+			}
+		}
+		
+		if( iRes == 2 )
+			break; /* es un error grave */
+			
+	} /* while ... */ 
+
+	if( ifnDBCloseCartera() )
+		return FALSE;
+
+	return( iRes != 0 ) ? FALSE : TRUE;   
+}/**************************** Final bfnGenAjustes ***************************/
+
+/*****************************************************************************/
+/*                           funcion : ifnDBOpenCartera                      */
+/* -Funcion que carga en Abre cursor sobre la tabla CO_CARTERA               */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL ifnDBOpenCartera (AJUSTE stAjuste)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int   ihDiferenciaPos;
+		int   ihDiferenciaNeg;
+		char  szhCARTERA    [11];
+		char  szhTIPDOCUM   [13];
+		int   ihValor_cerouno = 0.1;
+		int   ihValor_cerounoNeg =-0.1;
+	EXEC SQL END DECLARE SECTION;
+
+	ihDiferenciaPos = stAjuste.lDiferencia;
+	ihDiferenciaNeg = stAjuste.lDiferencia * -1;
+	strcpy(szhCARTERA ,"CO_CARTERA");
+	strcpy(szhTIPDOCUM,"COD_TIPDOCUM");
+
+	EXEC SQL DECLARE Cur_Maxivo CURSOR FOR
+	SELECT COD_CLIENTE, 
+	       SUM( IMPORTE_DEBE - IMPORTE_HABER ) MONTO_SALDO 
+	  FROM CO_CARTERA
+	 WHERE COD_TIPDOCUM NOT IN (	SELECT TO_NUMBER(COD_VALOR)
+									  FROM CO_CODIGOS
+									 WHERE NOM_TABLA   = :szhCARTERA
+									   AND NOM_COLUMNA = :szhTIPDOCUM )
+	   AND ( IMPORTE_DEBE - IMPORTE_HABER >= :ihValor_cerouno OR	IMPORTE_DEBE - IMPORTE_HABER <= :ihValor_cerounoNeg )
+	GROUP BY COD_CLIENTE
+	HAVING SUM( IMPORTE_DEBE - IMPORTE_HABER ) BETWEEN :ihDiferenciaNeg AND :ihDiferenciaPos
+	   AND SUM( IMPORTE_DEBE - IMPORTE_HABER ) != :ihValor_cero;
+
+	EXEC SQL OPEN Cur_Maxivo;
+
+	if( SQLCODE )
+	{
+		iDError( szExeAjustes, ERR000, vInsertarIncidencia, "ifnDBOpenCartera", szfnORAerror() );
+	}
+	return SQLCODE;
+}/**************************** Final ifnDBOpenCartera ***********************/
+
+/*****************************************************************************/
+/*                         funcion : ifnDBFetchCartera                       */
+/* -Funcion que realiza el Fetch sobre CO_CARTERA, y determina el universo al*/
+/*  cual se le generara el ajuste.                                           */
+/* -Valores Retorno : SQLCODE                                                */
+/*****************************************************************************/
+static ifnDBFetchCartera ( AJUSTE stAjuste, CARTERA *pstCartera)
+{
+	int	rows = 0;
+	EXEC SQL BEGIN DECLARE SECTION;
+		long   lhCodCliente;
+		double dhMtoSaldo	 ;	
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL 
+	FETCH Cur_Maxivo 
+     INTO :lhCodCliente, 
+          :dhMtoSaldo;
+
+	if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) 
+	{
+		iDError (szExeAjustes,ERR000,vInsertarIncidencia,"ifnDBFetchCartera",szfnORAerror());
+   	}
+   
+	pstCartera->lCodCliente  = lhCodCliente ;
+   	pstCartera->dMtoSaldo    = dhMtoSaldo   ;
+
+  	return SQLCODE;
+}/************************* Final ifnDBFetchCartera *************************/
+
+/*****************************************************************************/
+/*                          funcion : ifnDBCloseCartera                     */
+/* -Funcion que cierra el cursor abierto de CO_CARTERA                      */
+/* -Valores Retorno : SQLCODE                                                */
+/*****************************************************************************/
+static int ifnDBCloseCartera (void)
+{
+   EXEC SQL CLOSE Cur_Maxivo;
+
+   if (SQLCODE)   {
+      iDError(szExeAjustes,ERR000,vInsertarIncidencia,"ifnDBCloseCartera",szfnORAerror ()); 
+   }
+  return SQLCODE;
+}/************************* Final ifnDBCloseCartera *************************/
+
+/*****************************************************************************/
+/*                            funcion : bfnAjuCobros                         */
+/* -Funcion que rellena la estructura pstCobros para realizar el Interface   */
+/*  con el modulo de Cobros y asi actualizar la Cartera.                     */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+static BOOL bfnAjuCobros( DATCON *pstCobros, int iCodAbono, CARTERA stCartera )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char szhPrefPlaza[26];
+	char szhCodOperadoraScl[6];
+	char szhCodPlaza[6];		
+	long lhCodCliente;
+EXEC SQL END DECLARE SECTION;
+
+int iResul = 0;
+long lhNumSecuenci = 0;
+
+	vDTrazasLog( szExeName, "\n\t\t# Cliente  [%ld] \n\t\t  Saldo    [%f] ", LOG04, stCartera.lCodCliente, stCartera.dMtoSaldo );
+	
+	lhCodCliente = stCartera.lCodCliente;
+	
+	/* crea los documentos necesarios para ajustar los montos */
+	if( stCartera.dMtoSaldo > 0.0 )
+	{
+		pstCobros->iCodTipDocum  = 9; /* NC interna */
+		pstCobros->iCodConcepto  = 2; /* Abono */
+		pstCobros->dImporteDebe  = 0;
+		pstCobros->dImporteHaber = stCartera.dMtoSaldo;    
+		iTipoAjuste = 3; /* ajuste sencillo masivo NC */
+	}
+	else
+	{
+		pstCobros->iCodTipDocum = 10; /* ND interna */
+		pstCobros->iCodConcepto = 1; /* Recargo */
+		pstCobros->dImporteDebe  = stCartera.dMtoSaldo * -1;
+		pstCobros->dImporteHaber = 0;
+		iTipoAjuste = 7; /* ajuste sencillo masivo ND */
+	}
+	
+	pstCobros->iCodCentremi = 1;
+	strcpy( pstCobros->szLetra, "X" );
+	strcpy( pstCobros->szFolioCTC, "0" );
+	
+	/* obtiene la secuencia adecuada de la tabla correspondiente 
+	en funcion del tipo de documento*/
+	
+	iResul = iDBTomarSecuencia(	pstCobros->iCodTipDocum, pstCobros->iCodCentremi, pstCobros->szLetra, &lhNumSecuenci );
+	
+	/* si falla la obtencion de la secuencia se aborta el proceso */
+	if( iResul ) return FALSE;
+	
+	/* si recupero la secuencia, lleana la estructura de datos adecuada */
+	
+	pstCobros->lNumSecuenci = lhNumSecuenci;
+	pstCobros->lCodAgente   = 100001; 
+	pstCobros->iColumna     = 1;
+	pstCobros->iCodProducto = 5;
+	pstCobros->iIndContado   = 0;
+	pstCobros->iIndFacturado = 1;
+	strncpy (pstCobros->szFecEfectividad, szSysDate,8);
+	strncpy (pstCobros->szFecVencimie   , szSysDate,8);
+	strncpy (pstCobros->szFecCaducida   , szSysDate,8);
+	strncpy (pstCobros->szFecAntiguedad , szSysDate,8);
+	strncpy  (pstCobros->szFecPago      , szSysDate,8);
+	pstCobros->szFecEfectividad[8] ='\0';
+	pstCobros->szFecVencimie   [8] ='\0';
+	pstCobros->szFecCaducida   [8] ='\0';
+	pstCobros->szFecAntiguedad [8] ='\0';
+	pstCobros->szFecPago       [8] ='\0';
+	pstCobros->iDiasVencimiento = 0         ;
+	pstCobros->lNumAbonado      = 0         ;
+	pstCobros->lNumFolio        = lhNumSecuenci         ;
+	pstCobros->lNumCuota        = NULL      ;
+	pstCobros->iSecCuota        = NULL      ;
+	pstCobros->lNumTransa       = NULL      ;
+	pstCobros->lNumVenta        = NULL      ;
+	
+	/* buscamos la operadora y plaza del cliente */
+	EXEC SQL
+	SELECT COD_OPERADORA, 
+		   Fn_Obtiene_PlazaCliente( :lhCodCliente )
+	INTO  :szhCodOperadoraScl, 
+		   :szhCodPlaza
+	FROM  GE_CLIENTES
+	WHERE COD_CLIENTE = :lhCodCliente;
+	
+	if( sqlca.sqlcode != SQLOK )	{
+		vDTrazasError( szExeName, "\n\t\t=> Cliente => [%d] Error al recuperar OPERADORA.",LOG03, lhCodCliente );
+		return FALSE;
+	}
+	
+	rtrim( szhCodOperadoraScl );
+	rtrim( szhCodPlaza );
+	vDTrazasLog( szExeName, "\n\t\tszhCodOperadoraScl [%s] - szhCodPlaza  [%s]", LOG04, szhCodOperadoraScl,szhCodPlaza);
+	
+	EXEC SQL
+	SELECT PREF_PLAZA
+	INTO  :szhPrefPlaza
+	FROM  GE_OPERPLAZA_TD
+	WHERE COD_OPERADORA_SCL = :szhCodOperadoraScl
+	AND   COD_PLAZA = :szhCodPlaza;
+	   
+	if( sqlca.sqlcode != SQLOK )	{
+		vDTrazasError( szExeName, "\n\t\t=> Cliente => [%d] Error al recuperar PREFIJO PLAZA.",LOG03, lhCodCliente );
+		return FALSE;
+	}
+
+	rtrim( szhPrefPlaza );
+
+	strcpy( pstCobros->szPrefPlaza, szhPrefPlaza );				/* mgg 04-02-03 */
+	strcpy( pstCobros->szCodOperadoraScl, szhCodOperadoraScl );	/* mgg 04-02-03 */
+	strcpy( pstCobros->szCodPlaza, szhCodPlaza );				/* mgg 04-02-03 */
+
+	vDTrazasLog (szExeName,	"\n\t\t* Contenido stCobros  "
+							"\n\t\t=> Cod.TipDocum  [%d] "
+							"\n\t\t=> Cod.Agente    [%ld]" 
+							"\n\t\t=> Letra         [%s] "
+							"\n\t\t=> Cod.CentrEmi  [%d] "
+							"\n\t\t=> Num.Secuenci  [%ld]"
+							"\n\t\t=> Columna       [%d] "
+							"\n\t\t=> Cod.Producto  [%d] "
+							"\n\t\t=> Cod.Concepto  [%d] "
+							"\n\t\t=> Imp.Haber     [%f] "
+							"\n\t\t=> Imp.Debe      [%f] "
+							"\n\t\t=> Num.Transacc. [%ld]"
+							"\n\t\t=> Num.Venta     [%ld]"
+							"\n\t\t=> Num.Cuota     [%ld]"
+							"\n\t\t=> Sec.Cuotra    [%d] "
+							"\n\t\t=> Num.Folio     [%ld]"
+							"\n\t\t=> Num.Abonado   [%ld]"
+							"\n\t\t=> Ind.Contado   [%d] "
+							"\n\t\t=> Ind.Facturado [%d] "
+							"\n\t\t=> Fec.Vencimie  [%s] "
+							"\n\t\t=> Fec.Efectivid.[%s] "
+							"\n\t\t=> Fec.Caducida  [%s] " 
+							"\n\t\t=> Fec.Antiguedad[%s] "
+							"\n\t\t=> Fec.Pago      [%s] " 
+							"\n\t\t=> Num.CTC       [%s] "
+							"\n\t\t=> Dias.Vencimie.[%d] " 
+							"\n\t\t=> Pref Plaza.   [%s] " 
+							"\n\t\t=> Operadora.    [%s] " 
+							"\n\t\t=> Plaza.        [%s] ", 
+							LOG04, 
+							pstCobros->iCodTipDocum,
+							pstCobros->lCodAgente,
+							pstCobros->szLetra,
+							pstCobros->iCodCentremi,
+							pstCobros->lNumSecuenci,
+							pstCobros->iColumna,
+							pstCobros->iCodProducto,
+							pstCobros->iCodConcepto,
+							pstCobros->dImporteHaber,
+							pstCobros->dImporteDebe,
+							pstCobros->lNumTransa,
+							pstCobros->lNumVenta,
+							pstCobros->lNumCuota,
+							pstCobros->iSecCuota,
+							pstCobros->lNumFolio,
+							pstCobros->lNumAbonado,
+							pstCobros->iIndContado,
+							pstCobros->iIndFacturado,
+							pstCobros->szFecVencimie,
+							pstCobros->szFecEfectividad,
+							pstCobros->szFecCaducida,
+							pstCobros->szFecAntiguedad,
+							pstCobros->szFecPago,
+							pstCobros->szFolioCTC,
+							pstCobros->iDiasVencimiento,
+							pstCobros->szPrefPlaza,			/* mgg 04-02-03 */
+							pstCobros->szCodOperadoraScl,	/* mgg 04-02-03 */
+							pstCobros->szCodPlaza );		/* mgg 04-02-03 */
+ 
+ 	return TRUE;
+}/**************************** Final bfnAjuCobros ****************************/
+
+/*****************************************************************************/
+/*                         funcion : bfnPagoAjuste                           */
+/*****************************************************************************/
+static BOOL bfnPagoAjuste (DATDOC *pstDatDoc, DATPAG *pstDatPag, DATCON *pstCobros)
+{
+
+  /* inserta documento generado en la tabla CO_PAGOS */
+  if( !bfnDBInsertPagos( pstDatDoc, pstDatPag, stDatosGener.szOficinaPago ) )
+  {
+       vDTrazasError (szExeName, "\n\t\t=> Error funcion (Cobros) : bfnDBInsertPagos",LOG03);
+       return FALSE ;
+  }
+
+  if (pstCobros->dImporteDebe > 0 ) /* si tiene saldo a favor inserta en la Co_PagosConc */
+  {
+  	/* intenta obtener la secuencia de la proxima columna */	
+  	if( !bfnDBSecCol( pstCobros ) ) return FALSE;
+
+	/* inserta documento generado en la tabla CO_PAGOSCONC */
+  	if (!bfnDBInsertPagosConc(*pstDatDoc, *pstCobros))
+  	{
+       		vDTrazasError (szExeName,"\n\t\t=> Error funcion (Cobros) : bfnDBInsPagoConc", LOG03);
+       		return FALSE ;
+  	}
+  }
+
+  /* Inserta documento en la CO_AJUSTES */
+  if (!bfnDBInsertAjustes (*pstCobros, *pstDatPag))
+  {
+       vDTrazasError (szExeName, "\n\t\t=> Error funcion (Cobros) : bfnDBInsertAjustes", LOG03);
+       return FALSE ;
+  }
+
+  /* Inserta documentos en la CO_AJUSTESCONC */
+  if (!bfnDBInsertAjusteConc(*pstCobros))
+  {
+       vDTrazasError (szExeName,"\n\t\t=> Error funcion (Cobros) : bfnDBInsAjusteConc",LOG03);
+       return FALSE ;
+  }
+  
+  return TRUE; 
+}/**************************** Final bfnPagoAjuste ***************************/
+
+/*****************************************************************************/
+/*                             funcion : bfnDBInsertPagos                    */
+/*****************************************************************************/
+static BOOL bfnDBInsertPagos (DATDOC *pstDatDoc, DATPAG *pstDatPag, char *szOficina)
+{
+int	iResul = 0;
+
+  vDTrazasLog (szExeName,"\n\t\t* Insert=> Co_Pagos"
+                         "\n\t\t=> Cod.TipDocum [%d] "
+                         "\n\t\t=> Cod.CentrEmi [%d] " 
+                         "\n\t\t=> Num.Secuenci [%ld]" 
+                         "\n\t\t=> Cod.Vendedor [%ld]" 
+                         "\n\t\t=> Letra        [%s] " 
+                         "\n\t\t=> Cod.Cliente  [%ld]" 
+                         "\n\t\t=> Imp.Pago     [%f] " 
+                         "\n\t\t=> Nom.UsuarOra [%s] " 
+                         "\n\t\t=> Cod.ForPago  [%d] " 
+                         "\n\t\t=> Cod.SisPago  [%d] " 
+                         "\n\t\t=> Cod.OriPago  [%d] " 
+                         "\n\t\t=> Cod.CauPago  [%d] "
+                         "\n\t\t=> Des.Pago     [%s] " , LOG05,
+                         pstDatDoc->iCodTipDocum, pstDatDoc->iCodCentrEmi ,
+                         pstDatDoc->lNumSecuenci, pstDatDoc->lCodAgente   ,
+                         pstDatDoc->szLetra     , pstDatPag->lCodCliente  ,
+                         pstDatPag->dImpPago    , pstDatPag->szNomUsu     ,
+                         pstDatPag->iCodForPago ,
+                         pstDatPag->iCodSisPago , pstDatPag->iCodOriPago  ,
+                         pstDatPag->iCodCauPago , pstDatDoc->szDesPago);
+
+   
+     EXEC SQL INSERT INTO CO_PAGOS
+             (COD_TIPDOCUM       ,
+              COD_CENTREMI       ,
+              NUM_SECUENCI       ,
+              COD_VENDEDOR_AGENTE,
+              LETRA              ,
+              COD_CLIENTE        ,
+              IMP_PAGO           ,
+              FEC_EFECTIVIDAD    ,
+              FEC_VALOR          ,
+              NOM_USUARORA       ,
+              COD_FORPAGO        ,
+              COD_SISPAGO        ,
+              COD_ORIPAGO        ,
+              COD_CAUPAGO        ,
+              COD_BANCO          ,
+              COD_TIPTARJETA     ,
+              COD_SUCURSAL       ,
+              CTA_CORRIENTE      ,
+              NUM_TARJETA        ,
+              DES_PAGO           ,
+              PREF_PLAZA)                   
+       VALUES(:pstDatDoc->iCodTipDocum ,
+              :pstDatDoc->iCodCentrEmi ,
+              :pstDatDoc->lNumSecuenci ,
+              :pstDatDoc->lCodAgente   ,
+              :pstDatDoc->szLetra      ,
+              :pstDatPag->lCodCliente  ,
+              :pstDatPag->dImpPago     ,
+               SYSDATE                 ,
+               SYSDATE                 ,
+              :pstDatPag->szNomUsu     ,
+              :ihValor_cero            ,
+              :pstDatPag->iCodSisPago  ,
+              :pstDatPag->iCodOriPago  ,
+              :pstDatPag->iCodCauPago  ,
+              NULL                     ,
+              NULL                     ,
+              NULL                     ,
+              NULL                     ,
+              NULL                     ,
+              :pstDatDoc->szDesPago    ,
+              :szPrefPlazaDefault);         
+
+	if (SQLCODE) {
+   	iDError (szExeName,ERR000,vInsertarIncidencia,"Insert=> Co_Pagos",szfnORAerror ());
+	}
+
+ return (SQLCODE)?FALSE:TRUE;
+}/**************************** Final bfnDBInsertPagos ************************/
+
+/*****************************************************************************/
+/*                            funcion : bfnDBInsertPagosConc                 */
+/*****************************************************************************/
+static BOOL bfnDBInsertPagosConc( DATDOC stPago, DATCON stPagConc )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	static short i_shCodTipDocRel;
+	static short i_shCodCentrRel;
+	static short i_shNumSecuRel;
+	static short i_shLetraRel;
+	static short i_shCodAgenteRel;
+	static short i_shCodConcepto;
+	static short i_shImpConcepto;
+	static short i_shColumna;
+	static short i_shNumAbonado;
+	static short i_shNumFolio;
+	static short i_shNumCuota;
+	static short i_shSecCuota;
+	static short i_shNumTransa;
+	static short i_shNumVenta;
+	static short i_shFolioCTC;
+EXEC SQL END DECLARE SECTION;
+
+   vDTrazasLog (szExeName,
+                "\n\t\t* Insert=> Co_PagosConc"
+                "\n\t\t=> Cod.TipDocum      [%d]"
+                "\n\t\t=> Cod.CentrEmi      [%d]" 
+                "\n\t\t=> Num.Secuenci      [%ld]" 
+                "\n\t\t=> Cod.Agente        [%ld]" 
+                "\n\t\t=> Letra             [%s]"
+                "\n\t\t=> Imp.Concepto      [%f]" 
+                "\n\t\t=> Cod.Producto      [%d]" 
+                "\n\t\t=> Cod.TipDocRel     [%d]" 
+                "\n\t\t=> Cod.AgenteRel     [%ld]"
+                "\n\t\t=> Cod.CentrRel      [%ld]" 
+                "\n\t\t=> Num.SecuRel       [%ld]" 
+                "\n\t\t=> LetraRel          [%s]" 
+                "\n\t\t=> Cod.Concepto      [%d]" 
+                "\n\t\t=> Columna           [%d]" 
+                "\n\t\t=> Num.Abonado       [%ld]"
+                "\n\t\t=> Num.Folio         [%ld]"
+                "\n\t\t=> Num.Cuota         [%ld]" 
+                "\n\t\t=> Sec.Cuota         [%ld]" 
+                "\n\t\t=> Num.Transacc.     [%ld]" 
+                "\n\t\t=> Num.Venta         [%ld]" 
+                "\n\t\t=> Num.FolioCTC      [%s]" 
+                "\n\t\t=> szPrefPlaza       [%s]" 
+                "\n\t\t=> szCodOperadoraScl [%s]" 
+                "\n\t\t=> szCodPlaza        [%s]", 
+                LOG05, 
+                stPago.iCodTipDocum, 
+                stPago.iCodCentrEmi, 
+                stPago.lNumSecuenci, 
+                stPago.lCodAgente,
+                stPago.szLetra, 
+                stPagConc.dImporteDebe, 
+                stPagConc.iCodProducto, 
+                stPagConc.iCodTipDocum,
+                stPagConc.lCodAgente, 
+                stPagConc.iCodCentremi,
+                stPagConc.lNumSecuenci, 
+                stPagConc.szLetra,
+                stPagConc.iCodConcepto, 
+                stPagConc.iColumna,
+                stPagConc.lNumAbonado, 
+                stPagConc.lNumFolio,
+                stPagConc.lNumCuota, 
+                stPagConc.iSecCuota,
+                stPagConc.lNumTransa, 
+                stPagConc.lNumVenta, 
+                stPagConc.szFolioCTC,
+                stPagConc.szPrefPlaza,
+                stPagConc.szCodOperadoraScl,
+                stPagConc.szCodPlaza );
+  
+	i_shCodCentrRel    = (stPagConc.iCodCentremi    == -1)?-1:0;
+	i_shCodTipDocRel   = (stPagConc.iCodTipDocum    == -1)?-1:0;
+	i_shLetraRel       = (stPagConc.szLetra [0]     ==  0)?-1:0;
+	i_shNumSecuRel     = (stPagConc.lNumSecuenci    == -1)?-1:0;
+	i_shCodAgenteRel   = (stPagConc.lCodAgente      == -1)?-1:0;
+	i_shCodConcepto    = (stPagConc.iCodConcepto    == -1)?-1:0;
+	i_shColumna        = (stPagConc.iColumna        == -1)?-1:0;
+	i_shNumAbonado     = (stPagConc.lNumAbonado     == -1)?-1:0;
+	i_shNumFolio       = (stPagConc.lNumFolio       == -1)?-1:0;
+	i_shNumCuota       = (stPagConc.lNumCuota       == -1)?-1:0;
+	i_shSecCuota       = (stPagConc.iSecCuota       == -1)?-1:0;
+	i_shNumVenta       = (stPagConc.lNumVenta       == -1)?-1:0;
+	i_shNumTransa      = (stPagConc.lNumTransa      == -1)?-1:0;  
+	i_shFolioCTC       = (stPagConc.szFolioCTC [0]  ==  0)?-1:0;
+
+	EXEC SQL INSERT INTO CO_PAGOSCONC (
+                        COD_TIPDOCUM,
+                        COD_CENTREMI,
+                        NUM_SECUENCI,
+                        COD_VENDEDOR_AGENTE,
+                        LETRA,
+                        IMP_CONCEPTO,
+                        COD_PRODUCTO,
+                        COD_TIPDOCREL,
+                        COD_CENTRREL,
+                        NUM_SECUREL,
+                        COD_AGENTEREL,
+                        LETRA_REL,
+                        COD_CONCEPTO,
+                        COLUMNA,
+                        NUM_ABONADO,
+                        NUM_FOLIO,
+                        NUM_CUOTA,
+                        SEC_CUOTA,
+                        NUM_TRANSACCION,
+                        NUM_VENTA,
+                        NUM_FOLIOCTC,
+					         PREF_PLAZA         , 
+					         COD_OPERADORA_SCL  , 
+					         COD_PLAZA          ) 
+                 VALUES(:stPago.iCodTipDocum,
+                        :stPago.iCodCentrEmi,
+                        :stPago.lNumSecuenci,
+                        :stPago.lCodAgente,
+                        :stPago.szLetra,
+                        :stPagConc.dImporteDebe,
+                        :stPagConc.iCodProducto,
+                        :stPagConc.iCodTipDocum   :i_shCodTipDocRel,
+                        :stPagConc.iCodCentremi   :i_shCodCentrRel,
+                        :stPagConc.lNumSecuenci   :i_shNumSecuRel,   
+                        :stPagConc.lCodAgente     :i_shCodAgenteRel,
+                        :stPagConc.szLetra        :i_shLetraRel,
+                        :stPagConc.iCodConcepto   :i_shCodConcepto,
+                        :stPagConc.iColumna       :i_shColumna,
+                        :stPagConc.lNumAbonado    :i_shNumAbonado,
+                        :stPagConc.lNumFolio      :i_shNumFolio,
+                        :stPagConc.lNumCuota      :i_shNumCuota,
+                        :stPagConc.iSecCuota      :i_shSecCuota,
+                        :stPagConc.lNumTransa     :i_shNumTransa,
+                        :stPagConc.lNumVenta      :i_shNumVenta,
+                        :stPagConc.szFolioCTC     :i_shFolioCTC,
+		                  :stPagConc.szPrefPlaza,
+		                  :stPagConc.szCodOperadoraScl,
+		                  :stPagConc.szCodPlaza );
+
+	if( SQLCODE )  {
+		iDError( szExeName, ERR000, vInsertarIncidencia, "Insert=> Co_PagosConc", szfnORAerror () );
+	}
+	
+	return( SQLCODE ) ? FALSE : TRUE;
+}/******************************* Final bfnDBInsertPagosConc *****************/
+
+
+/*****************************************************************************/
+/*                           funcion : bfnDBInsertAjustes                    */
+/*****************************************************************************/
+static BOOL bfnDBInsertAjustes (DATCON pstCobros, DATPAG pstDatPag)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+   char szGlosa[50] = "";
+   int  ihTipoAjuste= 0 ;
+   int  ihNCND      = 0 ; /* por default nota de debito*/
+   double dhImpPago = 0;
+EXEC SQL END DECLARE SECTION;
+
+   ihTipoAjuste = iTipoAjuste;
+   
+   if (iTipoAjuste==3) ihNCND=1 ; 
+   
+   dhImpPago = fabs(pstCobros.dImporteDebe - pstCobros.dImporteHaber);
+   strcpy (szGlosa,"Ajuste Masivo en Cta. Cte.");
+
+   vDTrazasLog (szExeName,"\n\t\t* Insert=> Co_Ajustes"
+                         "\n\t\t=> Num.Secuenci [%ld]" 
+                         "\n\t\t=> Cod.TipDocum [%d] "
+                         "\n\t\t=> Cod.Vendedor [%ld]" 
+                         "\n\t\t=> Letra        [%s] " 
+                         "\n\t\t=> Cod.CentrEmi [%d] " 
+                         "\n\t\t=> Cod.Cliente  [%ld]" 
+                         "\n\t\t=> ImporteDebe  [%4f] " 
+                         "\n\t\t=> Nom.UsuarOra [%s] " 
+                         "\n\t\t=> Cod.TipAjus  [%d] " 
+                         "\n\t\t=> Ind.NC       [%d] " 
+                         "\n\t\t=> Ind.Procesa  [%d] "
+                         "\n\t\t=> Des.Observ   [%s] " , LOG05,
+                         pstCobros.lNumSecuenci, 
+                         pstCobros.iCodTipDocum, 
+			                pstCobros.lCodAgente  ,
+                         pstCobros.szLetra     , 
+			                pstCobros.iCodCentremi,
+			                pstDatPag.lCodCliente, dhImpPago, 
+			                pstDatPag.szNomUsu, 1, 1, 1, szGlosa);
+
+  
+     EXEC SQL INSERT INTO CO_AJUSTES
+             (NUM_SECUENCI       ,
+	           COD_TIPDOCUM       ,
+              COD_VENDEDOR_AGENTE,
+              LETRA              ,
+              COD_CENTREMI       ,
+              COD_CLIENTE        ,
+              IMPORTE_DEBE       ,
+              FEC_EFECTIVIDAD    ,
+              NOM_USUARORA       ,
+              COD_TIPAJUSTE      ,
+              IND_NC             ,
+              IND_PROCESADO      ,
+              FEC_PROCESO        ,
+              DES_OBSERVA)
+       VALUES(:pstCobros.lNumSecuenci ,
+	           :pstCobros.iCodTipDocum ,
+              :pstCobros.lCodAgente   ,
+              :pstCobros.szLetra      ,
+              :pstCobros.iCodCentremi ,
+              :pstDatPag.lCodCliente  ,
+              :dhImpPago              ,
+               SYSDATE                ,
+              :pstDatPag.szNomUsu     ,
+              :ihTipoAjuste           ,   /* tipo de ajuste */
+              :ihNCND                 ,   /* indicador nota de credito */
+              :ihValor_uno            ,   /* indicador procesado */
+              SYSDATE                 ,
+              :szGlosa);
+
+	if (SQLCODE)  {
+     iDError (szExeName,ERR000,vInsertarIncidencia,"Insert=> Co_Ajustes",szfnORAerror ());
+   }
+
+	return (SQLCODE)?FALSE:TRUE;
+}/**************************** Final bfnDBInsertAjustes ************************/
+
+/*****************************************************************************/
+/*                           funcion : bfnDBInsertAjusteConc                 */
+/*****************************************************************************/
+static BOOL bfnDBInsertAjusteConc (DATCON pstCobros)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	double	dhImpPago = 0;
+EXEC SQL END DECLARE SECTION;	
+
+	dhImpPago = fabs(pstCobros.dImporteDebe - pstCobros.dImporteHaber);
+   vDTrazasLog (szExeName,
+                "\n\t\t* Insert=> Co_AjusteConc"
+                "\n\t\t=> Cod.TipDocum  [%d]  "
+                "\n\t\t=> Cod.CentrEmi  [%d]  " 
+                "\n\t\t=> Num.Secuenci  [%ld] " 
+                "\n\t\t=> Cod.Agente    [%ld] " 
+                "\n\t\t=> Letra         [%s]  "
+                "\n\t\t=> Imp.Concepto  [%4f] " 
+                "\n\t\t=> Ord.Sec       [%d]  ", LOG05, 
+                pstCobros.iCodTipDocum      , pstCobros.iCodCentremi   , 
+                pstCobros.lNumSecuenci      , pstCobros.lCodAgente     ,
+                pstCobros.szLetra           , dhImpPago,
+                1);
+
+ 
+	EXEC SQL INSERT INTO CO_AJUSTECONC
+                       (COD_TIPDOCUM       ,
+                        COD_CENTREMI       ,
+                        NUM_SECUENCI       ,
+                        COD_VENDEDOR_AGENTE,
+                        LETRA              ,
+                        IMP_CONCEPTO       ,
+                        COD_PRODUCTO       ,
+                        COD_TIPDOCUMREL    ,
+                        COD_CENTREMIREL    ,
+                        NUM_SECUENCIREL    ,
+                        COD_AGENTEREL      ,
+                        LETRAREL           ,
+                        NUM_ABONADO        ,
+			               ORD_SEC			    )
+                 VALUES(:pstCobros.iCodTipDocum      ,
+                        :pstCobros.iCodCentremi      ,
+                        :pstCobros.lNumSecuenci      ,
+                        :pstCobros.lCodAgente        ,
+                        :pstCobros.szLetra           ,
+                        :dhImpPago                   ,
+                        NULL   ,
+                        NULL   ,
+                        NULL   ,
+                        NULL   ,
+                        NULL   ,
+                        NULL   ,
+                        NULL   ,
+                        :ihValor_uno);
+
+
+  if (SQLCODE)  {
+      iDError (szExeName,ERR000,vInsertarIncidencia,"Insert=> Co_AjusteConc",szfnORAerror ());
+  }
+
+  return (SQLCODE)?FALSE:TRUE;
+
+}/******************************* Final bfnDBInsertAjusteConc *****************/
+
+/****************************************************************************************************/
+/* rtrim()																		   					*/
+/****************************************************************************************************/
+void rtrim( char *szCadena )
+/*
+	Definicion		:	Quita los espacios en blanco a la derecha de una cadena.
+	Parametros		:	szCadena	cadena de trabajo.
+*/
+{
+char modulo[] = "rtrim";
+int i, iLen, iCnt;
+
+    iLen = strlen( szCadena ) - 1;
+    for( iCnt = iLen; iCnt >= 0; iCnt-- ) if( szCadena[iCnt] != ' ' && szCadena[iCnt] != '\0' ) break;
+    szCadena[ iCnt + 1 ] = '\0'; 	/* reemplaza primer ' ' por '\0' produciendo un rtrim */
+    return;
+} /* void rtrim( char *szCadena ) */
+
+/****************************************************************************************************/
+/* ifnValidaConceptos() : Selecciona los conceptos a cancelar           		   					*/
+/****************************************************************************************************/
+int ifnValidaConceptos( long lCodCliente ) 
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	lhCodCliente;
+		int		ihCodTipConcepto;
+		double	dhImporteConcepto;
+		char	szhCARTERA[11];
+		char	szhTIPDOCUM[13];
+	EXEC SQL END DECLARE SECTION;
+	
+	char	modulo[] = "ifnValidaConceptos";
+	int		iRes = 1;
+
+   	vDTrazasLog( szExeName, "\n\t\t===================================================================.", LOG03 );
+   	vDTrazasLog( szExeName, "\t\t===================================================================.", LOG03 );
+   	vDTrazasLog( szExeName, "\n\t\tCliente => [%ld] Ingreso MODULO [%s].", LOG03, lCodCliente, modulo );
+
+	lhCodCliente = lCodCliente;
+	strcpy( szhCARTERA, "CO_CARTERA" );
+	strcpy( szhTIPDOCUM, "COD_TIPDOCUM" );
+
+	EXEC SQL DECLARE CurValConceptos CURSOR FOR
+	SELECT ct.cod_tipconce,
+		   ca.importe_debe - ca.importe_haber 
+	  FROM co_tipconcep ct, co_conceptos cc, co_cartera ca
+	 WHERE ct.cod_tipconce = cc.cod_tipconce
+	   AND cc.cod_concepto = ca.cod_concepto  
+	   AND ca.cod_tipdocum NOT IN (	SELECT TO_NUMBER( cod_valor )
+									  FROM co_codigos
+									 WHERE nom_tabla   = :szhCARTERA
+									   AND nom_columna = :szhTIPDOCUM )
+	   AND ca.cod_cliente = :lhCodCliente;
+
+	if (SQLCODE != SQLOK) 
+	{
+		iDError( szExeName, ERR000, vInsertarIncidencia, "En DECLARE CurValConceptos.\n ", szfnORAerror() );
+		return -1;
+	}
+
+	EXEC SQL OPEN CurValConceptos;
+	if (SQLCODE != SQLOK) 
+	{
+		iDError( szExeName, ERR000, vInsertarIncidencia, "En OPEN CurValConceptos.\n ", szfnORAerror() );
+		return -1;
+	}
+
+    while(1) 
+    {
+		EXEC SQL
+		FETCH CurValConceptos
+	  	 INTO :ihCodTipConcepto,
+	  	 	  :dhImporteConcepto;
+
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+        {
+			iDError( szExeName, ERR000, vInsertarIncidencia, "En FETCH CurValConceptos.\n ", szfnORAerror() );
+			iRes = -1;
+			break;
+        }
+
+        if( SQLCODE == SQLNOTFOUND ) 
+        {
+	    	vDTrazasLog( szExeName, "\n\t\tTermino revision de conceptos del cliente [%ld].", LOG03, lhCodCliente );
+        	iRes = 1;
+        	break;
+        }
+
+		vDTrazasLog (szExeAjustes,"\n\t\tTipo Concepto => [%d] Importe Concepto => [%.4f]", LOG03, ihCodTipConcepto, dhImporteConcepto );
+
+		if( ihCodTipConcepto == 2 || ihCodTipConcepto == 6 ) /* son abonos */
+		{	
+			if ( dhImporteConcepto >= 0 ) /* esto quiere decir que el debe es mayor al haber */
+			{	
+				vDTrazasLog( szExeAjustes, "\n\t\t!! ATENCION ¡¡ CLIENTE => [%ld] SALDO DE ABONO INCONSISTENTE.", LOG03, lhCodCliente );
+				iRes = 0;
+				break;
+			}
+		}
+		else /* son cargos */
+		{	
+			if ( dhImporteConcepto <= 0 ) /* esto quiere decir que el haber es mayor al debe */
+			{	
+				vDTrazasLog( szExeAjustes, "\n\t\t!! ATENCION ¡¡ CLIENTE => [%ld] SALDO DE CARGO INCONSISTENTE.", LOG03, lhCodCliente );
+				iRes = 0;
+				break;
+			}
+		}
+    } /* while(1) */
+
+    EXEC SQL 
+    CLOSE CurValConceptos;
+    
+    if (SQLCODE != SQLOK) 
+    {
+        iDError(modulo,ERR000,vInsertarIncidencia,"En CLOSE Cur_Canga.\n ",SQLERRM);
+        iRes = -1;
+    }
+
+	vDTrazasLog( szExeAjustes, "\n\t\tFin funcion ifnValidaConceptos.", LOG03 );
+
+    return iRes;
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

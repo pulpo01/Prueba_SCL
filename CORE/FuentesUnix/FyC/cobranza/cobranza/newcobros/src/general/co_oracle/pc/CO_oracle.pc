@@ -1,0 +1,723 @@
+/* ============================================================================= */
+/*
+    Tipo        :  FUNCIONES ORACLE
+
+    Nombre      :  CO_oracle.pc
+
+    Descripcion :  Rutinas Generales a todos los modulos de newcobros.
+                   Incluyen funciones de conexion y desconexion a Oracle,etc
+
+    Autor       :  Roy Barrera Richards                 
+    Fecha       :  09 - Agosto - 2000 
+
+*/ 
+/* ============================================================================= */
+
+#define _COORACLE_PC_
+
+#include <stdio.h>
+#include <ctype.h>
+#include "CO_oracle.h"
+
+#define	DEC(c)	(((c) - ' ') & 077)		
+
+EXEC SQL INCLUDE sqlca;
+EXEC SQL INCLUDE sqlda;
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraConnect( char *szUser, char *szPasw )                            */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraConnect( char *szUser, char *szPasw )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char hszConnectStr[129]; EXEC SQL VAR hszConnectStr IS STRING(129);
+		char szhUser[30]; EXEC SQL VAR szhUser IS STRING(30);
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL WHENEVER SQLERROR      CONTINUE;
+	EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+	EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+	
+	OraDb.Connected=FALSE;
+	strcpy( hszConnectStr, szUser );
+	strcat( hszConnectStr, "/" );
+	strcat( hszConnectStr, szPasw );
+	
+	EXEC SQL CONNECT :hszConnectStr;
+	if( sqlca.sqlcode < 0 )
+		return FALSE;
+	
+	OraDb.Connected=TRUE;
+	
+	EXEC SQL SELECT USER INTO :szhUser FROM DUAL;
+	
+	strcpy( szUser, szhUser );
+	
+	if( ( szPasw ) || ( szUser ) )
+		return bfnOraActivaRoles( szUser );
+	else
+		return (TRUE);
+}
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraDisconnect(int iOraErr)                                          */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraDisconnect(int iOraErr)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  if(iOraErr) return bfnOraRollBackRelease();
+  else        return bfnOraCommitRelease();
+}
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraRollBackRelease(void)                                            */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraRollBackRelease(void)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL ROLLBACK WORK RELEASE;
+  if(sqlca.sqlcode<0) return FALSE;
+  OraDb.Connected=FALSE;
+  return TRUE;
+}
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraCommitRelease(void)                                              */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraCommitRelease(void)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL COMMIT WORK RELEASE;
+  if(sqlca.sqlcode<0) return FALSE; 
+  OraDb.Connected=FALSE;
+  return TRUE;
+}
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraRollBack(void)													  */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraRollBack(void)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL ROLLBACK WORK;
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraCommit(void)                                                     */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraCommit(void)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL COMMIT WORK;
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*----------------------------------------------------------------------------*/
+/* char *fnOraGetErrorMsg(void)                                               */
+/*----------------------------------------------------------------------------*/
+char *szfnOraGetErrorMsg(void)
+{
+  static char szMsg[BUFSIZ-1];
+  int iMaxSize = BUFSIZ;
+  int iOutSize = 0;
+  /*sqlglm( szMsg, &iMaxSize, &iOutSize );  MGG */
+  szMsg [iOutSize] = 0;
+  return szMsg;
+}
+
+/*----------------------------------------------------------------------------*/
+/* char *fnOraSetSavepoint(char* szSP)                                        */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraSetSavepoint(char* szSP)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhSentencia[BUFSIZ];
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL WHENEVER SQLERROR      CONTINUE;
+    EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+    EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+    
+    sprintf(szhSentencia,"SAVEPOINT %s",szSP);
+    
+    EXEC SQL PREPARE S FROM :szhSentencia;
+    if(sqlca.sqlcode<0) return FALSE;
+    
+    EXEC SQL EXECUTE S;
+    if(sqlca.sqlcode<0) return FALSE;
+
+    return TRUE;
+}
+
+/*----------------------------------------------------------------------------*/
+/* BOOL fnOraRestoreSP(char* szSP)                                            */
+/*----------------------------------------------------------------------------*/
+BOOL bfnOraRestoreSP(char *szSP)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhSentencia[BUFSIZ];  
+    EXEC SQL END DECLARE SECTION;
+    
+    EXEC SQL WHENEVER SQLERROR      CONTINUE;
+    EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+    EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+    
+    sprintf(szhSentencia,"ROLLBACK TO %s",szSP);
+    
+    EXEC SQL PREPARE S FROM :szhSentencia;
+    if(sqlca.sqlcode<0) return FALSE;
+    
+    EXEC SQL EXECUTE S;
+    if(sqlca.sqlcode<0) return FALSE;
+
+    return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* Implementacion de SQL Dinamico                                            */
+/*---------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------*/
+/* Implementacion de Metodo 1                                                */
+/*---------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraExecute(char* szStm)                                            */
+/*   Dynamic SQL Method 1                                                    */
+/*     The statement must not be a query                                     */
+/*     The statement is parsed every time it is executed                     */ 
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraExecute(char *szStm)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhStm[BUFSIZ];  
+    EXEC SQL END DECLARE SECTION;
+ 
+    EXEC SQL WHENEVER SQLERROR      CONTINUE;
+    EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+    EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+    
+    sprintf(szhStm,"%s",szStm);
+    EXEC SQL EXECUTE IMMEDIATE :szhStm;
+    if(sqlca.sqlcode<0) return FALSE;
+
+    return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraPrepareStm(char* szStm)                                         */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraPrepareStm(char *szStm)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char szhStm[BUFSIZ];  
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL WHENEVER SQLERROR      CONTINUE;
+    EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+    EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+
+    sprintf(szhStm,"%s",szStm);
+    EXEC SQL PREPARE STM FROM :szhStm;
+    if(sqlca.sqlcode<0) return FALSE;
+    
+    return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraDecCursorStm(void)                                              */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraDecCursorStm(void)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL DECLARE STM_CURSOR CURSOR FOR STM;
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraOpenCursorStm(SQLDA *desc)                                      */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraOpenCursorStm(SQLDA *desc)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL OPEN STM_CURSOR USING DESCRIPTOR desc;
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* int fnOraFetchDesc(SQLDA* desc)                                           */
+/*---------------------------------------------------------------------------*/
+int ifnOraFetchDesc(SQLDA* desc)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+    
+  EXEC SQL FETCH STM_CURSOR USING DESCRIPTOR desc;
+
+  if(sqlca.sqlcode == SQLNOTFOUND) return sqlca.sqlcode;
+  if(sqlca.sqlcode) return sqlca.sqlcode;
+
+  return sqlca.sqlcode;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraCloseCursorStm(void)                                            */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraCloseCursorStm(void)
+{
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  EXEC SQL CLOSE STM_CURSOR;
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraSetBindVars(SQLDA *bind_dp)                                     */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraSetBindVars(SQLDA *bind_dp)
+{
+  register int i,n;
+  char bind_var[64];
+
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+  
+  bind_dp->N=MAX_ITEMS;
+ 
+  EXEC SQL DESCRIBE BIND VARIABLES FOR STM INTO bind_dp;
+  if(sqlca.sqlcode<0) return FALSE;
+  
+  /*--------------------------------------------------------------------------*/
+  /* Si F es nevativo, existen mas variable bind                              */
+  /* que las encontradas en sqlald()                                          */
+  /*--------------------------------------------------------------------------*/
+  if(bind_dp->F < 0)  return FALSE;
+
+  bind_dp->N = bind_dp->F;
+
+  /*--------------------------------------------------------------------------*/
+  /* Obtiene el valor de cada variable bind como cadena de caracteres         */
+  /*                                                                          */
+  /* C[i] contiene la longitud del nombre de la variable bind de la sentencia */
+  /* S[i] contiene el nombre de la variable bind de la sentencia              */
+  /* L[i] contiene la longitud del valor de dato entrado                      */
+  /* V[i] contiene la direccion del valor de dato entrado                     */
+  /* T[i] tipo de dato                                                        */
+  /* I[i] apunta a la variable indicadora                                     */
+  /*--------------------------------------------------------------------------*/
+  /* Cuando Procesemos variables bind se asinan los valores actuales aqui     */
+
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraDescSelect(SQLDA *select_dp)                                    */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraDescSelect(SQLDA *select_dp)
+{
+  register int i=0;
+  int null_ok,precision,scale = 0;
+
+  EXEC SQL WHENEVER SQLERROR      CONTINUE;
+  EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+  EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+
+  select_dp->N = MAX_ITEMS;
+
+  EXEC SQL DESCRIBE SELECT LIST FOR STM INTO select_dp;
+  if(sqlca.sqlcode<0) return FALSE;
+
+  /*--------------------------------------------------------------------------*/
+  /* Si F es nevativo, existen mas variable bind                              */
+  /* que las encontradas en sqlald()                                          */
+  /*--------------------------------------------------------------------------*/
+  if(select_dp->F < 0)  return FALSE;
+  
+  select_dp->N = select_dp->F;
+
+  for(i=0;i<select_dp->F;i++) {
+
+    /* sqlnul(&(select_dp->T[i]),&(select_dp->T[i]),&null_ok); MGG */
+
+    switch(select_dp->T[i]) {
+      case 1:  /* CHAR */
+        break;
+      case 2:  /* NUMBER */
+        /* sqlprc(&(select_dp->L[i]),&precision,&scale); MGG */
+        if(precision==0) precision=40;
+        if(scale>0) select_dp->L[i] = sizeof(float);
+        else        select_dp->L[i] = sizeof(int);
+        break;
+      case 8:  /* LONG */
+        select_dp->L[i] = 240;
+        break;
+      case 11: /* ROWID */ 
+        select_dp->L[i] = 18;
+        break;
+      case 12: /* DATE */ 
+        select_dp->L[i] = 9;
+        break;
+      case 23: /* RAW */ 
+        break;
+      case 24: /* LONG RAW */ 
+        select_dp->L[i] = 240;
+        break;
+    }
+    if(select_dp->T[i] != 2)
+      select_dp->V[i] = (char*) realloc(select_dp->V[i],select_dp->L[i]+1);
+    else 
+      select_dp->V[i] = (char*) realloc(select_dp->V[i],select_dp->L[i]);
+    if(select_dp->T[i] != 24 && select_dp->T[i] !=2 ) select_dp->T[i] = 1;
+    if(select_dp->T[i] == 2 ) {
+      if(scale > 0) select_dp->T[i] = 4; /* FLOAT */
+      else          select_dp->T[i] = 3; /* INT   */
+    }
+  }
+  
+  if(sqlca.sqlcode<0) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraIniDescs(SQLDA* select_dp,SQLDA* bind_dp)                       */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraIniDescs(SQLDA** select_dp,SQLDA** bind_dp)
+{
+  if(!bfnOraAllocDesc(select_dp,
+		     MAX_ITEMS,MAX_VNAME_LEN,MAX_INAME_LEN)) return FALSE;
+  if(!bfnOraAllocDesc(bind_dp,
+		     MAX_ITEMS,MAX_VNAME_LEN,MAX_INAME_LEN)) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraAllocDesc(int size,int max_vname_len,int max_iname_len)         */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraAllocDesc(SQLDA** desc,int size,int max_vname_len,int max_iname_len)
+{
+   register int i=0;
+   SQLDA* pDesc=(SQLDA*)NULL;
+   /*if((SQLDA*)NULL==(pDesc=(SQLDA*)sqlald(size,max_vname_len,max_iname_len))) {
+     fprintf(stderr,"No puede atrapar memoria para el descriptor pDesc\n");
+     return FALSE;
+   } */
+   pDesc->N=MAX_ITEMS;
+   for(i=0;i<MAX_ITEMS;i++) {
+     pDesc->I[i] = (short*) malloc(sizeof(short));
+     pDesc->V[i] = (char*)  malloc(sizeof(char));
+   } 
+   *desc=pDesc;
+   return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraEndDescs(SQLDA* select_dp,SQLDA* bind_dp)                       */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraEndDescs(SQLDA* select_dp,SQLDA* bind_dp)
+{
+  if(!bfnOraDeAllocDesc(select_dp)) return FALSE;
+  if(!bfnOraDeAllocDesc(bind_dp)) return FALSE;
+  return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraDeAllocDesc(SQLDA* desc)                                        */
+/*---------------------------------------------------------------------------*/
+BOOL bfnOraDeAllocDesc(SQLDA* desc)
+{
+   register int i=0;
+   for(i=0;i<MAX_ITEMS;i++) {
+     if((char*)NULL!=desc->V[i]) free (desc->V[i]);
+     free(desc->I[i]);
+   }
+   /* sqlclu(desc); MGG */
+   return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* static char* strtoupper(char* szChain)                                    */
+/*---------------------------------------------------------------------------*/
+static char *strtoupper(char *szChain)
+{
+   int iCont=0;
+   int c;
+
+   for(iCont=0;iCont<strlen(szChain);iCont++) {
+      c = (int) szChain[iCont];
+      c = toupper(c);
+      szChain[iCont] = (char) c;
+   }
+
+   return ((char *)szChain);
+}
+
+/*----------------------------------------------------------------------------*/
+/* static int decode(FILE*,FILE*)                                             */
+/*----------------------------------------------------------------------------*/
+static int decode(char* pfin,char* pfout)
+{
+  extern int errno;
+  register int n;
+  register char ch, *p;
+  int mode, n1;
+  char buf[1024];
+  char pfTemp[BUFSIZ]="";
+  memset(pfout,0,BUFSIZ);
+
+  strcpy(buf,pfin);
+  p=buf;
+  /* for each input line */
+  for(;;) {
+    if((n=DEC(*p))<=0) break;
+    for(++p;n>0;p+=4,n-=3)
+    if(n>=3){
+      ch=DEC(p[0])<<2|DEC(p[1])>>4;
+      strcpy(pfTemp,pfout);
+      sprintf(pfout,"%s%c",pfTemp,ch);
+      ch=DEC(p[1])<<4|DEC(p[2])>>2;
+      strcpy(pfTemp,pfout);
+      sprintf(pfout,"%s%c",pfTemp,ch);
+      ch=DEC(p[2])<<6|DEC(p[3]);
+      strcpy(pfTemp,pfout);
+      sprintf(pfout,"%s%c",pfTemp,ch);
+    } else {
+      if(n>=1) {
+        ch=DEC(p[0])<<2|DEC(p[1])>>4;
+        strcpy(pfTemp,pfout);
+        sprintf(pfout,"%s%c",pfTemp,ch);
+      }
+      if(n>=2) {
+        ch=DEC(p[1])<<4|DEC(p[2])>>2;
+        strcpy(pfTemp,pfout);
+        sprintf(pfout,"%s%c",pfTemp,ch);
+      }
+      if(n>=3) {
+        ch=DEC(p[2])<<6|DEC(p[3]);
+        strcpy(pfTemp,pfout);
+        sprintf(pfout,"%s%c",pfTemp,ch);
+      }
+    }
+  }
+  return(0);
+}
+
+/*----------------------------------------------------------------------------*/
+/* char* fnOraGetFld(SQLDA* desc,int i)                                       */
+/*----------------------------------------------------------------------------*/
+char* szfnOraGetFld(SQLDA* desc,int i)
+{
+  static char szBuffer[BUFSIZ];
+  if(*desc->I[i]>=0) {
+    switch(desc->T[i]) {
+      case 3:
+       sprintf(szBuffer,"%*d",(int)desc->L[i],*(int*)desc->V[i]);
+       break;
+      case 4:
+       sprintf(szBuffer,"%*.2f",(int)desc->L[i],*(float*)desc->V[i]);
+       break;
+      default:
+       sprintf(szBuffer,"%-*s",(int)desc->L[i],desc->V[i]);
+       break;
+    }
+  } else sprintf(szBuffer,"NULL");
+  while(szBuffer[strlen(szBuffer)-1]==' ') szBuffer[strlen(szBuffer)-1]='\0';
+  return szBuffer;
+}
+
+/*----------------------------------------------------------------------------*/
+/* int fnOraGetNFlds(SQLDA* desc)                                             */
+/*----------------------------------------------------------------------------*/
+int ifnOraGetNFlds(SQLDA* desc)
+{
+  return desc->F;
+}
+
+/*---------------------------------------------------------------------------*/
+/* BOOL fnOraActivaRoles (void)                                              */
+/*---------------------------------------------------------------------------*/
+static BOOL bfnOraActivaRoles (char *szUser)
+{
+	BOOL iAdmin = FALSE;
+	char szCad[MAX_BUFSIZE] = "";
+	char szPassDec[MAX_BUFSIZE] = "";
+	char szTmp[MAX_BUFSIZE] = "";
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szRole[31];			EXEC SQL VAR szRole IS STRING(31);
+		char szPasswd[MAX_BUFSIZE];	EXEC SQL VAR szPasswd IS STRING(MAX_BUFSIZE);
+		char szhStm[MAX_BUFSIZE];	EXEC SQL VAR szhStm IS STRING(MAX_BUFSIZE);
+		char szUsr[62];				EXEC SQL VAR szUsr IS STRING(62);
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL WHENEVER SQLERROR      CONTINUE;
+	EXEC SQL WHENEVER SQLWARNING    CONTINUE;
+	EXEC SQL WHENEVER NOT FOUND     CONTINUE;
+	
+	memset( szCad, '\0', sizeof( szCad ) );
+	memset( szPassDec, '\0', sizeof( szPassDec ) );
+	memset( szTmp, '\0', sizeof( szTmp ) );
+	memset( szPasswd, '\0', sizeof( szPasswd ) );
+	memset( szRole, '\0', sizeof( szRole ) );
+	memset( szhStm, '\0', sizeof( szhStm ) );
+	memset( szUsr, '\0', sizeof( szUsr ) );
+	
+	strcpy( szUsr, szUser );
+	if( strstr( szUsr, "/" ) != NULL ) 
+		strcpy( szUsr, strtok( szUsr, "/" ) );
+	else 
+		strcpy( szUsr, szUser );
+	
+	strtoupper(szUsr);
+	
+	strcpy( szhStm, "SET ROLE SISCEL_ADMIN" );
+	
+	EXEC SQL EXECUTE IMMEDIATE :szhStm;
+	
+	if( sqlca.sqlcode ) 
+		iAdmin = FALSE;
+	else 
+		iAdmin = TRUE;
+	
+	strcpy( szhStm, "SET ROLE SISCEL_SEGUR" );
+	
+	EXEC SQL EXECUTE IMMEDIATE :szhStm;
+	if( sqlca.sqlcode ) 
+		return( FALSE );
+	
+	/* Roles de Usuario */
+	EXEC SQL DECLARE UROLES_CURSOR CURSOR FOR
+	SELECT A.ROLE, NVL(B.PASSWORD,CHR(0))
+	FROM   GE_SEG_USUROLES A,GE_SEG_ROLE B,GE_SEG_USUARIO C
+	WHERE  A.ROLE = B.ROLE
+	AND    A.NOM_USUARIO = C.NOM_USUARIO
+	AND    A.NOM_USUARIO = :szUsr;
+	EXEC SQL OPEN UROLES_CURSOR;
+
+	if( sqlca.sqlcode ) return FALSE;
+	
+	for(;;) 
+	{
+		EXEC SQL 
+		FETCH UROLES_CURSOR 
+		INTO  :szRole,:szPasswd;
+		
+		if( sqlca.sqlcode == SQLNOTFOUND ) break;
+		if( sqlca.sqlcode) return FALSE;
+		/* Compone cadena de roles */
+		if( strlen( szPasswd ) ) 
+		{
+			decode( szPasswd, szPassDec );
+			sprintf( szCad, "%s%s IDENTIFIED BY %s,", szTmp, szRole, szPassDec );
+		} 
+		else 
+			sprintf( szCad, "%s%s,", szTmp, szRole );
+			
+		strcpy( szTmp, szCad );
+	}
+	
+	EXEC SQL CLOSE UROLES_CURSOR;
+	if( sqlca.sqlcode ) return FALSE;
+	
+	fprintf( stdout, "Obtuvimos roles de usuario.\n" );
+
+	/* Roles de Grupo */
+	EXEC SQL DECLARE GROLES_CURSOR CURSOR FOR
+	SELECT A.ROLE, NVL(B.PASSWORD,CHR(0))
+	FROM   GE_SEG_GRPROLES A,GE_SEG_ROLE B,GE_SEG_GRPUSUARIO C
+	WHERE  A.ROLE = B.ROLE
+	AND    A.COD_GRUPO   = C.COD_GRUPO
+	AND    C.NOM_USUARIO = :szUsr;
+	EXEC SQL OPEN GROLES_CURSOR;
+
+	if( sqlca.sqlcode ) return FALSE;
+	
+	for(;;) 
+	{
+		EXEC SQL 
+		FETCH GROLES_CURSOR 
+		INTO  :szRole,:szPasswd;
+		
+		if( sqlca.sqlcode == SQLNOTFOUND ) break;
+		if( sqlca.sqlcode ) return FALSE;
+		/* Compone cadena de roles */
+		if( strlen( szPasswd ) ) 
+		{
+			decode( szPasswd, szPassDec );
+			sprintf( szCad, "%s%s IDENTIFIED BY %s,", szTmp, szRole, szPassDec );
+		} 
+		else 
+		{
+			sprintf( szCad, "%s%s,", szTmp, szRole );
+		}	
+		strcpy( szTmp, szCad );
+	}
+	
+	EXEC SQL CLOSE GROLES_CURSOR;
+	if( sqlca.sqlcode ) return FALSE;
+	
+	fprintf( stdout, "Obtuvimos roles de Grupo.\n" );
+
+	if( strlen( szCad ) ) 
+		szCad[strlen( szCad ) - 1] = '\0';
+	else 
+		strcpy( szCad, "SISCEL_SEGUR" );
+	
+	sprintf( szhStm, "SET ROLE %s", szCad );
+	
+	EXEC SQL EXECUTE IMMEDIATE :szhStm;
+
+	fprintf( stdout, "[%d]", sqlca.sqlcode );
+	fprintf( stdout, "SET ROLE [%s]", szhStm );
+	if( sqlca.sqlcode ) return FALSE;
+	
+	fprintf( stdout, "Roles OK.\n" );
+	return TRUE;
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

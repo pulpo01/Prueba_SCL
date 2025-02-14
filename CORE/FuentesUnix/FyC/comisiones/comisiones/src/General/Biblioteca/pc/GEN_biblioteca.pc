@@ -1,0 +1,2866 @@
+/*******************************************************************************/
+/* Nombre       : GEN_biblioteca.pc                                            */
+/* Objetivo : Biblioteca de rutinas de uso general por los programas de        */
+/*            Comisiones.                                                      */
+/* Autor        : Richard Troncoso C.                                          */
+/* Fecha        : 30/10/2001                                                   */
+/*                                                                             */
+/* tabstop=4                                                                   */
+/* Modificacones   fecha         Descripcion                                   */
+/* Jaime Vargas    19/12/2002    Se incorpora nueva rutina que controlara los  */
+/*                               blancos a la derecha                          */
+/*                               de una cadema de caracteres                   */
+/*******************************************************************************/
+/* Incorporacion de nuevo procedimiento que carga periodos                     */
+/* PGonzaleg 26-12-2002                                                        */
+/*******************************************************************************/
+/* 1. Se corrige funcion de carga de ciclos, para que reciba por parámetro el  */
+/*    ciclo a cargar y la estructura vacía donde cargar los datos, y devuelva  */
+/*    un TRUE/FALSE dependiendo del resultado de la carga.                     */
+/* 2. Se incorpran funciones de carga de esdtructuras de apoyo a la selección. */
+/*    Esta estructura es definida en archivo .h, y su uso se hace extensivo a  */
+/*    todos los procesos de Selección de Información.                          */
+/* 3. Se incorpran funciones de carga de estructura de apoyo a la valoración   */
+/*    de la información, referente a los conceptos y tipos de comisionista     */
+/*    sobre los que se aplican las distintas formas comisionales. Su uso se    */
+/*    hace extensivo a todos los procesos de Valoración.                       */
+/* Fabián Aedo R. Jul-2003 Cuzco.                                              */
+/*                                                                             */
+/* 4. Se incorpora funcion para validar si se deben ejecutar procesos de       */
+/*    Gestor de Retensiones.                                                   */
+/*******************************************************************************/
+
+#define _Bibliotecas_
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include "GEN_biblioteca.h"
+
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+
+/******************************************************************************
+ * Valida que agrega-modifica-cierra traza de bloque. CMT_TRAZAS_BLOQUES
+ * Retorno: 
+ *              < 0 -> Error Oracle.
+ *              = 0 -> Exito.
+ *              > 0 -> Error no grave.
+ ******************************************************************************/
+
+int iModifica_Traza_Bloque()
+{
+        char reproceso;
+
+        EXEC SQL begin declare section;
+                short   sql_ord_bloque;
+                short   sql_ord_primer_bloque;
+                int             sql_veces;
+                long    sql_cod_periodo;
+                long    sql_sec_bloque;
+                char    sql_ind_estado;
+                char    sql_cod_bloque[16]; EXEC SQL var sql_cod_bloque is string(16);
+                char    sql_cod_bloque_ant[16]; EXEC SQL var sql_cod_bloque_ant is string(16);
+                char    sql_cod_linea_proc[3]; EXEC SQL var sql_cod_linea_proc is string(3);
+                char    sql_id_periodo[11]; EXEC SQL var sql_id_periodo is string(11);
+                char    sql_nom_usuario[31]; EXEC SQL var sql_nom_usuario is string(31);
+        EXEC SQL end declare section;
+
+        strcpy(sql_cod_bloque, bloque.cod_bloque);
+        strcpy(sql_id_periodo, bloque.id_periodo);
+        /*
+        strcpy(sql_nom_usuario, bloque.nom_usuario);
+        */
+        sql_ind_estado = bloque.ind_estado;
+        sql_sec_bloque = bloque.sec_bloque;
+
+        fprintf(stderr,"\n\n >>>>>>>>>>>> BIBLIOTECA  BLOQUES <<<<<<<<<<<<<<<<\n\n");
+
+        fprintf(stderr," BLOQUE: [%s] PERIODO: [%s] ESTADO: [%c] SECUENCIA_BLOQUE: [%d]\n",
+                sql_cod_bloque, sql_id_periodo, sql_ind_estado, sql_sec_bloque);
+        fprintf(stderr,"\n\n");
+
+        /* obtencion de parametros del bloque */
+        EXEC SQL select ord_bloque, cod_linea_proc
+                         into   :sql_ord_bloque, :sql_cod_linea_proc
+                         from   cmd_bloques
+                         where  cod_bloque = :sql_cod_bloque;
+
+        if (sqlca.sqlcode == -915)
+                return EXIT__506;
+        else if (sqlca.sqlcode)
+                return EXIT_505;
+
+        reproceso = sql_cod_linea_proc[0];
+
+        /* verificacion del bloque en ejecucion */
+        sql_veces = 0;
+        EXEC SQL select count(*)
+                         into   :sql_veces
+                         from   cmt_trazas_bloques
+                         where  sec_bloque > 0
+                           and  ind_estado = 'I';
+
+        if (sqlca.sqlcode == -1031)
+                return EXIT__509;       
+        else if (sqlca.sqlcode == -915)
+                return EXIT__506;
+        else if (sqlca.sqlcode)
+                return EXIT__500;
+        else if (sql_veces && sql_ind_estado == 'I') 
+                return EXIT_501;
+
+        /* verificacion de bloque cerrado */
+        sql_veces = 0;
+        EXEC SQL select count(*)
+                         into   :sql_veces
+                         from   cmt_trazas_bloques
+                         where  sec_bloque > 0
+                           and  cod_bloque = :sql_cod_bloque
+                           and  id_periodo = :sql_id_periodo
+                           and  ind_estado = 'T';
+
+        if (sqlca.sqlcode == -1031)
+                return EXIT__509;       
+        else if (sqlca.sqlcode == -915)
+                return EXIT__506;
+        else if (sqlca.sqlcode)
+                return EXIT__500;
+        else if (sql_veces && reproceso != 'R') 
+                return EXIT_506;
+
+        /* obtencion del primer bloque de ejecucion */
+        sql_ord_primer_bloque = 0;
+        EXEC SQL select min(ord_bloque)
+                         into   :sql_ord_primer_bloque
+                         from   cmd_bloques
+                         where  cod_bloque > '0' 
+                           and  cod_linea_proc = :sql_cod_linea_proc;
+
+        if (sqlca.sqlcode == -915)
+                return EXIT__506;
+        else if (sqlca.sqlcode)
+                return EXIT__500;
+
+        if (sql_ord_primer_bloque != sql_ord_bloque)
+        {
+                /* ahora se debe revisar al bloque anterior */
+                EXEC SQL select cod_bloque
+                                 into   :sql_cod_bloque_ant
+                                 from   cmd_bloques
+                                 where  cod_bloque > '0'
+                                   and  ord_bloque + 1 = :sql_ord_bloque
+                                   and  cod_linea_proc = :sql_cod_linea_proc;
+
+                if (sqlca.sqlcode == -915)
+                        return EXIT__506;
+                else if (sqlca.sqlcode)
+                        return EXIT__500;
+
+                /* para bloque anterior se revisa su estado */
+        sql_veces = 0;
+        EXEC SQL select count(*)
+                 into   :sql_veces
+                 from   cmt_trazas_bloques
+                 where  sec_bloque > 0
+                                   and  id_periodo = :sql_id_periodo
+                   and  cod_bloque = :sql_cod_bloque_ant;
+
+        if (sqlca.sqlcode == -1031)
+            return EXIT__509;
+                else if (sqlca.sqlcode == -915)
+                        return EXIT__506;
+        else if (sqlca.sqlcode)
+            return EXIT__500;
+        else if (!sql_veces)
+            return EXIT_507; /* bloque anterior no ejecutado */
+
+                sql_veces = 0;
+                EXEC SQL select count(*)
+                                 into   :sql_veces
+                                 from   cmt_trazas_bloques
+                                 where  sec_bloque > 0
+                                   and  id_periodo  = :sql_id_periodo
+                                   and  cod_bloque  = :sql_cod_bloque_ant
+                                   and  sec_bloque  = (select max(sec_bloque)
+                                                                           from   cmt_trazas_bloques
+                                                                           where  id_periodo  = :sql_id_periodo
+                                                                                 and  cod_bloque  = :sql_cod_bloque_ant)
+                                   and  ind_estado  = 'I';
+
+                if (sqlca.sqlcode == -1031)
+                        return EXIT__509;
+                else if (sqlca.sqlcode == -915)
+                        return EXIT__506;
+                else if (sqlca.sqlcode)
+                        return EXIT__500;
+                else if (sql_veces)
+                        return EXIT_508; /* bloque anterior en ejecucion */
+
+        sql_veces = 0;
+        EXEC SQL select count(*)
+                 into   :sql_veces
+                 from   cmt_trazas_bloques
+                 where  sec_bloque > 0
+                                   and  id_periodo = :sql_id_periodo
+                   and  cod_bloque = :sql_cod_bloque_ant
+                                   and  sec_bloque  = (select max(sec_bloque)
+                                                                           from   cmt_trazas_bloques
+                                                                           where  id_periodo  = :sql_id_periodo
+                                                                                 and  cod_bloque  = :sql_cod_bloque_ant)
+                   and  ind_estado = 'F';
+
+        if (sqlca.sqlcode == -1031)
+            return EXIT__509;
+                else if (sqlca.sqlcode == -915)
+                        return EXIT__506;
+        else if (sqlca.sqlcode)
+            return EXIT__500;
+        else if (sql_veces)
+            return EXIT_509; /* bloque anterior termino con error */
+        }
+
+        if (sql_ind_estado == 'I')
+        {
+                /*EXEC SQL select cod_periodo                        */
+                /*               into   :sql_cod_periodo             */
+                /*               from   cmd_periodos                 */
+                /*               where  id_periodo = :sql_id_periodo;*/
+                                 
+                EXEC SQL SELECT COD_CICLCOMIS                                   /* Incorporado Por PGonzaleg 3-01-2003. Modificacion de Periodos. */ 
+                                INTO    :sql_cod_periodo                        /* Incorporado Por PGonzaleg 3-01-2003. Modificacion de Periodos. */ 
+                                FROM    CM_CICLCOMIS_TD                         /* Incorporado Por PGonzaleg 3-01-2003. Modificacion de Periodos. */ 
+                                WHERE   ID_CICLCOMIS = :sql_id_periodo;         /* Incorporado Por PGonzaleg 3-01-2003. Modificacion de Periodos. */ 
+
+                if (sqlca.sqlcode == -915)
+                        return EXIT__506;
+                else if (sqlca.sqlcode > 0)
+                        return EXIT_514;
+                else if (sqlca.sqlcode)
+                        return EXIT__500;
+
+                EXEC SQL select user
+                                        into     :sql_nom_usuario
+                                        from     dual;
+
+                if (sqlca.sqlcode)
+                        return EXIT__500;
+/*
+fprintf(stderr,"[%d] [%s] [%s]\n", sql_sec_bloque, sql_cod_bloque, sql_id_periodo);
+fprintf(stderr,"[%c] [%s] \n", sql_ind_estado, sql_nom_usuario);
+*/
+
+                EXEC SQL insert into cmt_trazas_bloques (
+                                                SEC_BLOQUE, COD_BLOQUE, ID_PERIODO,
+                                                COD_PERIODO, IND_ESTADO, FEC_INICIO,
+                                                NOM_USUARIO)
+                                 values (
+                                                :sql_sec_bloque,  :sql_cod_bloque, :sql_id_periodo,
+                                                :sql_cod_periodo, :sql_ind_estado, sysdate,
+                                                :sql_nom_usuario);
+
+                if ( sqlca.sqlcode == -1) {
+                        EXEC SQL rollback;
+                        return EXIT__515;
+                }
+                else if (sqlca.sqlcode == -1031) {
+                        EXEC SQL rollback;
+                        return EXIT__507;
+                }
+                else if (sqlca.sqlcode == -915) {
+                        EXEC SQL rollback;
+                        return EXIT__506;
+                }
+                else if (sqlca.sqlcode) {
+                        EXEC SQL rollback;
+                        return EXIT__504; 
+                }
+
+                EXEC SQL commit;
+        }
+        else if (sql_ind_estado == 'F' || sql_ind_estado == 'T')
+        {
+
+                EXEC SQL update cmt_trazas_bloques 
+                                 set    ind_estado = :sql_ind_estado,
+                                                fec_termino= sysdate
+                                 where  sec_bloque > 0
+                                   and  cod_bloque = :sql_cod_bloque
+                                   and  ind_estado = 'I'
+                                   and  fec_termino is null;
+
+                if (sqlca.sqlcode == -1031)
+                {
+                        EXEC SQL rollback;
+                        return EXIT__508;
+                }
+                else if (sqlca.sqlcode == -915)
+                {
+                        EXEC SQL rollback;
+                        return EXIT__506;
+                }
+                else if (sqlca.sqlcode)
+                {
+                        EXEC SQL rollback;
+                        return EXIT__505;
+                }
+
+                EXEC SQL commit;
+        }
+        else
+                return EXIT_517; /* indicador de estado no valido para procesar */
+        return 0; /* proceso termino OK */
+}
+
+/******************************************************************************
+ * Valida que agrega-modifica-cierra traza de proceso.
+ * Retorno:
+ *              < 0 -> Error Oracle.
+ *              = 0 -> Exito.
+ *              > 0 -> Error no grave.
+ ******************************************************************************/
+
+/*******************************************************************************/
+/* Valida que agrega-modifica-cierra traza de proceso.                         */
+/* Retorno:                                                                    */
+/*              < 0 -> Error Oracle.                                           */
+/*              = 0 -> Exito.                                                  */
+/*              > 0 -> Error no grave.                                         */
+/*******************************************************************************/
+int iModifica_Traza_Proceso()
+{
+	EXEC SQL begin declare section;
+		int 	sql_veces;
+		long	sql_cod_periodo;
+		long	sql_ord_proceso;
+		long	sql_ord_primer_proceso;
+		long	sql_sec_bloque;
+		long	sql_num_segundos;
+		long	sql_num_registros;
+		long	sql_sec_proceso;
+		short	sql_cod_error;
+		    	
+		char	sql_cod_bloque[16];
+		char	sql_cod_proceso[16];
+		    	
+		char	sql_ind_estado;
+		char	sql_des_error[101]; 
+		char	sql_cod_proceso_ant[16]; EXEC SQL var sql_cod_proceso_ant is string(16);
+		char	sql_cod_bloque_ant[16]; EXEC SQL var sql_cod_bloque_ant is string(16);
+		char	sql_cod_linea_proc[3]; EXEC SQL var sql_cod_linea_proc is string(3);
+		char	sql_id_periodo[11]; 
+		char	sql_nom_usuario[31]; EXEC SQL var sql_nom_usuario is string(31);
+		char	sql_fec_inicio[20];
+		char	sql_fec_termino[20];
+	EXEC SQL end declare section;
+
+    strcpy(sql_cod_bloque   , proceso.cod_bloque);
+    strcpy(sql_des_error    , proceso.des_error);
+    strcpy(sql_cod_proceso  , proceso.cod_proceso);
+    sql_sec_bloque          = proceso.sec_bloque;
+    sql_sec_proceso         = proceso.sec_proceso;
+    sql_num_segundos        = proceso.num_segundos;
+    sql_cod_error           = proceso.cod_error;
+    sql_num_registros       = proceso.num_registros;
+    sql_ind_estado          = proceso.ind_estado;
+
+    fprintf(stderr,"\n\n >>>>>>>>>>>> BIBLIOTECA PROCESOS <<<<<<<<<<<<<<<<\n\n");
+    fprintf(stderr, "BLOQUE:[%s] SEC_BLOQUE:[%d] PROCESO:[%s] SEC_PROCESO:[%d] SEGUNDOS:[%d]\n", 
+                    sql_cod_bloque, sql_sec_bloque, sql_cod_proceso, 
+                    sql_sec_proceso, sql_num_segundos);
+    fprintf(stderr,"ERROR:[%d] REGISTROS:[%d] DES_ERROR:[%s] ESTADO:[%c]\n", 
+                    sql_cod_error, sql_num_registros, sql_des_error, sql_ind_estado);
+    fprintf(stderr,"\n\n");
+
+    EXEC SQL SELECT COD_PERIODO,ID_PERIODO
+            INTO :sql_cod_periodo,:sql_id_periodo
+            FROM CMT_TRAZAS_BLOQUES
+            WHERE SEC_BLOQUE = :sql_sec_bloque;
+
+    if (sqlca.sqlcode != 0) 
+    {
+		fprintf(stderr, "\n[BIBLIOTECA] Error recuperando Ciclo de Comisiones.   [%d][%s]\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc); 
+		return EXIT__500;
+	}
+	switch(sql_ind_estado)
+    {
+		case 'I':
+            EXEC SQL insert into cmt_trazas_procesos(
+            	SEC_PROCESO, SEC_BLOQUE, COD_BLOQUE, 
+                COD_PROCESO, ID_PERIODO, COD_PERIODO, 
+                IND_ESTADO, FEC_INICIO, NOM_USUARIO)
+                VALUES (
+                :sql_sec_proceso, :sql_sec_bloque, :sql_cod_bloque,
+                :sql_cod_proceso, :sql_id_periodo, :sql_cod_periodo,
+                :sql_ind_estado , SYSDATE,USER);
+        	break; 
+        case 'T':
+			EXEC SQL update cmt_trazas_procesos
+				SET    ind_estado = :sql_ind_estado,
+                fec_termino= sysdate, 
+                num_segundos = :sql_num_segundos,
+                num_registros= :sql_num_registros
+                WHERE  sec_proceso= :sql_sec_proceso
+                AND  sec_bloque = :sql_sec_bloque
+                AND  cod_proceso= :sql_cod_proceso
+                AND  cod_bloque = :sql_cod_bloque
+                AND  id_periodo = :sql_id_periodo
+                AND  ind_estado = 'I';
+			break;
+		case 'F':
+        	EXEC SQL UPDATE CMT_TRAZAS_PROCESOS
+            	SET IND_ESTADO 		= :sql_ind_estado,
+                	FEC_TERMINO		= sysdate, 
+                	NUM_SEGUNDOS 	= :sql_num_segundos,
+                	NUM_REGISTROS	= 0,
+                	COD_ERROR  		= :sql_cod_error,
+                	DES_ERROR  		= :sql_des_error
+                WHERE  SEC_PROCESO	= :sql_sec_proceso
+                AND  SEC_BLOQUE 	= :sql_sec_bloque
+                AND  COD_PROCESO	= :sql_cod_proceso
+                AND  COD_BLOQUE 	= :sql_cod_bloque
+                AND  ID_PERIODO 	= :sql_id_periodo
+                AND  IND_ESTADO 	= 'I';
+	}
+    if (sqlca.sqlcode != 0) 
+    {
+		fprintf(stderr, "\n[BIBLIOTECA] Error Actualizando Trazas de Procesos.   [%d][%s]\n",sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc); 
+    	EXEC SQL rollback;
+        return EXIT__500;
+    }
+    EXEC SQL commit; 
+    return 0;
+}
+
+/*****************************************************************/
+/* Funcion encargada de buscar un secuencial de bloque-proceso   */
+/*****************************************************************/
+long   lDBGetSequenceNextVal ()
+{
+   EXEC SQL BEGIN DECLARE SECTION;
+         long sqlSEQ_BLOQUE;
+   EXEC SQL END DECLARE SECTION;
+
+   EXEC SQL
+        SELECT CMS_IND_TRAZAS.NEXTVAL
+      INTO   :sqlSEQ_BLOQUE
+      FROM   DUAL;
+   return(sqlSEQ_BLOQUE);
+}
+
+/********************************************************************************/
+/* Se inicia estructura "proceso" que se maneja en los programas.               */
+/* ******************************************************************************/
+int iAccesa_Traza_Procesos(char estado, short cod_error, char * des_error,long num_segundos, long num_registros)
+{
+    proceso.ind_estado = estado;
+
+    /* se obtiene secuencia de proceso */
+    if (estado == ABRIR_TRAZA)
+        proceso.sec_proceso = lDBGetSequenceNextVal();
+    else if (estado == CERRAR_TRAZA_NOK)
+    {
+        EXEC SQL rollback work;
+        proceso.cod_error = cod_error;
+        strcpy(proceso.des_error, des_error);
+    }
+    else if (estado == CERRAR_TRAZA_OK)
+    {
+        proceso.num_segundos = num_segundos;
+        proceso.num_registros= num_registros;
+    }
+    return iModifica_Traza_Proceso();
+}
+
+/******************************************************************************
+ * Se inicia estructura "proceso" que se maneja en los programas.
+ ******************************************************************************/
+
+void vInicia_Estructura_Procesos(char * bloque, char * proces,char * usuario  , int sec_bloque)
+{
+   strcpy(proceso.cod_bloque, bloque);
+   proceso.sec_bloque = sec_bloque;
+   strcpy(proceso.cod_proceso, proces);
+   strcpy(proceso.nom_usuario, usuario);
+}
+
+/*---------------------------------------------------------------------------*/
+/* Rutina para manejo de mensajes de errores Oracle.                         */
+/*---------------------------------------------------------------------------*/
+
+void vSqlError()
+{
+	EXEC SQL ROLLBACK WORK;
+
+    fprintf(stderr,"\n\nERROR. Se Cierra Traza de Procesos.");
+    fprintf(stderr,"[%d] [%s]\n\n", sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+   	exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,0,sqlca.sqlerrm.sqlerrmc,0,0));
+}
+void vSqlError_EXT()
+{
+	EXEC SQL ROLLBACK WORK;
+
+    fprintf(stderr,"\n\nError. Proceso se Cancela.");
+    fprintf(stderr,"[%d] [%s]\n\n", sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc);
+	ifnActualizaTrazasExtractores(0, "", sqlca.sqlcode, sqlca.sqlerrm.sqlerrmc, iCIERRATRAZAERROR);
+   	exit(EXIT_111);
+}
+
+/*---------------------------------------------------------------------------*/
+/* Rutina para manejo y validacion de argumentos ingresados como parametros  */
+/* externos.                                                                 */
+/*---------------------------------------------------------------------------*/
+void  vManejaArgs (int argc, char * const argv[])
+{
+   int         iOpt = 0;
+   extern char *optarg;
+   char        opstring[] = ":u:p:c:b:s:a:t:";
+   char        *szUserid_Aux;
+   char        userid[70];
+
+   while((iOpt=getopt(argc, argv, opstring)) != EOF)
+   {
+      switch(iOpt)
+      {
+      case 'u':
+         if(stArgs.bFlagUser == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUso);
+               exit(EXIT_104);
+            }
+            strcpy(userid, optarg);
+            if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+            {
+               fprintf(stderr, "\nUsuario Oracle no es valido\n");
+               fprintf(stderr, "%s\n\n", szUso);
+               exit(EXIT_104);
+            }
+            else
+            {
+               strncpy(stArgs.szUser, userid, szUserid_Aux-userid);
+               strcpy(stArgs.szPass, szUserid_Aux+1);
+            }
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUso);
+            exit(EXIT_104);
+         }
+         stArgs.bFlagUser=TRUE;
+         break;
+
+      case 'p':
+         if(stArgs.bFlagPeriodo == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUso);
+               exit(EXIT_101);
+            }
+            strcpy(stArgs.szIdPeriodo, optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUso);
+            exit(EXIT_101);
+         }
+         stArgs.bFlagPeriodo = TRUE;
+         break;
+      case 'c':
+         if(stArgs.bFlagProceso == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUso);
+               exit(EXIT_105);
+            }
+            strcpy(stArgs.szProceso,optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUso);
+            exit(EXIT_105);
+         }
+         stArgs.bFlagProceso = TRUE;
+         break;
+
+      case 'b':
+         if(stArgs.bFlagBloque == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUso);
+               exit(EXIT_106);
+            }
+            strcpy(stArgs.szBloque,optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUso);
+            exit(EXIT_106);
+         }
+         stArgs.bFlagBloque = TRUE;
+         break;
+
+      case 's':
+         if(stArgs.bFlagSecuencia == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUso);
+               exit(EXIT_107);
+            }
+            stArgs.izSecuencia = atoi(optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUso);
+            exit(EXIT_107);
+         }
+         stArgs.bFlagSecuencia = TRUE;
+         break;
+               
+      case '?':
+         fprintf(stderr, "Opcion -%c no reconocida. Se cancela.\n", optopt);
+         fprintf(stderr, "%s\n\n", szUso);
+         exit(EXIT_100);
+      }  /* Fin switch */
+   }     /* Fin while  */
+   /* *********************************************************************** */
+   /* ****************************** VALIDACIONES *************************** */
+   /* *********************************************************************** */
+   if(stArgs.bFlagPeriodo == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -p[Periodo(<YYYYMM><A><M><1>)]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUso);
+      exit(EXIT_104);
+   }
+   if(stArgs.bFlagProceso == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -c[Proceso]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUso);
+      exit(EXIT_105);
+   }
+   if(stArgs.bFlagBloque == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -b[Bloque]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUso);
+      exit(EXIT_106);
+   }
+   if(stArgs.bFlagSecuencia == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -s[Secuencia Bloque]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUso);
+      exit(EXIT_107);
+   }
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina para manejo y validacion de argumentos ingresados como parametros  */
+/* externos.   SOLO PARA EXTRACTORES                                         */
+/*---------------------------------------------------------------------------*/
+void  vManejaArgsExt (int argc, char * const argv[])
+{
+   int         iOpt = 0;
+   extern char *optarg;
+   char        opstring[] = ":u:d:h:s:";
+   char        *szUserid_Aux;
+   char        userid[70];
+
+   while((iOpt=getopt(argc, argv, opstring)) != EOF)
+   {
+       
+      switch(iOpt)
+      {
+      case 'u':
+         if(stArgsExt.bFlagUser == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUsoExt);
+               exit(EXIT_104);
+            }
+            strcpy(userid, optarg);
+            if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+            {
+               fprintf(stderr, "\nUsuario Oracle no es valido\n");
+               fprintf(stderr, "%s\n\n", szUsoExt);
+               exit(EXIT_104);
+            }
+            else
+            {
+               strncpy(stArgsExt.szUser, userid, szUserid_Aux-userid);
+               strcpy(stArgsExt.szPass, szUserid_Aux+1);
+            }
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUsoExt);
+            exit(EXIT_104);
+         }
+         stArgsExt.bFlagUser=TRUE;
+         break;
+
+     case 's':
+         if(stArgsExt.bFlagSecuencia == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUsoExt);
+               exit(EXIT_104);
+            }
+            stArgsExt.lNumSecuencia = atol(optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUsoExt);
+            exit(EXIT_104);
+         }
+         stArgsExt.bFlagSecuencia=TRUE;
+         break;
+
+      case 'd':
+         if(stArgsExt.bFlagFecDesde == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUsoExt);
+               exit(EXIT_105);
+            }
+            strcpy(stArgsExt.szFecDesde,optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUsoExt);
+            exit(EXIT_105);
+         }
+         stArgsExt.bFlagFecDesde = TRUE;
+         break;
+
+      case 'h':
+         if(stArgsExt.bFlagFecHasta == FALSE)
+         {
+            if(optarg[0]=='-')
+            {
+               fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n", optopt);
+               fprintf(stderr, "%s\n\n", szUsoExt);
+               exit(EXIT_105);
+            }
+            strcpy(stArgsExt.szFecHasta,optarg);
+         }
+         else
+         {
+            fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+            fprintf(stderr, "%s\n\n", szUsoExt);
+            exit(EXIT_105);
+         }
+         stArgsExt.bFlagFecHasta = TRUE;
+         break;
+
+
+               
+      case '?':
+         fprintf(stderr, "Opcion -%c no reconocida. Se cancela.\n", optopt);
+         fprintf(stderr, "%s\n\n", szUsoExt);
+         exit(EXIT_100);
+      }  /* Fin switch */
+   }     /* Fin while  */
+   /* *********************************************************************** */
+   /* ****************************** VALIDACIONES *************************** */
+   /* *********************************************************************** */
+   if(stArgsExt.bFlagUser == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -u[User/Pass]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUsoExt);
+      exit(EXIT_104);
+   }
+   if(stArgsExt.bFlagSecuencia == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -s[Secuencia Ejecucion]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUsoExt);
+      exit(EXIT_104);
+   }   
+   if(stArgsExt.bFlagFecDesde == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -c[Fecha Desde <YYYYMMDD>]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUsoExt);
+      exit(EXIT_105);
+   }
+   if(stArgsExt.bFlagFecHasta == FALSE)
+   {
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "Se requiere argumento -c[Fecha Hasta <YYYYMMDD>]\n");
+      fprintf(stderr, "%s\n", szRaya);
+      fprintf(stderr, "%s\n\n", szUsoExt);
+      exit(EXIT_105);
+   }
+}
+/******************************************************************************
+ * Abre archivo de log standar.
+ ******************************************************************************/
+
+FILE *fAbreArchivoLog()
+{
+	char szNomFile[300];
+	char szComando[100];
+
+	sprintf(szComando,"mkdir -p %s",stArgsLog.szPath);
+	system (szComando);
+	if (stArgsLog.szExtension[0] = 0)
+		strcpy(stArgsLog.szExtension, LOG);
+		
+    sprintf(szNomFile,"%s/%s_%s.%s" ,stArgsLog.szPath
+                                     ,stArgsLog.szProceso
+                                     ,stArgsLog.szSysDate
+                                     ,stArgsLog.szExtension);    
+        
+	fprintf(stderr,"Path    de log : [%s]\n",stArgsLog.szPath);  
+    fprintf(stderr,"Archivo de log : [%s]\n",szNomFile);   
+                                               
+    return(fopen(szNomFile,"w"));
+}
+
+/******************************************************************************
+ * Funcion que busca el nombre de tabla fisica asociada a tabla logica 
+   (Gestion de Enlace ).
+   Retorno TRUE->EXITO FALSE->ERROR
+ ******************************************************************************/
+
+int iBuscaTablaFisica(char *szTablaLogica, char * szIdPeriodo,char *szTablaFisica)
+{
+	EXEC SQL BEGIN DECLARE SECTION;    
+        char szhTablaLogica[31];
+        char szhTablaFisica[31];
+        char szhIdCiclComis[11];
+	EXEC SQL END DECLARE SECTION;    
+    
+    strcpy(szhIdCiclComis	, szIdPeriodo);
+    strcpy(szhTablaLogica	, szTablaLogica);
+        
+    EXEC SQL SELECT NVL(NOM_FISICO, '0')                              
+                INTO :szhTablaFisica                                  
+                FROM CM_ENLACEHIST_TO                                 
+                WHERE ID_PERIODO = :szhIdCiclComis
+                AND NOM_LOGICO = :szhTablaLogica;
+
+        if (sqlca.sqlcode != SQLOK)
+        {
+            strcpy(szTablaFisica,"0");
+            return FALSE;
+        }
+        else
+        {
+        	strcpy(szTablaFisica,szhTablaFisica);
+        }
+        return TRUE;
+}
+
+/*---------------------------------------------------------------------------*/
+/* QUITA LOS ESPACIOS EN BLANCO AL INICIO Y AL FINAL DE UNA CADENA DE        */
+/* CARACTERES                                                                */
+/*---------------------------------------------------------------------------*/
+char * szfnTrim(char * strin)
+{
+        int  i= 0,l=0;
+        char strtmps[STR_HUGE];
+  
+        memset(strtmps, 0, STR_LONG);
+        
+        while (*(strin + i) == ' ') 
+                i++;
+         
+        strcpy(strtmps,(strin + i));    
+         
+        
+        l = strlen(strtmps) - 1;
+        while ((l >= 0) && ((*(strtmps + l ) == ' ')||(*(strtmps + l ) == '\n')))
+        {        
+                *(strtmps + l ) = '\0';l--;
+        }
+        
+        strcpy(strin,strtmps);
+        return(strin);
+}
+/*---------------------------------------------------------------------------*/
+/* Función que retorna fecha en formato para creación de logs.               */
+/*---------------------------------------------------------------------------*/
+char * szfnObtieneFecYYYYMMDD()
+{
+        EXEC SQL BEGIN DECLARE SECTION;
+                char    szhFecLog[9];   
+        EXEC SQL END DECLARE SECTION;
+        
+    EXEC SQL
+            SELECT  TO_CHAR(SYSDATE,'YYYYMMDD') INTO
+                :szhFecLog 
+            FROM DUAL;
+
+        return (szhFecLog);
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina para recuperar fechas que definen Ciclo a procesar.                */
+/*---------------------------------------------------------------------------*/
+int vCargaCiclo(char * pszIdCiclComis,reg_ciclo * stMiCiclo)
+{
+    int		bRet = FALSE; 
+    EXEC SQL BEGIN DECLARE SECTION;
+	    char    szhIdCiclComisAnt[11];
+	    long    lhCodCiclComis;
+	    long    lhCiclo;
+	    char    szhIdCiclComis[11];             
+	    char	szhTipCiclComis;
+	    char	szhDesCiclcomis[61];                
+	    char    szhFecDesdeNormal[11];
+	    char    szhFecHastaNormal[11];
+	    char    szhFecDesdePrepago[11];
+	    char    szhFecHastaPrepago[11];
+	    char    szhFecDesdeAceptacion[11];
+	    char    szhFecHastaAceptacion[11];
+	    char    szhFecDesdeRecepcion[11];
+	    char    szhFecHastaRecepcion[11];
+	    char    szhCodEstado[4];
+	    char    szhFecHastaAceptacionAnt[11];
+	    char    szhFecHastaRecepcionAnt[11];      
+	    char	szhTipPeriodo[2];      
+    EXEC SQL END DECLARE SECTION;
+                
+	strcpy(szhIdCiclComis, pszIdCiclComis);
+        
+        
+	EXEC SQL SELECT  	TO_CHAR(FEC_DESDE_NORMAL        ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_HASTA_NORMAL        ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_DESDE_PREPAGO       ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_HASTA_PREPAGO       ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_DESDE_ACEPTACION    ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_HASTA_ACEPTACION    ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_DESDE_RECEPCION     ,'DD-MM-YYYY'),
+                        TO_CHAR(FEC_HASTA_RECEPCION     ,'DD-MM-YYYY'),
+                        COD_CICLCOMIS,
+                        COD_CICLO,
+                        COD_ESTADO,
+                        TIP_CICLCOMIS,
+                        NVL(DES_CICLCOMIS,'CICLO PERIODICO'),
+                        TIP_PERIODO
+                INTO    :szhFecDesdeNormal  ,
+                        :szhFecHastaNormal  ,
+                        :szhFecDesdePrepago ,
+                        :szhFecHastaPrepago ,
+                        :szhFecDesdeAceptacion,
+                        :szhFecHastaAceptacion,
+                        :szhFecDesdeRecepcion,
+                        :szhFecHastaRecepcion,
+                        :lhCodCiclComis,
+                        :lhCiclo,
+                        :szhCodEstado,
+                        :szhTipCiclComis,
+                        :szhDesCiclcomis,
+                        :szhTipPeriodo
+                FROM    CM_CICLCOMIS_TD
+                WHERE   ID_CICLCOMIS = :szhIdCiclComis;
+
+    if (sqlca.sqlcode==0)
+    {
+    	bRet = TRUE;
+        stMiCiclo->lCodCiclComis           			= lhCodCiclComis;
+        stMiCiclo->lCodCiclo               			= lhCiclo;
+        stMiCiclo->cTipCiclComis           			=szhTipCiclComis;
+        strcpy(stMiCiclo->szIdCiclComis            	,szfnTrim(szhIdCiclComis        ));
+        strcpy(stMiCiclo->szFecDesdeNormal         	,szfnTrim(szhFecDesdeNormal     ));
+        strcpy(stMiCiclo->szFecHastaNormal         	,szfnTrim(szhFecHastaNormal     ));
+        strcpy(stMiCiclo->szFecDesdePrepago        	,szfnTrim(szhFecDesdePrepago    ));
+        strcpy(stMiCiclo->szFecHastaPrepago        	,szfnTrim(szhFecHastaPrepago    ));
+        strcpy(stMiCiclo->szFecDesdeAceptacion     	,szfnTrim(szhFecDesdeAceptacion ));
+        strcpy(stMiCiclo->szFecHastaAceptacion     	,szfnTrim(szhFecHastaAceptacion ));
+        strcpy(stMiCiclo->szFecDesdeRecepcion      	,szfnTrim(szhFecDesdeRecepcion  ));
+        strcpy(stMiCiclo->szFecHastaRecepcion      	,szfnTrim(szhFecHastaRecepcion  ));      
+        strcpy(stMiCiclo->szCodEstado              	,szfnTrim(szhCodEstado          ));
+        strcpy(stMiCiclo->szDesCiclcomis           	,szfnTrim(szhDesCiclcomis       ));
+        strcpy(stMiCiclo->szTipPeriodo             	,szfnTrim(szhTipPeriodo));
+
+        fprintf (stderr, "--------------------Carga de Ciclos--------------------\n");
+        fprintf (stderr, "[CargaCiclo]Ciclo                         [%ld]\n", stMiCiclo->lCodCiclo             );
+        fprintf (stderr, "[CargaCiclo]Ciclo de Comision             [%ld]\n", stMiCiclo->lCodCiclComis         );
+        fprintf (stderr, "[CargaCiclo]Id Ciclo de Comision          [%s]\n" , stMiCiclo->szIdCiclComis         );
+        fprintf (stderr, "[CargaCiclo]Descripcion Ciclo             [%s]\n" , stMiCiclo->szDesCiclcomis        );
+        fprintf (stderr, "[CargaCiclo]Tipo de Ciclo de Comisiones   [%c]\n" , stMiCiclo->cTipCiclComis         );
+        fprintf (stderr, "[CargaCiclo]Fecha Inicio Normal           [%s]\n" , stMiCiclo->szFecDesdeNormal      );
+        fprintf (stderr, "[CargaCiclo]Fecha Termino Mornal          [%s]\n" , stMiCiclo->szFecHastaNormal      );
+        fprintf (stderr, "[CargaCiclo]Fecha Inicio Prepago          [%s]\n" , stMiCiclo->szFecDesdePrepago     );
+        fprintf (stderr, "[CargaCiclo]Fecha Termino Prepago         [%s]\n" , stMiCiclo->szFecHastaPrepago     );
+        fprintf (stderr, "[CargaCiclo]Fecha Inicio Aceptacion       [%s]\n" , stMiCiclo->szFecDesdeAceptacion  );
+        fprintf (stderr, "[CargaCiclo]Fecha Termino Aceptacion      [%s]\n" , stMiCiclo->szFecHastaAceptacion  );
+        fprintf (stderr, "[CargaCiclo]Fecha Inicio Recepcion        [%s]\n" , stMiCiclo->szFecDesdeRecepcion   );
+        fprintf (stderr, "[CargaCiclo]Fecha Termino Recepcion       [%s]\n" , stMiCiclo->szFecHastaRecepcion   );
+        fprintf (stderr, "[CargaCiclo]Estado del Ciclo              [%s]\n" , stMiCiclo->szCodEstado           );
+        fprintf (stderr, "[CargaCiclo]Tipo de Periodo               [%s]\n" , stMiCiclo->szTipPeriodo         );
+        fprintf (stderr, "-------------------------------------------------------\n");
+    }
+	return bRet;
+}
+
+/*---------------------------------------------------------------------------*/
+/* RUT sin guion y digito verificador (como numero)                          */
+/*---------------------------------------------------------------------------*/
+long lfnGetIntRut(char * s)
+{
+        int i,indice=0;
+        for (i=0; s[i]!='-' && s[i]!='\0';i++)
+                        indice = i;
+        s[indice+1] = '\0';
+        return atol(s);
+}
+/*---------------------------------------------------------------------------*/
+/* OBTENCION DE LA CATEGORIA ASOCIADA AL CLIENTE                             */
+/*---------------------------------------------------------------------------*/
+
+char * szfnGetCategCliente(char catribut, char * rut)
+{
+        
+    EXEC SQL BEGIN DECLARE SECTION;
+            char    szhCodOperadora[6];
+    EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL SELECT COD_OPERADORA_SCL
+        INTO :szhCodOperadora
+        FROM GE_OPERADORA_SCL_LOCAL;
+        
+	if (catribut == 'B')
+		return INDIVIDUAL;
+	else
+		return PYME;
+
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE LA LISTA DE TIPOS DE COMISIONISTAS / TIPOS DE RED CONFIGURADOS    */
+/* PARA EL CONCEPTO ESPECIFICO, EN EL CICLO DE COMISIONES ESPECIFICO.        */
+/* FUNCIONALIDAD UNICA DE CICLOS DE COMISIONES PERIODICOS.                   */
+/*---------------------------------------------------------------------------*/
+stTiposComis * stGetTipComisSelecPer(char *pszCodUniverso, reg_ciclo stCiclo)
+{
+	stTiposComis * paux;
+	stTiposComis * qaux;
+	
+	int				i;                                                         
+	short          	iLastRows    = 0;                                              
+	int            	iFetchedRows = MAXFETCH;                                       
+	int            	iRetrievRows = MAXFETCH;  
+	int				iCuentaRegs  = 0; 	
+		
+	EXEC SQL BEGIN DECLARE SECTION;	
+		char	szhTipPeriodo[2];
+		char	szhTIPOPERIODO[2];
+		char	szhCodUniverso[7];
+		int		ihCodCiclo;
+		char    szhFecHastaNormal[11];
+		char    szhFecDesdeNormal[11];
+		char	chTipCiclComis;
+		long 	lMaxFetch;
+		int		ihCodTipoRed[MAXFETCH];
+		char	szhDesTipoRed[MAXFETCH][31];
+		char	szhCodTipComisS[MAXFETCH][3];
+		char	szhDesTipComisS[MAXFETCH][31];
+		char	szhCodTipComisA[MAXFETCH][3];
+		char	szhDesTipComisA[MAXFETCH][31];
+		char	szhINDPARCIAL[2];
+	EXEC SQL END DECLARE SECTION;
+
+	paux = NULL;
+	qaux = NULL;
+	ihCodCiclo    				= stCiclo.lCodCiclo;
+	chTipCiclComis				= PERIODICO;
+	strcpy(szhCodUniverso 		, pszCodUniverso);
+	strcpy(szhFecHastaNormal 	, stCiclo.szFecHastaNormal);
+	strcpy(szhFecDesdeNormal 	, stCiclo.szFecDesdeNormal);
+	strcpy(szhTipPeriodo	 	, stCiclo.szTipPeriodo);
+	strcpy(szhTIPOPERIODO	 	, TIPPERIODO_M);
+	strcpy(szhINDPARCIAL	 	, INDPARCIAL_S);
+	
+	EXEC SQL DECLARE CUR_TiposComis 
+		CURSOR FOR SELECT DISTINCT
+				A.COD_TIPORED,
+				C.DES_TIPORED,
+				H.COD_TIPCOMIS,
+				G.DES_TIPCOMIS,
+				D.COD_TIPCOMIS,
+				E.DES_TIPCOMIS
+		FROM 	CMD_CONCEPTOS F,
+			 	CM_CONCEPTOSTIPORED_TD A,
+			 	CM_PLANESTIPORED_TD B,
+			 	VE_TIPORED_TD C,
+			 	VE_DETALLE_TIPORED_TD D,
+			 	VE_DETALLE_TIPORED_TD H,
+			 	VE_TIPCOMIS E,
+			 	VE_TIPCOMIS G
+		WHERE F.COD_UNIVERSO   	=  :szhCodUniverso
+		AND F.TIP_CICLCOMIS     =  :chTipCiclComis
+		AND F.COD_CONCEPTO		=  A.COD_CONCEPTO
+		AND A.COD_PLANCOMIS		=  B.COD_PLANCOMIS
+		AND A.COD_TIPORED 		=  B.COD_TIPORED
+		AND B.FEC_DESDE 		<= TO_DATE(:szhFecHastaNormal, 'DD-MM-YYYY')
+		AND B.FEC_HASTA 		>= TO_DATE(:szhFecDesdeNormal, 'DD-MM-YYYY')
+		AND B.COD_TIPORED 		=  C.COD_TIPORED
+		AND C.COD_CICLOCOMIS	=  :ihCodCiclo
+		AND C.COD_TIPORED 		=  D.COD_TIPORED
+		AND D.NUM_NIVEL 		=  A.NIV_SELECCION
+		AND D.COD_TIPCOMIS 		=  E.COD_TIPCOMIS
+		AND C.COD_TIPORED 		=  H.COD_TIPORED
+		AND A.NIV_APLICACION	=  H.NUM_NIVEL
+		AND H.COD_TIPCOMIS		=  G.COD_TIPCOMIS
+		AND((:szhTipPeriodo		=  :szhTIPOPERIODO) OR
+		    (:szhTipPeriodo		!= :szhTIPOPERIODO AND F.IND_PARCIAL = :szhINDPARCIAL));
+		
+	EXEC SQL OPEN CUR_TiposComis;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {
+	    EXEC SQL for :lMaxFetch FETCH CUR_TiposComis INTO
+	    	:ihCodTipoRed,
+	    	:szhDesTipoRed,
+	    	:szhCodTipComisA, 
+	    	:szhDesTipComisA,
+	    	:szhCodTipComisS, 
+	    	:szhDesTipComisS;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stTiposComis *) malloc(sizeof(stTiposComis));
+	        
+	        paux->iCodTipoRed				= ihCodTipoRed[i];
+
+	        strcpy(paux->szDesTipoRed		, szfnTrim(szhDesTipoRed[i]));
+	        strcpy(paux->szCodTipVendedor	, szfnTrim(szhCodTipComisS[i]));
+	        strcpy(paux->szDesTipVendedor	, szfnTrim(szhDesTipComisS[i]));
+	        strcpy(paux->szCodTipComis		, szfnTrim(szhCodTipComisA[i]));
+	        strcpy(paux->szDesTipComis		, szfnTrim(szhDesTipComisA[i]));
+
+	        paux->sgte 						= qaux;
+	        qaux 							= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_TiposComis;
+    fprintf(stderr,"\nCantidad de Tipos de Comisionistas para Universo:[%s] Ciclo[%d] =>[%d]\n",szhCodUniverso, ihCodCiclo ,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE LA LISTA DE TIPOS DE COMISIONISTAS / TIPOS DE RED CONFIGURADOS    */
+/* PARA EL CONCEPTO ESPECIFICO, EN EL CICLO DE COMISIONES ESPECIFICO.        */
+/* FUNCIONALIDAD UNICA DE CICLOS DE COMISIONES PROMOCIONALES.                */
+/*---------------------------------------------------------------------------*/
+stTiposComis * stGetTipComisSelecProm(char *pszCodUniverso, reg_ciclo stCiclo)
+{
+	stTiposComis * paux;
+	stTiposComis * qaux;
+	
+	int				i;                                                         
+	short          	iLastRows    = 0;                                              
+	int            	iFetchedRows = MAXFETCH;                                       
+	int            	iRetrievRows = MAXFETCH;  
+	int				iCuentaRegs  = 0; 
+		
+	EXEC SQL BEGIN DECLARE SECTION;	
+		char	szhTipPeriodo[2];
+		char	szhTIPOPERIODO[2];
+		char	szhCodUniverso[7];
+		int		ihCodCiclo;
+		char	szhIdCiclComis[11];
+		char    szhFecHastaNormal[11];
+		char    szhFecDesdeNormal[11];
+		char	chTipCiclComis;
+		int		ihCodTipoRed[MAXFETCH];
+		char	szhDesTipoRed[MAXFETCH][31];		
+		char	szhCodTipComisA[MAXFETCH][3];
+		char	szhDesTipComisA[MAXFETCH][31];
+		char	szhCodTipComisS[MAXFETCH][3];
+		char	szhDesTipComisS[MAXFETCH][31];
+		char	szhINDPARCIAL[2];
+		long 	lMaxFetch;
+
+	EXEC SQL END DECLARE SECTION;
+	paux = NULL;
+	qaux = NULL;
+
+	ihCodCiclo    				= stCiclo.lCodCiclo;
+	chTipCiclComis				= ESPORADICO;
+	strcpy(szhIdCiclComis		, stCiclo.szIdCiclComis);
+	strcpy(szhCodUniverso 		, pszCodUniverso);
+	strcpy(szhFecHastaNormal 	, stCiclo.szFecHastaNormal);
+	strcpy(szhFecDesdeNormal 	, stCiclo.szFecDesdeNormal);	
+	strcpy(szhTipPeriodo	 	, stCiclo.szTipPeriodo);
+	strcpy(szhTIPOPERIODO	 	, TIPPERIODO_M);
+	strcpy(szhINDPARCIAL	 	, INDPARCIAL_S);
+	
+	EXEC SQL DECLARE CUR_TiposComisProm 
+		CURSOR FOR SELECT DISTINCT
+				A.COD_TIPORED,
+				C.DES_TIPORED,
+				H.COD_TIPCOMIS,
+				G.DES_TIPCOMIS,
+				D.COD_TIPCOMIS,
+				E.DES_TIPCOMIS
+		FROM 	CMD_CONCEPTOS F,
+			 	CM_CONCEPTOSTIPORED_TD A,
+			 	CM_PLANESTIPORED_TD B,
+			 	VE_TIPORED_TD C,
+			 	VE_DETALLE_TIPORED_TD D,
+			 	VE_DETALLE_TIPORED_TD H,
+			 	VE_TIPCOMIS E,
+			 	VE_TIPCOMIS G
+		WHERE F.COD_UNIVERSO   	=  :szhCodUniverso
+		AND F.TIP_CICLCOMIS     =  :chTipCiclComis
+		AND F.ID_CICLCOMIS		=  :szhIdCiclComis
+		AND F.COD_CONCEPTO		=  A.COD_CONCEPTO
+		AND A.COD_PLANCOMIS     =  B.COD_PLANCOMIS
+		AND A.COD_TIPORED 		=  B.COD_TIPORED
+		AND B.FEC_DESDE 		<= TO_DATE(:szhFecHastaNormal, 'DD-MM-YYYY')
+		AND B.FEC_HASTA 		>= TO_DATE(:szhFecDesdeNormal, 'DD-MM-YYYY')
+		AND B.COD_TIPORED 		=  C.COD_TIPORED
+		AND C.COD_CICLOCOMIS	=  :ihCodCiclo
+		AND C.COD_TIPORED 		=  D.COD_TIPORED
+		AND D.NUM_NIVEL 		=  A.NIV_SELECCION
+		AND D.COD_TIPCOMIS 		=  E.COD_TIPCOMIS
+		AND C.COD_TIPORED 		=  H.COD_TIPORED
+		AND A.NIV_APLICACION	=  H.NUM_NIVEL
+		AND H.COD_TIPCOMIS		=  G.COD_TIPCOMIS
+		AND((:szhTipPeriodo		=  :szhTIPOPERIODO) OR
+		     (:szhTipPeriodo		!= :szhTIPOPERIODO AND F.IND_PARCIAL = :szhINDPARCIAL));
+
+	EXEC SQL OPEN CUR_TiposComisProm;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {                                                                              
+	    EXEC SQL for :lMaxFetch FETCH CUR_TiposComisProm INTO
+	    	:ihCodTipoRed,
+	    	:szhDesTipoRed,
+	    	:szhCodTipComisA, 
+	    	:szhDesTipComisA,
+	    	:szhCodTipComisS, 
+	    	:szhDesTipComisS;
+                         
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stTiposComis *) malloc(sizeof(stTiposComis));
+
+	        paux->iCodTipoRed 				= ihCodTipoRed[i];
+	        strcpy(paux->szDesTipoRed		, szfnTrim(szhDesTipoRed[i]));
+	        strcpy(paux->szCodTipVendedor	, szfnTrim(szhCodTipComisS[i]));
+	        strcpy(paux->szDesTipVendedor	, szfnTrim(szhDesTipComisS[i]));
+	        strcpy(paux->szCodTipComis		, szfnTrim(szhCodTipComisA[i]));
+	        strcpy(paux->szDesTipComis		, szfnTrim(szhDesTipComisA[i]));
+	        paux->sgte 						= qaux;
+	        qaux 							= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_TiposComisProm;
+    fprintf(stderr,"\nCantidad de Tipos de Comisionistas para Universo:[%s] Ciclo[%d] =>[%d]\n",szhCodUniverso, ihCodCiclo ,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE LISTA DE CONCEPTOS/TIPO DE RED VIGENTES A SER EVALUADOS PARA UNA  */
+/* FORMA COMISIONAL DADA, Y UN CICLO DE COMISIONES PERIODICO.                */
+/*---------------------------------------------------------------------------*/
+stConceptosProc * stGetConceptosPer_Normal(char *pszCodForma, reg_ciclo stCiclo)
+{
+	stConceptosProc * paux;
+	stConceptosProc * qaux;
+	
+	int				i;                                                         
+	short          	iLastRows    = 0;                                              
+	int            	iFetchedRows = MAXFETCH;                                       
+	int            	iRetrievRows = MAXFETCH;  
+	int				iCuentaRegs  = 0; 
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		int		ihCodCiclo;
+		char	szhIdCiclComis[11];
+		char    szhFecHastaNormal[11];
+		char    szhFecDesdeNormal[11];
+		char	chTipCiclComis;
+		char	szhCodForma[11];
+		char	szhTipPeriodo[2];
+		char	szhTIPOPERIODO[2];
+		
+		int		ihCodTipoRed[MAXFETCH];
+		char	szhCodPlanComis[MAXFETCH][6];  
+		char	szhCodTipComis[MAXFETCH][3];  
+		int		ihCodConcepto[MAXFETCH];
+		char	szhFecDesde[MAXFETCH][11];     
+		char	szhFecHasta[MAXFETCH][11];     
+		char	chCodTipCalulo[MAXFETCH][2];      
+		char	szhCodTecnologia[MAXFETCH][8]; 
+		char	szhCodUniverso[MAXFETCH][7];   
+		char	dhFecDesde[MAXFETCH][15];     
+		char	dhFecHasta[MAXFETCH][15];
+		char	szhINDPARCIAL[2];
+
+		long 	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+	paux = NULL;
+	qaux = NULL;
+
+	ihCodCiclo    				= stCiclo.lCodCiclo;
+	chTipCiclComis				= PERIODICO;
+	strcpy(szhIdCiclComis		, stCiclo.szIdCiclComis);
+	strcpy(szhFecHastaNormal 	, stCiclo.szFecHastaNormal);
+	strcpy(szhFecDesdeNormal 	, stCiclo.szFecDesdeNormal);
+	strcpy(szhTipPeriodo	 	, stCiclo.szTipPeriodo);
+	strcpy(szhCodForma 			, pszCodForma);
+	strcpy(szhTIPOPERIODO	 	, TIPPERIODO_M);
+	strcpy(szhINDPARCIAL	 	, INDPARCIAL_S);
+	
+	
+	EXEC SQL DECLARE CUR_ConceptosPer_Normal
+		CURSOR FOR SELECT 
+			   A.COD_TIPORED,
+			   B.COD_PLANCOMIS,
+			   E.COD_TIPCOMIS,
+			   C.COD_CONCEPTO,
+			   TO_CHAR(B.FEC_DESDE,'DD-MM-YYYY'),
+			   TO_CHAR(B.FEC_HASTA,'DD-MM-YYYY'),
+			   D.TIP_CALCULO,
+			   D.COD_TECNOLOGIA,
+			   D.COD_UNIVERSO,
+			   TO_CHAR(B.FEC_DESDE,'YYYYMMDDHH24MISS'),
+			   TO_CHAR(B.FEC_HASTA,'YYYYMMDDHH24MISS')
+		FROM VE_TIPORED_TD A,
+			 CM_PLANESTIPORED_TD B,
+			 CM_CONCEPTOSTIPORED_TD C,
+			 CMD_CONCEPTOS D,
+			 VE_DETALLE_TIPORED_TD E
+		WHERE A.COD_CICLOCOMIS 	= :ihCodCiclo
+		  AND A.COD_TIPORED 	= B.COD_TIPORED
+		  AND B.FEC_DESDE 		< TO_DATE(:szhFecHastaNormal,'DD-MM-YYYY')
+		  AND B.FEC_HASTA 		> TO_DATE(:szhFecDesdeNormal,'DD-MM-YYYY')
+		  AND B.COD_TIPORED 	= C.COD_TIPORED
+		  AND B.COD_PLANCOMIS 	= C.COD_PLANCOMIS
+		  AND C.COD_CONCEPTO 	= D.COD_CONCEPTO
+		  AND D.COD_FORMA 		= :szhCodForma
+		  AND D.TIP_CICLCOMIS 	= :chTipCiclComis
+		  AND C.COD_TIPORED		= E.COD_TIPORED
+		  AND C.NIV_APLICACION	= E.NUM_NIVEL
+		  AND((:szhTipPeriodo		=  :szhTIPOPERIODO) OR
+		     (:szhTipPeriodo		!= :szhTIPOPERIODO AND D.IND_PARCIAL = :szhINDPARCIAL));
+		
+	EXEC SQL OPEN CUR_ConceptosPer_Normal;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {
+	    EXEC SQL for :lMaxFetch FETCH CUR_ConceptosPer_Normal INTO
+	    	:ihCodTipoRed, 
+	    	:szhCodPlanComis, 
+	    	:szhCodTipComis, 
+	    	:ihCodConcepto, 
+	    	:szhFecDesde, 
+	    	:szhFecHasta, 
+	    	:chCodTipCalulo, 
+	    	:szhCodTecnologia, 
+	    	:szhCodUniverso, 
+	    	:dhFecDesde, 
+	    	:dhFecHasta;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stConceptosProc *) malloc(sizeof(stConceptosProc));
+
+			paux->iCodTipoRed         		= ihCodTipoRed[i];
+			strcpy(paux->szCodTipComis		, szfnTrim(szhCodTipComis[i]));
+			strcpy(paux->szCodPlanComis		, szfnTrim(szhCodPlanComis[i]));
+			paux->iCodConcepto        		= ihCodConcepto[i];
+			strcpy(paux->szFecDesde        	, szfnTrim(szhFecDesde[i]));
+			strcpy(paux->szFecHasta        	, szfnTrim(szhFecHasta[i]));
+			strcpy(paux->cCodTipCalculo     , szfnTrim(chCodTipCalulo[i]));
+			strcpy(paux->szCodTecnologia   	, szfnTrim(szhCodTecnologia[i]));
+			strcpy(paux->szCodUniverso     	, szfnTrim(szhCodUniverso[i]));
+			strcpy(paux->szCodForma        	, szhCodForma);
+			paux->dFecDesde        			= atof(szfnTrim(dhFecDesde[i]));
+			paux->dFecHasta        			= atof(szfnTrim(dhFecHasta[i]));
+			
+	        paux->sgte 						= qaux;
+	        qaux 							= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_ConceptosPer_Normal;
+    fprintf(stderr,"\nCantidad de Conceptos [PERIODICOS] Vigentes Para Forma Comisional:[%s] Ciclo[%d] =>[%d]\n",szhCodForma, ihCodCiclo ,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+stConceptosProc * stGetConceptosPer_AltaContra(char *pszCodForma, reg_ciclo stCiclo)
+{
+	stConceptosProc * paux;
+	stConceptosProc * qaux;
+	
+	int				i;                                                         
+	short          	iLastRows    = 0;                                              
+	int            	iFetchedRows = MAXFETCH;                                       
+	int            	iRetrievRows = MAXFETCH;  
+	int				iCuentaRegs  = 0; 
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		int		ihCodCiclo;
+		char	szhIdCiclComis[11];
+		char    szhFecHastaNormal[11];
+		char    szhFecDesdeNormal[11];
+		char	chTipCiclComis;
+		char	szhCodForma[11];
+		char	szhTipPeriodo[2];
+		char	szhTIPOPERIODO[2];
+		
+		int		ihCodTipoRed[MAXFETCH];
+		char	szhCodPlanComis[MAXFETCH][6];  
+		char	szhCodTipComis[MAXFETCH][3];  
+		int		ihCodConcepto[MAXFETCH];
+		char	szhFecDesde[MAXFETCH][11];     
+		char	szhFecHasta[MAXFETCH][11];     
+		char	chCodTipCalulo[MAXFETCH][2];      
+		char	szhCodTecnologia[MAXFETCH][8]; 
+		char	szhCodUniverso[MAXFETCH][7];   
+		char	dhFecDesde[MAXFETCH][15];     
+		char	dhFecHasta[MAXFETCH][15];
+		char	szhINDPARCIAL[2];
+		
+
+		long 	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+	paux = NULL;
+	qaux = NULL;
+
+	ihCodCiclo    				= stCiclo.lCodCiclo;
+	chTipCiclComis				= PERIODICO;
+	strcpy(szhIdCiclComis		, stCiclo.szIdCiclComis);
+	strcpy(szhFecHastaNormal 	, stCiclo.szFecHastaNormal);
+	strcpy(szhFecDesdeNormal 	, stCiclo.szFecDesdeNormal);
+	strcpy(szhTipPeriodo	 	, stCiclo.szTipPeriodo);
+	strcpy(szhCodForma 			, pszCodForma);
+	strcpy(szhTIPOPERIODO	 	, TIPPERIODO_M);
+	strcpy(szhINDPARCIAL	 	, INDPARCIAL_S);
+	
+	EXEC SQL DECLARE CUR_ConceptosPer_ALTACONTRA
+		CURSOR FOR SELECT 
+			   A.COD_TIPORED,
+			   B.COD_PLANCOMIS,
+			   E.COD_TIPCOMIS,
+			   C.COD_CONCEPTO,
+			   TO_CHAR(B.FEC_DESDE,'DD-MM-YYYY'),
+			   TO_CHAR(B.FEC_HASTA,'DD-MM-YYYY'),
+			   D.TIP_CALCULO,
+			   D.COD_TECNOLOGIA,
+			   D.COD_UNIVERSO,
+			   TO_CHAR(B.FEC_DESDE,'YYYYMMDDHH24MISS'),
+			   TO_CHAR(B.FEC_HASTA,'YYYYMMDDHH24MISS')
+		FROM VE_TIPORED_TD A,
+			 CM_PLANESTIPORED_TD B,
+			 CM_CONCEPTOSTIPORED_TD C,
+			 CMD_CONCEPTOS D,
+			 VE_DETALLE_TIPORED_TD E
+		WHERE A.COD_CICLOCOMIS 	= :ihCodCiclo
+		  AND A.COD_TIPORED 	= B.COD_TIPORED
+		  AND B.FEC_DESDE 		< TO_DATE(:szhFecHastaNormal,'DD-MM-YYYY')
+		  AND B.FEC_HASTA 		> TO_DATE(:szhFecDesdeNormal,'DD-MM-YYYY')
+		  AND B.COD_TIPORED 	= C.COD_TIPORED
+		  AND B.COD_PLANCOMIS 	= C.COD_PLANCOMIS
+		  AND C.COD_CONCEPTO 	= D.COD_CONCEPTO
+		  AND D.COD_FORMA 		IN ('ALTACONTRA','FONDOSCOAP','PRESENCIA')
+		  AND D.TIP_CICLCOMIS 	= :chTipCiclComis
+		  AND C.COD_TIPORED		= E.COD_TIPORED
+		  AND C.NIV_APLICACION	= E.NUM_NIVEL
+		  AND((:szhTipPeriodo		=  :szhTIPOPERIODO) OR
+		     (:szhTipPeriodo		!= :szhTIPOPERIODO AND D.IND_PARCIAL = :szhINDPARCIAL));
+		
+	EXEC SQL OPEN CUR_ConceptosPer_ALTACONTRA;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {
+	    EXEC SQL for :lMaxFetch FETCH CUR_ConceptosPer_ALTACONTRA INTO
+	    	:ihCodTipoRed, 
+	    	:szhCodPlanComis, 
+	    	:szhCodTipComis, 
+	    	:ihCodConcepto, 
+	    	:szhFecDesde, 
+	    	:szhFecHasta, 
+	    	:chCodTipCalulo, 
+	    	:szhCodTecnologia, 
+	    	:szhCodUniverso, 
+	    	:dhFecDesde, 
+	    	:dhFecHasta;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stConceptosProc *) malloc(sizeof(stConceptosProc));
+
+			paux->iCodTipoRed         		= ihCodTipoRed[i];
+			strcpy(paux->szCodTipComis		, szfnTrim(szhCodTipComis[i]));
+			strcpy(paux->szCodPlanComis		, szfnTrim(szhCodPlanComis[i]));
+			paux->iCodConcepto        		= ihCodConcepto[i];
+			strcpy(paux->szFecDesde        	, szfnTrim(szhFecDesde[i]));
+			strcpy(paux->szFecHasta        	, szfnTrim(szhFecHasta[i]));
+			strcpy(paux->cCodTipCalculo     , szfnTrim(chCodTipCalulo[i]));
+			strcpy(paux->szCodTecnologia   	, szfnTrim(szhCodTecnologia[i]));
+			strcpy(paux->szCodUniverso     	, szfnTrim(szhCodUniverso[i]));
+			strcpy(paux->szCodForma        	, szhCodForma);
+			paux->dFecDesde        			= atof(szfnTrim(dhFecDesde[i]));
+			paux->dFecHasta        			= atof(szfnTrim(dhFecHasta[i]));
+			
+	        paux->sgte 						= qaux;
+	        qaux 							= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_ConceptosPer_ALTACONTRA;
+    fprintf(stderr,"\nCantidad de Conceptos [PERIODICOS] Vigentes Para Forma Comisional:[%s] Ciclo[%d] =>[%d]\n",szhCodForma, ihCodCiclo ,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+stConceptosProc * stGetConceptosPer(char *pszCodForma, reg_ciclo stCiclo)
+{
+	if (strcmp(pszCodForma, "ALTACONTRA")==0)
+		return stGetConceptosPer_AltaContra(pszCodForma, stCiclo);
+	else
+		return stGetConceptosPer_Normal(pszCodForma, stCiclo);
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE LISTA DE CONCEPTOS/TIPO DE RED VIGENTES A SER EVALUADOS PARA UNA  */
+/* FORMA COMISIONAL DADA, Y EL IDENTIFICADOR DE LA PROMOCIÓN EN PROCESO.     */
+/*---------------------------------------------------------------------------*/
+stConceptosProc * stGetConceptosProm_Normal(char *pszCodForma, reg_ciclo stCiclo)
+{
+	stConceptosProc * paux;
+	stConceptosProc * qaux;
+	
+	int				i;
+	short          	iLastRows    = 0;
+	int            	iFetchedRows = MAXFETCH;
+	int            	iRetrievRows = MAXFETCH;
+	int				iCuentaRegs  = 0;
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		int		ihCodCiclo;
+		char	szhIdCiclComis[11];
+		char	chTipCiclComis;
+		char	szhCodForma[11];
+		char	szhDesCiclComis[61];		
+		char	szhTipPeriodo[2];
+		char	szhTIPOPERIODO[2];
+		
+		int		ihCodTipoRed[MAXFETCH];
+		char	szhCodPlanComis[MAXFETCH][6];  
+		char	szhCodTipComis[MAXFETCH][3];  
+		int		ihCodConcepto[MAXFETCH];       
+		char	szhFecDesde[MAXFETCH][11];     
+		char	szhFecHasta[MAXFETCH][11];     
+		char	chCodTipCalulo[MAXFETCH][2];      
+		char	szhCodTecnologia[MAXFETCH][8]; 
+		char	szhCodUniverso[MAXFETCH][7];   
+		char	szhINDPARCIAL[2];
+
+		long 	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+	paux = NULL;
+	qaux = NULL;
+
+	ihCodCiclo    				= stCiclo.lCodCiclo;
+	chTipCiclComis				= ESPORADICO;
+	strcpy(szhIdCiclComis		, stCiclo.szIdCiclComis);
+	strcpy(szhCodForma 			, pszCodForma);
+	strcpy(szhDesCiclComis		, stCiclo.szDesCiclcomis);
+	strcpy(szhTipPeriodo	 	, stCiclo.szTipPeriodo);
+	strcpy(szhTIPOPERIODO	 	, TIPPERIODO_M);
+	strcpy(szhINDPARCIAL	 	, INDPARCIAL_S);
+	
+	EXEC SQL DECLARE CUR_ConceptosProm_NORMAL
+		CURSOR FOR SELECT 
+			   C.COD_TIPORED,
+			   C.COD_PLANCOMIS,
+			   E.COD_TIPCOMIS,
+			   D.COD_CONCEPTO,
+			   TO_CHAR(B.FEC_DESDE,'DD-MM-YYYY'),
+			   TO_CHAR(B.FEC_HASTA,'DD-MM-YYYY'),
+			   D.TIP_CALCULO,
+			   D.COD_TECNOLOGIA,
+			   D.COD_UNIVERSO
+		FROM CM_PLANESTIPORED_TD B,
+			 CM_CONCEPTOSTIPORED_TD C,
+			 CMD_CONCEPTOS D,
+			 VE_DETALLE_TIPORED_TD E
+		WHERE D.TIP_CICLCOMIS 	= :chTipCiclComis
+		  AND D.ID_CICLCOMIS 	= :szhIdCiclComis
+		  AND D.COD_FORMA 		= :szhCodForma
+		  AND D.COD_CONCEPTO 	= C.COD_CONCEPTO
+		  AND C.COD_TIPORED		= B.COD_TIPORED
+		  AND C.COD_PLANCOMIS	= B.COD_PLANCOMIS
+		  AND C.COD_TIPORED		= E.COD_TIPORED
+		  AND C.NIV_APLICACION	= E.NUM_NIVEL
+		  AND((:szhTipPeriodo		=  :szhTIPOPERIODO) OR
+		     (:szhTipPeriodo		!= :szhTIPOPERIODO AND D.IND_PARCIAL = :szhINDPARCIAL));
+		
+	EXEC SQL OPEN CUR_ConceptosProm_NORMAL;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {
+	    EXEC SQL for :lMaxFetch FETCH CUR_ConceptosProm_NORMAL INTO
+	    	:ihCodTipoRed, 
+	    	:szhCodPlanComis, 
+	    	:szhCodTipComis, 
+	    	:ihCodConcepto, 
+	    	:szhFecDesde, 
+	    	:szhFecHasta, 
+	    	:chCodTipCalulo, 
+	    	:szhCodTecnologia, 
+	    	:szhCodUniverso;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stConceptosProc *) malloc(sizeof(stConceptosProc));
+
+			paux->iCodTipoRed         		= ihCodTipoRed[i];
+			strcpy(paux->szCodTipComis		, szfnTrim(szhCodTipComis[i]));
+			strcpy(paux->szCodPlanComis		, szfnTrim(szhCodPlanComis[i]));
+			paux->iCodConcepto        		= ihCodConcepto[i];
+			strcpy(paux->szFecDesde        	, szfnTrim(szhFecDesde[i]));
+			strcpy(paux->szFecHasta         , szfnTrim(szhFecHasta[i]));
+			strcpy(paux->cCodTipCalculo     , szfnTrim(chCodTipCalulo[i]));
+			strcpy(paux->szCodTecnologia   	, szfnTrim(szhCodTecnologia[i]));
+			strcpy(paux->szCodUniverso     	, szfnTrim(szhCodUniverso[i]));
+			strcpy(paux->szCodForma        	, szhCodForma);
+
+	        paux->sgte 						= qaux;
+	        qaux 							= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_ConceptosProm_NORMAL;
+    fprintf(stderr,"\nCantidad de Conceptos [ESPORADICOS] Vigentes Para Forma Comisional:[%s] Promoción[%s] =>[%d]\n",szhCodForma, szhDesCiclComis,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+stConceptosProc * stGetConceptosProm_AltaContra(char *pszCodForma, reg_ciclo stCiclo)
+{
+	stConceptosProc * paux;
+	stConceptosProc * qaux;
+	
+	int				i;
+	short          	iLastRows    = 0;
+	int            	iFetchedRows = MAXFETCH;
+	int            	iRetrievRows = MAXFETCH;
+	int				iCuentaRegs  = 0;
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		int		ihCodCiclo;
+		char	szhIdCiclComis[11];
+		char	chTipCiclComis;
+		char	szhCodForma[11];
+		char	szhDesCiclComis[61];
+		char	szhTipPeriodo[2];
+		char	szhTIPOPERIODO[2];
+		
+		int		ihCodTipoRed[MAXFETCH];
+		char	szhCodPlanComis[MAXFETCH][6];  
+		char	szhCodTipComis[MAXFETCH][3];  
+		int		ihCodConcepto[MAXFETCH];       
+		char	szhFecDesde[MAXFETCH][11];     
+		char	szhFecHasta[MAXFETCH][11];     
+		char	chCodTipCalulo[MAXFETCH][2];      
+		char	szhCodTecnologia[MAXFETCH][8]; 
+		char	szhCodUniverso[MAXFETCH][7];
+		char	szhINDPARCIAL[2];
+
+		long 	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+	paux = NULL;
+	qaux = NULL;
+
+	ihCodCiclo    				= stCiclo.lCodCiclo;
+	chTipCiclComis				= ESPORADICO;
+	strcpy(szhIdCiclComis		, stCiclo.szIdCiclComis);
+	strcpy(szhCodForma 			, pszCodForma);
+	strcpy(szhDesCiclComis		, stCiclo.szDesCiclcomis);
+	strcpy(szhTipPeriodo	 	, stCiclo.szTipPeriodo);
+	strcpy(szhTIPOPERIODO	 	, TIPPERIODO_M);
+	strcpy(szhINDPARCIAL	 	, INDPARCIAL_S);
+	
+	EXEC SQL DECLARE CUR_ConceptosProm_ALTACONTRA
+		CURSOR FOR SELECT 
+			   C.COD_TIPORED,
+			   C.COD_PLANCOMIS,
+			   E.COD_TIPCOMIS,
+			   D.COD_CONCEPTO,
+			   TO_CHAR(B.FEC_DESDE,'DD-MM-YYYY'),
+			   TO_CHAR(B.FEC_HASTA,'DD-MM-YYYY'),
+			   D.TIP_CALCULO,
+			   D.COD_TECNOLOGIA,
+			   D.COD_UNIVERSO
+		FROM CM_PLANESTIPORED_TD B,
+			 CM_CONCEPTOSTIPORED_TD C,
+			 CMD_CONCEPTOS D,
+			 VE_DETALLE_TIPORED_TD E
+		WHERE D.TIP_CICLCOMIS 	= :chTipCiclComis
+		  AND D.ID_CICLCOMIS 	= :szhIdCiclComis
+		  AND D.COD_FORMA 		IN ('ALTACONTRA','FONDOSCOAP','PRESENCIA')
+		  AND D.COD_CONCEPTO 	= C.COD_CONCEPTO
+		  AND C.COD_TIPORED		= B.COD_TIPORED
+		  AND C.COD_PLANCOMIS	= B.COD_PLANCOMIS
+		  AND C.COD_TIPORED		= E.COD_TIPORED
+		  AND C.NIV_APLICACION	= E.NUM_NIVEL
+		  AND((:szhTipPeriodo		=  :szhTIPOPERIODO) OR
+		     (:szhTipPeriodo		!= :szhTIPOPERIODO AND D.IND_PARCIAL = :szhINDPARCIAL));
+		
+	EXEC SQL OPEN CUR_ConceptosProm_ALTACONTRA;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {
+	    EXEC SQL for :lMaxFetch FETCH CUR_ConceptosProm_ALTACONTRA INTO
+	    	:ihCodTipoRed, 
+	    	:szhCodPlanComis, 
+	    	:szhCodTipComis, 
+	    	:ihCodConcepto, 
+	    	:szhFecDesde, 
+	    	:szhFecHasta, 
+	    	:chCodTipCalulo, 
+	    	:szhCodTecnologia, 
+	    	:szhCodUniverso;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stConceptosProc *) malloc(sizeof(stConceptosProc));
+
+			paux->iCodTipoRed         		= ihCodTipoRed[i];
+			strcpy(paux->szCodTipComis		, szfnTrim(szhCodTipComis[i]));
+			strcpy(paux->szCodPlanComis		, szfnTrim(szhCodPlanComis[i]));
+			paux->iCodConcepto        		= ihCodConcepto[i];
+			strcpy(paux->szFecDesde        	, szfnTrim(szhFecDesde[i]));
+			strcpy(paux->szFecHasta         , szfnTrim(szhFecHasta[i]));
+			strcpy(paux->cCodTipCalculo     , szfnTrim(chCodTipCalulo[i]));
+			strcpy(paux->szCodTecnologia   	, szfnTrim(szhCodTecnologia[i]));
+			strcpy(paux->szCodUniverso     	, szfnTrim(szhCodUniverso[i]));
+			strcpy(paux->szCodForma        	, szhCodForma);
+
+	        paux->sgte 						= qaux;
+	        qaux 							= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_ConceptosProm_ALTACONTRA;
+    fprintf(stderr,"\nCantidad de Conceptos [ESPORADICOS] Vigentes Para Forma Comisional:[%s] Promoción[%s] =>[%d]\n",szhCodForma, szhDesCiclComis,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+stConceptosProc * stGetConceptosProm(char *pszCodForma, reg_ciclo stCiclo)
+{
+	if (strcmp(pszCodForma, "ALTACONTRA")==0)
+		return stGetConceptosProm_AltaContra(pszCodForma, stCiclo);
+	else
+		return stGetConceptosProm_Normal(pszCodForma, stCiclo);
+}
+/*---------------------------------------------------------------------------*/
+/* LIBERA LA MEMORIA UTILIZADA POR LA LISTA DE CONCEPTOS DE VALORACIÓN.      */
+/*---------------------------------------------------------------------------*/
+void vLiberaConceptosVal(stConceptosProc * paux)
+{
+	if (paux!= NULL)
+	{
+		vLiberaConceptosVal(paux->sgte);
+		free (paux);
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE LA LISTA DE TIPOS DE COMISIONISTAS DE LA FORMA ('10','11','12')   */
+/* PARA EL CONCEPTO ESPECIFICO, EN EL CICLO DE COMISIONES ESPECIFICO.        */
+/* FUNCIONALIDAD UNICA DE CICLOS DE COMISIONES PERIODICOS.                   */
+/* FUNCIONALIDAD POCO FUNCIONAL  +++QUEDA EN DUDA SU USO+++++                */
+/*---------------------------------------------------------------------------*/
+char * szfnGetTiposComisConc(int piCodConcepto, reg_ciclo stCiclo)
+{
+	int				i;                                                         
+	short          	iLastRows    = 0;                                              
+	int            	iFetchedRows = MAXFETCH;                                       
+	int            	iRetrievRows = MAXFETCH;  
+	int				iCuentaRegs  = 0; 
+	char		    szSentencia[STR_LONG] = "";
+	char		   	szTipos[STR_LONG] = "";
+	char		   	szPaso[STR_LONG] = "";
+		
+	EXEC SQL BEGIN DECLARE SECTION;	
+		char	szhTipPeriodo[2];
+		int		ihCodConcepto;
+		int		ihCodCiclo;
+		char    szhFecHastaNormal[11];
+		char    szhFecDesdeNormal[11];
+		char	szhCodTipComis[MAXFETCH][3];
+		long 	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+
+	ihCodConcepto = piCodConcepto;
+	ihCodCiclo    = stCiclo.lCodCiclo;
+	strcpy(szhFecHastaNormal , stCiclo.szFecHastaNormal);
+	strcpy(szhFecDesdeNormal , stCiclo.szFecDesdeNormal);
+	strcpy(szhTipPeriodo	 , stCiclo.szTipPeriodo);
+
+	EXEC SQL DECLARE CUR_szTiposComis CURSOR FOR SELECT 
+			  DISTINCT D.COD_TIPCOMIS
+		FROM CM_CONCEPTOSTIPORED_TD A,
+			 CM_PLANESTIPORED_TD B,
+			 VE_TIPORED_TD C,
+			 VE_DETALLE_TIPORED_TD D
+		WHERE A.COD_CONCEPTO 	=  :ihCodConcepto
+		AND A.COD_TIPORED 		=  B.COD_TIPORED
+		AND A.COD_PLANCOMIS		=  B.COD_PLANCOMIS
+		AND B.FEC_DESDE 		<= TO_DATE(:szhFecHastaNormal, 'DD-MM-YYYY')
+		AND B.FEC_HASTA 		>= TO_DATE(:szhFecDesdeNormal, 'DD-MM-YYYY')
+		AND B.COD_TIPORED 		=  C.COD_TIPORED
+		AND C.COD_CICLOCOMIS	=  :ihCodCiclo
+		AND C.COD_TIPORED 		=  D.COD_TIPORED
+		AND D.NUM_NIVEL 		=  A.NIV_SELECCION;
+		
+	EXEC SQL OPEN CUR_szTiposComis;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {                                                                              
+	    EXEC SQL for :lMaxFetch FETCH CUR_szTiposComis INTO :szhCodTipComis;
+ 
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {
+	        strcpy(szPaso,"");
+	        sprintf(szPaso,"'%s',",szfnTrim(szhCodTipComis[i]));
+	        strcat(szTipos, szPaso);
+
+	        iCuentaRegs++;
+        }
+    }
+    if (iCuentaRegs>0)
+    {
+		szTipos[strlen(szTipos)]='\0';
+		sprintf(szSentencia," (%s) ",szTipos);
+    }
+    else
+    	strcpy(szSentencia , "('')");	
+	fprintf(stderr,"<%s>\n",szSentencia);
+    EXEC SQL CLOSE CUR_szTiposComis;
+    fprintf(stderr,"\nCantidad de Tipos de Comisionistas para Concepto:[%d] Ciclo[%d] =>[%d]\n",ihCodConcepto, ihCodCiclo ,iCuentaRegs);
+    return szSentencia;
+}
+/*---------------------------------------------------------------------------*/
+/* LIBERA LA LISTA DONDE SE CARGARON LOS TIPOS DE COMISIONISTA.              */
+/*---------------------------------------------------------------------------*/
+void vLiberaTiposComis(stTiposComis * paux)
+{
+	if (paux != NULL)
+	{
+		vLiberaTiposComis(paux->sgte);
+		free(paux);
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE NIVEL DE UN VENDEDOR DENTRO DE UN TIPO DE RED.                    */
+/*---------------------------------------------------------------------------*/
+int iGetNivelVendedor(int piCodTipoRed,long plCodVendedor)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed;
+		long	lhCodVendedor;
+		int		ihNumNivel;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodTipoRed 	= piCodTipoRed;
+	lhCodVendedor	= plCodVendedor;
+	
+	EXEC SQL SELECT NUM_NIVEL
+		INTO :ihNumNivel
+		FROM VE_REDVENTAS_TD
+		WHERE COD_TIPORED 	= :ihCodTipoRed
+		AND COD_VENDEDOR 	= :lhCodVendedor
+		AND (SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA
+		  OR FEC_HASTA IS NULL);
+		
+	if (!sqlca.sqlcode)
+		return ihNumNivel;	
+	return 0;
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE EL NOMBRE DE LA BASE DE DATOS SOBRE A LA QUE SE ESTÁ CONECTADO.   */
+/*---------------------------------------------------------------------------*/
+char * sysGetDBName()
+{
+/*	EXEC SQL BEGIN DECLARE SECTION;	*/
+/*		char	szhDBName[10];      */
+/*	EXEC SQL END DECLARE SECTION;   */
+/*	                                */
+/*	EXEC SQL SELECT NAME            */
+/*	INTO :szhDBName FROM V$DATABASE;*/
+/*	                                */
+/*	return(szhDBName);              */
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhUserName[10]; 
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL SELECT USER
+	INTO :szhUserName FROM DUAL;
+	
+	return(szhUserName);
+
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE EL NOMBRE DEL USUARIO CONECTADO A LA BASE DE DATOS.               */
+/*---------------------------------------------------------------------------*/
+char * sysGetUserName()
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhUserName[10]; 
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL SELECT USER
+	INTO :szhUserName FROM DUAL;
+	
+	return(szhUserName);
+}
+/*---------------------------------------------------------------------------*/
+/* DAFO UN TIPO DE RED, OBTIENE LA CATEGORIA DE VENTAS DEL PADRE (N-1).      */
+/*---------------------------------------------------------------------------*/
+char * szGetTipComisRed(int piTipoRed)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhTipComis[3];
+		int		ihTipoRed; 
+	EXEC SQL END DECLARE SECTION;
+	
+	ihTipoRed = piTipoRed;
+	strcpy(szhTipComis, "");
+	EXEC SQL SELECT 
+			COD_TIPCOMIS
+		INTO :szhTipComis 
+		FROM VE_DETALLE_TIPORED_TD
+		WHERE COD_TIPORED = :ihTipoRed
+		AND NUM_NIVEL = 1;
+	
+	return szfnTrim(szhTipComis);
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE EL VENDEDOR RAIZ DE UN VENDEDOR, DADO EL TIPO DE RED.             */
+/*---------------------------------------------------------------------------*/
+long lGetVendedorRaiz(int piCodTipoRed,long plCodVendedor)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed;
+		long	lhCodVendedor;
+		long	lhCodVendedorRaiz;
+	EXEC SQL END DECLARE SECTION;
+	
+	ihCodTipoRed 	= piCodTipoRed;
+	lhCodVendedor	= plCodVendedor;
+
+	EXEC SQL SELECT COD_VENDE_PADRE
+		INTO :lhCodVendedorRaiz
+		FROM VE_REDVENTAS_TD
+		WHERE COD_TIPORED 	= :ihCodTipoRed
+		AND COD_VENDEDOR 	= :lhCodVendedor
+		AND (SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA OR FEC_HASTA IS NULL);
+
+	if (!sqlca.sqlcode)
+		return lhCodVendedorRaiz;	
+	return 0;
+}	
+/*---------------------------------------------------------------------------*/
+/* OBTIENE VENDEDOR PADRE DE UN TIPO DE RED, DADO UN VENDEDOR HIJO (N-NIVEL) */
+/*---------------------------------------------------------------------------*/
+long lGetVendedorPadre(int iCodTipoRed,long lCodVendedor)
+{
+	
+	int		iNumNivel;
+	long	lCodVendedorRaiz;
+	
+	iNumNivel = iGetNivelVendedor(iCodTipoRed, lCodVendedor);
+	if (iNumNivel == 0)
+		return 0;
+	
+	if (iNumNivel == 1)
+		return lCodVendedor;
+
+	lCodVendedorRaiz = lGetVendedorRaiz(iCodTipoRed, lCodVendedor);
+	if (lCodVendedorRaiz > 0)
+		return lGetVendedorPadre(iCodTipoRed , lCodVendedorRaiz);
+	else
+		return 0;
+}
+/*---------------------------------------------------------------------------*/
+/* A PARTIR DE UN VENDEDOR PADRE, Y DEL TIPO DE RED, GENERA UNA LISTA CON    */
+/* TODOS LOS INTEGRANTES DE LA ESTRUCTURA DE VENTAS, DESCENDIENTES DEL PADRE */
+/* INCLUYÉNDOLO A ÉL MISMO.                                                  */
+/*---------------------------------------------------------------------------*/
+stRedVentas * stCreaRedVentas(int iCodTipoRed, long lCodVendedor)
+{
+	stRedVentas * paux;
+	stRedVentas * qaux;
+
+	int				i;
+	short          	iLastRows    = 0;
+	int            	iFetchedRows = MAXFETCH;
+	int            	iRetrievRows = MAXFETCH;
+	int				iCuentaRegs  = 0;
+	EXEC SQL BEGIN DECLARE SECTION;	
+		int		ihCodTipoRed;
+		long	lhCodPadre;
+		long	lhCodVendedor[MAXFETCH];
+		long	lhCodVendePadre[MAXFETCH];
+		int		ihNumNivel[MAXFETCH];
+		long 	lMaxFetch;
+	EXEC SQL END DECLARE SECTION;
+	paux = NULL;
+	qaux = NULL;
+	ihCodTipoRed  	= iCodTipoRed;
+	lhCodPadre 		= lCodVendedor;
+	EXEC SQL DECLARE CUR_RedDeVentas
+		CURSOR FOR SELECT DISTINCT 
+					COD_VENDEDOR, 
+					COD_VENDE_PADRE,
+					NUM_NIVEL
+			FROM (SELECT COD_TIPORED,
+				 		 NUM_NIVEL,
+						 COD_VENDEDOR,
+						 DECODE(COD_PADRE,0,NULL,COD_VENDE_PADRE) COD_VENDE_PADRE
+				  FROM (SELECT COD_TIPORED, 
+				   	   		   NUM_NIVEL, 
+				   			   COD_VENDEDOR, 
+				   			   COD_VENDEDOR - COD_VENDE_PADRE COD_PADRE,
+				   			   COD_VENDE_PADRE
+					    FROM VE_REDVENTAS_TD
+						WHERE (SYSDATE BETWEEN FEC_DESDE AND FEC_HASTA) 
+						   OR (FEC_HASTA IS NULL)
+					   )
+				)
+			WHERE COD_TIPORED = :ihCodTipoRed
+			START WITH COD_VENDEDOR  = :lhCodPadre
+			CONNECT BY PRIOR COD_VENDEDOR = COD_VENDE_PADRE
+			ORDER BY NUM_NIVEL,COD_VENDEDOR;
+		
+	EXEC SQL OPEN CUR_RedDeVentas;
+	lMaxFetch = MAXFETCH;
+    while(iFetchedRows == iRetrievRows)                                            
+    {
+	    EXEC SQL for :lMaxFetch FETCH CUR_RedDeVentas INTO
+	    	:lhCodVendedor, :lhCodVendePadre, :ihNumNivel;
+
+        iRetrievRows = sqlca.sqlerrd[2] - iLastRows;                           
+        iLastRows = sqlca.sqlerrd[2];  
+                                                
+        for (i=0; i < iRetrievRows; i++)                                       
+        {                                   
+	        paux = (stRedVentas *) malloc(sizeof(stRedVentas));
+
+			paux->iCodTipoRed       = ihCodTipoRed;
+			paux->lCodVendedor		= lhCodVendedor[i];
+			paux->lCodVendePadre	= lhCodVendePadre[i];
+			paux->iNumNivel			= ihNumNivel[i];
+	        paux->sgte 				= qaux;
+	        qaux 					= paux;
+	        iCuentaRegs++;
+        }
+    }
+    EXEC SQL CLOSE CUR_RedDeVentas;
+    fprintf(stderr,"\nCantidad de Ingtegrantes Red de Ventas TipoRed:[%d] VendedorPadre:[%d]=>[%d]\n",ihCodTipoRed, lhCodPadre,iCuentaRegs);
+    return qaux; 
+}
+/*---------------------------------------------------------------------------*/
+/* Libera la lista de Red de Ventas                                          */
+/*---------------------------------------------------------------------------*/
+void vLiberaRedVentas(stRedVentas * paux)
+{
+	if (paux != NULL)
+	{
+		vLiberaRedVentas(paux->sgte);
+		free (paux);
+	}
+}
+/*---------------------------------------------------------------------------*/
+/*   Calcula el dasface de un periodo mensual, dado un periodo inicial       */
+/*---------------------------------------------------------------------------*/
+long lNewCiclComis(long plCodCiclComis, int piNumSalto)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	    long    lhCodCiclComis;
+	    long    lhNewCodCiclComis;
+	    int     ihNumPeriodos;
+	EXEC SQL END DECLARE SECTION;
+        
+	lhCodCiclComis = plCodCiclComis;
+	ihNumPeriodos  = piNumSalto;
+
+	EXEC SQL SELECT 
+		TO_CHAR(ADD_MONTHS(TO_DATE(:lhCodCiclComis,'YYYYMMDD'), :piNumSalto), 'YYYYMMDD')
+	INTO :lhNewCodCiclComis
+	FROM DUAL;
+	return(lhNewCodCiclComis);
+}
+/*---------------------------------------------------------------------------*/
+/*   Determina el Id_CiclComis Mensual dado un CodCiclComis                  */
+/*---------------------------------------------------------------------------*/
+char * szNewCiclComis(long plCodCiclComis)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	    long    lhCodCiclComis;
+	    char    szhNewIdCiclComis[11];
+	EXEC SQL END DECLARE SECTION;
+        
+	lhCodCiclComis = plCodCiclComis;
+
+	EXEC SQL SELECT ID_CICLCOMIS
+	INTO :szhNewIdCiclComis
+	FROM CM_CICLCOMIS_TD
+	WHERE COD_CICLCOMIS = :lhCodCiclComis
+	AND ((TIP_CICLCOMIS = 'E') OR
+		 (TIP_CICLCOMIS = 'P' AND
+		  TIP_PERIODO   = 'M' AND
+		  NUM_SECUENCIA = 1));
+	
+	return(szhNewIdCiclComis);
+}
+
+/*---------------------------------------------------------------------------*/
+/* MARCA LA SECUENCIA EN ESTADO DE INICIO.                                   */
+/*---------------------------------------------------------------------------*/
+int vMarcaSecuencia(int iNumSecuencia, char * szNomCampo, char cEstado, int iCodError, char * szDesError)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihNumSecuencia;
+		char	szhNomCampo[30];
+		char	szSentenciaSql[500];
+		char	chEstado;
+		int		ihCodError;
+		char	szhDesError[121];
+	EXEC SQL END DECLARE SECTION;
+	ihNumSecuencia 		= iNumSecuencia;
+	chEstado 			= cEstado;
+	ihCodError			= iCodError;
+	strcpy(szhDesError	, szDesError);
+	strcpy(szhNomCampo 	, szNomCampo);
+	
+	sprintf(szSentenciaSql, "UPDATE CM_REGMIGRACION_TD "
+							" SET %s = :v1, "
+							" COD_ERROR = :v2, "
+							" DES_ERROR = :v3 "
+							" WHERE NUM_SECUENCIA = :v4 ",
+							szhNomCampo);
+							
+	EXEC SQL PREPARE Pre_Exec FROM :szSentenciaSql;
+	
+	EXEC SQL EXECUTE Pre_Exec USING :chEstado, :ihCodError, :szhDesError, :ihNumSecuencia;
+	if (sqlca.sqlcode == 0)
+	{
+		EXEC SQL COMMIT;
+		return TRUE;
+	}
+	return FALSE;
+}
+/*---------------------------------------------------------------------------*/
+/* MARCA LA SECUENCIA EN ESTADO DE INICIO.                                   */
+/*---------------------------------------------------------------------------*/
+int vGetEstadoSecuencia(int iNumSecuencia, char * szNomCampo)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihNumSecuencia;
+		char	szhNomCampo[30];
+		char	szSentenciaSql[500];
+		int  	ihEstado;
+	EXEC SQL END DECLARE SECTION;
+	ihNumSecuencia 	= iNumSecuencia;
+
+    strcpy(szhNomCampo, szNomCampo);
+
+	sprintf(szSentenciaSql, "SELECT DECODE(%s, 'N', 0, 'I', 1, 'F', 2,'T', 3, -1) "
+ 							" FROM CM_REGMIGRACION_TD "
+							" WHERE NUM_SECUENCIA = :v2 ",
+							szhNomCampo);
+							
+	EXEC SQL PREPARE Pre_Exec FROM :szSentenciaSql;
+	EXEC SQL DECLARE CUR_ESTADO CURSOR FOR Pre_Exec;
+	EXEC SQL OPEN CUR_ESTADO USING :ihNumSecuencia;
+	EXEC SQL FETCH CUR_ESTADO INTO :ihEstado;
+	if (sqlca.sqlcode == SQLNOTFOUND)
+	{
+		return -1;
+	}
+	return ihEstado;
+}
+
+/*---------------------------------------------------------------------------*/
+/* ACTUALIZA NOMBRE FISICO EN TABLA CM_ENLACEHIST_TO                         */
+/*---------------------------------------------------------------------------*/
+void vCierraEnlace(char * szNomLogico, char * szNomFisico, char * szIdPeriodo)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+        char szhNomLogico[30];
+        char szhNomFisico[30];
+		char szhIdPeriodo[11];
+	EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhNomFisico,szNomFisico);
+    strcpy(szhNomLogico,szNomLogico);
+    strcpy(szhIdPeriodo,szIdPeriodo);
+                                           
+    EXEC SQL UPDATE CM_ENLACEHIST_TO 
+         SET NOM_FISICO = :szhNomFisico
+       WHERE NOM_LOGICO = :szhNomLogico
+       AND   ID_PERIODO = :szhIdPeriodo;
+                
+    if ( sqlca.sqlcode != SQLOK )
+    {
+       fprintf(stderr, "Error en UPDATE CM_ENLACEHIST_TO en CIERRE : ORACLE-> %d ",sqlca.sqlcode);  
+       exit(EXIT_203);                 
+    }
+}
+/*---------------------------------------------------------------------------*/
+/* VERIFICA EVENTO EN VIGENCIA DE FECHA                                      */
+/*---------------------------------------------------------------------------*/
+int bValidaFechaEvento(char * szFec_Desde, char * szFec_Hasta, char * szFec_Evento) 
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+        char szhFec_Desde[11];
+        char szhFec_Hasta[11];
+		char szhFec_Evento[11];
+		int	 ihDif_Desde;
+		int	 ihDif_Hasta;
+	EXEC SQL END DECLARE SECTION;
+	
+	strcpy(szFec_Desde	,	szhFec_Desde);	
+	strcpy(szFec_Hasta	,	szhFec_Hasta);
+	strcpy(szhFec_Evento,	szhFec_Evento);
+	
+	EXEC SQL SELECT
+			TO_DATE(:szhFec_Evento	, 'DD-MM-YYYY') - TO_DATE(:szFec_Desde	, 'DD-MM-YYYY'),
+       		TO_DATE(:szFec_Hasta	, 'DD-MM-YYYY') - TO_DATE(:szhFec_Evento, 'DD-MM-YYYY')
+       		INTO
+       		:ihDif_Desde,
+			:ihDif_Hasta
+       		FROM dual;
+    
+    if ((ihDif_Desde >= 0) && (ihDif_Hasta >= 0))
+   			return (TRUE);
+    
+    return(FALSE);
+}
+/*---------------------------------------------------------------------------*/
+/* OBTIENE CODIGO DE PADRE DE VENDEDOR                                       */
+/*---------------------------------------------------------------------------*/
+long lObtieneVendedorPadre(long  plCodVendedor, int piCodTipoRed, char * pszCodTipComis) 
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed;
+		char	szhCodTipcomis[3];
+		int  	ihRegistros;
+		long 	lhCodVendedor;
+		long 	lhCodVendePadre;
+		char 	szhTipComis[3];
+		int  	ihNumNivel;
+		char	szhCodTipVendedor[3];
+	EXEC SQL END DECLARE SECTION;
+ 	
+	lhCodVendedor 			= plCodVendedor;
+	ihCodTipoRed 			= piCodTipoRed; 
+	strcpy(szhCodTipcomis 	, pszCodTipComis);
+
+	while(1) 
+	{
+		EXEC SQL SELECT COUNT(*)
+				INTO :ihRegistros  
+			FROM 	VE_REDVENTAS_TD A, 
+					VE_VENDEDORES B
+			WHERE A.COD_TIPORED = :ihCodTipoRed
+			AND A.COD_VENDEDOR 	= :lhCodVendedor
+			AND A.COD_VENDEDOR 	= B.COD_VENDEDOR;
+
+		if (ihRegistros > 0) 
+		{
+			EXEC SQL SELECT 
+			  		A.COD_VENDE_PADRE,
+			  		B.COD_TIPCOMIS,
+			  		A.NUM_NIVEL,
+			  		C.COD_TIPCOMIS
+			INTO  	:lhCodVendePadre,
+		  			:szhTipComis,
+		  			:ihNumNivel,
+		  			:szhCodTipVendedor
+			FROM	VE_REDVENTAS_TD A, 
+					VE_VENDEDORES B,
+					VE_VENDEDORES C
+			WHERE A.COD_TIPORED 	= :ihCodTipoRed
+			AND A.COD_VENDEDOR 		= :lhCodVendedor
+			AND A.COD_VENDE_PADRE   = B.COD_VENDEDOR
+			AND A.COD_VENDEDOR	    = C.COD_VENDEDOR;
+		
+			if (strcmp(szhCodTipcomis , szfnTrim(szhCodTipVendedor))==0)
+				return lhCodVendedor;
+							
+			if (strcmp(szhCodTipcomis , szfnTrim(szhTipComis))==0)
+				return lhCodVendePadre;
+
+			if (ihNumNivel = 1) 
+				return -1;
+
+			lhCodVendedor = lhCodVendePadre;
+		}
+		else
+			return -1;
+	}
+}
+/*---------------------------------------------------------------------------*/
+/* VALIDA SI APLICA GESTOR DE RETENCIONES                                    */
+/*---------------------------------------------------------------------------*/
+int ifnValidaGestorRetenciones() 
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char	szhNomParametro[21];
+		char	szhCodModulo[3];
+		int		ihCodProducto;
+		char	szhValParam[21];
+		int		ihRegistros;
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy( szhNomParametro, "IND_GR" );
+	strcpy( szhCodModulo, "GR" );
+	ihCodProducto = 1;
+
+	strcpy( szhValParam, INDNEGACION );
+
+	EXEC SQL 
+	SELECT COUNT(1)
+	  INTO :ihRegistros
+	  FROM GED_PARAMETROS
+	 WHERE NOM_PARAMETRO = :szhNomParametro
+	   AND COD_MODULO = :szhCodModulo
+	   AND COD_PRODUCTO = :ihCodProducto;
+
+	if ( sqlca.sqlcode != SQLOK )
+	{
+		fprintf(stderr, "Error al Validar Parametro de IND_GR( Gestor Retenciones) : ORACLE-> %d ",sqlca.sqlcode);  
+		return FALSE;
+	}
+
+	if( ihRegistros )
+	{
+		EXEC SQL 
+		SELECT VAL_PARAMETRO
+		  INTO :szhValParam
+		  FROM GED_PARAMETROS
+		 WHERE NOM_PARAMETRO = :szhNomParametro
+		   AND COD_MODULO = :szhCodModulo
+		   AND COD_PRODUCTO = :ihCodProducto;
+
+		if ( sqlca.sqlcode != SQLOK )
+		{
+			fprintf(stderr, "Error al Leer Parametro de IND_GR( Gestor Retenciones) : ORACLE-> %d ",sqlca.sqlcode);  
+			return FALSE;
+		}
+	}
+	
+	fprintf(stderr, "\nGestor de Retenciones Instalado? [%s].\n", szfnTrim(szhValParam));  
+
+	if(strcmp( szfnTrim(szhValParam), INDAFIRMACION )!=0 )
+		return FALSE;
+	return TRUE;
+}
+/*---------------------------------------------------------------------------*/
+/* CARGA DETALLE DE ARCHIVOS A GENERAR EN FUNCIÓN DEL UNIVERSO DE DATOS      */
+/*---------------------------------------------------------------------------*/
+stArchivo * stCargaDefArchivo(char * pszUniverso)
+{
+	long    	    iCantidad = 0;
+	int             i;
+	long            iLastRows    = 0;
+	int             iFetchedRows = MAXFETCH;
+	int             iRetrievRows = MAXFETCH;
+	stArchivo 	    * paux = NULL;
+	stArchivo 	    * qaux = NULL;
+	stDetArchivo 	* raux = NULL;
+	char    		szCodArchivo_Ant[11];
+			
+	EXEC SQL BEGIN DECLARE SECTION;
+		long    lMaxFetch;
+		char	szhUniverso[16];
+		char 	szhIndAfirmacion	[2];
+		char 	szhCodArchivo		[MAXFETCH][11];
+		char 	szhNomFisico		[MAXFETCH][21];
+		char 	szhCarSeparador		[MAXFETCH][2];
+		char 	szhIndEjecucion		[MAXFETCH][2];
+		char 	szhNomCampo			[MAXFETCH][31];
+		char 	szhNomEtiqueta		[MAXFETCH][31];
+		int  	ihNumOrden			[MAXFETCH];
+		int  	ihLargoCampo		[MAXFETCH];
+		char 	szhIndJustificado	[MAXFETCH][2];
+		char 	szhCarRelleno		[MAXFETCH][2];
+        char    szhTipoDato			[MAXFETCH][21];
+        char	szhFormato			[MAXFETCH][81];
+	EXEC SQL END DECLARE SECTION;
+    
+	strcpy(szhUniverso, pszUniverso);
+	strcpy(szCodArchivo_Ant, " ");
+	strcpy(szhIndAfirmacion,"S");
+	lMaxFetch = MAXFETCH;
+	
+	EXEC SQL DECLARE CUR_ARCHIVO CURSOR FOR 
+	SELECT
+		ARCH.COD_ARCHIVO,
+		ARCH.NOM_FISICO ,
+		NVL(ARCH.CAR_SEPARADOR,'X'),
+		ARCH.IND_EJECUCION ,
+		DET.NOM_CAMPO ,
+		NVL(DET.NOM_ETIQUETA,DET.NOM_CAMPO),
+		DET.NUM_ORDEN ,
+		DET.LARGO_CAMPO ,
+		DET.IND_JUSTIFICADO ,
+		NVL(DET.CAR_RELLENO, ' '),
+          	CAM.TIP_DATO     
+	FROM 	CM_ARCHIVOS_TD ARCH, 
+		CM_DETALLE_ARCHIVO_TD DET , 
+		CM_CAMPOS_UNIVERSO_TD CAM
+	WHERE ARCH.COD_UNIVERSO = DET.COD_UNIVERSO
+          	AND ARCH.COD_UNIVERSO = CAM.COD_UNIVERSO 
+          	AND DET.NOM_CAMPO     = CAM.NOM_CAMPO  
+		AND ARCH.COD_ARCHIVO  = DET.COD_ARCHIVO
+		AND ARCH.COD_UNIVERSO = :szhUniverso 
+		AND ARCH.IND_EJECUCION = :szhIndAfirmacion
+	ORDER BY ARCH.COD_ARCHIVO, DET.NUM_ORDEN  DESC; 
+
+	EXEC SQL OPEN CUR_ARCHIVO;
+        
+    while(iFetchedRows == iRetrievRows)
+    {
+		EXEC SQL for :lMaxFetch
+		FETCH CUR_ARCHIVO INTO
+			:szhCodArchivo,
+			:szhNomFisico,
+			:szhCarSeparador,
+			:szhIndEjecucion,
+			:szhNomCampo,
+			:szhNomEtiqueta,
+			:ihNumOrden,
+			:ihLargoCampo,
+			:szhIndJustificado,
+			:szhCarRelleno,
+            :szhTipoDato;
+                            
+		iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+		iLastRows = sqlca.sqlerrd[2];
+		for (i=0; i < iRetrievRows; i++)
+		{            
+			if(strcmp(szCodArchivo_Ant, szfnTrim(szhCodArchivo[i]))!=0)
+			{
+				paux = (stArchivo *) malloc(sizeof(stArchivo)); 
+				                
+				strcpy(paux->szCodArchivo      	, szfnTrim(szhCodArchivo[i]));
+				strcpy(paux->szNomFisico   		, szfnTrim(szhNomFisico[i]));
+				strcpy(paux->szCarSeparador  	, szfnTrim(szhCarSeparador[i]));
+				strcpy(paux->szIndEjecucion  	, szfnTrim(szhIndEjecucion[i]));				
+				paux->sgte_detalle 				= NULL;
+				paux->sgte 						= qaux;
+				qaux							= paux;
+				strcpy(szCodArchivo_Ant         , paux->szCodArchivo);
+			}
+			raux = (stDetArchivo *) malloc(sizeof(stDetArchivo));		
+				
+			strcpy(raux->szNomCampo  		, szfnTrim(szhNomCampo[i]));
+			strcpy(raux->szNomEtiqueta  	, szfnTrim(szhNomEtiqueta[i]));
+			raux->iNumOrden 				= ihNumOrden[i];
+			raux->iLargoCampo 				= ihLargoCampo[i];
+			strcpy(raux->szIndJustificado	, szfnTrim(szhIndJustificado[i]));
+			strcpy(raux->szCarRelleno  		, szfnTrim(szhCarRelleno[i]));
+            strcpy(raux->szTipoDato        	, szfnTrim(szhTipoDato[i]));
+			strcpy(raux->szFormato			, szRescataFormatoCampo(raux));
+			raux->sgte 						= qaux->sgte_detalle;
+			qaux->sgte_detalle				= raux;
+		}
+    }
+    EXEC SQL close CUR_ARCHIVO;
+    return(qaux);
+        
+}
+/*---------------------------------------------------------------------------*/
+/* ABRE EL ARCHIVO CON NOMBRE Y PATH INDICADOS                               */
+/* iTipoArchivo: 1 => LOG / 2 => DATOS / 3 => LIST(detalle de la ejecución)  */
+/*---------------------------------------------------------------------------*/
+void bGeneraArchivoExtractores(FILE **pfFile,
+                                 char * szFileName,
+                                 char * pszEnvArch,
+                                 char * szDateLog,
+                                 char * szExtension,
+                                 char * pszNomArchivo) 
+{
+	char    szFechaYYYYMMDD[9]="";
+    char    szComando[400];
+    char    szNomFile[400];
+	char    szPath[200];
+	
+    strcpy(szFechaYYYYMMDD, szfnObtieneFecYYYYMMDD());
+	sprintf(szPath,"%s%s/%s",pszEnvArch,szFileName,szFechaYYYYMMDD);
+	sprintf(pszNomArchivo,"%s_%s.%s", szFileName, szDateLog, szExtension); 
+	
+	fprintf(stderr, "\n[bGeneraArchivoExtractores] Datos Cargados para Crear Archivo:" );
+	fprintf(stderr, "\n[bGeneraArchivoExtractores] Path                 :[%s]"  , szPath );
+	fprintf(stderr, "\n[bGeneraArchivoExtractores] Archivo              :[%s]"  , pszNomArchivo );
+    
+    sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+		
+    sprintf(szNomFile,"%s/%s" ,szPath, pszNomArchivo);
+                                             
+    *pfFile = fopen(szNomFile,"w");
+
+	if((*pfFile) == (FILE *)NULL)
+	    fprintf(stderr, "\n[bGeneraArchivoExtractores]Error abriendo archivo: [%s]\n" ,szNomFile );
+	else
+		fprintf(stderr, "\n[bGeneraArchivoExtractores] Archivo Creado       :[%s]\n\n", szNomFile );
+}
+
+/*---------------------------------------------------------------------------*/
+/* Maneja Trazas de Extractores                                              */
+/*---------------------------------------------------------------------------*/
+int ifnActualizaTrazasExtractores(int piSecuencia, char * pszProceso, 
+                                  int piError, char * pszGlsError, int piAccion)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihNumSecuencia;
+		char 	szhCodProceso[16];
+		char	szhEstaEjec[2];
+		int		ihIndError;
+		char	szhGlsError[101];
+		int	    bRes;
+		int	    ihAccion;
+	EXEC SQL END DECLARE SECTION;
+	ihAccion     = piAccion;
+
+	ihNumSecuencia = piSecuencia;
+	strcpy(szhCodProceso, pszProceso);
+	strcpy(szhGlsError, pszGlsError);
+	ihIndError = piError;
+	ihAccion   = piAccion;
+
+	EXEC SQL SELECT 
+		CM_EXTRACTORES_PG.CM_ActTrazExtractores_FN(:ihNumSecuencia, :szhCodProceso, :ihIndError,  :szhGlsError, :ihAccion)
+	INTO :bRes
+	FROM DUAL;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr, "\n[ifnActualizaTrazasExtractores] Error en Package:[%s]", sqlca.sqlerrm.sqlerrmc);
+		return FALSE;
+	}
+
+	if (bRes == 0)
+		return TRUE;
+	return FALSE;
+}
+/*---------------------------------------------------------------------------*/
+/* Actualiza Información de Archivos Procesados                              */
+/*---------------------------------------------------------------------------*/
+int ifnActualizaTrazasArchivos(char * pszArchivo, char * pszUniverso,
+                               int piSecuencia, char * pszUbicacion, 
+                               int piNumReg, char * pszNomUsuario)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int 	ihSeqProceso;
+		char 	szhCodUniverso[7];
+		char 	szhCodArchivo[11];
+		char 	szhUbicacion[101];
+		int		ihNumReg;
+		char	szhNomUsuario[31];
+		int	    bRes;
+	EXEC SQL END DECLARE SECTION;
+
+
+	ihSeqProceso = piSecuencia;
+	ihNumReg     = piNumReg;
+	strcpy(szhCodUniverso , pszUniverso);
+	strcpy(szhCodArchivo  , pszArchivo);
+	strcpy(szhUbicacion   , pszUbicacion);
+	strcpy(szhNomUsuario  , pszNomUsuario);
+
+
+	EXEC SQL SELECT 
+		CM_EXTRACTORES_PG.CM_ActTrazArchivos_FN(:szhCodArchivo, :szhCodUniverso, :ihSeqProceso, :szhUbicacion, :ihNumReg, :szhNomUsuario )
+	INTO :bRes
+	FROM DUAL;
+
+	if (bRes == 0)
+		return TRUE;
+	return FALSE;
+}
+/*---------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
+void vMuestraDetArchivo(stDetArchivo * paux)
+{
+	if (paux == NULL)
+		return;
+
+	fprintf(stderr, "\n\t Nombre del Campo     : %s", paux->szNomCampo);
+	fprintf(stderr, "\n\t Etiqueta del Campo   : %s", paux->szNomEtiqueta);
+	fprintf(stderr, "\n\t Orden del Campo      : %d", paux->iNumOrden);
+	fprintf(stderr, "\n\t Largo del Campo      : %d", paux->iLargoCampo);
+	fprintf(stderr, "\n\t Justificacion        : %s", paux->szIndJustificado);
+	fprintf(stderr, "\n\t Caracter de Relleno  : %s", paux->szCarRelleno);
+	fprintf(stderr, "\n\t Tipo de Dato         : %s", paux->szTipoDato);
+	fprintf(stderr, "\n\t Formato Impresion    : [%s]", paux->szFormato);
+	
+	fprintf(stderr, "\n\t ----------------------------------------------");
+	vMuestraDetArchivo(paux->sgte);
+}
+/*---------------------------------------------------------------------------*/
+/*---------------------------------------------------------------------------*/
+void vMuestraArchivo(stArchivo * paux)
+{
+	if (paux == NULL)
+		return;
+	fprintf(stderr, "\n\n Código de Archivo : %s", paux->szCodArchivo);
+	fprintf(stderr, "\n Nombre Físico     : %s", paux->szNomFisico);
+	fprintf(stderr, "\n Caracter Separador: %s", paux->szCarSeparador);
+	fprintf(stderr, "\n\t Detalle de Campos: %s");
+	fprintf(stderr, "\n\t ==============================================");
+	vMuestraDetArchivo(paux->sgte_detalle);
+	vMuestraArchivo(paux->sgte);
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina que construye el string de formateo de los campos a listar         */
+/*---------------------------------------------------------------------------*/
+char *szRescataFormatoCampo(stDetArchivo  *paux_det_archivo)
+{    
+    char   szCodCampo[31];
+    int    iLargoCampo = paux_det_archivo->iLargoCampo;
+    char   szIndJustificado[2];
+    char   szCarRelleno[2];  
+    char   szFormato[81];
+    char   pszTipoDato[15];
+
+    if (iLargoCampo == 0) iLargoCampo=8; /* para fechas, por si no vienen con largo */
+    
+    strcpy(szCodCampo      , paux_det_archivo->szNomCampo);
+    strcpy(pszTipoDato     , paux_det_archivo->szTipoDato);
+    strcpy(szIndJustificado, paux_det_archivo->szIndJustificado);
+    strcpy(szCarRelleno    , paux_det_archivo->szCarRelleno);
+
+	/*fprintf(stderr, "[szRescataFormatoCampo] szCodCampo:[%s] pszTipoDato:[%s] szIndJustificado:[%s] szCarRelleno:[%s]", szCodCampo, pszTipoDato, szIndJustificado, szCarRelleno); */
+	if ( pszTipoDato[0] == 'N')
+	{ 
+    	if(strcmp(szfnTrim(szIndJustificado),"I")==0)
+    	{
+        	if (szCarRelleno[0] != NULL)         
+                sprintf(szFormato,"%%-%c%dd",szCarRelleno[0], iLargoCampo);
+            else  
+                sprintf(szFormato,"%%-%dd", iLargoCampo);
+       }
+       else 
+       { 
+              if (szCarRelleno[0] != NULL)         
+                 sprintf(szFormato, "%%%c%dd",szCarRelleno[0], iLargoCampo);
+              else
+                sprintf(szFormato,"%%%dd", iLargoCampo);
+       }
+	} 
+	else
+	{
+		if (strncmp( "BLANCO" ,szfnTrim(szCodCampo),6 ) == 0)
+	   		sprintf(szFormato,"%%%c%d.%ds",CARACBLANCO[0], iLargoCampo,iLargoCampo);
+		else
+		{
+	    	if(strcmp(szfnTrim(szIndJustificado),"I")==0)
+	    	{
+	        	if (szCarRelleno[0] != NULL)  
+	                  sprintf(szFormato,"%%-%c%d.%ds",szCarRelleno[0], iLargoCampo,iLargoCampo);
+	              else
+	                  sprintf(szFormato,"%%-%d.%ds", iLargoCampo,iLargoCampo);
+	       	}
+	       	else  
+	       	{  
+	       		if (szCarRelleno[0] != NULL)  
+	                sprintf(szFormato,"%%%c%d.%ds",szCarRelleno[0], iLargoCampo,iLargoCampo);
+	        	else
+	                sprintf(szFormato,"%%%d.%ds", iLargoCampo,iLargoCampo);
+			}
+		}
+	}
+	/*fprintf(stderr, "\tszFormato:[%s]\n", szFormato); */
+	return (szFormato);
+}
+/*---------------------------------------------------------------------------*/
+/* Rutina para recuperar fechas que definen Ciclo a procesar.                */
+/*---------------------------------------------------------------------------*/
+int ifnCargaDireccion(long plCodCliente, int piTipDireccion, rg_direccion * stMiDireccion)
+{
+    int		bRet = FALSE; 
+    EXEC SQL BEGIN DECLARE SECTION;
+		long	lhCodCliente;
+		int		ihTipDireccion;
+		char	szhCodProvincia[6];
+		char	szhDesProvincia[31];
+		char	szhCodRegion[4];
+		char	szhDesRegion[31];
+		char	szhCodCiudad[6];
+		char	szhDesCiudad[31];
+		char	szhCodFranquicia[6];
+		char	szhDesFranquicia[31];
+		char	szhDireccion[801];
+		
+		int	ihTipSujeto;
+		int	ihCodTipDireccion;
+		int	ihCodDisplay;
+    EXEC SQL END DECLARE SECTION;
+
+	lhCodCliente 	= plCodCliente;
+	ihTipDireccion 	= piTipDireccion;        
+	ihTipSujeto 		= 1;
+	ihCodTipDireccion 	= 1;
+	ihCodDisplay 		= 1;
+	
+	EXEC SQL SELECT 
+/* Inicio incidencia RA-200512150322 Mauricio Moya 17/12/2005 */
+/*			   GE_FN_OBTIENE_DIRCLIE(:lhCodCliente, :ihTipSujeto, :ihCodTipDireccion, :ihCodDisplay) Direccion, */
+/* Fin incidencia RA-200512150322 Mauricio Moya 17/12/2005 */	   		   
+	   		   replace(replace(GE_FN_OBTIENE_DIRCLIE(:lhCodCliente, :ihTipSujeto, :ihCodTipDireccion, :ihCodDisplay),'	'),'|') Direccion,
+			   B.COD_PROVINCIA		cod_provincia,
+			   replace(replace(C.DES_PROVINCIA,'	'),'|')	des_provincia,
+			   B.COD_REGION			cod_region, 
+			   replace(replace(D.DES_REGION,'	'),'|')	des_region,
+			   B.COD_COMUNA			cod_ciudad,
+			   replace(replace(E.DES_COMUNA,'	'),'|')	des_ciudad,
+			   B.COD_CIUDAD			cod_franquicia,
+			   replace(replace(F.DES_CIUDAD	,'	'),'|')	des_franquicia
+		INTO	:szhDireccion,
+			 :szhCodProvincia,
+			 :szhDesProvincia,
+			 :szhCodRegion,
+			 :szhDesRegion,
+			 :szhCodCiudad,
+			 :szhDesCiudad,
+			 :szhCodFranquicia,
+			 :szhDesFranquicia
+		FROM GA_DIRECCLI A,
+		     GE_DIRECCIONES B,
+		     GE_PROVINCIAS  C,
+		     GE_REGIONES    D,
+		     GE_COMUNAS     E,
+		     GE_CIUDADES    F
+		WHERE A.COD_CLIENTE = :lhCodCliente
+		AND   A.COD_TIPDIRECCION = :ihCodTipDireccion
+		AND   A.COD_DIRECCION = B.COD_DIRECCION
+		AND   B.COD_REGION    = D.COD_REGION
+		AND   B.COD_PROVINCIA = C.COD_PROVINCIA
+		AND   B.COD_REGION    = C.COD_REGION
+		AND   B.COD_REGION    = E.COD_REGION
+		AND   B.COD_PROVINCIA = E.COD_PROVINCIA
+		AND   B.COD_COMUNA    = E.COD_COMUNA
+		AND   B.COD_REGION    = F.COD_REGION
+		AND   B.COD_PROVINCIA = F.COD_PROVINCIA
+		AND   B.COD_CIUDAD    = F.COD_CIUDAD;		
+
+    if (sqlca.sqlcode==0)
+    {
+    	bRet = TRUE;
+    	
+    	strcpy(stMiDireccion->szDireccion      	  , szfnTrim(szhDireccion));
+    	strcpy(stMiDireccion->szCodProvincia      , szfnTrim(szhCodProvincia));
+    	strcpy(stMiDireccion->szDesProvincia      , szfnTrim(szhDesProvincia));
+    	strcpy(stMiDireccion->szCodRegion         , szfnTrim(szhCodRegion));
+    	strcpy(stMiDireccion->szDesRegion         , szfnTrim(szhDesRegion));
+    	strcpy(stMiDireccion->szCodCiudad         , szfnTrim(szhCodCiudad));
+    	strcpy(stMiDireccion->szDesCiudad         , szfnTrim(szhDesCiudad));
+    	strcpy(stMiDireccion->szCodFranquicia     , szfnTrim(szhCodFranquicia));
+    	strcpy(stMiDireccion->szDesFranquicia     , szfnTrim(szhDesFranquicia));
+    	
+    }
+	return bRet;
+}
+/*****************************************************************************/
+/*****************************************************************************/
+char *szFormatEtiqueta(stDetArchivo  *paux_det_archivo)
+{
+    char   *szResp;
+    int    iLargoCampo = paux_det_archivo->iLargoCampo;
+    char   szFormato[81];
+
+    if (iLargoCampo == 0) iLargoCampo=8; /* para fechas, por si no vienen con largo */
+    szResp = (char *) malloc(sizeof(iLargoCampo +1));
+    if (!szResp) 
+       fprintf(stderr, "[szFormatEtiqueta] No se pudo asignar memoria a szResp        [%s]\n",paux_det_archivo->szNomCampo);
+    memset(szResp,0,(iLargoCampo ));
+
+	sprintf(szFormato,"%%-%c%d.%ds",CARACBLANCO[0], paux_det_archivo->iLargoCampo,paux_det_archivo->iLargoCampo);
+    sprintf(szResp,szFormato, paux_det_archivo->szNomEtiqueta);
+	return (szResp);
+}
+
+/*---------------------------------------------------------------------------*/
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

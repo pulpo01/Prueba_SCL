@@ -1,0 +1,209 @@
+set time on feedback off
+--
+prompt Crea Tabla de Notas de Credito
+--
+DROP TABLE NC_PASOCOBROS;
+CREATE TABLE NC_PASOCOBROS
+PCTFREE 5 PCTUSED 95
+TABLESPACE ITS_TAB
+STORAGE ( INITIAL 800 K NEXT 100 K )
+AS
+SELECT UNIQUE
+NUM_SECUREL             ,
+COD_TIPDOCUMREL         ,
+COD_VENDEDOR_AGENTEREL  ,
+LETRAREL                ,
+COD_CENTRREL            
+FROM    FA_FACTDOCU_NOCICLO
+WHERE   NUM_SECUENCI  > 0
+AND     COD_TIPDOCUM  = 25
+AND     NUM_FOLIO     > 0
+AND     IND_PASOCOBRO = 0;
+--
+prompt Crea Indice NC_PASOCOBROS
+--
+CREATE INDEX NC_PASOCOBROS_IDX1
+ON NC_PASOCOBROS (
+        NUM_SECUREL             ,
+        COD_TIPDOCUMREL         ,
+        COD_VENDEDOR_AGENTEREL  ,
+        LETRAREL                ,
+        COD_CENTRREL            
+)
+TABLESPACE ITS_idx
+/
+--
+prompt Crea Tabla Repetidos desde Co_Cartera
+--
+DROP TABLE REPETIDOS
+;
+CREATE TABLE REPETIDOS
+PCTFREE 5 PCTUSED 95
+TABLESPACE ITS_TAB
+STORAGE ( INITIAL 200 K NEXT 10 K )
+AS
+SELECT	
+        A.NUM_SECUENCI       ,
+        A.COD_TIPDOCUM       ,
+        A.COD_VENDEDOR_AGENTE,
+        A.LETRA              ,
+        A.COD_CENTREMI       ,
+        A.COD_CONCEPTO       ,
+        A.COLUMNA            ,
+        A.NUM_FOLIO          ,
+        COUNT(A.NUM_SECUENCI) CNT_REPE
+FROM	CO_CARTERA      A,
+        NC_PASOCOBROS   B
+WHERE   A.NUM_SECUENCI        = B.NUM_SECUREL             
+AND     A.COD_TIPDOCUM        = B.COD_TIPDOCUMREL         
+AND     A.COD_VENDEDOR_AGENTE = B.COD_VENDEDOR_AGENTEREL  
+AND     A.LETRA               = B.LETRAREL                
+AND     A.COD_CENTREMI        = B.COD_CENTRREL            
+GROUP BY
+        A.NUM_SECUENCI       ,
+        A.COD_TIPDOCUM       ,
+        A.COD_VENDEDOR_AGENTE,
+        A.LETRA              ,
+        A.COD_CENTREMI       ,
+        A.COD_CONCEPTO       ,
+        A.COLUMNA            ,
+        A.NUM_FOLIO
+HAVING COUNT(*) > 1;
+--
+prompt Inserta desde Co_Cancelados
+--
+INSERT INTO REPETIDOS
+SELECT	
+        A.NUM_SECUENCI       ,
+        A.COD_TIPDOCUM       ,
+        A.COD_VENDEDOR_AGENTE,
+        A.LETRA              ,
+        A.COD_CENTREMI       ,
+        A.COD_CONCEPTO       ,
+        A.COLUMNA            ,
+        A.NUM_FOLIO          ,
+        COUNT(*) CNT_REPE
+FROM	CO_CANCELADOS   A ,
+        NC_PASOCOBROS   B   
+WHERE   A.NUM_SECUENCI        = B.NUM_SECUREL             
+AND     A.COD_TIPDOCUM        = B.COD_TIPDOCUMREL         
+AND     A.COD_VENDEDOR_AGENTE = B.COD_VENDEDOR_AGENTEREL  
+AND     A.LETRA               = B.LETRAREL                
+AND     A.COD_CENTREMI        = B.COD_CENTRREL            
+GROUP BY
+        A.NUM_SECUENCI       ,
+        A.COD_TIPDOCUM       ,
+        A.COD_VENDEDOR_AGENTE,
+        A.LETRA              ,
+        A.COD_CENTREMI       ,
+        A.COD_CONCEPTO       ,
+        A.COLUMNA            ,
+        A.NUM_FOLIO
+HAVING COUNT(*) > 1;
+--
+prompt Inserta desde Co_Cancelados Y Co_Cartera
+--
+INSERT INTO REPETIDOS
+SELECT	
+        CAR.NUM_SECUENCI       ,
+        CAR.COD_TIPDOCUM       ,
+        CAR.COD_VENDEDOR_AGENTE,
+        CAR.LETRA              ,
+        CAR.COD_CENTREMI       ,
+        CAR.COD_CONCEPTO       ,
+        CAR.COLUMNA            ,
+        CAR.NUM_FOLIO          ,
+        0 CNT_REPE
+FROM	CO_CARTERA      CAR , 
+        CO_CANCELADOS   CAN ,
+        NC_PASOCOBROS   PAS
+WHERE   CAR.NUM_SECUENCI          = PAS.NUM_SECUREL            
+AND     CAR.COD_TIPDOCUM          = PAS.COD_TIPDOCUMREL        
+AND     CAR.COD_VENDEDOR_AGENTE   = PAS.COD_VENDEDOR_AGENTEREL 
+AND     CAR.LETRA                 = PAS.LETRAREL               
+AND     CAR.COD_CENTREMI          = PAS.COD_CENTRREL           
+AND     CAR.NUM_SECUENCI          = CAN.NUM_SECUENCI 
+AND     CAR.COD_TIPDOCUM          = CAN.COD_TIPDOCUM 
+AND     CAR.COD_VENDEDOR_AGENTE   = CAN.COD_VENDEDOR_AGENTE 
+AND     CAR.LETRA                 = CAN.LETRA 
+AND     CAR.COD_CENTREMI          = CAN.COD_CENTREMI 
+AND     CAR.COD_CONCEPTO          = CAN.COD_CONCEPTO 
+AND     CAR.COLUMNA               = CAN.COLUMNA 
+AND     CAR.NUM_FOLIO             = CAN.NUM_FOLIO
+;
+--
+prompt Crea Tabla NC_A_MARCAR
+--
+DROP TABLE NC_A_MARCAR
+;
+CREATE TABLE NC_A_MARCAR
+PCTUSED 95 PCTFREE 5
+TABLESPACE ITS_TAB
+STORAGE (INITIAL 100 K NEXT 5 K )
+AS
+SELECT  UNIQUE
+        NUM_SECUENCI        NUM_SECUREL,
+        COD_TIPDOCUM        COD_TIPDOCUMREL,
+        COD_VENDEDOR_AGENTE COD_VENDEDOR_AGENTEREL,
+        LETRA               LETRAREL,
+        COD_CENTREMI        COD_CENTRREL,
+        999999999           IND_ORDENTOTAL
+FROM REPETIDOS;              
+--
+prompt Marca Ind_Ordentotal de NC Duplicadas
+--
+DECLARE
+CURSOR K IS
+SELECT	
+        H.IND_ORDENTOTAL, 
+        N.ROWID TID
+FROM	FA_FACTDOCU_NOCICLO H,
+	    NC_A_MARCAR         N
+WHERE   H.NUM_SECUREL       = N.NUM_SECUREL
+AND	    H.COD_TIPDOCUMREL   = N.COD_TIPDOCUMREL
+AND	    H.LETRAREL          = N.LETRAREL
+AND	    H.COD_CENTRREL      = N.COD_CENTRREL;
+BEGIN
+	FOR L IN K LOOP
+		UPDATE	NC_A_MARCAR
+		SET	    IND_ORDENTOTAL = L.IND_ORDENTOTAL
+		WHERE	ROWID = L.TID;
+	END LOOP;
+	COMMIT;
+END;
+/
+--
+prompt Elimina de NC Sin Duplicadas
+--
+DELETE
+FROM	NC_A_MARCAR
+WHERE	IND_ORDENTOTAL = 999999999;
+--
+prompt Crea Indice a NC_A_MARCAR IND_ORDENTOTAL
+--
+CREATE UNIQUE INDEX NC_A_MARCAR_IDX1
+ON NC_A_MARCAR (IND_ORDENTOTAL)
+TABLESPACE ITS_idx
+/
+--
+prompt Marcar en FA_FACTDOCU_NOCICLO Notas de Credito Duplicadas 
+--
+DECLARE
+CURSOR K IS
+SELECT	
+        H.ROWID TID
+FROM	FA_FACTDOCU_NOCICLO H,
+	    NC_A_MARCAR         N
+WHERE   H.IND_ORDENTOTAL    = N.IND_ORDENTOTAL
+AND	    H.IND_PASOCOBRO     = 0;
+BEGIN
+	FOR L IN K LOOP
+		UPDATE	FA_FACTDOCU_NOCICLO
+		SET	IND_PASOCOBRO = -7
+		WHERE	ROWID = L.TID;
+	END LOOP;
+	COMMIT;
+END;
+/
+GRANT SELECT ON REPETIDOS TO PUBLIC;
+EXIT;

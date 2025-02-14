@@ -1,0 +1,7 @@
+CREATE OR REPLACE PACKAGE        GE_PAC_ArregloPR IS
+--
+PROCEDURE GE_PR_RetornaArreglo(v_param_entrada IN VARCHAR2, Param IN OUT GE_TABTYPE_VCH2ARRAY);
+--
+END GE_PAC_ArregloPR;
+/
+SHOW ERRORS

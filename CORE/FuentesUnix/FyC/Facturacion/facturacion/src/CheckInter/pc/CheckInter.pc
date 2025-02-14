@@ -1,0 +1,2005 @@
+/* *********************************************************************** */
+/* *  Fichero : CheckInter.pc                                            * */
+/* *********************************************************************** */
+/* *********************************************************************** */
+/* *********************************************************************** */
+/* *********************************************************************** */
+/***************************************************************************/
+
+#define _CHECKINTER_PC_
+
+#include "CheckInter.h"
+
+/****************************************************************************/
+/*           Variables de Retorno de Oracle-Pro-C                           */
+/****************************************************************************/
+EXEC SQL INCLUDE sqlca;
+long pid=0;
+/****************************************************************************/
+/*  Funcion :   main                                                        */
+/****************************************************************************/
+int main(int argc, char *argv[])
+{
+	char modulo[]="main";
+
+	pid =getpid();
+
+	fprintf( stdout, "\n\t******  CheckInter   *******\n"
+			 "\t**%s**\n\t**** pid : [ %8ld ] ****"
+	                 "\n\t****************************\n",
+	         		 cfnGetTime(1),pid );
+
+
+    memset(&stLineaComandoCheck,0,sizeof(LINEACOMANDOCHECK));
+    memset(&stStatus,'\0',sizeof(STATUS));
+
+    if (!bfnValidaParametros(argc,argv,&stLineaComandoCheck)) return 1;
+
+
+    if(!bfnConnectORA(stLineaComandoCheck.szOraAccount,stLineaComandoCheck.szOraPasswd))
+    {
+        vDTrazasError(modulo, "<< Usuario/Password Invalido >>", LOG01);
+        return 2;
+    }
+
+	if (!bfnValidaOperadora())								return 3;
+
+    if (!bfnAbreArchivos(&stLineaComandoCheck,szSysDate)) 	return 4;
+
+	if (!bGetDatosGener (&stDatosGener, szSysDate))			return 5;
+
+    if(!bfnRevisaInterfaz(&stLineaComandoCheck))
+    {
+        vDTrazasError(modulo, " \n\t------------------------------------"
+                              " \n\tProceso Terminado de Forma Irregular"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        vDTrazasLog  (modulo, " \n\t------------------------------------"
+                              " \n\tProceso Terminado de Forma Irregular"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        return 6;
+    }
+    else
+    {
+        vDTrazasLog  (modulo, " \n\t------------------------------------"
+                              " \n\tProceso Terminado Correctamente"
+                              " \n\t------------------------------------"
+                              ,LOG04);
+
+        if (!bfnOraCommit())
+        {
+
+            vDTrazasLog  (modulo, " \n\t------------------------------------"
+                                  " \n\tFallo en el Commit"
+                                  " \n\t------------------------------------"
+                                  ,LOG01);
+            vDTrazasError(modulo, " \n\t------------------------------------"
+                                  " \n\tFallo en el Commit"
+                                  " \n\t------------------------------------"
+                                  ,LOG01);
+            return 7;
+        }
+    }
+
+    if(bfnDisconnectORA(0))
+    {
+      vDTrazasLog  (modulo, "\n\t--------------------------------------------"
+                            "\n\tDesconectado de  ORACLE"
+                            "\n\t--------------------------------------------"
+                            ,LOG04);
+	}
+
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+    return 0;
+
+} /* Main */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnValidaParametros                                           * */
+/* ************************************************************************* */
+/* * Realiza la validacion de los Parametros de Entrada                    * */
+/* ************************************************************************* */
+BOOL bfnValidaParametros( int argc, char *argv[], LINEACOMANDOCHECK *pstLineaCom )
+{
+
+	       char modulo[]="bfnValidaParametros";
+
+	extern char *optarg;
+	extern  int optind, opterr, optopt;
+
+	       char opt[] = ":u:l:";
+	        int iOpt=0;
+
+  	       char *psztmp = "";
+
+	        int Userflag=FALSE;
+ 	        int Logflag=FALSE;
+ 	        int MGenflag=FALSE;
+
+
+    vDTrazasLog (modulo , "\n\t*** Entrada en %s ***",LOG04,modulo);
+
+	opterr=0;
+
+	if(argc == 1)
+	{
+		fprintf (stderr,"\n\t<< Error : Parametros insuficientes >>\n%s\n",szUsageCheck);
+		return FALSE;
+	}
+
+	while ( (iOpt = getopt(argc, argv, opt) ) != EOF)
+	{
+		switch(iOpt)
+		{
+			case 'u':
+				if(Userflag==FALSE)
+				{
+	                strcpy(pstLineaCom->szUsuarioOra, optarg);
+    	            Userflag=TRUE;
+       	            vDTrazasLog (modulo, " -u %s ", LOG03, pstLineaCom->szUsuarioOra);
+				}
+				else
+				{
+					fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsageCheck);
+					return FALSE;
+				}
+				break;
+
+			case 'l':
+				if(Logflag==FALSE)
+				{
+                    stStatus.LogNivel = (atoi(optarg) > 0)? atoi(optarg):iLOGNIVEL_DEF ;
+                    Logflag=TRUE;
+				}
+				else
+				{
+					fprintf (stderr,"\n\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsageCheck);
+					return FALSE;
+				}
+				break;
+
+			case '?':
+				fprintf (stderr,"\n\t<< Error : opcion '-%c' es desconocida >>\n%s\n",optopt,szUsageCheck);
+				return FALSE;
+
+			case ':':
+				fprintf (stderr,"\n\t<< Error : Falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsageCheck);
+				return FALSE;
+
+		}
+
+	}
+
+
+	if(Logflag==FALSE)
+	{
+       stStatus.LogNivel = iLOGNIVEL_DEF ; /* asume nivel de log por defecto */
+       vDTrazasLog ( modulo, "Log : -l %d (default)", LOG03, stStatus.LogNivel );
+	}
+
+    pstLineaCom->iNivLog=stStatus.LogNivel ;
+
+	if(Userflag==TRUE)
+	{
+        if ( (psztmp=(char *)strstr(pstLineaCom->szUsuarioOra,"/"))==(char *)NULL)
+		{
+			fprintf (stderr,"\n\t<< Error : Usuario Oracle no valido. Requiere '/' >>\n%s\n",szUsageCheck);
+			return FALSE;
+		}
+		else
+		{
+            strncpy (pstLineaCom->szOraAccount,pstLineaCom->szUsuarioOra,psztmp-pstLineaCom->szUsuarioOra);
+            strcpy  (pstLineaCom->szOraPasswd, psztmp+1)                 ;
+		}
+	}
+
+
+	return TRUE;
+
+} /* bfnValidaParamatros */
+
+
+
+/* ************************************************************************* */
+/* * Funcion bfnAbreArchivos                                               * */
+/* ************************************************************************* */
+/* * Realiza la apertura de archivos de Logs, Errores y Datos              * */
+/* ************************************************************************* */
+BOOL bfnAbreArchivos(LINEACOMANDOCHECK *pstLineaCom, char *szDate)
+{
+ 	char modulo[]="bfnAbreArchivos";
+
+    char    *szDirLogs               ;
+    char    *szNomArchivo            ;
+    char    szComando[1024] = ""     ;
+
+    /*vDTrazasLog ( modulo, "\n\t*** Entrada en %s ***", LOG04, modulo); */
+
+    szDirLogs    = (char *)malloc(1024);
+    szNomArchivo = (char *)malloc(128);
+
+
+    if ((szDirLogs = szGetEnv("XPF_LOG")) == (char *)NULL) return FALSE;
+
+   	sprintf (pstLineaCom->szDirLogs,"%s/CheckInter",szDirLogs);
+    sprintf (szComando, "/usr/bin/mkdir -p %s",pstLineaCom->szDirLogs );
+
+   	fprintf (stdout, "\n\tCrea Directorio Log  : %s\n", pstLineaCom->szDirLogs);
+
+    if (system (szComando))
+    {
+        vDTrazasError(modulo,"*** Fallo mkdir de Directorio Logs : %s",LOG01,szComando);
+        return FALSE;
+    }
+
+
+   	sprintf (pstLineaCom->szDirLogs,"%s/%s",pstLineaCom->szDirLogs,cfnGetTime(2));
+    sprintf (szComando, "/usr/bin/mkdir -p %s",pstLineaCom->szDirLogs );
+
+   	fprintf (stdout, "\n\tCrea Directorio Log  : %s\n", pstLineaCom->szDirLogs);
+
+    if (system (szComando))
+    {
+        vDTrazasError(modulo,"*** Fallo mkdir de Directorio Logs : %s",LOG01,szComando);
+        return FALSE;
+    }
+
+	fprintf(stdout, "\n\tCrea Archivo Log/Err : CheckInter_%s\n\n", szDate );
+
+    sprintf(szNomArchivo,"%s/CheckInter_%s",
+    					pstLineaCom->szDirLogs);
+
+
+    sprintf(stStatus.ErrName,"%s.err",szNomArchivo);
+    if( (stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )
+    {
+        vDTrazasError(modulo,"*** No puede abrirse el fichero de error %s",LOG01, stStatus.ErrName);
+        return FALSE;
+    }
+
+    sprintf(stStatus.LogName, "%s.log",szNomArchivo);
+    if ((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL)
+    {
+        vDTrazasError(modulo,"*** No puede abrirse el fichero de log %s",LOG01, stStatus.LogName);
+        fclose(stStatus.ErrFile);
+        return FALSE;
+    }
+
+
+    vDTrazasLog  (modulo,"\n\t*************************************"
+                         "\n\t****        Log   CheckInter       **"
+                         "\n\t*************************************"
+                         ,LOG03);
+
+    vDTrazasLog(modulo, "\n\t***  Parametro de Entrada CheckInter  ***"
+                        "\n\t=> Usuario               [%s]"
+                        "\n\t=> Password              [************]"
+                        "\n\t=> Niv.Log               [%d]"
+                        ,LOG05
+                        ,pstLineaCom->szOraAccount
+                        ,pstLineaCom->iNivLog);
+
+    return TRUE;
+
+} /* bfnAbreArchivos */
+
+
+
+/* ************************************************************************* */
+/* * Funcion bfnRevisaInterfaz                                            * */
+/* ************************************************************************* */
+BOOL bfnRevisaInterfaz ( LINEACOMANDOCHECK *pstLineaCom )
+{
+	char modulo[]="bfnRevisaInterfaz";
+
+    vDTrazasLog ( modulo, "\n\t*** Entrada en %s ***", LOG04, modulo);
+
+    if (!bfnCheck800())
+	{
+        vDTrazasError(modulo, " Al procesar Documentos 800 " ,LOG01);
+        vDTrazasLog  (modulo, " Al procesar Documentos 800 " ,LOG01);
+		return FALSE;
+	}
+    if (!bfnCheck900())
+	{
+        vDTrazasError(modulo, " Al procesar Documentos 900 " ,LOG01);
+        vDTrazasLog  (modulo, " Al procesar Documentos 900 " ,LOG01);
+		return FALSE;
+	}
+    if (!bfnCheck920())
+	{
+        vDTrazasError(modulo, " Al procesar Documentos 920 " ,LOG01);
+        vDTrazasLog  (modulo, " Al procesar Documentos 920 " ,LOG01);
+		return FALSE;
+	}
+    if (!bfnCheck600())
+	{
+        vDTrazasError(modulo, " Al procesar Documentos 600 " ,LOG01);
+        vDTrazasLog  (modulo, " Al procesar Documentos 600 " ,LOG01);
+		return FALSE;
+	}
+	return TRUE;
+}
+ 
+/* ************************************************************************* */
+/* * Funcion bfnCheck800                                            * */
+/* ************************************************************************* */
+BOOL bfnCheck800 ( void )
+{
+	char modulo[]="bfnCheck800";
+	int  iCodEstado=800;
+	int  i =0;
+	int  iCont=0;
+	
+    vDTrazasLog (modulo,"\n\t*** Entrada en %s ***" ,LOG04,modulo);
+
+
+    if (!bfnOpenInterfaz(iCodEstado))
+	{
+        vDTrazasError(modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+        vDTrazasLog  (modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+		return FALSE;
+	}
+
+	memset(&stRegDocum,0,sizeof(REGDOCUM));
+    
+    if(!ifnFetchInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+    
+
+    if(!bfnCloseInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+
+	for (i=0;i<stRegDocum.iNumReg;i++)
+	{
+		if ( stRegDocum.stDocum[i].iCodTipDocum == 1  ||
+			 stRegDocum.stDocum[i].iCodTipDocum == 35 ||
+			 stRegDocum.stDocum[i].iCodTipDocum == 38 )
+		{
+			if (abs(stRegDocum.stDocum[i].dTotFactura)>0.0) /* Se valida el monto */
+			{
+	       		vDTrazasLog  (modulo, "El documento tiene un monto <> 0  : %ld"
+	       					, LOG03, stRegDocum.stDocum[i].lNumProceso);
+	       		vDTrazasError(modulo, "El documento tiene un monto <> 0  : %ld"
+	       					, LOG03, stRegDocum.stDocum[i].lNumProceso);
+			}
+			else 
+			{
+				
+				if (!bfnValidaFolio(i))
+					return FALSE;
+                                  
+				if (!bfnDBPasarHistFactura (stRegDocum.stDocum[i].lIndOrdenTotal))
+        			return FALSE;
+
+			    if (!bfnDBPasarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+			        return FALSE;
+
+/* rao: SE comenta para la version de Aranjuez */
+/* 				if (!bfnDBPasarHistTecno   (stRegDocum.stDocum[i].lIndOrdenTotal)) */
+/* 			        return FALSE; */
+
+				if  (!bfnBorrarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+			        return FALSE;
+			
+			    if (!bfnDBPasarHistCliente (stRegDocum.stDocum[i].lIndOrdenTotal))
+			        return FALSE;
+			
+			    if (!bfnDBPasarHistAbonado (stRegDocum.stDocum[i].lIndOrdenTotal))
+			        return FALSE;
+			
+			    if (!bfnDBEliminarFactura  (stRegDocum.stDocum[i].lIndOrdenTotal))
+			        return FALSE;
+			
+			    if( !bfnDBPasarHistInterfact(stRegDocum.stDocum[i].lNumProceso))
+			    	return FALSE;
+
+	       		vDTrazasLog  (modulo, "El documento fue traspasado a historicos  : %ld"
+	       					, LOG03, stRegDocum.stDocum[i].lNumProceso);
+	       		iCont++;
+			}
+		}
+		else 
+		{
+			vDTrazasLog  (modulo, "El documento no se procesa  : %ld"
+	       				, LOG03, stRegDocum.stDocum[i].lNumProceso);
+	       	vDTrazasError(modulo, "El documento no se procesa  : %ld"
+	       				, LOG03, stRegDocum.stDocum[i].lNumProceso);
+			
+		}
+
+	}
+
+	vDTrazasLog  (modulo, "\t\t** Documentos procesados : %d", LOG03, iCont);
+
+	if (!bfnOraCommit())
+    {
+
+    	vDTrazasLog  (modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        vDTrazasError(modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        return 7;
+    }
+
+	return TRUE;
+
+}/* bfnCheck800 */
+
+/* ************************************************************************* */
+/* * Funcion bfnCheck900                                            * */
+/* ************************************************************************* */
+BOOL bfnCheck900 (  )
+{
+	char modulo[]="bfnCheck900";
+	int  iCodEstado=900;
+	int  i =0;
+	int  iCont=0;
+	
+    vDTrazasLog (modulo,"\n\t*** Entrada en %s ***" ,LOG04,modulo);
+
+    if (!bfnOpenInterfaz(iCodEstado))
+	{
+        vDTrazasError(modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+        vDTrazasLog  (modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+		return FALSE;
+	}
+
+	memset(&stRegDocum,0,sizeof(REGDOCUM));
+    
+    if(!ifnFetchInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+    
+
+    if(!bfnCloseInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+
+	for (i=0;i<stRegDocum.iNumReg;i++)
+	{
+		if (!bfnValidaFolio(i))
+			return FALSE;
+                                  
+		if (!bfnDBPasarHistFactura (stRegDocum.stDocum[i].lIndOrdenTotal))
+        	return FALSE;
+
+	    if (!bfnDBPasarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+	        return FALSE;
+
+/* rao: SE comenta para la version de Aranjuez */
+/*		if (!bfnDBPasarHistTecno   (stRegDocum.stDocum[i].lIndOrdenTotal)) */
+/* 	        return FALSE;*/
+
+		if  (!bfnBorrarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+	        return FALSE;
+		
+		if (!bfnDBPasarHistCliente (stRegDocum.stDocum[i].lIndOrdenTotal))
+		    return FALSE;
+		
+		if (!bfnDBPasarHistAbonado (stRegDocum.stDocum[i].lIndOrdenTotal))
+		    return FALSE;
+		
+		if (!bfnDBEliminarFactura  (stRegDocum.stDocum[i].lIndOrdenTotal))
+		    return FALSE;
+		
+		if( !bfnDBPasarHistInterfact(stRegDocum.stDocum[i].lNumProceso))
+			return FALSE;
+
+	    vDTrazasLog  (modulo, "El documento fue traspasado a historicos  : %ld"
+	    			, LOG03, stRegDocum.stDocum[i].lNumProceso);
+	    iCont++;
+
+	}
+	vDTrazasLog  (modulo, "\t\t** Documentos procesados : %d", LOG03, iCont);
+
+	if (!bfnOraCommit())
+    {
+
+    	vDTrazasLog  (modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        vDTrazasError(modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        return 7;
+    }
+
+	return TRUE;
+
+}/* bfnCheck900 */
+
+/* ************************************************************************* */
+/* * Funcion bfnCheck920                          		                   * */
+/* ************************************************************************* */
+BOOL bfnCheck920 (  )
+{
+	char modulo[]="bfnCheck920";
+	int  iCodEstado=920;
+	int  i =0;
+	int  iCont=0;
+	
+    vDTrazasLog (modulo,"\n\t*** Entrada en %s ***" ,LOG04,modulo);
+
+    if (!bfnOpenInterfaz(iCodEstado))
+	{
+        vDTrazasError(modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+        vDTrazasLog  (modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+		return FALSE;
+	}
+
+	memset(&stRegDocum,0,sizeof(REGDOCUM));
+    
+    if(!ifnFetchInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+    
+
+    if(!bfnCloseInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+
+	for (i=0;i<stRegDocum.iNumReg;i++)
+	{
+		if (   stRegDocum.stDocum[i].iCodTipDocum == 1
+			|| stRegDocum.stDocum[i].iCodTipDocum == 35)
+		{	
+			if (!bfnValidaFolio(i))
+				return FALSE;
+	                                  
+			if (!bfnDBPasarHistFactura (stRegDocum.stDocum[i].lIndOrdenTotal))
+	        	return FALSE;
+	
+		    if (!bfnDBPasarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+		        return FALSE;
+
+/* rao: SE comenta para la version de Aranjuez */
+/*			if (!bfnDBPasarHistTecno   (stRegDocum.stDocum[i].lIndOrdenTotal))*/
+/*		        return FALSE;*/
+
+			if  (!bfnBorrarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+		        return FALSE;
+			
+			if (!bfnDBPasarHistCliente (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+			
+			if (!bfnDBPasarHistAbonado (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+			
+			if (!bfnDBEliminarFactura  (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+			
+			if( !bfnDBPasarHistInterfact(stRegDocum.stDocum[i].lNumProceso))
+				return FALSE;
+		    vDTrazasLog  (modulo, "El documento fue traspasado a historicos  : %ld"
+		    			, LOG03, stRegDocum.stDocum[i].lNumProceso);
+		    iCont++;
+		}
+		else if (stRegDocum.stDocum[i].iCodTipDocum == 52)
+		{
+			if (!bfnDBEliminarFactura  (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+			if( !bfnDBPasarHistInterfact(stRegDocum.stDocum[i].lNumProceso))
+				return FALSE;
+
+		    vDTrazasLog  (modulo, "El documento 52 se borro y paso a Hist. de interfaz  : %ld"
+    			, LOG03, stRegDocum.stDocum[i].lNumProceso);
+		    iCont++;
+		}
+	}
+
+	vDTrazasLog  (modulo, "\t\t** Documentos procesados : %d", LOG03, iCont);
+
+	if (!bfnOraCommit())
+    {
+
+    	vDTrazasLog  (modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        vDTrazasError(modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        return 7;
+    }
+
+	return TRUE;
+
+}/* bfnCheck920 */
+
+/* ************************************************************************* */
+/* * Funcion bfnCheck600                                            * */
+/* ************************************************************************* */
+BOOL bfnCheck600 (  )
+{
+	char modulo[]="bfnCheck600";
+	int  iCodEstado=600;
+	int  i =0;
+	int  iCont=0;
+	
+    vDTrazasLog (modulo,"\n\t*** Entrada en %s ***" ,LOG04,modulo);
+
+    if (!bfnOpenInterfaz(iCodEstado))
+	{
+        vDTrazasError(modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+        vDTrazasLog  (modulo, " Al abrir cursor sobre la interfaz " ,LOG01);
+		return FALSE;
+	}
+
+	memset(&stRegDocum,0,sizeof(REGDOCUM));
+    
+    if(!ifnFetchInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+    
+
+    if(!bfnCloseInterfaz())
+    {
+       vDTrazasLog  (modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       vDTrazasError(modulo, "Al cerrar el Cursor Cur_Interfaz : %s", LOG01, SQLERRM);
+       return FALSE;
+    }
+
+	for (i=0;i<stRegDocum.iNumReg;i++)
+	{
+		if  (  stRegDocum.stDocum[i].iCodTipDocum == 35
+		    && !(abs(stRegDocum.stDocum[i].dTotFactura)>0.0) 
+			&& stRegDocum.stDocum[i].iCodModVenta== 5	
+			&& stRegDocum.stDocum[i].iCodEstProc== 3)    
+		{
+				
+			if (!bfnValidaFolio(i))
+				return FALSE;
+                                  
+			if (!bfnDBPasarHistFactura (stRegDocum.stDocum[i].lIndOrdenTotal))
+        		return FALSE;
+
+		    if (!bfnDBPasarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+		        return FALSE;
+
+/* rao: SE comenta para la version de Aranjuez */
+/*			if (!bfnDBPasarHistTecno   (stRegDocum.stDocum[i].lIndOrdenTotal))*/
+/*		        return FALSE;*/
+
+			if  (!bfnBorrarHistDetalle (stRegDocum.stDocum[i].lIndOrdenTotal))
+		        return FALSE;
+			
+			if (!bfnDBPasarHistCliente (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+			
+			if (!bfnDBPasarHistAbonado (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+				
+			if (!bfnDBEliminarFactura  (stRegDocum.stDocum[i].lIndOrdenTotal))
+			    return FALSE;
+			
+			if( !bfnDBPasarHistInterfact(stRegDocum.stDocum[i].lNumProceso))
+				return FALSE;
+
+	       	vDTrazasLog  (modulo, "El documento fue traspasado a historicos  : %ld"
+	       				, LOG03, stRegDocum.stDocum[i].lNumProceso);
+	       				
+	       	iCont++;
+		}
+
+	}
+
+	vDTrazasLog  (modulo, "\t\t** Documentos procesados : %d", LOG03, iCont);
+
+	if (!bfnOraCommit())
+    {
+
+    	vDTrazasLog  (modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        vDTrazasError(modulo, " \n\t------------------------------------"
+                              " \n\tFallo en el Commit"
+                              " \n\t------------------------------------"
+                              ,LOG01);
+        return 7;
+    }
+
+	return TRUE;
+
+}/* bfnCheck600 */
+
+
+/* ************************************************************************* */
+/* * Funcion bfnOpenInterfaz                                               * */
+/* ************************************************************************* */
+/* * Crea y Abre un Cursor sobre los documentos a Foliar de FA_INTERFACT   * */
+/* ************************************************************************* */
+BOOL bfnOpenInterfaz(int iCodEstProc)
+{
+    char modulo[]="bfnOpenInterfaz";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int ihCodEstado       =0;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\t\t*** Entrada en %s ***" ,LOG04,modulo);
+
+	ihCodEstado    =iCodEstProc;
+
+
+	vDTrazasLog (modulo,"\t\t%s [%ld] Preparando Cursor sobre FA_INTERFACT "
+	            ,LOG03, cfnGetTime(1),pid);
+	EXEC SQL DECLARE  Cur_Interfaz  CURSOR for
+	        SELECT A.COD_ESTPROC,
+	        	   A.NUM_PROCESO, 
+	        	   B.IND_ORDENTOTAL, 
+	        	   B.COD_TIPDOCUM, 
+	        	   C.COD_TIPDOCUM COD_TIPDOCUMALM,
+	        	   /*NVL(B.PREF_PLAZA,'000'), */	/* Comentado   por PGonzalez 15-03-2004 */
+	        	   NVL(B.PREF_PLAZA,'0000000000'),	/* Incorporado por PGonzalez 15-03-2004 */
+	        	   NVL(B.NUM_FOLIO ,0),
+	        	   NVL(B.COD_VENDEDOR ,0),
+	        	   NVL(B.COD_OFICINA,' '),
+	        	   B.COD_MODVENTA ,
+	        	   B.TOT_FACTURA
+              FROM FA_INTERFACT A, FA_FACTDOCU_NOCICLO B,  FA_TIPDOCUMEN C
+			 WHERE A.COD_APLIC='FAC' 
+			   AND A.COD_ESTADOC  = :ihCodEstado
+			   AND A.NUM_PROCESO =B.NUM_PROCESO
+			   AND B.COD_TIPDOCUM =C.COD_TIPDOCUMMOV;
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo , "\n\t** En SQL-DECLARE Cur_Interfaz **"
+                               "\n\t\t=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo , "\n\t**  En SQL-DECLARE Cur_Interfaz **"
+                               "\n\t\t=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cur_Interfaz ;
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo,"**  En SQL-OPEN CURSOR Cur_Interfaz **"
+                             "\n\t\t=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo,"**  En SQL-OPEN CURSOR Cur_Interfaz **"
+                             "\n\t\t=> Detale : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    return TRUE;
+
+}/* bfnOpenInterfaz */
+
+
+/* ************************************************************************* */
+/* * Funcion ifnFetchInterfaz                                             * */
+/* ************************************************************************* */
+/* * Lee Un Registro de los documentos a Foliar                            * */
+/* ************************************************************************* */
+int ifnFetchInterfaz(void)
+{
+	char modulo[]="ifnFetchInterfaz";
+	BOOL bFinCursor=FALSE;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	int		ihCodEstProc	;
+    	long    lhNumProceso    ;
+    	long 	lhIndOrdenTotal ;
+    	int 	ihCodTipDocum	;
+    	int 	ihCodTipDocumAlm;
+    	/*char	szhPrefPlaza [4]; */ 	/* Comentado   por PGonzalez 15-03-2004 */
+    	char	szhPrefPlaza [11]; 	/* Incorporado por PGonzalez 15-03-2004 */
+    	long 	lhNumFolio		;
+    	long 	lhCodVendedor	;
+    	char	szhCodOficina [3];
+    	int 	ihCodModVenta	;
+    	double  dhTotFactura    ;
+    EXEC SQL END DECLARE SECTION;
+
+	stRegDocum.iNumReg = 0 ;
+	
+    vDTrazasLog (modulo , "\t\t*** Entrada en %s ***",LOG04,modulo);
+    
+    do
+    {
+		EXEC SQL FETCH Cur_Interfaz INTO
+						:ihCodEstProc ,
+	    			    :lhNumProceso ,
+	    			    :lhIndOrdenTotal,
+	    			    :ihCodTipDocum,
+	    			    :ihCodTipDocumAlm,
+	    			    :szhPrefPlaza,
+	    			    :lhNumFolio,
+	    			    :lhCodVendedor,
+	    			    :szhCodOficina,
+	    			    :ihCodModVenta,
+	    			    :dhTotFactura ;
+	
+	    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+	    {
+	        vDTrazasLog  (modulo,  "En FETCH sobre CURSOR Cur_Interfaz [%s]",LOG01,SQLERRM);
+	        vDTrazasError(modulo,  "En FETCH sobre CURSOR Cur_Interfaz [%s]",LOG01,SQLERRM);
+	        return SQLCODE ;
+	    }
+	
+	    if( SQLCODE == SQLNOTFOUND )
+	    {
+	        vDTrazasLog  (modulo, "\t\t** No Existen Mas Documentos en CURSOR Cur_Interfaz ",LOG03);
+	        bFinCursor = TRUE ;
+	    }
+	    else
+	    {
+			if( (stRegDocum.stDocum=
+			    (REGINTER *)realloc((REGINTER *)stRegDocum.stDocum,
+	                        		 sizeof(REGINTER)*(stRegDocum.iNumReg+1) ))
+	             ==(REGINTER *)NULL )
+	        {
+	        	iDError (szExeName,ERR005,vInsertarIncidencia,
+	            		"stRegDocum.stDocum");
+	            return(FALSE);
+			}
+			memset(&stRegDocum.stDocum[stRegDocum.iNumReg],0,sizeof(REGINTER));
+			
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].iCodEstProc	= ihCodEstProc	;
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].lNumProceso	= lhNumProceso	;
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].lIndOrdenTotal= lhIndOrdenTotal;
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].iCodTipDocum	= ihCodTipDocum	;
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].iCodTipDocumAlm= ihCodTipDocumAlm;
+	    	strcpy (stRegDocum.stDocum[stRegDocum.iNumReg].szPrefPlaza, szhPrefPlaza);
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].lNumFolio= lhNumFolio;
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].lCodVendedor= lhCodVendedor	;
+	    	strcpy (stRegDocum.stDocum[stRegDocum.iNumReg].szCodOficina, szhCodOficina);
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].iCodModVenta	= ihCodModVenta	;
+	    	stRegDocum.stDocum[stRegDocum.iNumReg].dTotFactura	= dhTotFactura	;
+	    	
+	    	stRegDocum.iNumReg ++;
+	    }
+    
+	} while (!bFinCursor);
+
+    vDTrazasLog  (modulo, "\t\tTotal de Registros obtenidos : %d ", LOG03, stRegDocum.iNumReg);
+
+    return SQLCODE ;
+} /* ifnFetchInterfaz */
+
+
+
+/* ************************************************************************* */
+/* * Funcion bfnCloseInterfaz                                              * */
+/* ************************************************************************* */
+/* * Cierra el Cursor de documentos a Foliar                               * */
+/* ************************************************************************* */
+BOOL bfnCloseInterfaz()
+{
+	char modulo[]="bfnCloseInterfaz";
+    vDTrazasLog  (modulo, "\t\t** Entrada en %s",LOG03,modulo);
+
+    EXEC SQL CLOSE Cur_Interfaz;
+
+    if (SQLCODE != SQLOK)
+        return FALSE;
+
+    return TRUE;
+}
+
+/* ************************************************************************* */
+/* * Funcion bfnValidaFolio                                              * */
+/* ************************************************************************* */
+BOOL bfnValidaFolio(int i)
+{
+	char 	modulo[]="bfnValidaFolio";
+	int	iNumParametros	;
+	char    *szArregloParametros[5];
+	int     iEstadoFolio;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	int 	ihCodTipDocum	;
+    	int 	ihCodTipDocumAlm;
+    	/*char	szhPrefPlaza [4]; */	/* Comentado   por PGonzalez 15-03-2004 */
+    	char	szhPrefPlaza [11];	/* Incorporado por PGonzalez 15-03-2004 */
+    	long 	lhNumFolio		;
+    	long 	lhCodVendedor	;
+    	char	szhCodOficina [3];
+    	double  dhTotFactura    ;
+
+   	    char  	szhRetorno[250] ;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo, "\t\t** Entrada en %s",LOG03,modulo);
+	
+	if (stRegDocum.stDocum[i].lNumFolio > 0)
+	{
+		ihCodTipDocumAlm=stRegDocum.stDocum[i].iCodTipDocumAlm;
+		lhCodVendedor 	=stRegDocum.stDocum[i].lCodVendedor	;
+		strcpy (szhCodOficina, stRegDocum.stDocum[i].szCodOficina);
+		strcpy (szhPrefPlaza ,stRegDocum.stDocum[i].szPrefPlaza);
+		lhNumFolio 		= stRegDocum.stDocum[i].lNumFolio;
+		
+		EXEC SQL 
+			SELECT fa_foliacion_pg.FA_CONSULTA_FOLIO_FN(
+						:ihCodTipDocumAlm, 
+						decode(:lhCodVendedor,0,NULL,:lhCodVendedor) , 
+						:szhCodOficina,
+                        'TMC', 
+                        :szhPrefPlaza,
+                        :lhNumFolio,
+                        NULL , 
+                        1 )
+                        
+			  INTO :szhRetorno
+          	  FROM DUAL;
+
+	    if (SQLCODE != SQLOK)
+	        return FALSE;
+	
+	  	/* Recupera Parametros de szhRetorno función y setea iNumParametros = 3 */
+	  	iNumParametros = 0;
+	    RecupParam(&iNumParametros,szArregloParametros,szhRetorno,cSEPARADOR_COMA);
+		
+		iEstadoFolio=atoi(szArregloParametros[0]);
+		if (iEstadoFolio == G_NESTADO_CONSUMIDO )
+		{
+	       	vDTrazasLog(modulo , "\t\tDocumento con folio consumido N° Proceso [%ld]"
+	       				,LOG03,stRegDocum.stDocum[i].lNumProceso);
+	       				
+			/* Si el folio se encuentra consumido se anula */
+	      	EXEC SQL 
+	      		SELECT FA_FOLIACION_PG.FA_ANULA_FOLIO_FN(
+	      					:ihCodTipDocumAlm, 
+							decode(:lhCodVendedor,0,NULL,:lhCodVendedor) , 
+							:szhCodOficina,
+	                        'TMC', 
+	                        :szhPrefPlaza,
+	                        :lhNumFolio)
+	          	 INTO :szhRetorno
+	          	FROM DUAL;
+	        if (SQLCODE != SQLOK)
+	        {
+	        	vDTrazasLog(modulo , "en la Anulacion del folio Docto N° Proceso [%ld]:(%d|%s)"
+	        				,LOG01,stRegDocum.stDocum[i].lNumProceso, SQLCODE,SQLERRM);
+	        	return FALSE;
+	        	
+	        }
+	       	vDTrazasLog(modulo , "Se anulo el folio del documento N° Proceso  [%ld]"
+	       				,LOG03,stRegDocum.stDocum[i].lNumProceso);
+	        
+	     }
+	}     	
+    return TRUE;
+}
+
+
+/* ************************************************************************* */
+/* * Funcion bfnValidaOperadora                                            * */
+/* ************************************************************************* */
+/* * VALIDA QUE LA OPERADORA EN LA QUE SE EJECUTA LA APLICACION SEA TMC    * */
+/* ************************************************************************* */
+BOOL bfnValidaOperadora(void)
+{
+    char modulo[]="bfnValidaOperadora";
+
+	EXEC SQL BEGIN DECLARE SECTION;
+    	 int ihCuenta=0;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (modulo,"\n\t*** Entrada en %s ***" ,LOG04,modulo);
+
+	EXEC SQL 
+	        SELECT COUNT(1)
+	        INTO :ihCuenta
+ 			FROM GE_OPERADORA_SCL_LOCAL
+ 			WHERE COD_OPERADORA_SCL='TMC';
+
+    if (SQLCODE)
+    {
+        vDTrazasLog  (modulo , "\n\t** En Validacion de operadora TMC **"
+                               "\n\t\t=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo , "\n\t** En Validacion de operadora TMC **"
+                               "\n\t\t=> Detalle : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return FALSE;
+    }
+
+    if (ihCuenta != 1)
+    {
+        vDTrazasLog  (modulo,"**  La operadora no es valida para ejecutar el programa  **",LOG01);
+        vDTrazasError(modulo,"**  La operadora no es valida para ejecutar el programa  **",LOG01);
+        return FALSE;
+    }
+
+    return TRUE;
+
+}/* bfnValidaOperadora */
+
+
+
+
+/* *************************************** */
+/*                  HISTORICOS			   */
+/* *************************************** */
+
+/* ************************************************************************* */
+/* * Funcion bfnDBPasarHistFactura( ),                                     * */
+/* * Pasamos a Historicas Facturas                                         * */
+/* ************************************************************************* */
+BOOL bfnDBPasarHistFactura(long lIndOrdenTotal)
+{
+    char modulo[]="bfnDBPasarHistFactura";
+    char    szCadenaInsert[4096] ="";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+
+	lhIndOrdenTotal = lIndOrdenTotal ;
+	
+    vDTrazasLog  (modulo,"\t\t**  Paso Historico de Facturas **"
+    					 "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                         ,LOG05,lIndOrdenTotal);
+
+    vfnInitCadenaInsertFactura (szCadenaInsert);
+
+    EXEC SQL PREPARE sql_insert_factura FROM :szCadenaInsert;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Insert Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Insert Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_insert_factura USING :lhIndOrdenTotal;
+
+    if ( SQLCODE )
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Insert Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Insert Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+
+    return (TRUE);
+}
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaInsertFactura()                                  * */
+/* * Inicilaiza Sql para Insertar Facturas                                 * */
+/* ************************************************************************* */
+void vfnInitCadenaInsertFactura(char *szCadena)
+{
+    sprintf(szCadena,
+            "INSERT INTO FA_HISTDOCU ( "
+                    "NUM_SECUENCI              , COD_TIPDOCUM              ,"
+                    "COD_VENDEDOR_AGENTE       , LETRA                     ,"
+                    "COD_CENTREMI              , TOT_PAGAR                 ,"
+                    "TOT_CARGOSME              , COD_VENDEDOR              ,"
+                    "COD_CLIENTE               , FEC_EMISION               ,"
+                    "FEC_CAMBIOMO              , NOM_USUARORA              ,"
+                    "ACUM_NETOGRAV             , ACUM_NETONOGRAV           ,"
+                    "ACUM_IVA                  , IND_ORDENTOTAL            ,"
+                    "IND_VISADA                , IND_LIBROIVA              ,"
+                    "IND_PASOCOBRO             , IND_SUPERTEL              ,"
+                    "IND_ANULADA               , NUM_PROCESO               ,"
+                    "NUM_FOLIO                 , COD_PLANCOM               ,"
+                    "COD_CATIMPOS              , FEC_VENCIMIE              ,"
+                    "FEC_CADUCIDA              , FEC_PROXVENC              ,"
+                    "COD_CICLFACT              , NUM_SECUREL               ,"
+                    "LETRAREL                  , COD_TIPDOCUMREL           ,"
+                    "COD_VENDEDOR_AGENTEREL    , COD_CENTRREL              ,"
+                    "NUM_VENTA                 , NUM_TRANSACCION           ,"
+                    "IMP_SALDOANT              , IND_IMPRESA               ,"
+                    "SEQ_FORCOB                , SEQ_PAC                   ,"
+                    "SEQ_SUPERTFN              , SEQ_FORFAC                ,"
+                    "COD_OPREDFIJA             , NUM_CTC                   ,"
+                    "COD_MODVENTA              , TOT_FACTURA               ,"
+                    "TOT_CUOTAS                , TOT_DESCUENTO             ,"
+                    "COD_BARRAS                , IND_FACTUR                ,"
+                    "COD_DESPACHO			   , IND_RECUPIVA              ,"
+                    "NUM_CUOTAS                , NUM_PROCPASOCOBRO         ,"
+                    "COD_OFICINA               , PREF_PLAZA				   ,"
+                    "COD_OPERADORA			   , COD_ZONAIMPO			   ,"
+                    "COD_PLAZA											   )"
+            "SELECT "
+                    "NUM_SECUENCI              , COD_TIPDOCUM              ,"
+                    "COD_VENDEDOR_AGENTE       , LETRA                     ,"
+                    "COD_CENTREMI              , TOT_PAGAR                 ,"
+                    "TOT_CARGOSME              , COD_VENDEDOR              ,"
+                    "COD_CLIENTE               , FEC_EMISION               ,"
+                    "FEC_CAMBIOMO              , NOM_USUARORA              ,"
+                    "ACUM_NETOGRAV             , ACUM_NETONOGRAV           ,"
+                    "ACUM_IVA                  , IND_ORDENTOTAL            ,"
+                    "IND_VISADA                , IND_LIBROIVA              ,"
+                    "IND_PASOCOBRO             , IND_SUPERTEL              ,"
+                    "IND_ANULADA               , NUM_PROCESO               ,"
+                    "NUM_FOLIO                 , COD_PLANCOM               ,"
+                    "COD_CATIMPOS              , FEC_VENCIMIE              ,"
+                    "FEC_CADUCIDA              , FEC_PROXVENC              ,"
+                    "COD_CICLFACT              , NUM_SECUREL               ,"
+                    "LETRAREL                  , COD_TIPDOCUMREL           ,"
+                    "COD_VENDEDOR_AGENTEREL    , COD_CENTRREL              ,"
+                    "NUM_VENTA                 , NUM_TRANSACCION           ,"
+                    "IMP_SALDOANT              , IND_IMPRESA               ,"
+                    "SEQ_FORCOB                , SEQ_PAC                   ,"
+                    "SEQ_SUPERTFN              , SEQ_FORFAC                ,"
+                    "COD_OPREDFIJA             , NUM_CTC                   ,"
+                    "COD_MODVENTA              , TOT_FACTURA               ,"
+                    "TOT_CUOTAS                , TOT_DESCUENTO             ,"
+                    "COD_BARRAS                , IND_FACTUR                ,"
+                    "COD_DESPACHO			   , IND_RECUPIVA              ,"
+                    "NUM_CUOTAS                , NUM_PROCPASOCOBRO         ,"
+                    "COD_OFICINA               , PREF_PLAZA 			   ,"
+                    "COD_OPERADORA			   , COD_ZONAIMPO			   ,"
+                    "COD_PLAZA												"
+            "FROM   FA_FACTDOCU_NOCICLO "
+            "WHERE  IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+/*-----------------------------------------------------------------------------------------------------*/
+/* ************************************************************************* */
+/* * Funcion bfnDBPasarHistDetalle( ),                                     * */
+/* * Pasamos a Historicas Detalle de Facturas                              * */
+/* ************************************************************************* */
+BOOL bfnDBPasarHistDetalle(long lIndOrdenTotal)
+{
+ 	char  modulo[]="bfnDBPasarHistDetalle";
+    char    szCadenaInsert[2048] ="";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+	
+	lhIndOrdenTotal = lIndOrdenTotal;
+	
+    vDTrazasLog  (modulo, "\t\t**  Paso Historico Detalle Factura **"
+    					  "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                          ,LOG05,lIndOrdenTotal);
+
+    vfnInitCadenaInsertDetalle(szCadenaInsert);
+
+    EXEC SQL PREPARE sql_insert_detalle FROM :szCadenaInsert;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Insert Detalle **"
+                               "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Insert Detalle **"
+                               "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_insert_detalle USING :lhIndOrdenTotal;
+
+    if ( SQLCODE )
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Insert Detalle **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Insert Detalle **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+
+    return (TRUE);
+}
+
+
+/* ************************************************************************* */
+/* * Funcion bfnBorrarHistDetalle( ),                                      * */
+/* * Borramos a Historicas Detalle de Facturas                             * */
+/* ************************************************************************* */
+BOOL bfnBorrarHistDetalle(long lIndOrdenTotal)
+{
+ 	char  modulo[]="bfnBorrarHistDetalle";
+    char  szCadenaDelete[512]  ="";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+
+	lhIndOrdenTotal = lIndOrdenTotal;
+    vDTrazasLog  (modulo, "\t\t**  Borrado del Historico Detalle Factura **"
+    					  "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                          ,LOG05,lIndOrdenTotal);
+
+   vfnInitCadenaDeleteDetalle(szCadenaDelete);
+   EXEC SQL PREPARE sql_delete_detalle FROM :szCadenaDelete;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Delete Detalle **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Delete Detalle **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_delete_detalle USING  :lhIndOrdenTotal;
+
+    if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Delete Detalle **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Delete Detalle **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    return (TRUE);
+}/* ******************* * End bfnBorrarHistDetalle * ******************* */
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaInsertDetalle ()                                 * */
+/* * Inicilaiza Sql para Insertar Detalle de Facturas                      * */
+/* ************************************************************************* */
+void vfnInitCadenaInsertDetalle(char *szCadena)
+{
+    sprintf(szCadena,
+            "INSERT INTO FA_HISTCONC_19010102 ( "
+                    "IND_ORDENTOTAL  , COD_CONCEPTO    , "
+                    "COLUMNA         , COD_MONEDA      , "
+                    "COD_PRODUCTO    , COD_TIPCONCE    , "
+                    "FEC_VALOR       , FEC_EFECTIVIDAD , "
+                    "IMP_CONCEPTO    , COD_REGION      , "
+                    "COD_PROVINCIA   , COD_CIUDAD      , "
+                    "IMP_MONTOBASE   , IND_FACTUR      , "
+                    "IMP_FACTURABLE  , IND_SUPERTEL    , "
+                    "NUM_ABONADO     , COD_PORTADOR    , "
+                    "DES_CONCEPTO    , SEG_CONSUMIDO   , "
+                    "NUM_CUOTAS      , ORD_CUOTA       , "
+                    "NUM_UNIDADES    , NUM_SERIEMEC    , "
+                    "NUM_SERIELE     , PRC_IMPUESTO    , "
+                    "VAL_DTO         , TIP_DTO         , "
+                    "MES_GARANTIA    , NUM_GUIA        , "
+                    "IND_ALTA        , NUM_PAQUETE     , "
+                    "FLAG_IMPUES     , FLAG_DTO        , "
+                    "COD_CONCEREL    , COLUMNA_REL     , "
+                    "SEQ_CUOTAS       ) "
+            "SELECT "
+                    "IND_ORDENTOTAL  , COD_CONCEPTO    , "
+                    "COLUMNA         , COD_MONEDA      , "
+                    "COD_PRODUCTO    , COD_TIPCONCE    , "
+                    "FEC_VALOR       , FEC_EFECTIVIDAD , "
+                    "IMP_CONCEPTO    , COD_REGION      , "
+                    "COD_PROVINCIA   , COD_CIUDAD      , "
+                    "IMP_MONTOBASE   , IND_FACTUR      , "
+                    "IMP_FACTURABLE  , IND_SUPERTEL    , "
+                    "NUM_ABONADO     , COD_PORTADOR    , "
+                    "DES_CONCEPTO    , SEG_CONSUMIDO   , "
+                    "NUM_CUOTAS      , ORD_CUOTA       , "
+                    "NUM_UNIDADES    , NUM_SERIEMEC    , "
+                    "NUM_SERIELE     , PRC_IMPUESTO    , "
+                    "VAL_DTO         , TIP_DTO         , "
+                    "MES_GARANTIA    , NUM_GUIA        , "
+                    "IND_ALTA        , NUM_PAQUETE     , "
+                    "FLAG_IMPUES     , FLAG_DTO        , "
+                    "COD_CONCEREL    , COLUMNA_REL     , "
+                    "SEQ_CUOTAS      "
+            "FROM   FA_FACTCONC_NOCICLO "
+            "WHERE  IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaDeleteDetalle ()                                 * */
+/* * Inicilaiza Sql para Deletear Detalle de Facturas                      * */
+/* ************************************************************************* */
+void vfnInitCadenaDeleteDetalle (char *szCadena)
+{
+	char modulo[]="vfnInitCadenaDeleteDetalle";
+
+    sprintf(szCadena,
+        "DELETE "
+        "FROM    FA_FACTCONC_NOCICLO "
+        "WHERE   IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+
+/*-----------------------------------------------------------------------------------------------------*/
+/* ************************************************************************* */
+/* * Funcion bfnDBPasarHistCliente ( ),                                    * */
+/* * Pasamos a Historicas de Clientes Facturados                           * */
+/* ************************************************************************* */
+BOOL bfnDBPasarHistCliente(long lIndOrdenTotal)
+{
+	char modulo[]="bfnDBPasarHistCliente";
+
+    char    szCadenaInsert[2048] ="";
+    char    szCadenaDelete[512]  ="";
+
+    long    lFilasInsert=0          ;
+    long    lFilasDelete=0          ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+    
+    lhIndOrdenTotal = lIndOrdenTotal;
+    vDTrazasLog  (modulo, "\t\t**  Paso Historico Cliente Factura **"
+    					  "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                          ,LOG05,lIndOrdenTotal);
+
+    vfnInitCadenaInsertCliente(szCadenaInsert);
+    vfnInitCadenaDeleteCliente(szCadenaDelete);
+
+    EXEC SQL PREPARE sql_insert_cliente FROM :szCadenaInsert;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Insert Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Insert Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_insert_cliente USING :lhIndOrdenTotal;
+
+    if ( SQLCODE )
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Insert Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Insert Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasInsert=(SQLROWS>0?SQLROWS:0);
+
+    EXEC SQL PREPARE sql_delete_cliente FROM :szCadenaDelete;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Delete Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Delete Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_delete_cliente USING  :lhIndOrdenTotal;
+
+    if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Delete Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Delete Cliente **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasDelete=(SQLROWS>0?SQLROWS:0);
+
+    if (lFilasInsert != lFilasDelete)
+    {
+        vDTrazasLog  (modulo,   "\n\t**  Error Filas Insertadas != Filas Deletadas **",LOG01);
+        vDTrazasError(modulo,   "\n\t**  Error Filas Insertadas != Filas Deletadas **",LOG01);
+        return (FALSE);
+    }
+    return (TRUE);
+}
+
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaInsertCliente ()                                 * */
+/* * Inicilaiza Sql para Insertar Clientes de Facturas                     * */
+/* ************************************************************************* */
+void vfnInitCadenaInsertCliente(char *szCadena)
+{
+    sprintf(szCadena,
+            "INSERT INTO FA_HISTCLIE_19010102 ( "
+                    "IND_ORDENTOTAL , COD_CLIENTE    , "
+                    "NOM_CLIENTE    , COD_PLANCOM    , "
+                    "NOM_APECLIEN1  , NOM_APECLIEN2  , "
+                    "TEF_CLIENTE1   , TEF_CLIENTE2   , "
+                    "DES_ACTIVIDAD  , NOM_CALLE      , "
+                    "NUM_CALLE      , NUM_PISO       , "
+                    "DES_COMUNA     , DES_CIUDAD     , "
+                    "COD_PAIS       , COD_RUTADESP   , "
+                    "IND_DEBITO     , IMP_STOPDEBIT  , "
+                    "COD_BANCO      , COD_SUCURSAL   , "
+                    "IND_TIPCUENTA  , COD_TIPTARJETA , "
+                    "NUM_CTACORR    , NUM_TARJETA    , "
+                    "FEC_VENCITARJ  , COD_BANCOTARJ  , "
+                    "COD_TIPIDTRIB  , NUM_IDENTTRIB  , "
+                    "NUM_FAX        , COD_IDIOMA     , "
+	            	"GLS_DIRECCLIE)"
+            "SELECT "
+                    "IND_ORDENTOTAL , COD_CLIENTE    , "
+                    "NOM_CLIENTE    , COD_PLANCOM    , "
+                    "NOM_APECLIEN1  , NOM_APECLIEN2  , "
+                    "TEF_CLIENTE1   , TEF_CLIENTE2   , "
+                    "DES_ACTIVIDAD  , NOM_CALLE      , "
+                    "NUM_CALLE      , NUM_PISO       , "
+                    "DES_COMUNA     , DES_CIUDAD     , "
+                    "COD_PAIS       , COD_RUTADESP   , "
+                    "IND_DEBITO     , IMP_STOPDEBIT  , "
+                    "COD_BANCO      , COD_SUCURSAL   , "
+                    "IND_TIPCUENTA  , COD_TIPTARJETA , "
+                    "NUM_CTACORR    , NUM_TARJETA    , "
+                    "FEC_VENCITARJ  , COD_BANCOTARJ  , "
+                    "COD_TIPIDTRIB  , NUM_IDENTTRIB  , "
+                    "NUM_FAX        , COD_IDIOMA     , "
+	            	"GLS_DIRECCLIE "
+            "FROM   FA_FACTCLIE_NOCICLO "
+            "WHERE  IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+    
+}
+
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaDeleteCliente ()                                 * */
+/* * Inicilaiza Sql para Deletear Detalle de Facturas                      * */
+/* ************************************************************************* */
+void vfnInitCadenaDeleteCliente (char *szCadena)
+{
+	char modulo[]="vfnInitCadenaDeleteCliente";
+
+    sprintf(szCadena,
+        "DELETE "
+        "FROM    FA_FACTCLIE_NOCICLO  "
+        "WHERE   IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+
+
+/*-----------------------------------------------------------------------------------------------------*/
+/* ************************************************************************* */
+/* * Funcion bfnDBPasarHistAbonado( ),                                     * */
+/* * Pasamos a Historicas Abonados Facturados                              * */
+/* ************************************************************************* */
+BOOL bfnDBPasarHistAbonado(long lIndOrdenTotal)
+{
+	char modulo[]="bfnDBPasarHistAbonado";
+
+    char    szCadenaInsert[2048] ="";
+    char    szCadenaDelete[512]  ="";
+
+    long    lFilasInsert=0          ;
+    long    lFilasDelete=0          ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+
+	lhIndOrdenTotal = lIndOrdenTotal;
+    vDTrazasLog  (modulo,"\t\t**  Paso Historico Abonados de Factura **"
+    					 "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                         ,LOG05,lhIndOrdenTotal);
+
+    vfnInitCadenaInsertAbonado (szCadenaInsert);
+    vfnInitCadenaDeleteAbonado (szCadenaDelete);
+
+    EXEC SQL PREPARE sql_insert_abonado FROM :szCadenaInsert;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Insert Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Insert Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_insert_abonado USING :lhIndOrdenTotal;
+
+    if ( SQLCODE )
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Insert Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Insert Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasInsert=(SQLROWS>0?SQLROWS:0);
+
+    EXEC SQL PREPARE sql_delete_abonado FROM :szCadenaDelete;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Delete Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Delete Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_delete_abonado USING  :lhIndOrdenTotal;
+
+    if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Delete Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Delete Abonados **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasDelete=(SQLROWS>0?SQLROWS:0);
+
+    if (lFilasInsert != lFilasDelete)
+    {
+        vDTrazasLog  (modulo,   "\n\t**  Error Filas Insertadas != Filas Deletadas **",LOG01);
+        vDTrazasError(modulo,   "\n\t**  Error Filas Insertadas != Filas Deletadas **",LOG01);
+        return (FALSE);
+    }
+    return (TRUE);
+}
+
+
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaInsertAbonado ()                                 * */
+/* * Inicilaiza Sql para Insertar Abonados de Facturas                     * */
+/* ************************************************************************* */
+void vfnInitCadenaInsertAbonado(char *szCadena)
+{
+    char modulo[]="vfnInitCadenaInsertAbonado";
+
+    sprintf(szCadena,
+            "INSERT INTO FA_HISTABON_19010102 ( "
+                    "IND_ORDENTOTAL   , COD_CLIENTE      , "
+                    "NUM_ABONADO      , COD_PRODUCTO     , "
+                    "COD_SITUACION    , TOT_CARGOSME     , "
+                    "ACUM_CARGO       , ACUM_DTO         , "
+                    "ACUM_IVA         , COD_DETFACT      , "
+                    "FEC_FINCONTRA    , IND_FACTUR       , "
+                    "COD_CREDMOR      , NOM_USUARIO      , "
+                    "NOM_APELLIDO1    , NOM_APELLIDO2    , "
+                    "LIM_CREDITO      , NUM_CELULAR      , "
+                    "NUM_BEEPER       , CAP_CODE         , "
+                    "IND_SUPERTEL     , NUM_TELEFIJA     , "
+                    "COD_BARRAS       )"
+            "SELECT "
+                    "IND_ORDENTOTAL   , COD_CLIENTE      , "
+                    "NUM_ABONADO      , COD_PRODUCTO     , "
+                    "COD_SITUACION    , TOT_CARGOSME     , "
+                    "ACUM_CARGO       , ACUM_DTO         , "
+                    "ACUM_IVA         , COD_DETFACT      , "
+                    "FEC_FINCONTRA    , IND_FACTUR       , "
+                    "COD_CREDMOR      , NOM_USUARIO      , "
+                    "NOM_APELLIDO1    , NOM_APELLIDO2    , "
+                    "LIM_CREDITO      , NUM_CELULAR      , "
+                    "NUM_BEEPER       , CAP_CODE         , "
+                    "IND_SUPERTEL     , NUM_TELEFIJA     , "
+                    "COD_BARRAS       "
+            "FROM   FA_FACTABON_NOCICLO "
+            "WHERE  IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaDeleteAbonado ()                                 * */
+/* * Inicilaiza Sql para Deletear Abonados de Facturas                     * */
+/* ************************************************************************* */
+void vfnInitCadenaDeleteAbonado (char *szCadena)
+{
+    char modulo[]="vfnInitCadenaDeleteAbonado";
+
+    sprintf(szCadena,
+        "DELETE "
+        "FROM    FA_FACTABON_NOCICLO  "
+        "WHERE   IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+/*-----------------------------------------------------------------------------------------------------*/
+
+/* ************************************************************************* */
+/* * Funcion bfnDBPasarHistInterfact( ),                                   * */
+/* * Pasamos a Historicas Interfaz                                         * */
+/* ************************************************************************* */
+BOOL bfnDBPasarHistInterfact(long lNumProceso)
+{
+    char modulo[]="bfnDBPasarHistInterfact";
+
+    char    szCadenaInsert[4096] ="";
+    char    szCadenaDelete[512]  ="";
+    long    lFilasDelete=0          ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhNumProceso	= 0;
+    EXEC SQL END DECLARE SECTION;
+
+	lhNumProceso = lNumProceso;
+    vDTrazasLog  (modulo,"\t\t**  Paso Historico de InterFaz **"
+    					 "\n\t\t ==> Num.Proceso   [%ld]"
+                         ,LOG05,lhNumProceso);
+
+    vfnInitCadenaInsertInterfaz (szCadenaInsert);
+    vfnInitCadenaDeleteInterfaz (szCadenaDelete);
+
+    EXEC SQL PREPARE sql_insert_factura FROM :szCadenaInsert;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Insert Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Insert Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_insert_factura USING :lhNumProceso;
+
+    if ( SQLCODE )
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Insert Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Insert Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+
+    EXEC SQL PREPARE sql_delete_factura FROM :szCadenaDelete;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Delete Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Delete Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_delete_factura USING  :lhNumProceso;
+
+    if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Delete Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Delete Interfaz **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasDelete=(SQLROWS>0?SQLROWS:0);
+
+    return (TRUE);
+}
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaInsertInterfaz()                                 * */
+/* * Inicilaiza Sql para Insertar Interfaz                                 * */
+/* ************************************************************************* */
+void vfnInitCadenaInsertInterfaz(char *szCadena)
+{
+    char modulo[]="vfnInitCadenaInsertInterfaz";
+
+    sprintf(szCadena,
+            "INSERT INTO FA_HISTINTERFACT ( "
+						"NUM_PROCESO       ,"
+						"NUM_VENTA         ,"
+						"COD_MODGENER      ,"
+						"COD_ESTADOC       ,"
+						"COD_ESTPROC       ,"
+						"COD_TIPMOVIMIEN   ,"
+						"COD_CATRIBUT      ,"
+						"COD_CATIMPOSITIVA ,"
+						"COD_TIPDOCUM      ,"
+						"NUM_FOLIO         ,"
+						"NUM_FOLIOREL      ,"
+						"FEC_INGRESO       ,"
+						"FEC_FACTURACION   ,"
+						"FEC_IMPRESION     ,"
+						"FEC_FOLIACION     ,"
+						"FEC_VISACION      ,"
+						"FEC_PASOCOBRO     ,"
+						"FEC_CIERRE        ,"
+						"FEC_VENCIMIENTO   ,"
+						"NUM_CUOTAS        ,"
+						"COD_MODVENTA      ,"
+						"PREF_PLAZA)"
+            "SELECT "
+						"NUM_PROCESO       ,"
+						"NUM_VENTA         ,"
+						"COD_MODGENER      ,"
+						"COD_ESTADOC       ,"
+						"COD_ESTPROC       ,"
+						"COD_TIPMOVIMIEN   ,"
+						"COD_CATRIBUT      ,"
+						"COD_CATIMPOSITIVA ,"
+						"COD_TIPDOCUM      ,"
+						"NUM_FOLIO         ,"
+						"NUM_FOLIOREL      ,"
+						"FEC_INGRESO       ,"
+						"FEC_FACTURACION   ,"
+						"FEC_IMPRESION     ,"
+						"FEC_FOLIACION     ,"
+						"FEC_VISACION      ,"
+						"FEC_PASOCOBRO     ,"
+						"FEC_CIERRE        ,"
+						"FEC_VENCIMIENTO   ,"
+						"NUM_CUOTAS        ,"
+						"COD_MODVENTA      ,"
+						"PREF_PLAZA		    "
+            "FROM   FA_INTERFACT "
+            "WHERE  NUM_PROCESO = :lhNumProceso "
+            "AND COD_APLIC = 'FAC' "); /* Incorporado por PGonzaleg 31-01-2002 */
+    return;
+}
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaDeleteInterfaz ()                                 * */
+/* * Inicilaiza Sql para Deletear Interfaz                                 * */
+/* ************************************************************************* */
+void vfnInitCadenaDeleteInterfaz  (char *szCadena)
+{
+    char modulo[]="vfnInitCadenaDeleteInterfaz";
+
+    sprintf(szCadena,
+        "DELETE "
+        "FROM    FA_INTERFACT  "
+        "WHERE   NUM_PROCESO = :lhNumProceso "
+        "AND COD_APLIC = 'FAC' "); /* Incorporado por PGonzaleg 31-01-2002 */
+    return;
+}
+
+
+/*---------------------------------------------------------------------------------------------*/
+
+/* ************************************************************************* */
+/* * Funcion bfnDBEliminarFactura( ),                                      * */
+/* * Eliminamos Facturas ya pasadas a Historicas                           * */
+/* ************************************************************************* */
+BOOL bfnDBEliminarFactura(long lIndOrdenTotal)
+{
+    char modulo[]="bfnDBEliminarFactura";
+
+    char    szCadenaDelete[512]  ="";
+    long    lFilasDelete=0          ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+
+	lhIndOrdenTotal = lIndOrdenTotal;
+	
+    vDTrazasLog  (modulo, "\t\t**  Paso Eliminar Facturas **"
+    					  "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                          ,LOG05,lIndOrdenTotal);
+
+    vfnInitCadenaDeleteFactura (szCadenaDelete);
+
+    EXEC SQL PREPARE sql_delete_factura FROM :szCadenaDelete;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Delete Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Delete Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_delete_factura USING  :lhIndOrdenTotal;
+
+    if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Delete Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Delete Facturas **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasDelete=(SQLROWS>0?SQLROWS:0);
+
+    return (TRUE);
+
+}
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaDeleteFactura ()                                 * */
+/* * Inicilaiza Sql para Deletear Facturas                                 * */
+/* ************************************************************************* */
+void vfnInitCadenaDeleteFactura  (char *szCadena)
+{
+
+    sprintf(szCadena,
+        "DELETE "
+        "FROM    FA_FACTDOCU_NOCICLO  "
+        "WHERE   IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+/* ************************************************************************* */
+/* * Funcion bfnDBPasarHistTecno( ),                                     * */
+/* * Pasamos a Historicas Abonados Facturados                              * */
+/* ************************************************************************* */
+BOOL bfnDBPasarHistTecno(long lIndOrdenTotal)
+{
+	char modulo[]="bfnDBPasarHistTecno";
+
+    char    szCadenaInsert[2048] ="";
+    char    szCadenaDelete[512]  ="";
+
+    long    lFilasInsert=0          ;
+    long    lFilasDelete=0          ;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    	 int lhIndOrdenTotal	= 0;
+    EXEC SQL END DECLARE SECTION;
+
+	lhIndOrdenTotal =lIndOrdenTotal ;
+	
+    vDTrazasLog  (modulo,"\t\t**  Paso Historico Tenologia de Factura **"
+    					 "\n\t\t==> Ind.OrdenTotal   [%ld]"
+                         ,LOG05,lIndOrdenTotal);
+
+    vfnInitCadenaInsertTecno (szCadenaInsert);
+    vfnInitCadenaDeleteTecno (szCadenaDelete);
+
+    EXEC SQL PREPARE sql_insert_abonado FROM :szCadenaInsert;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Insert Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Insert Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_insert_abonado USING :lhIndOrdenTotal;
+
+    if ( SQLCODE )
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Insert Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Insert Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasInsert=(SQLROWS>0?SQLROWS:0);
+
+    EXEC SQL PREPARE sql_delete_abonado FROM :szCadenaDelete;
+
+    if (SQLCODE)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-PREPARE Delete Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-PREPARE Delete Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+
+
+    EXEC SQL EXECUTE sql_delete_abonado USING  :lhIndOrdenTotal;
+
+    if (SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,  "\n\t**  Error en SQL-EXECUTE Delete Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        vDTrazasLog  (modulo,  "\n\t**  Error en SQL-EXECUTE Delete Tenologia **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    lFilasDelete=(SQLROWS>0?SQLROWS:0);
+
+    if (lFilasInsert != lFilasDelete)
+    {
+        vDTrazasLog  (modulo,   "\n\t**  Error Filas Insertadas != Filas Deletadas **",LOG01);
+        vDTrazasError(modulo,   "\n\t**  Error Filas Insertadas != Filas Deletadas **",LOG01);
+        return (FALSE);
+    }
+    return (TRUE);
+}
+
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaInsertAbonado ()                                 * */
+/* * Inicilaiza Sql para Insertar Abonados de Facturas                     * */
+/* ************************************************************************* */
+void vfnInitCadenaInsertTecno(char *szCadena)
+{
+
+    sprintf(szCadena,
+            "INSERT INTO FA_HISTECNO_TH_19010102 ( "
+                    "IND_ORDENTOTAL   , COD_CONCEPTO , "
+                    "COLUMNA      , COD_TECNOLOGIA   , "
+                    "PRC_TECNOLOGIA ) "
+            "SELECT "
+                    "IND_ORDENTOTAL   , COD_CONCEPTO , "
+                    "COLUMNA      , COD_TECNOLOGIA   , "
+                    "PRC_TECNOLOGIA    "
+            "FROM   FA_FACTECNO_TO_NOCICLO "
+            "WHERE  IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+
+/* ************************************************************************* */
+/* * Funcion vfnInitCadenaDeleteTecno ()                                 * */
+/* * Inicilaiza Sql para Deletear Abonados de Facturas                     * */
+/* ************************************************************************* */
+void vfnInitCadenaDeleteTecno (char *szCadena )
+{
+
+    sprintf(szCadena,
+        "DELETE "
+        "FROM    FA_FACTECNO_TO_NOCICLO  "
+        "WHERE   IND_ORDENTOTAL = :lhIndOrdenTotal ");
+    return;
+}
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

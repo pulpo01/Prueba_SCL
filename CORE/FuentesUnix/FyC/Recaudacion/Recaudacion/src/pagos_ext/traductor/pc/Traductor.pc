@@ -1,0 +1,2156 @@
+/*==================================================================================
+   Nombre      : Traductor.pc
+   Programa    : Traductor de archivos de pagos externos. Carga la interfaz de pago.
+
+   Modificaciones
+  ==================================================================================*/
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <pasoc.h>
+#include <unistd.h>
+#include "Traductor.h"      
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                    -- Declaracion de Variables Globales --                */
+/*****************************************************************************/
+
+EXEC SQL BEGIN DECLARE SECTION;
+    /* Ret_entidad_trad */
+    char   szhaCod_entidad      [MAX_ENT][6] ; EXEC SQL VAR szhaCod_entidad   IS STRING(6);
+    char   szhaGls_entidad      [MAX_ENT][21]; EXEC SQL VAR szhaGls_entidad   IS STRING(21);
+    char   szhaDes_entidad      [MAX_ENT][41]; EXEC SQL VAR szhaDes_entidad   IS STRING(41);
+    char   szhaInd_separador    [MAX_ENT][2] ; EXEC SQL VAR szhaInd_separador IS STRING(2);
+    int    ihaVal_registros     [MAX_ENT]    ;
+    int    ihaVal_maxregistro   [MAX_ENT]    ;
+    int    ihaVal_inicial       [MAX_ENT]    ;
+    int    ihaVal_largo         [MAX_ENT]    ;
+    
+    /* Ret_registros_trad */
+    char   szhaCod_entidadReg   [MAX_ENT][6] ; EXEC SQL VAR szhaCod_entidadReg  IS STRING(6);
+    char   szhaCod_registroReg  [MAX_ENT][4] ; EXEC SQL VAR szhaCod_registroReg IS STRING(4);
+    char   szhaGls_tipoReg      [MAX_ENT][51]; EXEC SQL VAR szhaGls_tipoReg     IS STRING(51);
+    int    ihaVal_totalcampos   [MAX_ENT]    ;
+    int    ihaInd_totalizador   [MAX_ENT]    ;
+    int    ihaCod_totalizador   [MAX_ENT]    ;
+    int    ihaVal_cuentacabecera[MAX_ENT]    ;
+    int    ihaVal_largoreg      [MAX_ENT]    ;
+
+    /* Ret_campos_trad */
+    char   szhaGls_campo        [MAX_CAM][31]; EXEC SQL VAR szhaGls_campo IS STRING(31);
+    char   szhaInd_tipo         [MAX_CAM][2] ; EXEC SQL VAR szhaInd_tipo  IS STRING(2);
+    int    ihaCod_campo         [MAX_CAM]    ;
+    int    ihaInd_significa     [MAX_CAM]    ;
+    
+    /* Ret_regcampos_trad */
+    char   szhaCod_entidadRC    [MAX_CAM][6] ; EXEC SQL VAR szhaCod_entidadRC  IS STRING(6);
+    char   szhaCod_registroRC   [MAX_CAM][4] ; EXEC SQL VAR szhaCod_registroRC IS STRING(4);
+    char   szhaGls_defectoRC    [MAX_CAM][31]; EXEC SQL VAR szhaGls_defectoRC  IS STRING(31);
+    char   szhaFormato_fecRC    [MAX_CAM][22]; EXEC SQL VAR szhaFormato_fecRC  IS STRING(22); 
+    int    ihaCod_campoRC       [MAX_CAM]    ;
+    int    ihaVal_inicialRC     [MAX_CAM]    ;
+    int    ihaVal_largoRC       [MAX_CAM]    ;
+    int    ihaVal_decimalesRC   [MAX_CAM]    ;
+    int    ihaInd_correlRC      [MAX_CAM]    ;
+
+    /* generales */    
+    char   szhCod_Entidad_Proc  [6]          ; EXEC SQL VAR szhCod_Entidad_Proc IS STRING(6);
+    char   szhHora              [9]          ; EXEC SQL VAR szhHora             IS STRING(9);
+    int    ihVal_MaxRegistro                 ;
+
+    /* interfaz de pagos */
+    char   szhEmp_recaudadora   [16]         ; EXEC SQL VAR szhEmp_recaudadora IS STRING(16);
+    char   szhFec_efectividad   [20]         ; EXEC SQL VAR szhFec_efectividad IS STRING(20); 
+    char   szhNum_ejercicio     [13]         ; EXEC SQL VAR szhNum_ejercicio   IS STRING(13);  
+    char   szhNum_ident         [21]         ; EXEC SQL VAR szhNum_ident       IS STRING(21);  
+    char   szhCod_banco         [16]         ; EXEC SQL VAR szhCod_banco       IS STRING(16);  
+    char   szhCta_corriente     [19]         ; EXEC SQL VAR szhCta_corriente   IS STRING(19);  
+    char   szhNum_tarjeta       [20]         ; EXEC SQL VAR szhNum_tarjeta     IS STRING(20);  
+    char   szhCod_region         [4]         ; EXEC SQL VAR szhCod_region      IS STRING(4);  
+    char   szSysdate            [11]         ; EXEC SQL VAR szSysdate          IS STRING(11);
+    char   szHora               [11]         ; EXEC SQL VAR szHora             IS STRING(11);
+    char   szFechayyyymmdd       [9]         ; EXEC SQL VAR szFechayyyymmdd    IS STRING(9);
+    char   szyyyymmddhhmm       [13]         ; EXEC SQL VAR szyyyymmddhhmm     IS STRING(13);
+    char   szhPref_Plaza_Doc    [26]         ; EXEC SQL VAR szhPref_Plaza_Doc  IS STRING(26); /* MIX-09003 16.02.2010  MQG*/
+    char   szhFec_Pago          [11]         ; EXEC SQL VAR szhFec_Pago        IS STRING(11); /* Incidencia 129515 - 09.04.2010  MQG*/
+    long   lhNum_Folio_Doc                   ; /* MIX-09003 16.02.2010  MQG*/
+    long   lhNum_transaccion                 ; 
+    long   lhCod_cliente                     ;
+    long   lhNum_celular                     ;
+    long   lhNum_documento                   ;
+    int    ihCod_servicio                    ; 
+    int    ihTipo_valor                      ;
+    int    iDecimal                          ;
+    double dhImp_pago                        ;
+    double dhImp_pago_Reversa                ; 
+
+    /* co_anomalia_externa */
+    long   lhCod_Recext           ;
+    long   ihCod_Anomalia         ;
+    long   lhNum_Consecutivo      ;
+    char   szhCt_Corriente    [19]           ; EXEC SQL VAR szhCt_Corriente   IS STRING(19);
+
+    /* Inicio MIX-09003 16.02.2010  MQG*/
+    /* co_recaudaext */
+    char   szhTip_movimiento  [3]            ; EXEC SQL VAR szhTip_movimiento IS STRING(3);
+    int    ihCod_oripago       ;
+    /* Fin MIX-09003 16.02.2010  MQG*/
+
+EXEC SQL END DECLARE SECTION;
+
+static char szExeCarga [1024];
+
+FILE   *fpDat;
+FILE   *fpRegAn;
+
+char   szFileName        [1024];
+char   szFileNameAux     [1024];
+char   szGlosaRechazo [MAX_ENT];
+BOOL   bIsNorma43 = FALSE;
+static TRADUCTOR stTraductor;
+
+int    iIndGrabaInt     ;
+
+/* contadores */
+int    iRows_entidad     ;
+int    iRows_registros   ;
+int    iRows_campos      ;
+int    iRows_regcampos   ;
+int    iInicio_Registro  ;
+int    iLargo_Registro   ;
+
+long   lCorrel_Transac=0 ;
+long   lReg_Leido        ;
+long   lCan_Reg=0        ;      
+long   lReg_Rechazados=0 ;
+long   lReg_Informados=0 ;
+long   lReg_Reversados=0 ;  
+long   lCon_Rech=0       ;
+
+double dValor_pago_efectivo= 0; 
+double dTotal_importe      = 0;
+double dImp_Procesados     = 0;
+double dImp_Rechazados     = 0;
+double dImp_Reversados     = 0;  
+
+/* Variable de Glosa Default*/
+char   szCod_region     [4]  ;
+char   szNum_ident      [21] ;
+char   szCod_banco      [16] ;
+int    iNum_Celular          ;
+
+char  szPath        [128] ="";
+static char szUsage [] =
+   "\nUso : Traductor "
+   "\n\t -u [Usuario]/[Password]\n"
+   "\n\t -l [NivelLog]\n"
+   "\n\t -f [Archivo de Pago]\n"
+   "\n\t -e [Empresa (5)]\n ";
+
+/*****************************************************************************/
+/*     main                                                                  */
+/*****************************************************************************/
+int main (int argc, char* argv[])
+{
+extern int   opterr;
+extern int   optopt;
+extern char *optarg;
+
+char opt[]  = "u:l:f:e:";
+int  iOpt   = 0    ;
+
+char szUsuario[61] = "" ;
+char *pszTmp       = "" ;
+
+    fprintf( stdout, "\nPROCESO => Traductor VERSION => %s.\n", szVERSION ); 
+    vDTrazasLog (szExeCarga,"\t PROCESO => Traductor VERSION => %s.\n",LOG03,szVERSION); 
+
+    memset (&stTraductor,0,sizeof (TRADUCTOR));
+    memset (&stStatus,0,sizeof (STATUS));
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF) {
+        switch (iOpt) {
+            case 'u':  
+                if ( strlen (optarg) ) {
+                    strcpy (szUsuario,optarg)  ;
+                    stTraductor.bOptUsuario = TRUE;
+                }
+                break;
+            case 'l': 
+                if ( strlen (optarg) ) {
+                    stTraductor.bOptNivelLog = TRUE         ;
+                    stTraductor.iNivelLog    = atoi (optarg);
+                }
+                break;   
+            case 'f': 
+                if ( strlen (optarg) ) {
+                    strcpy (stTraductor.szFile,optarg)  ;
+                    stTraductor.bOptFile = TRUE;
+                }
+                break;   
+            case 'e': 
+                if ( strlen (optarg) ) {
+                    strcpy (stTraductor.szEmpresa,optarg)  ;
+                    stTraductor.bOptEmpresa = TRUE;
+                }
+                break;   
+
+        }/* fin switch */
+    }/* fin While de Opciones */
+
+    if (!stTraductor.bOptUsuario) {
+         fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: \n%s\n\n",szUsage);
+         return  -1  ;
+
+    } else {
+       
+       if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL) {
+             fprintf (stderr,"\n\t=>Formato Usuario Oracle Incorrecto:\n%s\n\n",szUsage);
+             return -1  ;
+
+       } else if (!stTraductor.bOptFile) {
+                 fprintf (stderr,"\n\t=>Falta Archivo de datos\n%s\n\n",szUsage);
+                 return -1  ;
+       } else {
+              sprintf(szFileName,"%s",stTraductor.szFile);
+              strncpy (stTraductor.szUsuario ,szUsuario,pszTmp-szUsuario);
+              strcpy  (stTraductor.szPassWord, pszTmp+1);
+       }
+    } /* end if (!stTraductor.bOptUsuario) */
+    
+    if (!stTraductor.bOptEmpresa) {
+       fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: \n%s\n\n",szUsage);
+       return  -1  ;
+    }
+
+    if (!stTraductor.bOptNivelLog)
+         stTraductor.iNivelLog = 3;
+
+    if (ifnInicio(&stTraductor,&stStatus)!=0) {
+        return -1 ;
+    }
+
+    if (ifnCarga_Interfaz_Pago()!=0) {
+		EXEC SQL
+		SELECT 	TO_CHAR(SYSDATE,'hh24:mi:ss')           
+      	  INTO	:szhHora          
+      	  FROM	DUAL;
+    	
+        vDTrazasLog (szExeCarga,"Fallo en ifnCarga_Interfaz_Pago().",LOG01);
+        vDTrazasLog (szExeCarga,"\n\t *** Proceso Abortado *****\n\n",LOG03);
+        vDTrazasLog (szExeCarga,"\n\t  Hora fin de proceso => %s\n",LOG03,szhHora); 
+        EXEC SQL ROLLBACK WORK;
+        fclose(stStatus.LogFile);
+	    fclose(stStatus.ErrFile);
+        return -1 ;
+    } /* end if ifnCarga_Interfaz_Pago()*/
+
+	EXEC SQL
+	SELECT 	TO_CHAR(SYSDATE,'hh24:mi:ss')           
+      INTO	:szhHora          
+      FROM	DUAL;
+      
+    /***** Update co_recaudaext *****/
+    EXEC SQL
+    UPDATE co_recaudaext SET
+           num_anomalias  = :lReg_Rechazados,
+           imp_valor_anom = :dImp_Rechazados
+    WHERE  cod_recext  = :lhCod_Recext;
+    if (SQLCODE!=SQLOK) 
+    {
+            iDError(szExeCarga,ERR000,vInsertarIncidencia,"UPDATE co_recaudaext .\n ",SQLERRM);
+            return -1;
+    }      
+
+    vDTrazasLog (szExeCarga,"\n\t *** Proceso Termino OK *****",LOG03);
+	vDTrazasLog (szExeCarga,"\n\t  Hora fin de proceso => %s\n",LOG03,szhHora);     
+    if (!ifnExitTraductor()) return -1;
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+    return 0; 
+}
+/***************************** Final main ***********************************/
+
+/*****************************************************************************/
+/* Funcion : ifnInicio                                                       */
+/*****************************************************************************/
+int ifnInicio ( TRADUCTOR *stTraductor, STATUS *pstStatus )
+{
+int  iRes=0;
+
+    if (!bfnConnectORA (stTraductor->szUsuario,stTraductor->szPassWord))  {
+        fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+        return  -1 ;
+    }
+    
+    /* Datos Iniciales de Tiempo */
+    cpu_ini = clock();
+    time (&real_ini) ;
+    pstStatus->OraConnected = 1;
+    
+    EXEC SQL
+    SELECT TO_CHAR(SYSDATE,'dd-mm-yyyy') , TO_CHAR(SYSDATE,'hh24:mi:ss'), 
+           TO_CHAR(SYSDATE,'yyyymmdd')   , TO_CHAR(SYSDATE,'yyyymmddhh24mi'),
+           CO_SEQ_RECAUDAEXT.NEXTVAL     , 
+           GE_PAC_GENERAL.PARAM_GENERAL('num_decimal')
+    INTO   :szSysdate      , :szHora        , 
+           :szFechayyyymmdd, :szyyyymmddhhmm,
+           :lhCod_Recext   , 
+           :iDecimal
+    FROM   DUAL;
+            
+    iRes = ifnAbreArchivosLog();
+    if (iRes != 0) return -1;
+    
+    strcpy (szExeCarga,"Carga de Datos.");
+    pstStatus->LogNivel = stTraductor->iNivelLog;
+    
+    vDTrazasLog  (szExeCarga,
+    "\n     *******************************************************************"
+    "\n     * %s      DATOS DE RECAUDADORA EXTERNA   HORA : %s      *"
+    "\n     *******************************************************************\n", LOG03,szVERSION, szHora);
+    
+    vDTrazasError(szExeCarga,
+    "\n     *******************************************************************"
+    "\n     * %s      ERRORES EN CARGA DE DATOS      HORA : %s      *"
+    "\n     *******************************************************************\n", LOG03,szVERSION, szHora);
+
+
+    EXEC SQL
+    SELECT VAL_PARAMETRO
+    INTO   :ihCod_oripago
+    FROM   GED_PARAMETROS 
+    WHERE  NOM_PARAMETRO = 'ORIGEN_PAGO_REC'
+    AND    COD_MODULO    = 'RE';
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"SELECT COD_ORIPAGO.  ",SQLERRM);        
+        return -1;    
+    }        
+    
+    return 0;
+}/* fin ifnInicio */ 
+
+/*****************************************************************************/
+/* Funcion : ifnExitTraductor                                               */
+/*****************************************************************************/
+int ifnExitTraductor (void)
+{
+    /* Desconexion Oracle */
+    if (!bfnDisconnectORA(0)) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Desconexion Oracle. ",SQLERRM);
+        return -1;
+    }
+    stStatus.OraConnected = FALSE;
+    vDTrazasLog (szExeCarga,"\t *** Desconexion a Oracle ***",LOG03);
+    
+    /* Datos Fin de Tiempo */
+    times (&tms)     ;
+    cpu_fin = clock();
+    time (&real_fin) ;
+    
+    real = (real_fin-real_ini)                ;
+    cpu  =(float)cpu_fin/(float)CLOCKS_PER_SEC;
+    
+    dTotal_importe=dImp_Rechazados + dImp_Procesados + dImp_Reversados;  
+
+    vDTrazasLog (szExeCarga,"\n\t => Tiempo de CPU     : [%g]"
+                            "\n\t => Tiempo Real       : [%g]"
+                            "\n\t => Reg. Informados   : [%ld]"
+                            "\n\t => Reg. Procesados   : [%ld]"
+                            "\n\t => Reg. Rechazados   : [%ld]"
+                            "\n\t => Reg. Reversas     : [%ld] (Pago + Reversa)"   
+                            "\n\t => Importe Informado : [%.*f]"
+                            "\n\t => Importe Procesado : [%.*f]"
+                            "\n\t => Importe Rechazado : [%.*f]"
+                            "\n\t => Importe Reversado : [%.*f]\n\n\n",   
+                            LOG03, cpu, real,
+                            lReg_Informados,lCan_Reg,lReg_Rechazados ,lReg_Reversados ,  
+                            iDecimal, dTotal_importe  , 
+                            iDecimal, dImp_Procesados , 
+                            iDecimal, dImp_Rechazados,  
+                            iDecimal, dImp_Reversados); 
+
+    return 0;                                
+                           
+} /* end ifnExitTraductor */
+
+/*****************************************************************************/
+/* Funcion principal de la carga de datos.                                   */
+/*****************************************************************************/
+int ifnCarga_Interfaz_Pago()
+{
+    int x=0, iCampo;
+    char szcomando[2000];
+
+    memset(szcomando, 0x00, sizeof(szcomando));    
+    vDTrazasLog (szExeCarga,"\t *** Funcion :  ifnCarga_Interfaz_Pago \n",LOG03);
+
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales())	{
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Error al realizar carga de bGetParamDecimales().");        
+	    return -1;
+	}
+	
+    if (ifnValidaEmpresaProcesar()!=0)  return -1;
+    if (ifnValidaArchivoProcesado()!=0) return -1;
+    if (ifnOpenFileDat()!=0) return -1;
+
+    vDTrazasLog (szExeCarga,"\n\t  Iniciando Carga de Host Array\n",LOG03);
+    if (ifnCargaEntidad()  !=0)  return -1;
+    if (ifnCargaRegistros()!=0)  return -1;
+    if (ifnCargaCampos()   !=0)  return -1;
+    if (ifnCarga_RegCampos()!=0) return -1;
+ 
+    for (x=0;x<iRows_regcampos;x++) {
+        iCampo = ihaCod_campoRC[x];
+        if (strcmp(szhaGls_defectoRC[x]," ")!=0) {
+            if (ifnCargaGlosa_Defecto(iCampo)!=0) return -1;
+        }
+    } /* end for */
+
+    if( bfnEntidadNorma43() ) 
+    {
+        if( bfnIsFileNorma43() ) 
+        { 
+	        bIsNorma43 = TRUE;
+	        memset(szcomando, 0x00, sizeof(szcomando));
+	        strcpy(szFileNameAux, szFileName);
+            strcat(szFileNameAux, ".back");
+            sprintf(szcomando, "cp %s %s", szFileName, szFileNameAux);
+            system(szcomando);
+	        if( !bfnValidaClaveBanco() ) return(-1);
+	        if( !bfnIsValidFormat() ) return(-1);
+        }
+        else return(-1);
+    } /* end bfnEntidadNorma43*/
+
+    if (ifnDatos_Interfaz()!=0) return -1;
+
+    if( bIsNorma43 )
+    {
+	    sprintf(szcomando, "cp %s %s", szFileNameAux, szFileName);
+   	    system(szcomando);
+	    memset(szcomando, 0x00, sizeof(szcomando));
+	    sprintf(szcomando, "rm %s", szFileNameAux);
+	    system(szcomando);
+    } /* end if( bIsNorma43 ) */
+
+    EXEC SQL COMMIT;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Commit Work. ",SQLERRM);
+        return -1;
+    }
+
+    return 0;
+    
+} /* fin ifnCarga_Interfaz_Pago */
+
+/*****************************************************************************/
+/* Funcion que valida la empresa a procesar                                  */
+/*****************************************************************************/
+int ifnValidaEmpresaProcesar()
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhEmp_recauda  [16]; EXEC SQL VAR szhEmp_recauda IS STRING(16);
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCarga,"\n\t *** Funcion : ifnValidaEmpresaProcesar ***",LOG03);
+    sprintf(szhEmp_recauda,"%s\0",stTraductor.szEmpresa);
+    vDTrazasLog (szExeCarga,"\t\t szEmpresa   [%s]",LOG04,szhEmp_recauda);
+
+    EXEC SQL
+    SELECT A.EMP_RECAUDADORA  , B.COD_ENTIDAD         ,  B.VAL_MAXREGISTRO
+    INTO   :szhEmp_recaudadora, :szhCod_Entidad_Proc  ,  :ihVal_MaxRegistro
+    FROM   CO_EMPRESAS_REX A, RET_ENTIDAD_TRAD B
+    WHERE  A.EMP_RECAUDADORA = :szhEmp_recauda
+    AND    A.EMP_RECAUDADORA = B.GLS_ENTIDAD;
+
+    if (SQLCODE != SQLOK) {
+        vDTrazasLog (szExeCarga,"\t Nombre Entidad erroneo o no existe....!!!!",LOG03);
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"SELECT B.COD_ENTIDAD FROM CO_EMPRESAS_REX. ",SQLERRM);        
+        return -1;
+    }
+
+    vDTrazasLog (szExeCarga,"\t\t szhCod_Entidad_Proc   [%s]",LOG04,szhCod_Entidad_Proc);
+    vDTrazasLog (szExeCarga,"\t\t ihVal_MaxRegistro     [%d]",LOG04,ihVal_MaxRegistro);
+
+    return 0;
+    
+} /* fin ifnValidaEmpresaProcesar() */
+        
+/*****************************************************************************/
+/* Funcion que valida que el archivo en cuestion no este procesado           */
+/*****************************************************************************/
+int ifnValidaArchivoProcesado()
+{          
+EXEC SQL BEGIN DECLARE SECTION;
+    char  szhNom_fichero  [81] ;
+    int   ihCount              ;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCarga,"\n\t *** Validando Archivo en Proceso ***",LOG03);
+    sprintf(szhNom_fichero,"%s\0",szFileName);
+    
+    vDTrazasLog (szExeCarga,"\t\t strlen(szFileName)  [%ld]",LOG03,strlen(szFileName));
+    vDTrazasLog (szExeCarga,"\t\t File : [%s]",LOG03,szhNom_fichero);
+        
+    EXEC SQL
+    SELECT COUNT(*)
+    INTO   :ihCount
+    FROM   CO_RECAUDAEXT
+    WHERE  NOM_FICHERO = :szhNom_fichero;
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select count(*) Co_RecaudaExt. ",SQLERRM);
+        return -1;
+    }
+
+    if (ihCount != 0) {
+        vDTrazasLog (szExeCarga,"\t Archivo [%s] ya fue procesado...!!!!",LOG03,szhNom_fichero);
+        return -1;
+    }    
+    vDTrazasLog (szExeCarga,"\t    < Archivo Valido. No ha sido Procesado >\n",LOG03);
+    return 0;
+    
+} /* fin ifnValidaArchivoProcesado */
+
+/*****************************************************************************/
+/* Funcion que carga las entidades existentes en ret_entidad_trad            */
+/*****************************************************************************/
+int ifnCargaEntidad()
+{
+int i;
+
+    vDTrazasLog (szExeCarga,"\n\t *** Cargando Entidades ***",LOG03);
+
+    EXEC SQL DECLARE Cur_Entidad CURSOR FOR
+    SELECT COD_ENTIDAD   , GLS_ENTIDAD     , NVL(DES_ENTIDAD,' ')       , IND_SEPARADOR , 
+           VAL_REGISTROS , VAL_MAXREGISTRO , NVL(VAL_INICIALREGISTRO,-1), NVL(VAL_LARGOREGISTRO,-1)
+    FROM   RET_ENTIDAD_TRAD
+    WHERE  COD_ENTIDAD = :szhCod_Entidad_Proc
+    ORDER BY 1;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"DECLARE Cur_Entidad. ",SQLERRM);        
+        return -1;
+    }
+
+    EXEC SQL OPEN Cur_Entidad ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"OPEN Cur_Entidad. ",SQLERRM);        
+        return -1;
+    }
+
+    while (1) {
+        EXEC SQL FETCH Cur_Entidad INTO 
+                 :szhaCod_entidad   ,
+                 :szhaGls_entidad   ,
+                 :szhaDes_entidad   ,
+                 :szhaInd_separador ,
+                 :ihaVal_registros  ,
+                 :ihaVal_maxregistro,
+                 :ihaVal_inicial    ,
+                 :ihaVal_largo      ;
+
+        iRows_entidad = SQLROWS;
+        if (SQLCODE == SQLNOTFOUND ) break;
+        if (SQLCODE != SQLOK) {
+            iDError(szExeCarga,ERR000,vInsertarIncidencia,"FETCH Cur_Entidad. ",SQLERRM);
+            return -1;
+        }
+        
+    } /* end while */
+  
+    EXEC SQL CLOSE Cur_Entidad ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"CLOSE Cur_Entidad. ",SQLERRM);        
+        return -1;
+    }
+    
+    for (i=0;i<iRows_entidad;i++)   {
+        vDTrazasLog (szExeCarga,"\t\t szhaCod_entidad       [%s]",LOG07,szhaCod_entidad   [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaDes_entidad       [%s]",LOG07,szhaDes_entidad   [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaInd_separador     [%s]",LOG07,szhaInd_separador [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_registros      [%d]",LOG07,ihaVal_registros  [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_maxregistro    [%d]",LOG07,ihaVal_maxregistro[i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_inicial        [%d]",LOG07,ihaVal_inicial    [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_largo          [%d]\n",LOG07,ihaVal_largo    [i]);
+    }
+
+    vDTrazasLog (szExeCarga,"\t *** Fin a Carga de Entidades. ***\n",LOG03);
+    
+    return 0;
+
+} /* fin ifnCargaEntidad */
+
+/*****************************************************************************/
+/* Funcion que carga los registros existentes en ret_registros_trad          */
+/*****************************************************************************/
+int ifnCargaRegistros()
+{
+int i;
+
+    vDTrazasLog (szExeCarga,"\n\t *** Cargando Registros ***",LOG03);
+    vDTrazasLog (szExeCarga,"\t\t szhCod_Entidad_Proc  [%s]",LOG06,szhCod_Entidad_Proc);
+
+    EXEC SQL DECLARE Cur_Registros CURSOR FOR
+    SELECT COD_ENTIDAD , COD_REGISTRO, NVL(GLS_TIPOREGISTRO,' ') , NVL(VAL_TOTALCAMPOS,-1) , 
+           NVL(IND_TOTALIZADOR,-1) , NVL(COD_TOTALIZADOR,-1) , NVL(VAL_CUENTACABECERA,-1), VAL_LARGOREG
+    FROM   RET_REGISTROS_TRAD
+    WHERE  COD_ENTIDAD = :szhCod_Entidad_Proc
+    ORDER BY 1;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"DECLARE Cur_Registros. ",SQLERRM);        
+        return -1;
+    }
+
+    EXEC SQL OPEN Cur_Registros ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"OPEN Cur_Registros. ",SQLERRM);        
+        return -1;
+    }
+
+    while (1) {
+        EXEC SQL FETCH Cur_Registros INTO 
+                 :szhaCod_entidadReg   ,
+                 :szhaCod_registroReg  , 
+                 :szhaGls_tipoReg      ,
+                 :ihaVal_totalcampos   ,
+                 :ihaInd_totalizador   ,
+                 :ihaCod_totalizador   ,
+                 :ihaVal_cuentacabecera,
+                 :ihaVal_largoreg      ;
+                                       
+        iRows_registros = SQLROWS;
+        if (SQLCODE == SQLNOTFOUND ) break;
+        if (SQLCODE != SQLOK) {
+            iDError(szExeCarga,ERR000,vInsertarIncidencia,"FETCH Cur_Registros. ",SQLERRM);        
+            return -1;
+        }
+    } /* end while */
+
+    EXEC SQL CLOSE Cur_Registros ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"CLOSE Cur_Registros. - %s",SQLERRM);        
+        return -1;
+    }
+    
+    for (i=0;i<iRows_registros;i++)   {
+        vDTrazasLog (szExeCarga,"\t\t szhaCod_entidadReg    [%s]",LOG07,szhaCod_entidadReg   [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaCod_registroReg   [%s]",LOG07,szhaCod_registroReg  [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaGls_tipoReg       [%s]",LOG07,szhaGls_tipoReg      [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_totalcampos    [%d]",LOG07,ihaVal_totalcampos   [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaInd_totalizador    [%d]",LOG07,ihaInd_totalizador   [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaCod_totalizador    [%d]",LOG07,ihaCod_totalizador   [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_cuentacabecera [%d]",LOG07,ihaVal_cuentacabecera[i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_largoreg       [%d]\n",LOG07,ihaVal_largoreg    [i]);
+    }
+
+    vDTrazasLog (szExeCarga,"\t *** Fin a Carga de Registros. ***\n",LOG03);
+    
+    return 0;
+    
+} /* fin ifnCargaRegistros*/
+
+/*****************************************************************************/
+/* Funcion que carga los registros existentes en ret_registros_trad          */
+/*****************************************************************************/
+int ifnCargaCampos()
+{
+int i;
+
+    vDTrazasLog (szExeCarga,"\n\t *** Cargando Campos ***",LOG03);
+
+    EXEC SQL DECLARE Cur_Campos CURSOR FOR
+    SELECT COD_CAMPO                , GLS_CAMPO        ,
+           NVL(IND_SIGNIFICATIVO,-1), NVL(IND_TIPO,' ')
+    FROM   RET_CAMPOS_TRAD
+    ORDER BY 1;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"DECLARE Cur_Campos. ",SQLERRM);        
+        return -1;
+    }
+
+    EXEC SQL OPEN Cur_Campos ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"OPEN Cur_Campos. ",SQLERRM);        
+        return -1;
+    }
+
+    while (1) {
+        EXEC SQL FETCH Cur_Campos INTO 
+                 :ihaCod_campo     ,
+                 :szhaGls_campo    , 
+                 :ihaInd_significa ,
+                 :szhaInd_tipo     ;
+        
+        iRows_campos = SQLROWS;
+        if (SQLCODE == SQLNOTFOUND ) break;
+        if (SQLCODE != SQLOK) {
+            iDError(szExeCarga,ERR000,vInsertarIncidencia,"FETCH Cur_Campos. ",SQLERRM);        
+            return -1;
+        }
+        
+    } /* end while */
+
+    EXEC SQL CLOSE Cur_Campos ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"CLOSE Cur_Campos. ",SQLERRM);        
+        return -1;
+    }
+    
+    for (i=0;i<iRows_campos;i++)   {
+        vDTrazasLog (szExeCarga,"\t\t ihaCod_campo        [%d]",LOG07,ihaCod_campo     [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaGls_campo       [%s]",LOG07,szhaGls_campo    [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaInd_significa    [%d]",LOG07,ihaInd_significa [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaInd_tipo        [%s]\n",LOG07,szhaInd_tipo   [i]);
+    }
+
+    vDTrazasLog (szExeCarga,"\t *** Fin a Carga de Campos. ***\n",LOG03);
+    
+    return 0;
+    
+} /* fin ifnCargaCampos */
+
+/*****************************************************************************/
+/* Funcion que carga los registros y  campos existentes en ret_regcampos_trad*/
+/*****************************************************************************/
+int ifnCarga_RegCampos()
+{
+int i;
+
+    vDTrazasLog (szExeCarga,"\n\t *** Cargando Registro y Campos ***",LOG03);
+
+    EXEC SQL DECLARE Cur_RegCampos CURSOR FOR
+    SELECT COD_ENTIDAD         , COD_REGISTRO           , COD_CAMPO            , 
+           NVL(VAL_INICIAL,-1) , NVL(VAL_LARGO,-1)      , NVL(VAL_DECIMALES,-1), 
+           NVL(GLS_DEFECTO,' '), NVL(IND_CORRELATIVO,-1), NVL(GLS_FORMATO_FECHA,' ')
+    FROM   RET_REGCAMPOS_TRAD
+    WHERE  COD_ENTIDAD = :szhCod_Entidad_Proc
+    ORDER BY COD_CAMPO;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"DECLARE Cur_RegCampos. ",SQLERRM);        
+        return -1;
+    }
+
+    EXEC SQL OPEN Cur_RegCampos ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"OPEN Cur_RegCampos. ",SQLERRM);        
+        return -1;
+    }
+
+    while (1) {
+        EXEC SQL FETCH Cur_RegCampos INTO 
+                 :szhaCod_entidadRC   ,
+                 :szhaCod_registroRC  , 
+                 :ihaCod_campoRC      ,
+                 :ihaVal_inicialRC    ,
+                 :ihaVal_largoRC      ,
+                 :ihaVal_decimalesRC  , 
+                 :szhaGls_defectoRC   ,
+                 :ihaInd_correlRC     ,
+                 :szhaFormato_fecRC   ;
+        
+        iRows_regcampos = SQLROWS;
+        if (SQLCODE == SQLNOTFOUND ) break;
+        if (SQLCODE != SQLOK) {
+            iDError(szExeCarga,ERR000,vInsertarIncidencia,"FETCH Cur_RegCampos. ",SQLERRM);        
+            return -1;
+        }
+    }
+    EXEC SQL CLOSE Cur_RegCampos ;
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"CLOSE Cur_RegCampos. ",SQLERRM);        
+        return -1;
+    }
+    
+    for (i=0;i<iRows_regcampos;i++)   {
+        vDTrazasLog (szExeCarga,"\t\t szhaCod_entidadRC     [%s]",LOG07,szhaCod_entidadRC  [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaCod_registroRC    [%s]",LOG07,szhaCod_registroRC [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaCod_campoRC        [%d]",LOG07,ihaCod_campoRC     [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_inicialRC      [%d]",LOG07,ihaVal_inicialRC   [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_largoRC        [%d]",LOG07,ihaVal_largoRC     [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaVal_decimalesRC    [%d]",LOG07,ihaVal_decimalesRC [i]);
+        vDTrazasLog (szExeCarga,"\t\t szhaGls_defectoRC     [%s]",LOG07,szhaGls_defectoRC  [i]);
+        vDTrazasLog (szExeCarga,"\t\t ihaInd_correlRC       [%d]\n",LOG07,ihaInd_correlRC  [i]);
+    }
+
+    vDTrazasLog (szExeCarga,"\t *** Fin a Carga de Registros y Campos. ***\n",LOG03);
+    
+    return 0;
+    
+} /* fin ifnCarga_RegCampos */
+
+/*****************************************************************************/
+/* Funcion que abre el archivo de datos de recaudacion externa               */
+/*****************************************************************************/
+int ifnOpenFileDat ()
+{
+    vDTrazasLog (szExeCarga,"\n\t *** Abriendo Archivos de Datos Externos  [%s]***",LOG03,szFileName);
+
+	if ((fpDat=fopen(szFileName,"r+")) == (FILE *)NULL) {
+        vDTrazasLog (szExeCarga,"\t Fallo al abrir Fichero de datos [%s].",LOG01,szFileName);
+		return -1;
+	}
+    vDTrazasLog (szExeCarga,"\t\t Archivo [%s] fue abierto con Exito.",LOG03,szFileName);
+    
+    return 0;
+} /* fin ifnOpenFileDat */
+
+/*********************************************************************************************/
+/* Funcion que llama a funciones para cargar datos para la interfaz                          */
+/*********************************************************************************************/
+int ifnDatos_Interfaz()
+{
+int i=0;
+
+    vDTrazasLog (szExeCarga,"\t\t Cerrando y abriendo Archivo.",LOG06);
+  	fflush(fpDat);
+    fclose(fpDat);
+    
+    for (i=0;i<iRows_entidad;i++) {
+        iInicio_Registro = ihaVal_inicial[i];
+        iLargo_Registro  = ihaVal_largo  [i];
+    }
+    if (ifnOpenFileDat()!=0) return -1;
+    
+    if (ifnReadFileDat()!=0) return -1;
+    
+    if (ifnGrabaArchivoProcesado()!=0) return -1;
+    
+    fflush(fpRegAn);
+    fclose(fpRegAn);
+    
+    return 0;
+    
+} /* fin ifnDatos_Interfaz */
+
+/*********************************************************************************************/
+/* Funcion que carga las glosas por defecto                                                  */
+/*********************************************************************************************/
+int ifnCargaGlosa_Defecto(int iCampo)
+{
+int ii=0, kk=0;
+
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion : ifnCargaGlosa_Defecto ***  ",LOG05);
+    vDTrazasLog (szExeCarga,"\t\t     iCampo  [%d] ",LOG05,iCampo);
+
+    switch (iCampo) {
+
+        case CAMPO2:  
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    ihCod_servicio = atoi(szhaGls_defectoRC[kk]);
+                    sprintf(szhFec_efectividad,"%s %s\0",szSysdate,szHora);
+                    vDTrazasLog (szExeCarga,"\t\t\t =====> szhFec_efectividad   [%s]",LOG03,szhFec_efectividad);
+                    break;
+                }
+            }
+            break;
+        case CAMPO5:  
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    ihCod_servicio = atoi(szhaGls_defectoRC[kk]);
+                    vDTrazasLog (szExeCarga,"\t\t\t\t =====> ihCod_servicio    [%d]",LOG04,ihCod_servicio);
+                    break;
+                }
+            }
+            break;
+
+        case CAMPO6:  
+            sprintf(szhNum_ejercicio,"%s\0",szyyyymmddhhmm);
+            vDTrazasLog (szExeCarga,"\t\t\t\t =====> szhNum_ejercicio  [%s]",LOG04,szhNum_ejercicio);
+            break;
+
+        case CAMPO8:  
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    iNum_Celular = atoi(szhaGls_defectoRC[kk]);
+                    vDTrazasLog (szExeCarga,"\t\t\t\t =====> iNum_Celular      [%d]",LOG04,iNum_Celular);
+                    break;
+                }
+            }
+            break;
+
+        case CAMPO10:
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    sprintf(szNum_ident,"%s\0",szhaGls_defectoRC[kk]);
+                    RighTrim (szNum_ident);
+                    vDTrazasLog (szExeCarga,"\t\t\t\t =====> szNum_ident       [%s]",LOG04,szNum_ident);
+                    break;
+                }
+            }
+            break;
+
+        case CAMPO11:  
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    ihTipo_valor = atoi(szhaGls_defectoRC[kk]);
+                    vDTrazasLog (szExeCarga,"\t\t\t\t =====> ihTipo_valor      [%d]",LOG04,ihTipo_valor);
+                    break;
+                }
+            }
+            break;
+
+        case CAMPO13:  
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    sprintf(szCod_banco,"%s\0",szhaGls_defectoRC[kk]);
+                    vDTrazasLog (szExeCarga,"\t\t\t\t =====> szCod_banco       [%s]",LOG04,szCod_banco);
+                    break;
+                }
+            }
+            break;
+
+        case CAMPO18:  
+            for (kk=0;kk<iRows_regcampos;kk++) {
+                if ((ihaCod_campoRC[kk]==iCampo) && (strcmp(szhaCod_entidadRC[kk],szhCod_Entidad_Proc)==0)) {
+                    sprintf(szCod_region,"%s\0",szhaGls_defectoRC[kk]);
+                    vDTrazasLog (szExeCarga,"\t\t\t\t =====> szCod_region      [%s]",LOG04,szCod_region);
+                    break;
+                }
+            }
+
+    } /* end switch */        
+  
+    return 0;
+    
+} /* end ifnCargaGlosa_Defecto */    
+
+/*********************************************************************************************/
+/* Funcion que lee los registros del archivo                                                 */
+/*********************************************************************************************/
+int ifnReadFileDat ()
+{
+char  szAux         [LARGOREG];
+char  szReg_Leido   [LARGOREG];
+char  szCod_Registro[LARGOREG];
+char  szAux_Fecha   [21];
+char  szAux_Format  [22]; 
+char  szDec          [6];
+char  szInt         [20];
+char  szEntidad      [6];
+int   x, iSql, y ;
+int   iCampo;
+int   iValIni , iValLar;
+int   iInd_Entidad ;
+int   iNum_Dec ;
+
+    vDTrazasLog (szExeCarga,"\n\t ** Funcion : ifnReadFileDat **  ",LOG03);
+    vDTrazasLog (szExeCarga,"\n\t\t  ****** Iniciando Lectura del Archivo ******\n",LOG03);
+    
+    iSql= 0; 
+    while (!feof(fpDat)) {        
+        memset(szReg_Leido   ,'\0',sizeof(szReg_Leido));
+        memset(szAux         ,'\0',sizeof(szAux));
+        memset(szCod_Registro,'\0',sizeof(szCod_Registro));
+        iInd_Entidad=0;
+        vfnMemset_Var();
+   	    strcpy( szhTip_movimiento, INS_PAGO );
+
+        fgets(szReg_Leido,LARGOREG,fpDat);
+        lReg_Leido++;
+        vDTrazasLog (szExeCarga,"\t\t < iInicio_Registro >    [%d]",LOG05,iInicio_Registro);
+        vDTrazasLog (szExeCarga,"\t\t < iLargo_Registro  >    [%d]",LOG05,iLargo_Registro);
+        vDTrazasLog (szExeCarga,"\n\t\t  =========> Reg. Leido  Nro.  [%ld] <=========",LOG03,lReg_Leido);
+        strncpy(szAux,&szReg_Leido[iInicio_Registro-1],iLargo_Registro);
+        vDTrazasLog (szExeCarga,"\t\t < szAux    >    [%s]",LOG05,szAux);
+        sprintf(szCod_Registro,"%s\0",szAux);
+
+        if (strlen(szAux)>0) {
+            iIndGrabaInt = 0;
+            for (x=0;x<iRows_regcampos;x++) {
+                    
+                if (strcmp(szhaCod_entidadRC[x],szhCod_Entidad_Proc)==0)  {
+    
+                    iCampo = ihaCod_campoRC[x];
+	                    if (ihaVal_largoRC[x] > 0) {                    	
+	    
+	                        sprintf(szEntidad    ,"%s\0",szhaCod_entidadRC[x]);
+	                        memset(szGlosaRechazo,'\0'  ,sizeof(szGlosaRechazo));
+	        
+	                        switch (iCampo) {
+	                            case CAMPO2:  
+	                                 /* szhFec_efectividad */
+	                                 if (ihaVal_inicialRC[x] != 0) {
+	                                     memset(szAux_Fecha,'\0',sizeof(szAux_Fecha));
+	                                     iValIni = ihaVal_inicialRC[x]-1;
+	                                     iValLar = ihaVal_largoRC[x];  
+	                                     strncpy(szAux_Fecha,&szReg_Leido[iValIni],iValLar);
+	                                     sprintf(szAux_Format,"%s\0",szhaFormato_fecRC[x]);
+	                                     RighTrim (szAux_Fecha);
+	                                     RighTrim (szAux_Format);
+	                                     vDTrazasLog (szExeCarga,"\t\t\t szAux_Fecha    [%s]",LOG05,szAux_Fecha);
+	                                     vDTrazasLog (szExeCarga,"\t\t\t szAux_Format   [%s]",LOG05,szAux_Format);
+	            
+	                                     iSql+=ifnValida_Fecha(szAux_Fecha, szAux_Format, 1);
+
+	                                     if (iSql > 0) {
+	                                        vDTrazasLog (szExeCarga,"\t\t\t =====>ERROR EN CAMPO FEC_EFECTIVIDAD [%s]",LOG05,szAux_Fecha);
+                                            sprintf(szhFec_efectividad,"%s\0","31-12-3000");
+	                                        vDTrazasLog (szExeCarga,"\t\t\t =====>ERROR EN CAMPO FEC_EFECTIVIDAD se asume  [%s]",LOG05,szhFec_efectividad);	                                     	
+	                                     }else{
+	                                      	sprintf(szhFec_efectividad,"%s\0",szAux_Fecha);
+	                                     }
+	
+										 vDTrazasLog (szExeCarga,"\t\t\t =====> szhFec_efectividad   [%s]",LOG03,szhFec_efectividad);
+										
+	                                 } /* end if (ihaVal_inicialRC[x] != 0) */
+	                                 break;
+
+                                /* Inicio Incidencia 129515 - 09.04.2010  MQG*/
+	                            case CAMPO4:  
+	                                 /* szhFec_Pago */
+	                                 memset(szAux       ,'\0',sizeof(szAux));
+	                                 memset(szAux_Fecha ,'\0',sizeof(szAux_Fecha));
+	                                 memset(szAux_Format,'\0',sizeof(szAux_Format));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+                                     sprintf(szAux_Fecha ,"%s\0",szAux);
+                                     sprintf(szAux_Format,"%s\0",szhaFormato_fecRC[x]);
+	                                 RighTrim (szAux_Fecha);                                 
+	                                 RighTrim (szAux_Format);
+                                     vDTrazasLog (szExeCarga,"\t\t\t szAux_Fecha    [%s]",LOG05,szAux_Fecha);
+                                     vDTrazasLog (szExeCarga,"\t\t\t szAux_Format   [%s]",LOG05,szAux_Format);
+
+                                     iSql+=ifnValida_Fecha(szAux_Fecha, szAux_Format, 3);
+	                                 
+                                     if (iSql > 0) {
+                                        vDTrazasLog (szExeCarga,"\t\t\t =====>ERROR EN CAMPO FEC_PAGO [%s]",LOG05,szAux_Fecha);
+                                        sprintf(szhFec_Pago,"%s\0","31-12-3000");
+                                        vDTrazasLog (szExeCarga,"\t\t\t =====>ERROR EN CAMPO FEC_PAGO se asume  [%s]",LOG05,szhFec_Pago);	                                     	
+                                     }else{
+                                      	sprintf(szhFec_Pago,"%s\0",szAux_Fecha);
+                                     }
+	
+									 vDTrazasLog (szExeCarga,"\t\t\t =====> szhFec_Pago   [%s]",LOG03,szhFec_Pago);
+
+	                                 break;
+                                /* Fin Incidencia 129515 - 09.04.2010  MQG*/
+	        	        
+	                            case CAMPO7:  
+	                                 /* lhCod_cliente */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 lhCod_cliente=atol(szAux);
+	                                 iSql += ifnValida_Cliente(lhCod_cliente);  
+	                                 
+	                                 if (ihCod_Anomalia==COD_CLI) 
+	                                 	if (lhCod_cliente > 99999999) lhCod_cliente=-1;
+
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> lhCod_cliente        [%ld]",LOG03,lhCod_cliente);
+	                                 break;
+	        
+	                            case CAMPO8:  
+	                                 /* lhNum_celular */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (atol(szAux)==0) sprintf(szAux,"%d\0",iNum_Celular);
+	                                 lhNum_celular=atol(szAux);
+	                                 /*--if (lhNum_celular > 0) --*/
+	                                 iSql += ifnValida_NumCelular(lhNum_celular);  
+	                                 
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> lhNum_celular        [%ld]",LOG03,lhNum_celular);
+	                                 break;
+	        
+	                            case CAMPO9:  
+	                                 /* dhImp_pago */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iNum_Dec= ihaVal_decimalesRC[x];
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux    [%s]",LOG06,szAux);
+	                                 
+	                                 strncpy(szDec,&szAux[strlen(szAux)-iNum_Dec],strlen(szAux));
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szDec    [%s]",LOG06,szDec);
+	    
+	                                 strncpy(szInt,&szAux[0],strlen(szAux)-iNum_Dec);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szInt    [%s]",LOG06,szInt);
+	                                 
+	                                 memset(&szAux,0,sizeof(szAux));
+	                                 
+	                                 for (y=0;y<iRows_entidad;y++)  {                                        
+	                                      if (strcmp(szhaCod_entidad[y],szhaCod_entidadRC[x])==0) {
+	                                          if (atoi(szhaInd_separador[y])!=0) {
+	                                             sprintf(szAux,"%s%s\0",szInt,szDec);
+	                                             break;
+	                                          } else {
+	                                            sprintf(szAux,"%s.%s\0",szInt,szDec);
+	                                            break;
+	                                          }
+	                                      }
+	                                 }
+	                                 
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 dhImp_pago=atof(szAux); 
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> dhImp_pago           [%f]",LOG03,dhImp_pago);
+	                                 if (dhImp_pago==0) {
+	                                    vDTrazasLog (szExeCarga,"\t Importe de Pago no puede ser 0.",LOG02);
+	                                    ihCod_Anomalia=IMP_PAG;
+	                                    iSql+=100;
+	                                 }
+	                                 break;
+	        
+	                            case CAMPO10:  
+	                                 /* szhNum_ident */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 RighTrim (szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) sprintf(szAux,"%s\0",szNum_ident);
+	                                    sprintf(szhNum_ident,"%s\0",szAux);
+	                                 if ( (strcmp(szhNum_ident," ")!=0) && (atol(szhNum_ident)>0) )
+	                                    iSql+=ifnValida_RutCliente( szhNum_ident, lhCod_cliente);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> szhNum_ident         [%s]",LOG03,szhNum_ident);
+	                                 break;
+	        
+	                            case CAMPO12:  
+	                                 /* lhNum_documento */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) strcpy(szAux,"\0");
+	                                    lhNum_documento=atol(szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> lhNum_documento      [%ld]",LOG03,lhNum_documento);
+	                                 break;
+	        
+	                            case CAMPO13:  
+	                                 /* szhCod_banco */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 RighTrim (szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) sprintf(szAux,"%s\0",szCod_banco);
+	                                    sprintf(szhCod_banco,"%s\0",szAux);
+	                                 iSql+=ifnValida_Cod_Banco(szhCod_banco);
+	                                 
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> szhCod_banco         [%s]",LOG03,szhCod_banco);
+	                                 break;
+	    
+	                            case CAMPO14:  
+	                                 /* szhCta_corriente */
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 RighTrim (szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) strcpy(szAux,"\0");
+	                                    sprintf(szhCta_corriente,"%s\0",szAux);
+	                                 
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> szhCta_corriente     [%s]",LOG03,szhCta_corriente);
+	                                 break;     
+	                            
+	                            case CAMPO17:  
+	                                 /* szhNum_tarjeta */ 
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 RighTrim (szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) strcpy(szAux,"\0");
+	                                    sprintf(szhNum_tarjeta,"%s\0",szAux);
+	    
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> szhNum_tarjeta       [%s]",LOG03,szhNum_tarjeta);
+	                                 break;     
+	    
+	                            case CAMPO18:
+	                                 /* szhCod_region */	    
+	                                 /*iIndGrabaInt = 1;*/
+	                                 /*lReg_Informados++;*/
+	                                 lCorrel_Transac++;
+	                                 /* lhNum_transaccion */
+	                                 lhNum_transaccion = lCorrel_Transac;
+	    	    
+	                                 break;
+
+                                /* Inicio MIX-09003 16.02.2010  MQG*/
+	                            case CAMPO19:  
+	                                 /* szhNum_Folio_Doc */ 
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) strcpy(szAux,"\0");
+	                                    lhNum_Folio_Doc=atol(szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> lhNum_Folio_Doc      [%ld]",LOG03,lhNum_Folio_Doc);
+	                                 
+	                                 break;
+	                                                                                                 
+	                            case CAMPO20:
+	                                 /* szhPref_Plaza_Doc */
+	                                 lReg_Informados++;	    
+	                                 iIndGrabaInt = 1;
+	                                 lCorrel_Transac++;
+	                                 lhNum_transaccion = lCorrel_Transac;
+	                                 
+	                                 memset(szAux,'\0',sizeof(szAux));
+	                                 iValIni = ihaVal_inicialRC[x]-1;
+	                                 iValLar = ihaVal_largoRC[x];  
+	                                 strncpy(szAux,&szReg_Leido[iValIni],iValLar);
+	                                 RighTrim (szAux);
+	                                 LeftTrim (szAux);
+	                                 vDTrazasLog (szExeCarga,"\t\t\t szAux   [%s]",LOG05,szAux);
+	                                 if (strlen(szAux)==0) strcpy(szAux,"\0");
+	                                 sprintf(szhPref_Plaza_Doc,"%s\0",szAux);
+	    
+	                                 vDTrazasLog (szExeCarga,"\t\t\t =====> szhPref_Plaza_Doc       [%s]",LOG03,szhPref_Plaza_Doc);
+     	                             vDTrazasLog (szExeCarga,"\n\t\t iSql    [%d]",LOG03,iSql);
+	                                 if (iSql > 0 ) {
+	                                    if (ifnCarga_RegAnomalias(szReg_Leido,lCon_Rech)!=0) return -1;
+	                                    lCon_Rech++;
+	                                    iSql = 0;
+	                                    iIndGrabaInt = 2;
+	                                 }
+
+	                                 break;     
+        
+                                /* Fin MIX-09003 16.02.2010  MQG*/
+
+	                        } /* end switch (iCampo)*/               
+	                       
+	                        if  (iIndGrabaInt == 1)  {
+	                            if (ifnInserta_InterfazPagos()!=0) return -1;
+	                        }
+	                        
+	                    } /* end if (ihaVal_largoRC[x] > 0) */	                    
+                } /* end if (strcmp(szhaCod_entidadRC[x],szhCod_Entidad_Proc)==0) */                           
+            } /* end for */           
+        } /* end if (strlen(szAux)>0) */       
+    } /* end while */
+
+    return 0;
+    
+} /* fin ifnReadFileDat */
+
+/* Inicio Incidencia 129515 - 09.04.2010  MQG*/
+/*****************************************************************************/
+/* Funcion que valida la fecha y numero de ejercicio                         */
+/*****************************************************************************/
+int ifnValida_Fecha(char *szFecha, char *szFormato, int iInd_Fecha)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    char  szhFecha_Cambio  [21] ; EXEC SQL VAR szhFecha_Cambio  IS STRING(21); 
+    char  szhFecha_Final   [21] ; EXEC SQL VAR szhFecha_Final   IS STRING(21); 
+    char  szhFecha_Pago    [11] ; EXEC SQL VAR szhFecha_Pago    IS STRING(11); 
+    char  szhNum_ejercicio  [9] ; EXEC SQL VAR szhNum_ejercicio IS STRING(9); 
+    char  szhFormato       [22] ; EXEC SQL VAR szhFormato       IS STRING(22); 
+EXEC SQL END DECLARE SECTION;
+    
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion : ifnValida_Fecha ***",LOG03);
+    sprintf(szhFecha_Cambio,"%s\0",szFecha);
+    sprintf(szhFormato     ,"%s\0",szFormato);
+    
+    EXEC SQL
+    SELECT TO_CHAR(TO_DATE(:szhFecha_Cambio,:szhFormato),'dd-mm-yyyy')||TO_CHAR(SYSDATE,' hh24:mm:ss'),
+           TO_CHAR(TO_DATE(:szhFecha_Cambio,:szhFormato),'yyyymmdd'),
+           TO_CHAR(TO_DATE(:szhFecha_Cambio,:szhFormato),'dd-mm-yyyy')
+    INTO   :szhFecha_Final  ,
+           :szhNum_ejercicio, 
+           :szhFecha_Pago
+    FROM   DUAL;
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select Fecha from Dual. ",SQLERRM);        
+        sprintf(szGlosaRechazo,"Error en Select Fecha from Dual\0");
+        ihCod_Anomalia=FEC_EFE;
+        return 100;
+    }
+
+    if (iInd_Fecha == 1) {
+        sprintf(szFecha,"%s\0",szhFecha_Final);
+        vDTrazasLog (szExeCarga,"\t\t\t szFecha Efectividad [%s]",LOG04,szFecha);
+    }    
+
+    if (iInd_Fecha == 2) {
+        sprintf(szFecha,"%s\0",szhNum_ejercicio);
+        vDTrazasLog (szExeCarga,"\t\t\t szhNum_ejercicio    [%s]",LOG04,szhNum_ejercicio);
+    }    
+
+    if (iInd_Fecha == 3) {
+        sprintf(szFecha,"%s\0",szhFecha_Pago);
+        vDTrazasLog (szExeCarga,"\t\t\t szFecha Pago        [%s]",LOG04,szFecha);
+    }    
+    
+    vDTrazasLog (szExeCarga,"\t\t *** Fecha OK ***\n",LOG03);
+    return 0;
+    
+} /* end ifnValida_Fecha */
+/* Fin Incidencia 129515 - 09.04.2010  MQG*/
+
+/*****************************************************************************/
+/* Funcion que valida el numero de cliente del registro                      */
+/*****************************************************************************/
+int ifnValida_Cliente( long lCod_cliente)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     long  lhCod_Cliente   ;
+     int   ihCount         ;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion : ifnValida_Cliente ***",LOG03);
+    lhCod_Cliente=lCod_cliente;
+
+    EXEC SQL
+    SELECT COUNT(*)
+    INTO   :ihCount
+    FROM   GE_CLIENTES   
+    WHERE  COD_CLIENTE = :lhCod_Cliente;
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select cod_cliente from GE_CLIENTES. ",SQLERRM); 
+        ihCod_Anomalia=COD_CLI;
+        return -1;
+    }
+
+    if (ihCount < 1 ) {
+       vDTrazasLog (szExeCarga,"Cliente no Existe  [%ld]",LOG02,lhCod_Cliente); 
+       sprintf(szGlosaRechazo,"Cliente no es Valido\0");
+       ihCod_Anomalia=COD_CLI;
+       return 100;
+    }
+
+    vDTrazasLog (szExeCarga,"\t\t *** Cliente OK ***\n",LOG03);
+    return 0;
+    
+} /* end ifnValida_Cliente */
+
+
+/*****************************************************************************/
+/* Funcion que valida el numero de celular del cliente                       */
+/*****************************************************************************/
+int ifnValida_NumCelular( long lNum_celular)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     long  lhNum_Celular   ;
+     int   ihCount         ;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion : ifnValida_NumCelular ***",LOG03);
+    lhNum_Celular=lNum_celular;
+    
+    EXEC SQL
+    SELECT COUNT(*)
+    INTO   :ihCount
+    FROM   GA_ABOCEL
+    WHERE  NUM_CELULAR = :lhNum_Celular
+    AND    FEC_BAJA IS NULL;
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select Num_celular from Ga_Abocel. ",SQLERRM);        
+        return -1;
+    }
+
+    if (ihCount < 1 ) {
+        EXEC SQL
+        SELECT COUNT(*)
+        INTO   :ihCount
+        FROM   GA_INTARCEL
+        WHERE  NUM_CELULAR = :lhNum_Celular;
+
+        if (SQLCODE != SQLOK) {
+            iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select Num_celular from Ga_Intarcel. ",SQLERRM);        
+            return -1;
+        }
+
+        if (ihCount < 1 ) {
+           vDTrazasLog (szExeCarga,"Numero de Celular no existe.  [%ld]",LOG02,lhNum_Celular);
+           sprintf(szGlosaRechazo,"Numero de Celular no es Valido\0");
+           ihCod_Anomalia=NUM_CEL;
+           return 100;
+        }
+
+    }
+    vDTrazasLog (szExeCarga,"\t\t *** Numero de Celular OK ***\n",LOG03);
+    return 0;
+    
+} /* end ifnValida_NumCelular */
+
+/*****************************************************************************/
+/* Funcion que valida el rut del cliente                                     */
+/*****************************************************************************/
+int ifnValida_RutCliente( char *szNum_ident, long lCod_cliente)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char  szhNum_Ident [21];
+     int   ihCount          ;
+     long  lhCod_Cliente    ;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion : ifnValida_RutCliente ***",LOG03);
+    sprintf(szhNum_Ident,"%s\0",szNum_ident);
+    lhCod_Cliente=lCod_cliente;
+    
+    EXEC SQL
+    SELECT COUNT(*)
+    INTO   :ihCount
+    FROM   GE_CLIENTES
+    WHERE  COD_CLIENTE = :lhCod_Cliente
+    AND    NUM_IDENT   = :szhNum_Ident;
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select Rut Cliente from Ge_Clientes. ",SQLERRM);        
+        return -1;
+    }
+
+    if (ihCount < 1 ) {
+       vDTrazasLog (szExeCarga,"Rut del Cliente es Invalido.   [%s]",LOG02,szhNum_Ident);
+       sprintf(szGlosaRechazo,"Rut del Cliente no es Valido\0");
+       ihCod_Anomalia=RUT_CLI;
+       return 100;
+    }
+
+    vDTrazasLog (szExeCarga,"\t\t *** Rut de Cliente OK ***\n",LOG03);
+    return 0;
+    
+} /* end ifnValida_RutCliente */
+
+/*****************************************************************************/
+/* Funcion que valida el codigo del banco                                    */
+/*****************************************************************************/
+int ifnValida_Cod_Banco( char *szCod_banco)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCod_Banco [16];
+     int  ihCount          ;
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion : ifnValida_Cod_Banco ***",LOG03);
+    sprintf(szhCod_Banco,"%s\0",szCod_banco);
+
+    EXEC SQL
+    SELECT COUNT(*)
+    INTO   :ihCount
+    FROM   GE_BANCOS
+    WHERE  COD_BANCO = :szhCod_Banco;
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select Cod_banco from Ge_Bancos. ",SQLERRM);        
+        return -1;
+    }
+
+    if (ihCount < 1 ) {
+       vDTrazasLog (szExeCarga,"Codigo de Banco no Existe.   [%s]",LOG02,szhCod_Banco);
+       ihCod_Anomalia=COD_BAN;
+       return 100;
+    }
+
+    vDTrazasLog (szExeCarga,"\t\t *** Codigo de Banco OK ***\n",LOG03);
+    return 0;
+    
+} /* end ifnValida_Cod_Banco */
+
+/*****************************************************************************/
+/* Funcion que inserta registro en la interfaz de pagos                      */
+/*****************************************************************************/
+int ifnInserta_InterfazPagos()
+{
+    lCan_Reg++;
+    dImp_Procesados += dhImp_pago;
+
+    if ( (lhCod_cliente==0) && (lhNum_celular!=0) ) ihCod_servicio=3;
+
+    vDTrazasLog (szExeCarga,"\t\t *** Funcion : ifnInserta_InterfazPagos ***",LOG03);
+    vDTrazasLog (szExeCarga,"\t\t\t lhCod_Recext         [%ld]",LOG04,lhCod_Recext);    
+    vDTrazasLog (szExeCarga,"\t\t\t szhEmp_recaudadora   [%s] ",LOG04,szhEmp_recaudadora);
+    vDTrazasLog (szExeCarga,"\t\t\t szhFec_efectividad   [%s] ",LOG04,szhFec_efectividad);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_transaccion    [%ld]",LOG04,lhNum_transaccion);
+    vDTrazasLog (szExeCarga,"\t\t\t ihCod_servicio       [%d] ",LOG04,ihCod_servicio);
+    vDTrazasLog (szExeCarga,"\t\t\t szhNum_ejercicio     [%s] ",LOG04,szhNum_ejercicio);
+    vDTrazasLog (szExeCarga,"\t\t\t lhCod_cliente        [%ld]",LOG04,lhCod_cliente);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_celular        [%ld]",LOG04,lhNum_celular);
+    vDTrazasLog (szExeCarga,"\t\t\t dhImp_pago           [%f] ",LOG04,dhImp_pago);
+    vDTrazasLog (szExeCarga,"\t\t\t szhNum_ident         [%s] ",LOG04,szhNum_ident);
+    vDTrazasLog (szExeCarga,"\t\t\t ihTipo_valor         [%d] ",LOG04,ihTipo_valor);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_documento      [%ld]",LOG04,lhNum_documento);
+    vDTrazasLog (szExeCarga,"\t\t\t szhCod_banco         [%s] ",LOG04,szhCod_banco);
+    vDTrazasLog (szExeCarga,"\t\t\t szhCta_corriente     [%s] ",LOG04,szhCta_corriente);
+    vDTrazasLog (szExeCarga,"\t\t\t szhNum_tarjeta       [%s] ",LOG04,szhNum_tarjeta);
+    vDTrazasLog (szExeCarga,"\t\t\t szhCod_region        [%s] ",LOG04,szhCod_region);
+    vDTrazasLog (szExeCarga,"\t\t\t szhPref_Plaza_Doc    [%s] ",LOG04,szhPref_Plaza_Doc);/* MIX-09003 16.02.2010  MQG */
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_Folio_Doc      [%ld]",LOG04,lhNum_Folio_Doc);  /* MIX-09003 16.02.2010  MQG */
+    vDTrazasLog (szExeCarga,"\t\t\t szhFec_Pago          [%s]",LOG04,szhFec_Pago);  /* Incidencia 129515 - 09.04.2010  MQG*/
+    
+
+    EXEC SQL
+    INSERT INTO CO_INTERFAZ_EXTERNA (COD_RECEXT   , 
+                EMP_RECAUDADORA , FEC_EFECTIVIDAD ,
+                NUM_TRANSACCION , NOM_USUARORA    ,
+                COD_SERVICIO    , NUM_EJERCICIO   , 
+                COD_CLIENTE     , NUM_CELULAR     , 
+                NUM_IDENT       , IMP_PAGO        ,
+                TIP_VALOR       , NUM_DOCUMENTO   , 
+                COD_BANCO       , CTA_CORRIENTE   , 
+                NUM_TARJETA     , COD_REGION      ,
+                IND_BATCH       , PREF_PLAZA_DOC  , /* MIX-09003 16.02.2010  MQG */
+                NUM_FOLIO_DOC   , FEC_PAGO)         /* MIX-09003 16.02.2010  MQG *//* Incidencia 129515 - 09.04.2010  MQG*/
+    VALUES (    :lhCod_Recext      ,
+                :szhEmp_recaudadora, TO_DATE(:szhFec_efectividad,'dd-mm-yyyy hh24:mi:ss'),
+                :lhNum_transaccion , USER               ,
+                :ihCod_servicio    , :szhNum_ejercicio  , 
+                :lhCod_cliente     , :lhNum_celular     , 
+                :szhNum_ident      , GE_PAC_GENERAL.REDONDEA(:dhImp_pago, :iDecimal, 0) ,
+                :ihTipo_valor      , :lhNum_documento   , 
+                :szhCod_banco      , :szhCta_corriente  , 
+                :szhNum_tarjeta    , :szhCod_region     , 
+                1                  , :szhPref_Plaza_Doc , /* MIX-09003 16.02.2010  MQG */
+                :lhNum_Folio_Doc   , TO_DATE(:szhFec_Pago, 'DD-MM-YYYY'));       /* MIX-09003 16.02.2010  MQG *//* Incidencia 129515 - 09.04.2010  MQG*/
+                
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"INSERT INTO CO_INTERFAZ_EXTERNA. ",SQLERRM);        
+        return -1;
+    }
+
+    dValor_pago_efectivo+=dhImp_pago;
+
+    vDTrazasLog (szExeCarga,"\t\t *** Inserto en Interfaz OK ***\n",LOG03);
+    return 0;
+    
+} /* end ifnInserta_InterfazPagos */
+
+/*****************************************************************************/
+/* Funcion que graba los registros con anomalias en un arreglo               */
+/*****************************************************************************/
+int ifnCarga_RegAnomalias(char *szReg_Leido, long lCon_Rech)
+{
+char  szReg_anomalo [LARGOREG];		
+    
+    vDTrazasLog (szExeCarga,"\t\t *** Funcion : ifnCarga_RegAnomalias ***\n",LOG03);
+
+    lhNum_Consecutivo++;
+    lReg_Rechazados++;
+    dImp_Rechazados+=dhImp_pago; 
+    
+    if (lhCod_cliente > 99999999) lhCod_cliente=-1;
+    
+    sprintf(szReg_anomalo,"%s\0",szReg_Leido);
+ 
+    if ( strcmp(szhFec_efectividad,"31-12-3000") == 0 ) {
+        dhImp_pago = 0;   
+        ihCod_Anomalia = FEC_EFE;        
+    }
+    
+    vDTrazasLog (szExeCarga,"\t\t\t Insertando en Co_anomalia_externa",LOG03);
+    vDTrazasLog (szExeCarga,"\t\t\t lhCod_Recext       =======>  [%ld]",LOG03,lhCod_Recext);
+    vDTrazasLog (szExeCarga,"\t\t\t ihCod_Anomalia     =======>  [%d]",LOG03,ihCod_Anomalia);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_Consecutivo  =======>  [%ld]",LOG03,lhNum_Consecutivo);
+    vDTrazasLog (szExeCarga,"\t\t\t szhEmp_recaudadora =======>  [%s]",LOG03,szhEmp_recaudadora);
+    vDTrazasLog (szExeCarga,"\t\t\t szhFec_efectividad =======>  [%s]",LOG03,szhFec_efectividad);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_transaccion  =======>  [%ld]",LOG03,lhNum_transaccion);
+    vDTrazasLog (szExeCarga,"\t\t\t ihCod_servicio     =======>  [%d]",LOG03,ihCod_servicio);
+    vDTrazasLog (szExeCarga,"\t\t\t szhNum_ejercicio   =======>  [%s]",LOG03,szhNum_ejercicio);
+    vDTrazasLog (szExeCarga,"\t\t\t lhCod_cliente      =======>  [%ld]",LOG03,lhCod_cliente);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_celular      =======>  [%ld]",LOG03,lhNum_celular);
+    vDTrazasLog (szExeCarga,"\t\t\t dhImp_pago         =======>  [%f]",LOG03,dhImp_pago);
+    vDTrazasLog (szExeCarga,"\t\t\t szhNum_ident       =======>  [%s]",LOG03,szhNum_ident);
+    vDTrazasLog (szExeCarga,"\t\t\t ihTipo_valor       =======>  [%d]",LOG03,ihTipo_valor);
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_documento    =======>  [%ld]",LOG03,lhNum_documento);
+    vDTrazasLog (szExeCarga,"\t\t\t szhCod_banco       =======>  [%s]",LOG03,szhCod_banco);
+    vDTrazasLog (szExeCarga,"\t\t\t szhCta_corriente   =======>  [%s]",LOG03,szhCta_corriente);
+    vDTrazasLog (szExeCarga,"\t\t\t szhNum_tarjeta     =======>  [%s]",LOG03,szhNum_tarjeta);
+    vDTrazasLog (szExeCarga,"\t\t\t szhCod_region      =======>  [%s]",LOG03,szhCod_region);
+    vDTrazasLog (szExeCarga,"\t\t\t szhTip_movimiento  =======>  [%s]",LOG03,szhTip_movimiento);
+    vDTrazasLog (szExeCarga,"\t\t\t szReg_anomalo      =======>  [%s]",LOG03,szReg_anomalo);  
+    vDTrazasLog (szExeCarga,"\t\t\t szhPref_Plaza_Doc  =======>  [%s]",LOG03,szhPref_Plaza_Doc); /* MIX-09003 23.02.2010  MQG */
+    vDTrazasLog (szExeCarga,"\t\t\t lhNum_Folio_Doc    =======>  [%ld]",LOG03,lhNum_Folio_Doc);  /* MIX-09003 23.02.2010  MQG */
+    vDTrazasLog (szExeCarga,"\t\t\t szhFec_Pago        =======>  [%s]",LOG03,szhFec_Pago);  /* Incidencia 129515 - 09.04.2010  MQG*/
+
+    EXEC SQL
+    INSERT INTO CO_ANOMALIA_EXTERNA 
+           (COD_RECEXT         , COD_ANOMALIA     , NUM_CONSECUTIVO   , 
+            FEC_IMPUTCONTABLE  , IND_REGULARIZA   , EMP_RECAUDADORA   , 
+            FEC_EFECTIVIDAD    , NUM_TRANSACCION  , COD_SERVICIO      ,
+            NUM_EJERCICIO      , COD_CLIENTE      , NUM_CELULAR       , 
+            IMP_PAGO           , NUM_IDENT        , TIP_VALOR         , 
+            NUM_DOCUMENTO      , COD_BANCO        , CTA_CORRIENTE     , 
+            NUM_TARJETA        , COD_TIPIDENT     , COD_REGION        ,
+            FEC_PROCESO        , TIP_MOVIMIENTO	  , REG_ANOMALO       , 
+            PREF_PLAZA_DOC     , NUM_FOLIO_DOC    , FEC_PAGO  ) /* MIX-09003 16.02.2010  MQG *//* Incidencia 129515 - 09.04.2010  MQG*/
+    VALUES (:lhCod_Recext      , :ihCod_Anomalia    , :lhNum_Consecutivo , 
+            NULL               , 0                  , :szhEmp_recaudadora, 
+            TO_DATE(:szhFec_efectividad,'dd-mm-yyyy hh24:mi:ss')         ,
+            :lhNum_transaccion , :ihCod_servicio    , 
+            :szhNum_ejercicio  , :lhCod_cliente     , :lhNum_celular     , 
+            GE_PAC_GENERAL.REDONDEA(:dhImp_pago, :iDecimal, 0)           ,
+            :szhNum_ident      , :ihTipo_valor      , 
+            :lhNum_documento   , :szhCod_banco      , :szhCta_corriente  , 
+            :szhNum_tarjeta    , NULL               , :szhCod_region     ,
+            SYSDATE            , :szhTip_movimiento , :szReg_anomalo     , 
+            :szhPref_Plaza_Doc , :lhNum_Folio_Doc   , TO_DATE(:szhFec_Pago, 'DD-MM-YYYY'));   
+            
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"INSERT INTO CO_ANOMALIA_EXTERNA.  ",SQLERRM);        
+        vDTrazasLog (szExeCarga,"\t\t *** NO INSERTA ANOMALIA. REVISAR ARCHIVO CON PROBLEMAS  ***\n\n",LOG03);
+        return 0;
+    }
+           
+    vDTrazasLog (szExeCarga,"\t\t *** Inserto Anomalia OK ***\n",LOG03);
+    return 0;
+    
+} /*end ifnCarga_RegAnomalias*/
+
+/***************************************************************************************/
+/* Funcion que graba el archivo procesado y obtener los totales para contabilizacion   */
+/***************************************************************************************/
+int ifnGrabaArchivoProcesado()
+{          
+EXEC SQL BEGIN DECLARE SECTION;
+  char   szhNom_fichero  [281];
+EXEC SQL END DECLARE SECTION;
+    
+    vDTrazasLog (szExeCarga,"\n\t\t *** Funcion ifnGrabaArchivoProcesado ***",LOG03);  
+    sprintf(szhNom_fichero,"%s\0",szFileName);
+
+    vDTrazasLog (szExeCarga,"\t\t\t ===> lhCod_Recext     [%ld]",LOG03,lhCod_Recext);
+    vDTrazasLog (szExeCarga,"\t\t\t ===> szhNom_fichero   [%s]" ,LOG03,szhNom_fichero);
+    vDTrazasLog (szExeCarga,"\t\t\t ===> ihCod_oripago    [%d]" ,LOG03,ihCod_oripago);
+
+    EXEC SQL
+    INSERT  INTO CO_RECAUDAEXT (
+            COD_RECEXT    , NOM_FICHERO , FEC_VALOR      , NOM_USUARORA      , NUM_REGISTROS, 
+            NUM_ANOMALIAS , COD_ORIPAGO , IMP_VALOR_ANOM , FEC_IMPUTCONTABLE , IMP_VALOR    ,
+            COD_OPERADORA , COD_PLAZA   )
+    VALUES (:lhCod_Recext , :szhNom_fichero , SYSDATE    , USER              , 0            , 
+            0             , :ihCod_oripago  , 0          , SYSDATE           , 0            ,
+            0             , 0               );
+
+    if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"INSERT CO_RECAUDAEXT.  ",SQLERRM);
+        return -1;    
+    }        
+      
+    vDTrazasLog (szExeCarga,"\t\t < Inserto Ok archivo [%s] >",LOG03,szhNom_fichero);
+    return 0;
+    
+} /* end ifnGrabaArchivoProcesado */
+
+/*****************************************************************************/
+/* Funcion que abre los archivos de log y de error                           */
+/*****************************************************************************/
+int ifnAbreArchivosLog()
+{
+char szExeCarga[]="ifnAbreArchivosLog";
+char *pathDir               ;
+char szArchivo  [32]    ="" ;
+char szComando  [128]   ="" ;
+
+	memset(szArchivo,'\0',sizeof(szArchivo));
+	sprintf(szArchivo,"Traductor");
+
+	pathDir =(char *)malloc(128);
+	pathDir =szGetEnv("HOME");
+	sprintf(szPath  ,"%s/LOG/Recaudacion/Traductor/%s",pathDir,szFechayyyymmdd);
+
+	free(pathDir);
+
+	sprintf(szComando,"mkdir -p %s", szPath);
+	system (szComando);
+
+	sprintf(stStatus.ErrName,"%s/%s_%ld.err",szPath,szArchivo,lhCod_Recext); 
+	if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+	    fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+	    return -1;
+	}
+
+	sprintf(stStatus.LogName,"%s/%s_%ld.log",szPath,szArchivo,lhCod_Recext); 
+	if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+	    fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+    	return -1;
+    }
+
+    return 0;
+    
+} /* fin ifnAbreArchivosLog */
+
+/*****************************************************************************/
+/* Funcion RighTrim : Limpia blancos a la derecha                            */
+/*****************************************************************************/
+int RighTrim (char *szVar)
+{
+int  iLenVar = 0, i=0;
+
+    iLenVar = strlen(szVar);
+    for (i=iLenVar-1;i>-1;i--) {
+        if (szVar[i]==' ') {
+            szVar[i]='\0';
+        } else break;
+    }
+    return (0);   
+         
+} /* end RighTrim */
+
+/*****************************************************************************/
+/* Funcion LeftTrim : Limpia blancos a la izquierda                          */
+/*****************************************************************************/
+int LeftTrim (char *szVar)
+{
+int iLenVar = 0, i=0;
+char szVarAux [250];
+
+    iLenVar = strlen(szVar);
+    for (i=0;i<iLenVar;i++) {
+        if (szVar[i]==' ') {
+            memset(&szVarAux ,0,sizeof(szVarAux));
+            strncpy(szVarAux,&szVar[i+1],iLenVar);
+        } else break;
+    }
+
+    sprintf(szVar,"%s\0",szVarAux);
+    return (0);
+    
+} /* end LeftTrim */
+
+/*****************************************************************************/
+/* Funcion SubStr                                                            */
+/*****************************************************************************/
+void *SubStr(char *text, int i, int j)
+{
+        static char  tmp[200];
+        int     k=0;
+        int     l=0;
+        int     a=0;
+        
+        l = 0;
+        a = j + i - 1;
+        for ( k = i-1; k < a; k++)
+        {
+                tmp[l] = text[k];
+                l++;
+        }
+        tmp[l] = '\0';
+        return (tmp);
+        
+} /* end SubStr */
+
+/*****************************************************************************/
+/* Funcion mid                                                               */
+/*****************************************************************************/
+void mid(char* szpalabra, int iini, int ilargo, char* szvuelta)
+{
+    int ii;
+    BOOL icr = TRUE;
+    if (ilargo < 0)
+    {
+       ilargo *= -1;
+       icr = FALSE; 
+    }
+    szpalabra += iini - 1;
+    for (ii=iini;ii<=(iini + ilargo -1);ii++)
+    {
+        *szvuelta = *szpalabra;
+        szvuelta++;szpalabra++;
+    }
+
+    if (icr) *szvuelta = 0;
+  
+  return;
+  
+} /* end mid*/
+
+/*****************************************************************************/
+/* Funcion vfnMemset_Var                                                     */
+/*****************************************************************************/
+void vfnMemset_Var()
+{
+    memset(&szhNum_ident      ,'\0',sizeof(szhNum_ident));      
+    memset(&szhCta_corriente  ,'\0',sizeof(szhCta_corriente));  
+    memset(&szhNum_tarjeta    ,'\0',sizeof(szhNum_tarjeta));      
+    memset(&szhCod_region     ,'\0',sizeof(szhCod_region)); 
+    memset(&szhPref_Plaza_Doc ,'\0',sizeof(szhPref_Plaza_Doc)); /* MIX-09003 16.02.2010  MQG*/
+         
+    memset(&lhNum_transaccion ,0,sizeof(lhNum_transaccion));
+    memset(&lhCod_cliente     ,0,sizeof(lhCod_cliente));    
+    memset(&lhNum_celular     ,0,sizeof(lhNum_celular));    
+    memset(&dhImp_pago        ,0,sizeof(dhImp_pago));        
+    memset(&dhImp_pago_Reversa,0,sizeof(dhImp_pago_Reversa));  
+    memset(&lhNum_documento   ,0,sizeof(lhNum_documento));  
+    memset(&szhTip_movimiento ,0,sizeof(szhTip_movimiento));
+    memset(&lhNum_Folio_Doc   ,0,sizeof(lhNum_Folio_Doc)); /* MIX-09003 16.02.2010  MQG*/
+
+} /* fin vfnMemset_Var */
+
+/*****************************************************************************/
+/* Funcion bfnEntidadNorma43                                                 */
+/*****************************************************************************/
+BOOL bfnEntidadNorma43()
+{
+   int i = 0;
+   int iCountHeader = 0;
+   int iCountFooter = 0;
+
+   for(i=0; i < iRows_registros; i++)
+   {
+        if( strcmp(szhaCod_registroReg[i], REGISTRO_11) == 0)
+            iCountHeader += 1;
+        else if( strcmp(szhaCod_registroReg[i], REGISTRO_88) == 0)
+            iCountFooter += 1;
+   }
+   
+   if( iCountHeader != 1 && iCountFooter != 1 ) return(FALSE);
+
+   vDTrazasLog (szExeCarga,"\n\tEntidad parametrizada con Norma 43", LOG03);
+   return(TRUE); 
+   
+} /* end bfnEntidadNorma43 */
+
+/*****************************************************************************/
+/* Funcion bfnIsFileNorma43                                                  */
+/*****************************************************************************/
+BOOL bfnIsFileNorma43()
+{
+   char  szLine[LARGOREG];
+   BOOL bIs11 = FALSE, bIs88 = FALSE;
+
+   while( (fgets(szLine, LARGOREG, fpDat)) != NULL )
+   {
+     if( strlen(szLine) == 0 ) continue;
+     if( (strcmp(SubStr(szLine, 1, strlen(REGISTRO_11)), REGISTRO_11)==0 ))
+	  	bIs11 = TRUE;
+	 if( (strcmp(SubStr(szLine, 1, strlen(REGISTRO_88)), REGISTRO_88)==0 ))
+        bIs88 = TRUE;
+   }
+   
+   if( !bIs11 || !bIs88 ){
+      vDTrazasLog (szExeCarga,"\n\tArchivo no cumple con Norma 43", LOG03);
+      return(FALSE);
+   }
+
+   vDTrazasLog (szExeCarga,"\n\tArchivo cumple con Norma 43", LOG03);
+   return(TRUE);
+} /* end bfnIsFileNorma43 */
+
+/*****************************************************************************/
+/* Funcion bfnValidaClaveBanco                                               */
+/*****************************************************************************/
+BOOL bfnValidaClaveBanco()
+{
+   char szEntidad[100];
+   char szAux[100];
+   char szLine[LARGOREG];
+   int i=1;
+
+   EXEC SQL BEGIN DECLARE SECTION;
+       char  szhBco_asoc[4];
+       int   ihCount;
+   EXEC SQL END DECLARE SECTION;
+
+   memset(szEntidad,'\0',sizeof(szEntidad));
+   memset(szAux   , '\0', sizeof(szAux));
+   fseek(fpDat, 0L, SEEK_SET);
+   if( fpDat == NULL ) return(FALSE);
+   while( (fgets(szLine, LARGOREG, fpDat)) != NULL )
+   {
+      if( strlen(szLine) == 0 ) continue;
+      if( (strcmp(SubStr(szLine, 1, strlen(REGISTRO_11)), REGISTRO_11)==0 ))
+	  {
+	     strcpy(szEntidad, SubStr(szLine, INICIO_ENTIDAD, LARGO_ENTIDAD)); 
+	     break;
+	  }
+   }
+   if( strlen(szEntidad) > 0 )
+   {
+	    i = 1;
+        strcpy(szAux, "");
+        for(i=1; i<strlen(szEntidad); i++)
+	    {
+	       if( strcmp(SubStr(szEntidad,i,1), "@") == 0)  break;
+	       if( strcmp(SubStr(szEntidad,i,1), "#") != 0)  strcat(szAux, SubStr(szEntidad,i,1));
+	    }
+   }
+   else{
+	    vDTrazasLog (szExeCarga,"\tEntidad no Valida", LOG03);
+	    return(FALSE);
+   }
+   strcpy(szhBco_asoc, szAux);
+
+   EXEC SQL
+   SELECT Count(*)
+   INTO   :ihCount
+   FROM   CO_BCOS_ASOC_TD
+   WHERE  COD_BANCO_ASOC = :szhBco_asoc;
+
+   if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"Select count(*) Co_bcos_asoc_td. ",SQLERRM);
+        return (FALSE);
+   }
+
+   if (ihCount < 1) {
+        vDTrazasLog (szExeCarga,"\tEntidad [%s] no existe en co_bcos_asoc_td", LOG03,szhBco_asoc);
+        return (FALSE);
+   }
+   
+   return(TRUE); 
+} /* end bfnValidaClaveBanco */
+
+
+/*****************************************************************************/
+/* Funcion bfnIsValidFormat                                                  */
+/*****************************************************************************/
+BOOL bfnIsValidFormat()
+{
+   char  szLine[LARGOREG];
+   int   iStrlenReg = 0;
+   int   i = 0;
+   char  szAux[LARGOREG];
+   int   posicion= 0;
+   int   iCampo  = 0;
+   int   iReg    = 0;
+   char* pAux =NULL;
+   char  szcomando[2000];
+   PAGOS* stPago = (struct stPAGOS*) malloc(sizeof(struct stPAGOS)*30000);
+   int   iValIni , iValLar;
+
+   EXEC SQL BEGIN DECLARE SECTION;
+     int ihPosicion;
+   EXEC SQL END DECLARE SECTION;
+
+   if( stPago == NULL )
+   {
+	  vDTrazasLog (szExeCarga,"\nError en la asignacion de memoria", LOG05);
+	  return(FALSE);
+   }
+   
+   fseek(fpDat, 0L, SEEK_SET);
+   if( fpDat == NULL ) return(FALSE);
+
+   EXEC SQL
+   SELECT VAL_PARAMETRO
+   INTO   :ihPosicion
+   FROM   GED_PARAMETROS 
+   WHERE  NOM_PARAMETRO = 'POS_DEBE_HABER_43'
+   AND    COD_MODULO    = 'RE';
+
+   if (SQLCODE != SQLOK) {
+        iDError(szExeCarga,ERR000,vInsertarIncidencia,"SELECT POS_DEBE_HABER_43 .  ",SQLERRM);        
+        return (FALSE);    
+   }        
+
+   for( i=0; i<iRows_registros; i++)
+   {
+        if( strcmp(szhaCod_registroReg[i], REGISTRO_22) == 0 )
+             iStrlenReg = ihaVal_largoreg[i];
+   }
+
+   memset(szLine,0x00,sizeof(szLine)); 
+   while( (fgets(szLine, LARGOREG, fpDat)) != NULL )
+   {
+	   mid(szLine, 1, strlen(szLine)-1, szLine);
+       if( strlen(szLine) == 0 ) continue;
+
+	   if( (strcmp(SubStr(szLine, 1, strlen(REGISTRO_22)), REGISTRO_22)==0 ))
+	   {
+	       if( strlen(szLine) != iStrlenReg )
+	       {
+	 	       vDTrazasLog (szExeCarga,"\n\tLargo del reg. 22 no corresponde [%d]", LOG03, strlen(szLine)); 	
+  		       posicion = ftell( fpDat ) - strlen(szLine);
+               fseek(fpDat, posicion, SEEK_SET);
+               fwrite(&NULO, sizeof(NULO), 1, fpDat);
+               fseek(fpDat, posicion, SEEK_SET);    
+	       } else {
+		       if( (strcmp(SubStr(szLine, ihPosicion, strlen(CAMPO_PAGO)), CAMPO_PAGO)==0 ))	
+		       {
+		          if( (pAux = fnParser( szLine, CAMPO7, FALSE )) == NULL ) return(FALSE); 
+		              strcpy(stPago[iReg].szCliente, pAux);
+		              if( (pAux = fnParser( szLine, CAMPO9, FALSE )) == NULL ) return(FALSE);			
+		              strcpy(stPago[iReg].szImporte, pAux);
+		              posicion = ftell( fpDat ) - strlen(szLine);
+		              stPago[iReg].iPos = posicion;	
+		              iReg++;	
+		      }
+	      }
+	   }
+       memset(szLine,0x00,sizeof(szLine));
+   } 
+   if( !fnValidaReversa( fpDat, stPago, iReg, ihPosicion ) ) return (FALSE);
+   free(stPago);
+   return(TRUE);
+   
+} /*end bfnIsValidFormat*/
+
+/*****************************************************************************/
+/* Funcion fnValidaReversa                                                   */
+/*****************************************************************************/
+BOOL fnValidaReversa( FILE* fpFile, PAGOS* stPagoItem, int iCountReg, int iPosicion )
+{
+   int  i, posicion;
+   int  iValIni , iValLar, iCampo;
+   char szLine[LARGOREG];
+   BOOL bExistePago;
+   char szCliente[13];
+   char* pCliente =NULL;
+   char szImporte[14];
+   char* pAux =NULL; 
+
+   /*validar que el archivo exista y este abierto*/
+   fseek(fpFile, 0L, SEEK_SET);
+   if( fpFile == NULL ) return(FALSE);
+
+   while( (fgets(szLine, LARGOREG, fpFile)) != NULL )
+   {
+	bExistePago = FALSE;
+	vfnMemset_Var();
+    strcpy( szhTip_movimiento, INS_REVERSA );
+
+	if( (strcmp(SubStr(szLine, 1, strlen(REGISTRO_22)), REGISTRO_22)==0 ))
+	{
+	   if( (pCliente = fnParser( szLine, CAMPO7, FALSE )) == NULL ) return(FALSE);
+       strcpy(szCliente, pCliente);
+       if( (pAux = fnParser( szLine, CAMPO9, FALSE )) == NULL ) return(FALSE);
+       strcpy(szImporte, pAux);
+
+	   if( strcmp(SubStr(szLine, iPosicion, strlen(CAMPO_REVERSA)), CAMPO_REVERSA)==0 ) 
+	   {
+	      for( i=0; i<iCountReg; i++)
+	      {
+		    if( (strcmp(szImporte, stPagoItem[i].szImporte) == 0) 
+		       && (strcmp(szCliente, stPagoItem[i].szCliente) == 0) )
+		    {
+		            posicion = ftell( fpFile ) - strlen(szLine);
+                    fseek(fpFile, posicion, SEEK_SET);
+                    fwrite(&NULO, sizeof(NULO), 1, fpFile);
+		            fseek(fpFile, stPagoItem[i].iPos, SEEK_SET);
+		            fwrite(&NULO, sizeof(NULO), 1, fpFile);
+                    fseek(fpFile, posicion, SEEK_SET);		  
+		            bExistePago = TRUE;
+			        if( (pAux = fnParser( szLine, CAMPO9, TRUE )) == NULL ) return(FALSE);
+           	        strcpy(szImporte, pAux);
+                    dhImp_pago_Reversa = atof(szImporte); 
+
+			        dImp_Reversados += dhImp_pago_Reversa;
+		    
+			        lReg_Reversados= lReg_Reversados+2;
+			        lReg_Informados= lReg_Informados+2;
+		            break;
+		   }
+	     }/*end for*/
+	    
+	     if( !bExistePago )
+	     {
+		           vDTrazasLog (szExeCarga,"\n\tInsertar Anomalia, no existe pago.... ", LOG03);
+                   ihCod_Anomalia = REVERSA;
+		           lCorrel_Transac++;
+   		           lReg_Informados++;
+		           lhNum_transaccion = lCorrel_Transac;
+                   lhCod_cliente     = atol(szCliente); 
+		           if( (pAux = fnParser( szLine, CAMPO9, TRUE )) == NULL ) return(FALSE);
+           	       strcpy(szImporte, pAux);
+                   dhImp_pago = atof(szImporte); 
+ 
+                   if( ifnCarga_RegAnomalias(szLine, 0) ) return(FALSE); 
+		           posicion = ftell( fpFile ) - strlen(szLine);
+                   fseek(fpFile, posicion, SEEK_SET);
+                   fwrite(&NULO, sizeof(NULO), 1, fpFile);
+		           fseek(fpFile, posicion, SEEK_SET);
+	     }
+	   }
+	}
+   }
+   return(TRUE);
+
+} /* fin fnValidaReversa */
+
+/*****************************************************************************/
+/* Funcion fnParser                                                          */
+/*****************************************************************************/
+char* fnParser( char* pReg, int iCampo, BOOL bDecimal )
+{
+    char  szAux[LARGOREG];
+    int   iValIni, iValLar, i, j;
+    char  szDec [6] ;
+    char  szInt [20];
+    int   iNum_Dec = 0;
+
+    if( pReg == NULL ) return NULL;
+    memset(szAux,0x00,sizeof(szAux));
+    for(i=0; i<iRows_regcampos; i++)
+    {
+        if( strcmp(szhaCod_entidadRC[i], szhCod_Entidad_Proc)==0 
+	       && iCampo == ihaCod_campoRC[i] )
+        {
+	        iValIni = ihaVal_inicialRC[i]-1;
+	        iValLar = ihaVal_largoRC[i];
+            switch (iCampo)
+            {
+                 case CAMPO7: /* Cliente */
+                      memset(szAux,'\0',sizeof(szAux));
+                      strncpy(szAux,&pReg[iValIni],iValLar);
+                      break;
+
+                 case CAMPO9: /* Importe */
+                      memset(szAux,'\0',sizeof(szAux));
+                      strncpy(szAux,&pReg[iValIni],iValLar);
+
+		              if( bDecimal ){
+			             iNum_Dec = ihaVal_decimalesRC[i];
+                         strncpy(szDec,&szAux[strlen(szAux)-iNum_Dec],strlen(szAux));
+                         strncpy(szInt,&szAux[0],strlen(szAux)-iNum_Dec);
+		                 for( j=0; j<iRows_entidad; j++ ){
+                           if( strcmp(szhaCod_entidad[j], szhaCod_entidadRC[i]) == 0 ) {
+                               if (atoi(szhaInd_separador[j]) != 0){
+                                   sprintf(szAux,"%s%s\0",szInt, szDec);
+                                   break;
+                               }
+                               else{
+                                   sprintf(szAux,"%s.%s\0",szInt, szDec);
+                                   break;
+                               }
+                           }
+                        }
+		      }
+
+              break;
+
+		 default:
+		      return NULL;
+            } /* end switch */
+            break;
+         } /*end if*/
+   }
+   return szAux;
+   
+} /* fin fnParser */
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

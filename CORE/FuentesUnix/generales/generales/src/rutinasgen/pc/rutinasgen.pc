@@ -1,0 +1,321 @@
+/****************************************************************************/
+/* Programa :rutinasgen                                                     */
+/* Fecha : 25/06/1999                                                       */
+/* Autor : Mauricio Villagra  (& RBR)                                       */
+/****************************************************************************/
+#include "rutinasgen.h"
+EXEC SQL INCLUDE sqlca;
+
+/****************************************************************************/
+/*   funcion char* szGetEnv ( char VarHost )                                */
+/****************************************************************************/
+/*   Rutina que rescata el valor de una variable de Ambiente Host           */
+/****************************************************************************/
+
+char* szGetEnv(char * VarHost)
+{
+    char *ValVarHost;
+
+    ValVarHost=(char *)malloc(1024);
+    if (getenv(VarHost) == NULL)
+    {
+        printf( "\n\t-------------------------------------------------------"
+                "\n\t  No Existe Variable de Ambiente %s    "
+                "\n\t-------------------------------------------------------\n",
+                VarHost);
+        return ((char *) NULL);
+    }
+
+    strcpy(ValVarHost,getenv(VarHost));
+    return (ValVarHost);
+}
+
+/****************************************************************************/
+/*   funcion char* bfnSelectSysDate( char )                                 */
+/****************************************************************************/
+/*   Rutina que rescata la Hora y Fecha de Sistema                          */
+/****************************************************************************/
+
+BOOL bfnSelectSysDate (char* szFecSysDate)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char* pszhFecSysDate; EXEC SQL VAR pszhFecSysDate IS STRING (15);
+    EXEC SQL END DECLARE SECTION;
+
+    pszhFecSysDate = szFecSysDate;
+    EXEC SQL SELECT TO_CHAR(SYSDATE,'yyyymmddhh24miss')
+            INTO :pszhFecSysDate
+            FROM DUAL;
+    if (SQLCODE)
+    {
+         return FALSE;
+    }
+    return TRUE;
+}/************************* Final bGetSysDate ********************************/
+
+
+/*****************************************************************************/
+/*                      funcion : bSumaDias                                  */
+/* -Funcion que Suma dias a Fecha1                                           */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bSumaDias (char *szFecha1,char *szFecha2,int iNumDias)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    static int  ihNumDias           ;
+    static char szhFecha1[20]       ; EXEC SQL VAR szhFecha1 IS STRING(20);
+    static char szhFecha2[20]       ; EXEC SQL VAR szhFecha2 IS STRING(20) ;
+    EXEC SQL END DECLARE SECTION    ;
+
+    ihNumDias = iNumDias           ;
+    strcpy (szhFecha2,szFecha2)    ;
+
+/*    vDTrazasLog (szExeName,"\n\t\t* Suma Dias Fechas : %s +  %d \n",LOG05,szhFecha2,ihNumDias); */
+    printf("\n\t\t* Suma Dias Fechas : %s +  %d \n",szhFecha2,ihNumDias);
+
+    EXEC SQL
+        SELECT TO_CHAR((TO_DATE (:szhFecha2,'YYYYMMDDHH24MISS') + :ihNumDias),'YYYYMMDDHH24MISS')
+               INTO    :szhFecha1
+        FROM    DUAL;
+
+    if (SQLCODE)
+/*        iDError (szExeName,ERR000,vInsertarIncidencia,"Select Dual (bSumaDias)->",szfnORAerror()); */
+        printf("\n\t\t ERR Select Dual (bSumaDias)-> %s",szhFecha1);
+
+    if (SQLCODE == SQLOK)
+        strcpy(szFecha1,szhFecha1);
+
+    return (SQLCODE != 0)?FALSE:TRUE;
+}/************************ Final bSumaDias    ********************************/
+
+
+
+/*****************************************************************************/
+/*                      funcion : bGetEnlaceHist                             */
+/* -Funcion que Retorna Registro de FA_ENLACEHIST                            */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bGetEnlaceHist (ENLACEHIST *stEnlace)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    long    lhCodCiclFact        ;
+    int     ihCodTipAlmac        ;
+    char    szhDetCelular    [40];EXEC SQL VAR szhDetCelular     IS STRING(40);
+    char    szhDetRoaming    [40];EXEC SQL VAR szhDetRoaming     IS STRING(40);
+    char    szhDetFortas     [40];EXEC SQL VAR szhDetFortas      IS STRING(40);
+    char    szhDetAcumLlam   [40];EXEC SQL VAR szhDetAcumLlam    IS STRING(40);
+    char    szhDetCliente    [40];EXEC SQL VAR szhDetCliente     IS STRING(40);
+    char    szhDetAboCel     [40];EXEC SQL VAR szhDetAboCel      IS STRING(40);
+    char    szhDetAboBep     [40];EXEC SQL VAR szhDetAboBep      IS STRING(40);
+    char    szhDetDocumento  [40];EXEC SQL VAR szhDetDocumento   IS STRING(40);
+    char    szhDetConceptos  [40];EXEC SQL VAR szhDetConceptos   IS STRING(40);
+    short   s_ihCodTipAlmac  ;
+    short   s_szhDetCelular  ;
+    short   s_szhDetRoaming  ;
+    short   s_szhDetFortas   ;
+    short   s_szhDetAcumLlam ;
+    short   s_szhDetCliente  ;
+    short   s_szhDetAboCel   ;
+    short   s_szhDetAboBep   ;
+    short   s_szhDetDocumento;
+    short   s_szhDetConceptos;
+    EXEC SQL END DECLARE SECTION    ;
+
+    lhCodCiclFact = stEnlace->lCodCiclFact;
+
+    if (lhCodCiclFact  == 0)
+    {
+/*        vDTrazasLog ("bGetEnlaceHist","\n\t\t* Codigo de Ciclo de Facturacion No Valido **",LOG01); */
+        return (FALSE);
+    }
+    EXEC SQL
+        SELECT  COD_TIPALMAC      ,
+                FA_DETCELULAR     ,
+                FA_DETROAMING     ,
+                FA_DETFORTAS      ,
+                FA_HISTACUMLLAM   ,
+                FA_HISTCLIE       ,
+                FA_HISTABOCELU    ,
+                FA_HISTABOBEEP    ,
+                FA_HISTDOCU       ,
+                FA_HISTCONC
+        into    :ihCodTipAlmac    :s_ihCodTipAlmac  ,
+                :szhDetCelular    :s_szhDetCelular  ,
+                :szhDetRoaming    :s_szhDetRoaming  ,
+                :szhDetFortas     :s_szhDetFortas   ,
+                :szhDetAcumLlam   :s_szhDetAcumLlam ,
+                :szhDetCliente    :s_szhDetCliente  ,
+                :szhDetAboCel     :s_szhDetAboCel   ,
+                :szhDetAboBep     :s_szhDetAboBep   ,
+                :szhDetDocumento  :s_szhDetDocumento,
+                :szhDetConceptos  :s_szhDetConceptos
+        FROM    FA_ENLACEHIST
+        WHERE   COD_CICLFACT = :lhCodCiclFact;
+    if (SQLCODE != SQLOK )
+    {
+/*        vDTrazasLog ("bGetEnlaceHist","\n\t\t* Codigo de Ciclo de Facturacion No Encontrado [%ld]**",LOG01,lhCodCiclFact);*/
+        return (FALSE);
+
+    }
+    if (SQLCODE == SQLOK)
+    {
+        if ( s_ihCodTipAlmac    != ORA_NULL )
+            stEnlace->iCodTipAlmac  = ihCodTipAlmac              ;
+        else
+            stEnlace->iCodTipAlmac  = 0;
+
+        if ( s_szhDetCelular    != ORA_NULL )
+            strcpy(stEnlace->szDetCelular   ,  szhDetCelular    );
+        else
+            strcpy(stEnlace->szDetCelular   ,  "");
+
+        if ( s_szhDetRoaming    != ORA_NULL )
+            strcpy(stEnlace->szDetRoaming   ,  szhDetRoaming    );
+        else
+            strcpy(stEnlace->szDetRoaming   ,  "");
+
+        if ( s_szhDetFortas     != ORA_NULL )
+            strcpy(stEnlace->szDetFortas    ,  szhDetFortas     );
+        else
+            strcpy(stEnlace->szDetFortas    ,  "");
+
+        if ( s_szhDetAcumLlam   != ORA_NULL )
+            strcpy(stEnlace->szDetAcumLlam  ,  szhDetAcumLlam   );
+        else
+            strcpy(stEnlace->szDetAcumLlam  ,  "");
+
+        if ( s_szhDetCliente    != ORA_NULL )
+            strcpy(stEnlace->szDetCliente   ,  szhDetCliente    );
+        else
+            strcpy(stEnlace->szDetCliente   ,  "");
+
+        if ( s_szhDetAboCel     != ORA_NULL )
+            strcpy(stEnlace->szDetAboCel    ,  szhDetAboCel     );
+        else
+            strcpy(stEnlace->szDetAboCel    ,  "");
+
+        if ( s_szhDetAboBep     != ORA_NULL )
+            strcpy(stEnlace->szDetAboBep    ,  szhDetAboBep     );
+        else
+            strcpy(stEnlace->szDetAboBep    ,  "");
+
+        if ( s_szhDetDocumento  != ORA_NULL )
+            strcpy(stEnlace->szDetDocumento ,  szhDetDocumento  );
+        else
+            strcpy(stEnlace->szDetDocumento ,  "");
+
+        if ( s_szhDetConceptos  != ORA_NULL )
+            strcpy(stEnlace->szDetConceptos ,  szhDetConceptos  );
+        else
+            strcpy(stEnlace->szDetConceptos ,  "");
+    }
+    return (SQLCODE != 0)?FALSE:TRUE;
+}/************************ Final bRestaFechas ********************************/
+
+
+
+/* ********************************************************************************** */
+/* szGetTime : Recupera la fecha en el formato deseado (pudiendo ser fecha y hora)   */
+/*              Permite cualquier valor numerico, con las siguientes restricciones    */
+/*              fmto = 0 : fecha de hoy en formato por defecto (dd/mm/yyyy)           */
+/*              fmto > 0 : fecha de hoy en formato definido en el switch (y/u hora)   */
+/*              fmto < 0 : fecha pasada en formato 2(yyyymmdd), retrocede 'fmto' dias */
+/* ********************************************************************************** */
+char *cfnGetTime(int fmto)
+{
+	char modulo[]="cfnGetTime";
+
+	static time_t timer;
+	static size_t nbytes;
+	static char szTime[26]="";
+	int iDia = 86400;
+
+	memset(szTime,'\0',26);
+
+	if (fmto >= 0)
+	{
+		timer = time((time_t *)0);
+	}
+	else
+	{
+		timer = time((time_t *)0)+fmto*iDia;
+		fmto = 2;
+	}
+
+	switch (fmto)
+	{
+		case 1 :
+				nbytes = strftime(szTime, 26, "[%d-%b-%Y] [%H:%M:%S]",  (struct tm *)localtime(&timer));
+				break; /* Ej.: 4 de febrero de 2000 -> [04-Feb-2000] [11:22:38] (escritura de log)*/
+		case 2 :
+				nbytes = strftime(szTime, 26, "%Y%m%d",                 (struct tm *)localtime(&timer));
+				break; /* Ej.: 4 de febrero de 2000->  20000204  (nombre de archivo) */
+		case 3 :
+				nbytes = strftime(szTime, 26, "[%H:%M:%S]",             (struct tm *)localtime(&timer));
+				break; /* Ej.: 11 horas, 22 minutos, 38 segundos ->  [11:22:38] (escritura de log) */
+		case 4 :
+				nbytes = strftime(szTime, 26, "%H%M%S",                 (struct tm *)localtime(&timer));
+				break; /* Ej.: 11 horas, 22 minutos, 38 segundos ->  112238 (nombre de archivo) */
+		case 5 :
+				nbytes = strftime(szTime, 26, "%Y%m%d_%H%M%S",          (struct tm *)localtime(&timer));
+				break; /* Ej.: 4 de febrero de 2000 -> 20000204_112238 (nombre de archivo: 1_3)*/
+		case 6 :
+				nbytes = strftime(szTime, 26, "%j",                     (struct tm *)localtime(&timer));
+				break; /* Ej.: 4 de febrero de 2000 -> 035 (fecha juliana 001-366 )*/
+		case 7 :
+				nbytes = strftime(szTime, 26, "%Y%m%d%H%M%S",           (struct tm *)localtime(&timer));
+				break; /* Ej.: 4 de febrero de 2000 -> 20000204112238 (tipo Oracle)*/
+		default :
+				nbytes = strftime(szTime, 26, "%d/%m/%Y",               (struct tm *)localtime(&timer));
+				break; /* Ej.: 4 de febrero de 2000 -> 04/02/2000 (formato comun)*/
+	}
+
+	return (char *) szTime;
+
+}/*******************************final szGetTime *******************************************/
+
+/* **************************************************************************************** */ 
+/*  bKillProc : Envia señal de termino forsado de ejecucion al proceso identificado PID     */
+/*              -Valores Retorno : Error->FALSE, !Error->TRUE                               */
+/*                  									    */
+/* **************************************************************************************** */
+BOOL bKillProc ( long lPidProc )
+{
+    char szComando [128]    =""     ;
+    BOOL flagKill           =FALSE  ;
+
+    sprintf(szComando,"kill -9 %ld \0", lPidProc );
+
+    if ( system ( szComando ) == 0 )
+        return 0;
+    else
+        return 1;
+
+
+}
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

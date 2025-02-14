@@ -1,0 +1,193 @@
+/*****************************************************************************/
+/* Fichero    : prebilnot.pc                                                 */
+/* Descripcion: funcion que realiza el PreBilling de Notas Credito y Notas   */
+/*              Debito, aplica descuentos e impuestos generados en el momento*/
+/*              de generar la factura Origen (la que se modifica).           */
+/* Autor      : Javier Garcia Paredes                                        */
+/* Fecha      : 19-05-1997                                                   */
+/*****************************************************************************/
+#define _PREBILNOT_PC_
+
+#include <prebilnot.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                       funcion : bfnPreBillingClienteNotas                 */
+/*****************************************************************************/
+BOOL bfnPreBillingClienteNotas (long lNumProceso,int iTipoFact)
+{   int i =0;
+   int iEsNotaCredTotal = 0;
+   char szNomParam [21];
+   char szValParam [21];
+   char szCodModulo[3];
+   char szSysDate[20]="";
+   BOOL bDocOrigenCiclo = FALSE;
+   ACUMDETIMPTOSTIPO pAcumImptoTipo={0,(DETIMPTOSTIPO *)NULL};
+   
+    /* Se inicializa la estructura de anomalias */
+    vInitAnomProceso (&stAnomProceso);
+
+    stAnomProceso.lNumProceso = lNumProceso;
+
+    if (iTipoFact == FACT_NOTACRED)
+    {
+        strcpy (stAnomProceso.szDesProceso,"PreBilling Nota Credito")         ;
+        vDTrazasLog  (szExeName,"\n\t\t* NOTA CREDITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+        vDTrazasError(szExeName,"\n\t\t* NOTA CREDITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+    }
+    
+    if (iTipoFact == FACT_NOTADEBI)
+    {
+        strcpy (stAnomProceso.szDesProceso,"PreBilling Nota Debito ")         ;
+        vDTrazasLog  (szExeName,"\n\t\t* NOTA DEBITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+        vDTrazasError(szExeName,"\n\t\t* NOTA DEBITO"
+                                "\n\t\t=>Num.Proceso [%ld]",LOG03,lNumProceso);
+    }
+    
+    if (!bfnGetDatosCliente (stCliente.lCodCliente))
+    {
+         return FALSE;
+    } 
+    
+    if (!bfnIFNotas ())
+    {
+         vDTrazasError(szExeName,"\n\t\t* Error Cargando Conceptos de Notas\n",
+                       LOG03);
+         vDTrazasLog  (szExeName,"\n\t\t* Error Cargando Conceptos de Notas\n",
+                       LOG03);
+         return FALSE;
+    }
+    /*P-CSR-12019*/
+ 
+	if (!bCargaAcumImptosNCredito(stNota.lNumFolio, stNota.szPrefPlaza,&pAcumImptoTipo )){
+	    vDTrazasError(szExeName,"\n\t\t* Error al obtener impuestos acumulados del documento origen\n",
+                       LOG01);
+        vDTrazasLog  (szExeName,"\n\t\t* Error al obtener impuestos acumulados del documento origen\n",
+                       LOG01);
+        return FALSE;
+	}
+       /* GCASTRO - se agrega stNota.szIndOrdenTotal como parametro - 200069 - 24-10-2013 */  
+        if (!bEsNotaCreditoTotal(lNumProceso, stNota.lNumFolio, stNota.szPrefPlaza, stNota.szIndOrdenTotal,  &iEsNotaCredTotal , &bDocOrigenCiclo))
+	{   vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+	    vDTrazasError(szExeName,"\n\t\t* Error determinando nota de credito total\n",
+                       LOG01);
+         vDTrazasLog  (szExeName,"\n\t\t* Error determinando nota de credito total\n",
+                       LOG01);
+         return FALSE;
+	}
+	/*FIN P-CSR-12019*/
+	vDTrazasLog  (szExeName,"\n\t\t* Es una nota de credito total [%d]\n",LOG03, iEsNotaCredTotal); 
+ 
+    if (!bfnGetDirecCli (stCliente.lCodCliente, TIPDIRECCION_FACTURA))
+    {    vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+         return FALSE;
+    }
+    
+	if (iEsNotaCredTotal==1){
+	   if (!bImptosNotasTotal(iTipoFact,bDocOrigenCiclo,&pAcumImptoTipo)){
+	       vDTrazasLog  (szExeName,
+                           "\n\t\t* Error Aplicando Impuestos a Notas\n",LOG03); 
+             vDTrazasError(szExeName,
+                           "\n\t\t* Error Aplicando Impuestos a Notas\n",LOG03);
+             vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+			 return FALSE;
+	   }
+	}else{
+	    strcpy(szCodModulo, "FA");
+		sprintf(szNomParam, "%20.20s\0", "FEC_CALC_IMTPO_CROJA");
+	
+        if (!bfnGetGedParam(szNomParam, szCodModulo, szValParam))
+        {   vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+		    vDTrazasLog  (szExeName,
+                           "\n\t**Error : En consulta parametro %s  \n",LOG01,szNomParam); 
+            vDTrazasError(szExeName,
+                           "\n\t**Error : En consulta parametro %s  \n",LOG01,szNomParam);
+            return (FALSE);
+        }
+ 	    
+		vDTrazasLog  (szExeName, "\n\tFecha inicio proceso [%s], fecha Emision doc.orig.[%s]  \n",LOG03,szValParam, stNota.szFecEmision);
+		 
+        if (strcmp(stNota.szFecEmision,szValParam)>=0){
+		    vDTrazasLog  (szExeName, "\n\t\t*  Aplicando Impuestos a Notas con imptos cruz roja\n",LOG03); 
+			if (!bImptosNotasCredParcial(iTipoFact, &pAcumImptoTipo))
+			{   vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+			    vDTrazasLog  (szExeName, "\n\t\t* Error Aplicando Impuestos a Notas de credito parcial\n",LOG03); 
+                vDTrazasError(szExeName,  "\n\t\t* Error Aplicando Impuestos a Notas de credito parcial\n",LOG03);
+                return FALSE;
+			}
+		}
+		else {
+            if (stProceso.iIndNotaCredC == 0)
+            {
+
+               if (!bImptosIvaNotas (iTipoFact))
+               {
+                   vDTrazasLog  (szExeName,
+                           "\n\t\t* Error Aplicando Impuestos a Notas\n",LOG03); 
+                   vDTrazasError(szExeName,
+                           "\n\t\t* Error Aplicando Impuestos a Notas\n",LOG03);
+                   return FALSE;
+               }
+            }
+		}
+    }
+    if (!bfnPasoHistoricos ())
+    {
+         vDTrazasLog  (szExeName,
+                       "\n\t\t* Error Paso a Historicos de Nota\n",LOG03);
+         vDTrazasError(szExeName,
+                       "\n\t\t* Error Paso a Historicos de Nota\n",LOG03);
+        vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+         return FALSE;
+    }
+    
+	
+    if (!bfnDBUpdateAjustes ())
+    {    vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+         return FALSE;
+    }
+    
+	if (!bActualizAcumImptosNCredito (&pAcumImptoTipo))
+	{
+	    vDTrazasLog  (szExeName,
+                       "\n\t\t* Error en proceso de actualizacion de impuestos por nota de credito\n",LOG03);
+         vDTrazasError(szExeName,
+                       "\n\t\t* Error en proceso de actualizacion de impuestos por nota de credito\n",LOG03);
+         vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+         return FALSE;
+	}
+	
+	vFreeAcumImpuestoTipos(&pAcumImptoTipo);
+
+    return TRUE;
+
+}/************************ Final bfnPreBillingClienteNotas *******************/
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

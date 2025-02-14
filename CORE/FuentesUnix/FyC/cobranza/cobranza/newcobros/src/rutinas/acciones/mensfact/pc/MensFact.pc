@@ -1,0 +1,246 @@
+/* ============================================================================= */
+/*
+    Tipo       	 :  ACCION
+
+    Nombre     	 :  MensFact.pc ("MENSF"->szfnMensFact)
+
+    Descripcion	 :  Genera archivos la Direccion  y el Monto de la deuda vencida
+               	    del cliente dado.
+
+    Recibe     	 :  by Val -> Cod Cliente 
+
+    Devuelve   	 :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+               	    "NOMSJ"-> No hay mensajes definidos y/o generados
+               	    "OK"   -> La accion se ejecuto correctamente
+
+    Autor 	     :  Modesto Aranda Contreras
+    fecha      	 :  20 - Diciembre - 2002 
+
+Modificacion    :  15-11-2004
+		   Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo   
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#include "MensFact.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* Envia mensajes en la factura al cliente  */
+/* ============================================================================= */
+char *szfnMensFact(FILE **ptArchLog, long lCliente, sql_context ctxCont )
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long	lhCodCliente		 = 0  ;
+		long	lhCorrMens			 = 0;
+		char	szhDirClie[250]	 = "" ;EXEC SQL VAR szhDirClie IS STRING (250);
+		char	szhNomClie[91]		 = "" ;EXEC SQL VAR szhNomClie IS STRING (91);
+		char	szhCodIdioma[6]	 = "" ;EXEC SQL VAR szhCodIdioma IS STRING (6);
+		int	ihCodBloque			 = 0 ;
+		int 	ihCodFormula		 = 0 ;
+		int 	ihCantLineas		 = 0 ;
+		char	szhFecDesde[9]		 = ""  ; EXEC SQL VAR szhFecDesde IS STRING (9);
+		char	szhFecHasta[9]		 = ""  ; EXEC SQL VAR szhFecHasta IS STRING (9);
+		char	szhDescMens[41]	 = ""  ; EXEC SQL VAR szhDescMens IS STRING (41);
+		int	ihCodProducto		 = 0;
+		long	lhNumAbonado		 = 0;
+		long	lhNumSecuencia		 = 0;
+		long	lhNumDias			 = 0;	
+		double dMtoSaldo 			 = 0.0; 
+	
+		/* Vbles Bind */
+		char  szhEPR      [4];
+		char  szhMFACT    [6];
+		char  szhModulo   [3];
+		char  szhCODBLOQUE[17];
+		char  szhFORMULARIO[21];
+		char  szhFormatoYYYYMMDD[9];
+		char  szhCero     [2];
+		char  szhLetra_C  [2];
+		int   ihValor_dos  = 2;
+		int   ihValor_cinco= 5;
+		sql_context CXX;
+	EXEC SQL END DECLARE SECTION;
+
+	char	modulo[] = "szfnMensFact";
+	int		iError = 0, ii=0, iMsgGenerados = 0, rr, ik, ilarDir, iresta=0, ilargo=0, iexiste=0;
+	char	szhFecAux[9]="", szComando[256]="", szPathCart[256]="";
+	char	szEncabeza[501]="", szArchivoCart[256]="";
+	static  char 	szAux[9];
+	double  dMtoAux = 0.0 ;
+
+	FILE	*fp;
+	FILE	*pfLog=*ptArchLog;
+	struct sqlca sqlca;
+
+	CXX = ctxCont;
+	EXEC SQL CONTEXT USE :CXX;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);	
+		
+	memset(szArchivoCart,'\0',sizeof(szArchivoCart));
+	memset(szPathCart,'\0',sizeof(szPathCart));
+
+	lhCodCliente = lCliente;
+	strcpy(szhEPR   ,"EPR");
+	strcpy(szhMFACT ,"MFACT");
+	strcpy(szhModulo,"CO");
+	strcpy(szhCODBLOQUE,"COD_BLOQUE_MENSF");
+	strcpy(szhFORMULARIO,"COD_FORMULARIO_MENSF");
+	strcpy(szhCero,"0");
+	strcpy(szhLetra_C,"C");
+	strcpy(szhFormatoYYYYMMDD,"YYYYMMDD");
+	
+	/*-Determina el codigo del mensaje -*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT	TO_NUMBER(NVL(M.COD_PARAM,:szhCero)),
+			M.NUM_SECUENCIA
+	INTO	:lhCorrMens,
+			:lhNumSecuencia
+	FROM	CO_PARAM_ACCIONES M, CO_ACCIONES C 
+	WHERE	C.COD_CLIENTE   = :lhCodCliente
+	AND     C.COD_ESTADO    = :szhEPR			/* la accion debe estar en proceso */
+	AND     C.COD_RUTINA    = :szhMFACT		/* accion de Mensajes en la Factura */
+	AND     C.NUM_SECUENCIA = M.NUM_SECUENCIA
+	AND     M.COD_PARAM  IS NOT NULL;
+	
+	if( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar CO_PARAM_ACCIONES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";   
+	}
+
+	ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Secuencia encontrada => [%d] ", LOG03, lhCodCliente, lhNumSecuencia );
+
+ 	/*-Obtiene la fecha hasta-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+    SELECT TO_CHAR(A.FEC_EMISION-:ihValor_cinco,:szhFormatoYYYYMMDD) FEC_DESDE
+          ,TO_CHAR(A.FEC_EMISION+:ihValor_cinco,:szhFormatoYYYYMMDD) FEC_HAST
+          , B.COD_IDIOMA
+      INTO :szhFecDesde
+          ,:szhFecHasta
+          ,:szhCodIdioma
+	  FROM FA_CICLFACT A,
+	  	   GE_CLIENTES B
+	 WHERE A.COD_CICLO = B.COD_CICLO
+	   AND B.COD_CLIENTE = :lhCodCliente
+	   AND SYSDATE BETWEEN FEC_DESDELLAM AND  A.FEC_HASTALLAM 
+	   AND ROWNUM < :ihValor_dos;
+
+	if( sqlca.sqlcode != SQLOK  )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al Obtener datos cliente %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "NODAT";
+	}
+
+	/*-Obtiene datos del mensaje-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT	CANT_LINEASMEN, DESC_MENSAJE 
+	INTO	:ihCantLineas,:szhDescMens
+	FROM   FA_MENSAJES
+	WHERE CORR_MENSAJE = :lhCorrMens
+	  AND COD_IDIOMA = :szhCodIdioma
+	  AND ROWNUM < :ihValor_dos;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar tabla FA_MENSAJES %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Mensaje:%ld) no esta en tabla FA_MENSAJES %s ", LOG02, lhCorrMens, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+	
+	/*-Obtiene datos del Formulario donde ira el mensaje-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT TO_NUMBER(VAL_PARAMETRO)
+	  INTO :ihCodFormula
+	  FROM GED_PARAMETROS
+	 WHERE COD_MODULO =:szhModulo
+	   AND NOM_PARAMETRO = :szhFORMULARIO;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar tabla GED_PARAMETROS %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(COD_FORMULARIO) no esta en tabla GED_PARAMETROS %s ", LOG02, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+	
+	/*-Obtiene datos del bloque de Formulario donde ira el mensaje-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT TO_NUMBER(VAL_PARAMETRO)
+	  INTO :ihCodBloque
+	  FROM GED_PARAMETROS
+	 WHERE COD_MODULO =:szhModulo
+	   AND NOM_PARAMETRO = :szhCODBLOQUE;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al consultar tabla GED_PARAMETROS %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(COD_BLOQUE) no esta en tabla GED_PARAMETROS %s ", LOG02, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+	/*-Inserta el mensaje en las tablas de Facturacion-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	INSERT INTO FA_MENSCLIENTE
+	(COD_CLIENTE,COD_FORMULARIO,COD_BLOQUE,CORR_MENSAJE,NUM_LINEAS,FEC_DESDE
+	 ,COD_ORIGEN,FEC_HASTA,IND_CICLO,DESC_MENSAJE,NOM_USUARIO,FEC_INGRESO)
+	VALUES
+	(:lhCodCliente,:ihCodFormula,:ihCodBloque,:lhCorrMens,:ihCantLineas, TO_DATE(:szhFecDesde,:szhFormatoYYYYMMDD)
+	 ,:szhModulo,TO_DATE(:szhFecHasta,:szhFormatoYYYYMMDD),:szhLetra_C,:szhDescMens,USER,SYSDATE);
+	 
+	if( sqlca.sqlcode != SQLOK )
+	{
+		ifnTrazaHilos( modulo,&pfLog, "(Cliente:%ld) Error al insertar tabla  FA_MENSCLIENTE %s ", LOG02, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "ERPAR";
+	}
+
+	return "OK";
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

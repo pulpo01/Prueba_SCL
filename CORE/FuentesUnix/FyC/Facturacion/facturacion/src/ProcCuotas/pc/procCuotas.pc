@@ -1,0 +1,2085 @@
+/* ***********************************************
+              "procCuotas.pc"
+
+15 de Mayo de 2000 :    Mauricio Villagra V.
+                        Creacion de Proceso
+
+*********************************************** */
+/************************************************************************/
+/*  Modificaciones referentes a caidas del proceso en los casos de  */
+/*  Prefijo Plaza.                          */
+/*  PGonzaleg 16-01-2003                        */
+/************************************************************************/
+
+#include "procCuotas.h"
+
+EXEC SQL INCLUDE sqlca;
+
+#define MAX_CUOTASCREDITOCLIENTE_PLUS MAX_CUOTASCREDITOCLIENTE + 500
+
+EXEC SQL BEGIN DECLARE SECTION  ;
+int     giMinNumCuotas       ;
+long    glhCodCliente        ;
+int     gihCodCiclo          ;
+long    glahNumSecuenci      [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+int     giahCodTipDocum      [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+long    glahCodVendedorAgente[MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+VARCHAR gszahLetra           [MAX_CUOTASCREDITOCLIENTE_PLUS][2]   ;
+int     giahCodCentremi      [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+int     giahCodConcepto      [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+int     giahColumna          [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+int     giahNumCuota         [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+int     giahSecCuota         [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+int     giahIndFacturado     [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+VARCHAR gszahFecVencimie     [MAX_CUOTASCREDITOCLIENTE_PLUS][20]  ;
+VARCHAR gszahNumFolioCTC     [MAX_CUOTASCREDITOCLIENTE_PLUS][12]  ;
+double  gdahMtoCuota         [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+VARCHAR gszahFecCompra       [MAX_CUOTASCREDITOCLIENTE_PLUS][20]  ;
+long    glahNum_Folio        [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+/*RA-200510310009*largo pref_plaza*/
+/*VARCHAR gszhPref_Plaza       [MAX_CUOTASCREDITOCLIENTE_PLUS][4]   ;*/
+/* VARCHAR gszhPref_Plaza       [MAX_CUOTASCREDITOCLIENTE_PLUS][11]  ; */ /*PGG - inc 215022 - 01-07-2022 */
+VARCHAR gszhPref_Plaza       [MAX_CUOTASCREDITOCLIENTE_PLUS][26]  ; /*PGG - inc 215022 - 01-07-2022 */
+/*RA-200510310009*largo pref_plaza*/
+long    glahNumAbonado       [MAX_CUOTASCREDITOCLIENTE_PLUS]      ;
+
+
+char *szSQL_INSERT_FA_CUOTCREDITO =
+" INSERT INTO FA_CUOTCREDITO      (  "
+"         IND_ORDENTOTAL          ,  "
+"         COD_CLIENTE             ,  "
+"         NUM_SECUENCI            ,  "
+"         COD_TIPDOCUM            ,  "
+"         COD_VENDEDOR_AGENTE     ,  "
+"         LETRA                   ,  "
+"         COD_CENTREMI            ,  "
+"         COD_CONCEPTO            ,  "
+"         COLUMNA                 ,  "
+"         NUM_CUOTA               ,  "
+"         SEC_CUOTA               ,  "
+"         COD_CICLFACT            ,  "
+"         IND_FACTURADO           ,  "
+"         FEC_VENCIMIE            ,  "
+"         NUM_FOLIOCTC            ,  "
+"         MTO_CUOTA               ,  "
+"         FEC_COMPRA              ,  "
+"         IND_IMPRESO             ,  "
+"         NUM_FOLIO               ,  "
+"         PREF_PLAZA              ,  "
+"         NUM_ABONADO           )    "
+" VALUES (:ihIndOrdentotal        ,  "
+"         :lhCodCliente           ,  "
+"         :lhNumSecuenci          ,  "
+"         :ihCodTipDocum          ,  "
+"         :lhCodVendedorAgente    ,  "
+"         :szhLetra               ,  "
+"         :ihCodCentremi          ,  "
+"         :ihCodConcepto          ,  "
+"         :ihColumna              ,  "
+"         :ihNumCuota             ,  "
+"         :ihSecCuota             ,  "
+"         :lhCodCiclFact          ,  "
+"         :ihIndFacturado         ,  "
+"         TO_DATE(:szhFecVencimie,'YYYYMMDDHH24MISS'),  "
+"         :szhNumFolioCTC         ,  "
+"         :dhMtoCuota             ,  "
+"         TO_DATE(:szhFecCompra,'YYYYMMDDHH24MISS') ,  "
+"         :ihIndImpreso           ,  "
+"         :lhNum_Folio            ,  "
+"         :szhPref_Plaza          ,  "
+"         :lhNumAbonado         )    ";
+
+char *szSQL_UPDATE_CO_CARTERA =
+" UPDATE  CO_CARTERA                                   "
+" SET     IND_FACTURADO       =   :ihIndFacturado ,    "
+"         NUM_FOLIOCTC        =   :szhNumFolio    ,    "
+"         FEC_VENCIMIE        =   TO_DATE(:szhFecVencimien,'YYYYMMDDHH24MISS') "
+" WHERE   COD_CLIENTE         =   :lhCodCliente        "
+" AND     NUM_SECUENCI        =   :lhNumSecuenci       "
+" AND     COD_TIPDOCUM        =   :ihCodTipDocum       "
+" AND     COD_VENDEDOR_AGENTE =   :lhCodVendedorAgente "
+" AND     LETRA               =   :szhLetra            "
+" AND     COD_CENTREMI        =   :ihCodCentremi       "
+" AND     COD_CONCEPTO        =   :ihCodConcepto       "
+" AND     COLUMNA             =   :ihColumna           ";
+
+char *szSQL_INSERT_FA_HISTCUOTCREDITO =
+" INSERT INTO FA_HISTCUOTCREDITO (      "
+"             IND_ORDENTOTAL          , "
+"             COD_CLIENTE             , "
+"             NUM_SECUENCI            , "
+"             COD_TIPDOCUM            , "
+"             COD_VENDEDOR_AGENTE     , "
+"             LETRA                   , "
+"             COD_CENTREMI            , "
+"             COD_CONCEPTO            , "
+"             COLUMNA                 , "
+"             NUM_CUOTA               , "
+"             SEC_CUOTA               , "
+"             COD_CICLFACT            , "
+"             IND_FACTURADO           , "
+"             FEC_VENCIMIE            , "
+"             NUM_FOLIOCTC            , "
+"             MTO_CUOTA               , "
+"             FEC_COMPRA              , "
+"             IND_IMPRESO             , "
+"             NUM_FOLIO               , "
+"             PREF_PLAZA              , "
+"             NUM_ABONADO           )   "
+" SELECT      IND_ORDENTOTAL          , "
+"             COD_CLIENTE             , "
+"             NUM_SECUENCI            , "
+"             COD_TIPDOCUM            , "
+"             COD_VENDEDOR_AGENTE     , "
+"             LETRA                   , "
+"             COD_CENTREMI            , "
+"             COD_CONCEPTO            , "
+"             COLUMNA                 , "
+"             NUM_CUOTA               , "
+"             SEC_CUOTA               , "
+"             COD_CICLFACT            , "
+"             IND_FACTURADO           , "
+"             FEC_VENCIMIE            , "
+"             NUM_FOLIOCTC            , "
+"             MTO_CUOTA               , "
+"             FEC_COMPRA              , "
+"             IND_IMPRESO             , "
+"             NUM_FOLIO               , "
+"             PREF_PLAZA              , "
+"             NUM_ABONADO               "
+" FROM        FA_CUOTCREDITO            "
+" WHERE       ROWID       =   :szhRowid ";
+
+char *szSQL_DELETE_FA_CUOTCREDITO =
+" DELETE FROM FA_CUOTCREDITO            "
+" WHERE       ROWID       =   :szhRowid ";
+
+/*******************************************************************/
+/* Globales                                                        */
+/*******************************************************************/
+
+    char    gszFormatoFec  [17];EXEC SQL VAR gszFormatoFec IS STRING(17);
+    long    glhCodCicloFact   = 0L;
+    int     gihIndActuacAlta  = NORMAL;
+    int     giCero            = 0;
+    int     giUno             = 1;
+    int     gihIndMascara     = 0;
+    long    glhRngIniClie     = 0L;
+    long    glhRngFinClie     = 0L;
+    long    gihIngRngClientes = 0;
+
+EXEC SQL END DECLARE SECTION    ;
+
+EXEC SQL DECLARE CURSOR_SELECT_CO_CARTERA CURSOR FOR
+    SELECT  NUM_SECUENCI            ,
+            COD_TIPDOCUM            ,
+            COD_VENDEDOR_AGENTE     ,
+            LETRA                   ,
+            COD_CENTREMI            ,
+            COD_CONCEPTO            ,
+            COLUMNA                 ,
+            NUM_CUOTA               ,
+            SEC_CUOTA               ,
+            IND_FACTURADO           ,
+            TO_CHAR(FEC_VENCIMIE,:gszFormatoFec) ,
+            NVL(NUM_FOLIOCTC,' ')   ,
+            (IMPORTE_DEBE-IMPORTE_HABER) ,
+            TO_CHAR(FEC_EFECTIVIDAD,:gszFormatoFec) ,
+            NUM_FOLIO     ,
+            NVL(PREF_PLAZA,'000')   ,
+            NVL(NUM_ABONADO,:giCero)
+    FROM    CO_CARTERA
+    WHERE COD_CLIENTE = :glhCodCliente
+      AND NUM_CUOTA   > :giMinNumCuotas
+      AND COD_TIPDOCUM != 5
+      AND COD_TIPDOCUM != 59
+      AND COD_TIPDOCUM != 60
+      AND COD_TIPDOCUM != 39
+      AND COD_TIPDOCUM != 32
+    ORDER BY NUM_SECUENCI,
+             COD_TIPDOCUM,
+             COD_VENDEDOR_AGENTE,LETRA,
+             COD_CENTREMI,
+             COD_CONCEPTO,
+             COLUMNA,
+             NUM_CUOTA;
+
+EXEC SQL DECLARE CURSOR_INFACCEL CURSOR FOR
+    SELECT COUNT(:giUno)
+      FROM GA_INFACCEL
+     WHERE COD_CLIENTE  = :glhCodCliente
+       AND NUM_ABONADO >= :giCero
+       AND COD_CICLFACT = :glhCodCicloFact
+       AND IND_ACTUAC   = :gihIndActuacAlta;
+
+
+EXEC SQL DECLARE cCursor_Cliente_Cuotas CURSOR FOR
+    SELECT DISTINCT CLI.COD_CLIENTE
+      FROM FA_CICLOCLI CLI
+     WHERE CLI.COD_CICLO    = :gihCodCiclo
+       AND CLI.IND_MASCARA  = :gihIndMascara
+       AND ((CLI.COD_CLIENTE BETWEEN :glhRngIniClie AND :glhRngFinClie) OR (1 <> :gihIngRngClientes))
+       AND EXISTS (SELECT 1
+                    FROM CO_CARTERA  CAR
+                   WHERE CAR.COD_CLIENTE = CLI.COD_CLIENTE
+                     AND NUM_CUOTA   > :giMinNumCuotas
+                     AND COD_TIPDOCUM != 5
+                     AND COD_TIPDOCUM != 59
+                     AND COD_TIPDOCUM != 60
+                     AND COD_TIPDOCUM != 39
+                     AND COD_TIPDOCUM != 32);
+
+BOOL bfnPreparaQuerysBind()
+{
+    char *modulo="bfnPreparaQuerysBind";
+
+    EXEC SQL PREPARE SQL_INSERT_FA_CUOTCREDITO FROM :szSQL_INSERT_FA_CUOTCREDITO;
+    if( SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n\t**  Error en SQL-PREPARE SQL_INSERT_FA_CUOTCREDITO **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return(FALSE);
+    }
+
+    EXEC SQL PREPARE SQL_UPDATE_CO_CARTERA FROM :szSQL_UPDATE_CO_CARTERA;
+    if( SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n\t**  Error en SQL-PREPARE SQL_UPDATE_CO_CARTERA **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return(FALSE);
+    }
+
+    EXEC SQL PREPARE SQL_INSERT_FA_HISTCUOTCREDITO FROM :szSQL_INSERT_FA_HISTCUOTCREDITO;
+    if( SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n\t**  Error en SQL-PREPARE SQL_INSERT_FA_HISTCUOTCREDITO **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return(FALSE);
+    }
+
+    EXEC SQL PREPARE SQL_DELETE_FA_CUOTCREDITO FROM :szSQL_DELETE_FA_CUOTCREDITO;
+    if( SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n\t**  Error en SQL-PREPARE SQL_DELETE_FA_CUOTCREDITO **"
+                      "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return(FALSE);
+    }
+    return(TRUE);
+}
+
+/* ******************************************************************************** */
+/* main : Rutina principal */
+/* ******************************************************************************** */
+int main(int argc,char *argv[])
+{
+    char modulo[]="main";
+    char szHostId[25]="";
+    long lClieIniBD = 0L;
+    long lClieFinBD = 0L;
+    char szFechaInicio[20]="";
+
+    ARGSENTRADA  stArgsEntrada;
+    ESTADISTICAS stEstTiempo;
+
+    memset(&stArgsEntrada,0,sizeof(ARGSENTRADA));
+    memset(&stEstTiempo,0,sizeof(ESTADISTICAS));
+
+    vfnIniciarEstProc(&stEstTiempo);
+
+    /* 20051123: Informacion de la version de compilacion */
+    printf("\n(II)\t*** procCuotas, Version de compilacion: [%s] - [%s] ***\n",__DATE__,__TIME__);
+
+    if (!bfnValidaParametros (argc, argv, &stArgsEntrada))
+        return (RET_ERROR_PARAMETROS);
+
+    vfnImprimirArgsEntrada(CONSOLA,stArgsEntrada);
+
+    if (!bfnAbreArchivosLog(stArgsEntrada.iModProceso,stArgsEntrada.lCodCiclFact,stArgsEntrada.iLogLevel))
+        return (RET_ERROR_ARCHIVOSLOG);
+
+    if (!ifnAcessoOracle(stArgsEntrada.szOraAccount,stArgsEntrada.szOraPasswd))
+        return (RET_ERROR_ACCESSORA);
+
+    /* Tomar fecha de inicio de proceso */
+    if (!bfnSelectSysDate(szFechaInicio))
+        return FALSE;
+    strcpy(stArgsEntrada.szHoraInicProc, szFechaInicio);
+
+    /*** Obtencion de rangos de clientes, si existen ***/
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        vDTrazasLog(modulo, "(AVISO) main(): No se rescatan datos de Rango de clientes desde base de datos\n"
+                            "\t\tSe mantienen datos ingresados desde linea de comando (Si existen).", LOG05);
+    }
+    else
+    {
+        /*** Busqueda de rangos de clientes desde Base de Datos ***/
+        vDTrazasLog(modulo,"(INFO) main(): Tratando de obtener Rangos de clientes desde Base de Datos...\n", LOG05);
+        if( (iGetRangosHost(szHostId, stArgsEntrada.lCodCiclFact, &lClieIniBD, &lClieFinBD))==0 )
+        {
+            stArgsEntrada.lClienteIni = lClieIniBD;
+            stArgsEntrada.lClienteFin = lClieFinBD;
+            stArgsEntrada.bIngRngClientes = TRUE;
+        }
+        else
+        {
+            vDTrazasLog(modulo, "(AVISO) main(): No se rescatan datos de Rango de clientes desde base de datos\n"
+                                "\t\tSe mantienen datos ingresados desde linea de comando (Si existen).", LOG05);
+        }
+    }
+
+    stCiclo.lCodCiclFact = stArgsEntrada.lCodCiclFact;
+
+    if(!bFindCiclFact(&stCiclo))
+        return (FALSE);
+
+    stArgsEntrada.iCodCiclo = stCiclo.iCodCiclo; 
+
+    vfnImprimirArgsEntrada(TRAZASLOG,stArgsEntrada);
+
+    if (!bfnPreparaQuerysBind())
+        return(RET_ERROR_ACCESSORA-1);
+
+    if (stArgsEntrada.iModProceso == MODO_PROCESO_GENERACION)
+    {
+        if (!bprocGenCuota(stArgsEntrada))
+        {
+            vDTrazasError(modulo,"\n(EE)\t%s Termino Anormal de Generacion de Cuotas \n", LOG03, cfnGetTime(1));
+            vDTrazasLog  (modulo,"\n(EE)\t%s Termino Anormal de Generacion de Cuotas \n", LOG03, cfnGetTime(1));
+            return (RET_ERROR_GENERACION);
+        }
+/*  rao: se separa del proceso de carga de cuotas, tambien se modifca el universo cCursor_Cliente_Cuotas */
+/*        if ( !bprocCargaUltimoPago(stArgsEntrada))                                                                */
+/*        {                                                                                                         */
+/*            vDTrazasError(modulo,"\n(EE)\t%s Termino Anormal de Validacion de Package \n", LOG03, cfnGetTime(1)); */
+/*            vDTrazasLog  (modulo,"\n(EE)\t%s Termino Anormal de Validacion de Package \n", LOG03, cfnGetTime(1)); */
+/*            return (RET_ERROR_GENERACION);                                                                        */
+/*        }                                                                                                         */
+    }
+
+    if ((stArgsEntrada.iModProceso == MODO_PROCESO_HISTORICOS) && (!bprocHisCuota(stArgsEntrada)))
+    {
+        vDTrazasError(modulo,"\n(EE)\t%s Termino Anormal de Historico de Cuotas \n", LOG03, cfnGetTime(1));
+        vDTrazasLog  (modulo,"\n(EE)\t%s Termino Anormal de Historico de Cuotas \n", LOG03, cfnGetTime(1));
+        return (RET_ERROR_HISTORICO);
+    }
+
+    vfnImprimirEstProc(&stEstTiempo);
+
+    fprintf(stdout,"\n");
+    vDTrazasError(modulo,"\n(II)\t%s Termino Normal de la Aplicacion\n", LOG03, cfnGetTime(1));
+    vDTrazasLog  (modulo,"\n(II)\t%s Termino Normal de la Aplicacion\n", LOG03, cfnGetTime(1));
+
+    return (0);
+} /********************************  Fin  main  *************************************/
+
+/* ******************************************************************************** */
+/* bfnValidaParametros : verifica los parametros de la invocacion  */
+/* ******************************************************************************** */
+BOOL bfnValidaParametros (  int     argc            ,
+                            char    *argv[]          ,
+                            ARGSENTRADA *pstArgsEntrada)
+{
+    extern char *optarg;
+    extern int opterr, optopt;
+    char opt[] = ":u:c:l:GHi:f:";
+    int iOpt=0;
+    char *psztmp = "";
+    char szUser [64] = "";
+
+    BOOL Userflag=FALSE;
+    BOOL ModGenflag=FALSE;
+    BOOL ModHisflag=FALSE;
+    BOOL Cicflag=FALSE;
+    BOOL Logflag=FALSE;
+    BOOL bClieIniFlag=FALSE;
+    BOOL bClieFinFlag=FALSE;
+
+    opterr=0;
+
+    if(argc == 1)
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : Parametros insuficientes >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    while ( (iOpt = getopt(argc, argv , opt) ) != EOF)
+    {
+        switch(iOpt)
+        {
+            case 'u':
+                if(Userflag==FALSE)
+                {
+                    strcpy(szUser, optarg);
+                    Userflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'G':
+                if(ModGenflag==FALSE)
+                {
+                    pstArgsEntrada->iModProceso = MODO_PROCESO_GENERACION;
+                    ModGenflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'H':
+                if(ModHisflag==FALSE)
+                {
+                    pstArgsEntrada->iModProceso = MODO_PROCESO_HISTORICOS;
+                    ModHisflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'c':
+                if(Cicflag==FALSE)
+                {
+                    pstArgsEntrada->lCodCiclFact=atol(optarg);
+                    Cicflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'l':
+                if(Logflag==FALSE)
+                {
+                    pstArgsEntrada->iLogLevel=atoi(optarg);
+                    Logflag=TRUE;
+                }
+                else
+                {
+                    fprintf (stderr,"\n(EE)\t<< Error : opcion '-%c' duplicada >>\n%s\n",optopt,szUsage);
+                    return (FALSE);
+                }
+                break;
+
+            case 'i':
+                pstArgsEntrada->lClienteIni = atol(optarg);
+                bClieIniFlag = TRUE;
+                break;
+
+            case 'f':
+                pstArgsEntrada->lClienteFin = atol(optarg);
+                bClieFinFlag = TRUE;
+                break;
+
+            case '?':
+                fprintf(stdout,"\n(EE)\t<< Error: opcion '-%c' es desconocida >>\n%s\n",optopt,szUsage);
+                return (FALSE);
+
+            case ':':
+                fprintf(stdout,"\n(EE)\t<< Error: falta parametro para opcion '-%c' >>\n%s\n",optopt,szUsage);
+                return (FALSE);
+        }/* endswitch */
+    } /* enwhile */
+
+    if ((ModGenflag == FALSE)  && (ModHisflag == FALSE))
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-G' o '-H' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    if ((ModGenflag == TRUE)  && (ModHisflag == TRUE))
+    {
+        fprintf (stderr,"\n(EE)\t<< Opciones Excluyentes '-G' y '-H' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    if(Cicflag==FALSE)
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-c' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    if(Userflag==TRUE)
+    {
+        if ( (psztmp=(char *)strstr(szUser,"/") )==(char *)NULL )
+        {
+            fprintf (stderr,"\n(EE)\t<< Error : usuario no valido. Requiere \"/\" >>\n%s\n",szUsage);
+            return (FALSE);
+        }
+        else
+        {
+            strncpy (pstArgsEntrada->szOraAccount,szUser,psztmp-szUser);
+            strcpy  (pstArgsEntrada->szOraPasswd, psztmp+1);
+        }
+    }
+
+    if(Logflag==FALSE)
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-l' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    if( (bClieIniFlag==TRUE && bClieFinFlag==FALSE) || (bClieIniFlag==FALSE && bClieFinFlag==TRUE))
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-i' o '-f' >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+
+    if((bClieIniFlag==TRUE && bClieFinFlag==TRUE))
+        pstArgsEntrada->bIngRngClientes = TRUE;
+    else
+        pstArgsEntrada->bIngRngClientes = FALSE;
+
+    if(pstArgsEntrada->lClienteIni - pstArgsEntrada->lClienteFin > 0L)
+    {
+        fprintf (stderr,"(EE)\t<< Error : Cliente inicial debe ser menor a Cliente final >>\n%s\n",szUsage);
+        return (FALSE);
+    }
+    return (TRUE); /* Validacion ok */
+} /***************************  Fin  bfnValidaParametros  ***************************/
+
+
+/* ******************************************************************************** */
+/* ifnAcessoOracle : Se conecta y trabaja sobre la base de Datos */
+/* ******************************************************************************** */
+BOOL ifnAcessoOracle(char    *szOraAccount  ,
+                     char    *szOraPasswd   )
+{
+    char    modulo[]="ifnAcessoOracle";
+
+    char    szUsuario[64]="";
+    char    szAux[16]="";
+    char    *psztmp = "";
+    char    szhNomUsuarOra[32]="";
+    char    szhPasUsuarOra[32]="";
+
+    strcpy(szhNomUsuarOra,szOraAccount);
+    strcpy(szhPasUsuarOra,szOraPasswd);
+
+/*  Formateo adecuado del Usuario/Password recuperado de la base */
+    memset(szUsuario,0,sizeof(szUsuario));
+
+    if ( (psztmp=(char *)strstr(szhNomUsuarOra,"\\$") )!=(char *)NULL )
+    {
+        sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+    else if ((psztmp=(char *)strchr(szhNomUsuarOra,'$') )!=(char *)NULL )
+    {
+        memset(szAux,0,sizeof(szAux));
+        strncpy (szAux,szhNomUsuarOra,psztmp-szhNomUsuarOra);
+        sprintf (szUsuario,"%s\\%s/%s",szAux,psztmp,szhPasUsuarOra);
+    }
+    else
+    {
+        sprintf(szUsuario,"%s/%s",szhNomUsuarOra,szhPasUsuarOra);
+    }
+
+    if (!fnOraConnect(szOraAccount,szOraPasswd))
+    {
+        vDTrazasError(modulo, " No Hay Conexion a la Base de Datos", LOG01);
+        return (FALSE);
+    }
+    vDTrazasLog(modulo,"(II)\t%s Conectado a la Base de Datos", LOG03, cfnGetTime(1));
+    return (TRUE);
+} /*********************************  Fin  ifnAcessoOracle *******************************/
+
+
+
+/* ************************************************************************************* */
+/* bfnAbreArchivosLog                                                                    */
+/* ************************************************************************************* */
+BOOL bfnAbreArchivosLog(    int     iModProceso     ,
+                            long    lCodCiclFact    ,
+                            int     iLogLevel       )
+{
+    char modulo[]="bfnAbreArchivosLog";
+
+    char *pathDir;
+    char szArchivo[52]="";
+    char szPath[128]="";
+    char szComando[128]="";
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"procCuotas_%3s_%s",(iModProceso == MODO_PROCESO_GENERACION? "Gen":"His"),cfnGetTime(5));
+
+    pathDir=(char *)malloc(128);
+    pathDir=szGetEnv("XPF_LOG");
+    sprintf(szPath,"%s/procCuotas/%ld",pathDir,lCodCiclFact);
+    free(pathDir);
+
+    fprintf( stdout, "\n\tCrea Directorio Log  : %s\n", szPath);
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    fprintf( stdout, "\n\tCrea Archivo Log/Err : %s\n\n", szArchivo);
+
+    stStatus.LogNivel = iLogLevel;
+
+    sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL )/* "wb+" */
+    {
+        fprintf( stderr, "\n\t<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+        return (FALSE);
+    }
+
+    vDTrazasError(modulo, "(II)\t%s << Abre Archivo de Errores >>", LOG03, cfnGetTime(1));
+
+    sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+    if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) /* "wb+" */
+    {
+        fprintf(stderr, "\n\t<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+        vDTrazasError(modulo, " << No pudo crearse el archivo de log %s >>\n", LOG01, stStatus.LogName);
+        return (FALSE);
+    }
+
+    vDTrazasLog(modulo, "(II)\t%s << Abre Archivo de Log >>", LOG03, cfnGetTime(1));
+    return (TRUE);
+}
+/****************************    Fin bfnAbreArchivosLog   ******************************/
+
+/* ******************************************************************************** */
+/*  bprocGenCuota()  : Generacion de Cuotas                                         */
+/* ******************************************************************************** */
+BOOL bprocGenCuota(ARGSENTRADA stArgsEntrada)
+{
+    char    modulo[]   = "bprocGenCuota"    ;
+    char    szFecha[20]= ""                 ;
+    int     iSqlCodeInt= SQLOK              ;
+    long    lCodCliente=0                   ;
+    CUOTCREDITOCLIENTE  stCuotasCliente     ;
+    /********************************************************************************/
+
+    if (!bfnWrapperValidaTrazaProc(stArgsEntrada.lCodCiclFact, iPROC_GENCUOTAS, iIND_FACT_ENPROCESO))
+        return (FALSE);
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        return (FALSE);
+    }
+    bfnWrapperSelectTrazaProc (stArgsEntrada.lCodCiclFact, iPROC_GENCUOTAS, &stTrazaProc);
+    bPrintTrazaProc(stTrazaProc);
+
+    if (!bfnDeleteFaCuotCredito(stArgsEntrada))
+        return (FALSE);
+
+    iSqlCodeInt = ifnOpenClientesFaCicloCli(stArgsEntrada);
+
+    while ( iSqlCodeInt == SQLOK )
+    {
+        lCodCliente=0;
+        iSqlCodeInt = ifnFetchClienteFaCicloCli(&lCodCliente);
+
+        if (iSqlCodeInt == SQLOK)
+        {
+            vDTrazasLog  (modulo,"\n\t** Procesando Cliente [%ld]",LOG03, lCodCliente);
+            memset(&stCuotasCliente, 0 , sizeof(CUOTCREDITOCLIENTE));
+
+            if (!bCargaCuotasClienteCartera(stArgsEntrada.lCodCiclFact,lCodCliente,&stCuotasCliente))
+                return (FALSE);
+
+            if (stCuotasCliente.iNumCuotasCliente > 0)
+            {
+                if (!bfnClienteDeBajaInter(stArgsEntrada.lCodCiclFact,lCodCliente,&stCuotasCliente))
+                    return (FALSE);
+
+                if (!bfnInsertCuotasFaCuotCredito(stCuotasCliente))
+                    return (FALSE);
+            }
+        }
+    }
+
+    if (!bfnCloseClienteFaCicloCli())
+        return (FALSE);
+
+    if (!bfnSelectSysDate(szFecha))
+        return FALSE;
+
+    if (iSqlCodeInt != SQLNOTFOUND )
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szFecInicio,stArgsEntrada.szHoraInicProc);
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Generacion de Cuotas Termino con Error");
+    }
+    else
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+        strcpy(stTrazaProc.szFecInicio,stArgsEntrada.szHoraInicProc);
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Generacion de Cuotas Terminado OK");
+    }
+
+    bPrintTrazaProc(stTrazaProc);
+
+    if(!bfnWrapperUpdateTrazaProc(stTrazaProc))
+        return FALSE;
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperUpdateTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperUpdateTrazaProc", LOG01);
+        return FALSE;
+    }
+    return (TRUE);
+}/*********************************** Fin bprocGenCuota *****************************/
+
+
+/* **********************************************************************************/
+/*  ifnOpenClientesFaCicloCli()  : Abre Cursor de Clietes                           */
+/* ******************************************************************************** */
+int ifnOpenClientesFaCicloCli(ARGSENTRADA stArgsEnt)
+{
+    char modulo[]   = "ifnOpenClientesFaCicloCli";
+
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhCodCiclFact    = 0L;
+        int  ihIndMascara     = 1 ;
+        long lhRngIniClie     = 0L;
+        long lhRngFinClie     = 0L;
+        int  ihIngRngClientes = 0 ;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo,   "(II) **(ifnOpenClientesFaCicloCli), Parametros de entrada:"
+                            "\n\tCod_CiclFact    : [%ld]"
+                            "\n\tlClienteIni     : [%ld]"
+                            "\n\tlClienteFin     : [%ld]"
+                            "\n\tbIngRngClientes : [%ld]"
+                            , LOG05
+                            , stArgsEnt.lCodCiclFact
+                            , stArgsEnt.lClienteIni
+                            , stArgsEnt.lClienteFin
+                            , stArgsEnt.bIngRngClientes);
+
+    lhCodCiclFact  = stArgsEnt.lCodCiclFact;
+    lhRngIniClie   = stArgsEnt.lClienteIni;
+    lhRngFinClie   = stArgsEnt.lClienteFin;
+
+    ihIngRngClientes = (stArgsEnt.bIngRngClientes == TRUE)?1:0;
+
+    vDTrazasLog  (modulo,"(II) **(ifnOpenClientesFaCicloCli), ihIngRngClientes : [%d]", LOG05, ihIngRngClientes);
+
+    glhCodCicloFact   =  lhCodCiclFact;
+    glhRngIniClie     =  lhRngIniClie ;
+    glhRngFinClie     =  lhRngFinClie ;
+    gihIndMascara     =  ihIndMascara;
+    gihIngRngClientes =  ihIngRngClientes;
+    gihCodCiclo       =  stArgsEnt.iCodCiclo;
+    giMinNumCuotas    =  MIN_CUOTASCREDITOCLIENTE;
+
+    EXEC SQL OPEN cCursor_Cliente_Cuotas;
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasLog  (modulo," ** No Existen Datos en cCursor_Cliente_Cuotas **",LOG01);
+        vDTrazasError(modulo," ** No Existen Datos en cCursor_Cliente_Cuotas **",LOG01);
+        return (SQLCODE);
+    }
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo, " en Open cCursor_Cliente_Cuotas **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        vDTrazasLog  (modulo, " en Open cCursor_Cliente_Cuotas **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    }
+    vDTrazasLog  (modulo," (ifnOpenClientesFaCicloCli) Cantidad de clientes cargados: [%d] **",LOG05, sqlca.sqlerrd[2]);
+    return (SQLCODE);
+}/*************************** Fin ifnOpenClientesFaCicloCli ************************/
+
+
+/* ******************************************************************************** */
+/*  ifnFetchClienteFaCicloCli()  : Fetch de Cliente                               */
+/* ******************************************************************************** */
+int ifnFetchClienteFaCicloCli(long *lCodCliente)
+{
+    char modulo[]   = "ifnFetchClienteFaCicloCli";
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhCodCliente;
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL FETCH cCursor_Cliente_Cuotas INTO :lhCodCliente;
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Fecth Cursor cCursor_Cliente_Cuotas %s ",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Fecth Cursor cCursor_Cliente_Cuotas %s ",LOG01,SQLERRM);
+    }
+
+    if( SQLCODE == SQLOK )
+        *lCodCliente = lhCodCliente;
+
+    return (SQLCODE);
+}/************************* Fin ifnFetchClienteFaCicloCli *************************/
+
+
+/* ******************************************************************************** */
+/*  bfnCloseClienteFaCicloCli()  : Cierra Cursor de Clientes                      */
+/* ******************************************************************************** */
+BOOL bfnCloseClienteFaCicloCli(void)
+{
+    char modulo[]   = "bfnCloseClienteFaCicloCli";
+
+    EXEC SQL CLOSE cCursor_Cliente_Cuotas;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/************************* Fin bfnCloseClienteFaCicloCli *************************/
+
+
+
+/* ******************************************************************************** */
+/*  bfnDeleteFaCuotCredito()  : Elimina Cuotas del Ciclo  antes de Cargar             */
+/* ******************************************************************************** */
+BOOL bfnDeleteFaCuotCredito (/*long lCodCicloFact*/ ARGSENTRADA stArgsEnt)
+{
+    char modulo[]   = "bfnDeleteFaCuotCredito";
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhCodCiclFact;
+        long lhRngIniClie = 0L;
+        long lhRngFinClie = 0L;
+    EXEC SQL END DECLARE SECTION;
+
+    lhCodCiclFact = stArgsEnt.lCodCiclFact  ;
+
+    vDTrazasLog  (modulo,"\n\t**(bfnDeleteFaCuotCredito) Eliminando Cuotas Cargadas...", LOG03);
+
+    if(stArgsEnt.bIngRngClientes == FALSE)
+    {
+        EXEC SQL
+            DELETE
+            FROM    FA_CUOTCREDITO
+            WHERE   COD_CICLFACT = :lhCodCiclFact;
+    }
+    else
+    {
+        lhRngIniClie = stArgsEnt.lClienteIni;
+        lhRngFinClie = stArgsEnt.lClienteFin;
+
+        EXEC SQL
+            DELETE
+            FROM    FA_CUOTCREDITO
+            WHERE   COD_CICLFACT = :lhCodCiclFact
+            AND     COD_CLIENTE BETWEEN :lhRngIniClie  AND :lhRngFinClie;
+    }
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo, " en Delete en FA_CUOTCREDITO **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        vDTrazasLog  (modulo, " en Delete en FA_CUOTCREDITO **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/***************************** Fin bfnDeleteFaCuotCredito ****************************/
+
+/* ******************************************************************************** */
+/*  bCargaCuotasClienteCartera()  : Carga Cuotas del Cliente en Memoria                    */
+/* ******************************************************************************** */
+
+BOOL bCargaCuotasClienteCartera(long lCodCiclFact, long lCodCliente, CUOTCREDITOCLIENTE *pstCuotasCliente)
+{
+    char    modulo[]= "bCargaCuotasClienteCartera";
+    int     i=0;
+    int     iNumCuotas;
+
+    sprintf(gszFormatoFec, "YYYYMMDDHH24MISS");
+    giCero = 0;
+    glhCodCliente =  lCodCliente             ;
+    giMinNumCuotas=  MIN_CUOTASCREDITOCLIENTE;
+
+
+    vDTrazasLog  (modulo,"\t\t**(bCargaCuotasClienteCartera) Cargando Cuotas en Memoria Cliente [%ld]", LOG04,glhCodCliente);
+
+    EXEC SQL OPEN CURSOR_SELECT_CO_CARTERA ;
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n Error en SQL OPEN CURSOR_SELECT_CO_CARTERA"
+                             "\n [%d]  [%s]\n", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog(modulo,"\n << Error en SQL OPEN CURSOR_SELECT_CO_CARTERA>>",LOG05);
+        return  (FALSE);
+    }
+
+    EXEC SQL FETCH CURSOR_SELECT_CO_CARTERA INTO :glahNumSecuenci         ,
+                                                 :giahCodTipDocum         ,
+                                                 :glahCodVendedorAgente   ,
+                                                 :gszahLetra              ,
+                                                 :giahCodCentremi         ,
+                                                 :giahCodConcepto         ,
+                                                 :giahColumna             ,
+                                                 :giahNumCuota            ,
+                                                 :giahSecCuota            ,
+                                                 :giahIndFacturado        ,
+                                                 :gszahFecVencimie        ,
+                                                 :gszahNumFolioCTC        ,
+                                                 :gdahMtoCuota            ,
+                                                 :gszahFecCompra          ,
+                                                 :glahNum_Folio           ,
+                                                 :gszhPref_Plaza          ,
+                                                 :glahNumAbonado;
+
+    iNumCuotas = sqlca.sqlerrd[2];
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Select de Cuotas en CO_CARTERA [%s]",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Select de Cuotas en CO_CARTERA [%s]",LOG01,SQLERRM);
+        return (FALSE);
+    }
+    if( SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(modulo,"** Cantidad de Cuotas Exede Maximi Permitido [%d] > [%d]"
+                            ,LOG01,SQLROWS,MAX_CUOTASCREDITOCLIENTE);
+        vDTrazasLog  (modulo,"** Cantidad de Cuotas Exede Maximi Permitido [%d] > [%d]"
+                            ,LOG01,SQLROWS,MAX_CUOTASCREDITOCLIENTE);
+        return (FALSE);
+    }
+
+    EXEC SQL CLOSE CURSOR_SELECT_CO_CARTERA;
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n Error en SQL CLOSE CURSOR_SELECT_CO_CARTERA"
+                             "\n [%d]  [%s]\n", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog(modulo,"\n << Error en SQL CLOSE CURSOR_SELECT_CO_CARTERA>>",LOG05);
+        return  (FALSE);
+    }
+
+    for (i=0;i<iNumCuotas;i++)
+    {
+        pstCuotasCliente->iNumCuotasCliente++;
+        pstCuotasCliente->stRegCuota[i].lCodCliente         =   lCodCliente              ;
+        pstCuotasCliente->stRegCuota[i].lNumSecuenci        =   glahNumSecuenci        [i];
+        pstCuotasCliente->stRegCuota[i].iCodTipDocum        =   giahCodTipDocum        [i];
+        pstCuotasCliente->stRegCuota[i].lCodVendedorAgente  =   glahCodVendedorAgente  [i];
+        sprintf(pstCuotasCliente->stRegCuota[i].szLetra,"%.*s\0",gszahLetra      [i].len, gszahLetra      [i].arr);
+        pstCuotasCliente->stRegCuota[i].iCodCentremi        =   giahCodCentremi        [i];
+        pstCuotasCliente->stRegCuota[i].iCodConcepto        =   giahCodConcepto        [i];
+        pstCuotasCliente->stRegCuota[i].iColumna            =   giahColumna            [i];
+        pstCuotasCliente->stRegCuota[i].iNumCuota           =   giahNumCuota           [i];
+        pstCuotasCliente->stRegCuota[i].iSecCuota           =   giahSecCuota           [i];
+        pstCuotasCliente->stRegCuota[i].lCodCiclFact        =   lCodCiclFact             ;
+        pstCuotasCliente->stRegCuota[i].iIndFacturado       =   giahIndFacturado       [i];
+        sprintf(pstCuotasCliente->stRegCuota[i].szFecVencimie,"%.*s\0",gszahFecVencimie[i].len, gszahFecVencimie[i].arr);
+        sprintf(pstCuotasCliente->stRegCuota[i].szNumFolioCTC,"%.*s\0",gszahNumFolioCTC[i].len, gszahNumFolioCTC[i].arr);
+        pstCuotasCliente->stRegCuota[i].dMtoCuota           =   gdahMtoCuota           [i];
+        sprintf(pstCuotasCliente->stRegCuota[i].szFecCompra  ,"%.*s\0",gszahFecCompra  [i].len, gszahFecCompra  [i].arr);
+        pstCuotasCliente->stRegCuota[i].lNum_Folio          =   glahNum_Folio          [i];
+        sprintf(pstCuotasCliente->stRegCuota[i].szPrefPlaza,"%.*s\0",gszhPref_Plaza[i].len, gszhPref_Plaza[i].arr);
+        pstCuotasCliente->stRegCuota[i].lNumAbonado         =   glahNumAbonado         [i];    /* 20051123 */
+    }
+    vDTrazasLog  (modulo,"\t\t\t**Total Cuotas [%d]", LOG05,iNumCuotas);
+    return (TRUE);
+}/***************************** Fin bCargaCuotasClienteCartera  ****************************/
+
+
+/* ******************************************************************************** */
+/*  bfnClienteDeBajaInter()  : Valida Si Cliente esta de Baja                            */
+/* ******************************************************************************** */
+
+BOOL bfnClienteDeBajaInter(long lCodCiclFact, long lCodCliente, CUOTCREDITOCLIENTE *pstCuotasCliente)
+{
+    char modulo[]   = "bfnClienteDeBajaInter" ;
+
+    CUOTCREDITOCLIENTE stmpCuotas           ;
+    int i,j;
+
+    EXEC SQL BEGIN DECLARE SECTION          ;
+        int     ihAltaCliente               ;
+    EXEC SQL END DECLARE SECTION            ;
+
+    vDTrazasLog  (modulo,   "\t\t**(bfnClienteDeBajaInter) Valida Si Cliente esta de Baja "
+                            "\n\t\t\t**  Ciclo Facturacion  [%ld]"
+                            "\n\t\t\t**  Cliente            [%ld]"
+                            "\n\t\t\t**  Ind_Actuac         [%d]"
+                            ,LOG04 ,lCodCiclFact, lCodCliente, NORMAL);
+
+    /** CO-0062 21.04.2006 **/
+
+    glhCodCliente    = lCodCliente ;
+    gihIndActuacAlta = NORMAL      ;
+    giUno            = 1;
+    giCero           = 0;
+
+    /** CO-0062 21.04.2006 **/
+
+    EXEC SQL OPEN CURSOR_INFACCEL;
+
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n Error en SQL OPEN CURSOR_INFACCEL"
+                             "\n [%d]  [%s]\n", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog(modulo,"\n << Error en SQL OPEN CURSOR_INFACCEL>>",LOG05);
+        return  (FALSE);
+    }
+
+    EXEC SQL FETCH CURSOR_INFACCEL INTO :ihAltaCliente ;
+
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n Error en SQL FETCH CURSOR_INFACCEL"
+                             "\n [%d]  [%s]\n", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog(modulo,"\n << Error en SQL FETCH CURSOR_INFACCEL>>",LOG05);
+        return  (FALSE);
+    }
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Select de Abonados en INFACCEL-INFACBEEP [%s]",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Select de Abonados en INFACCEL-INFACBEEP [%s]",LOG01,SQLERRM);
+        return (FALSE);
+    }
+
+    EXEC SQL CLOSE CURSOR_INFACCEL;
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo,"\n Error en SQL CLOSE CURSOR_INFACCEL"
+                             "\n [%d]  [%s]\n", LOG05,SQLCODE,SQLERRM);
+        vDTrazasLog(modulo,"\n << Error en SQL CLOSE CURSOR_INFACCEL>>",LOG05);
+        return  (FALSE);
+    }
+
+    memset(&stmpCuotas,0,sizeof(CUOTCREDITOCLIENTE));
+
+    vDTrazasLog  (modulo,"\t\t\t**(bfnClienteDeBajaInter) Cliente Con [%d] Abonados de Alta [%s]"
+                        ,LOG04,ihAltaCliente,stCiclo.szFecEmision);
+
+    if (ihAltaCliente > 0)      /*  Cliente con al menos un Abonado de Aalta    */
+    {                           /*  Eliminar Registros de Cuotas No Vencidas    */
+        for (i=0;i<pstCuotasCliente->iNumCuotasCliente;i++)
+        {
+            vDTrazasLog  (modulo,"\t\t\t\ti=[%d], pstCuotasCliente->stRegCuota[i].szFecVencimie :[%s] , stCiclo.szFecEmision:[%s]"
+                                ,LOG05,i,pstCuotasCliente->stRegCuota[i].szFecVencimie, stCiclo.szFecEmision);
+            if (strcmp(pstCuotasCliente->stRegCuota[i].szFecVencimie,stCiclo.szFecEmision) <= 0)
+            {
+                vDTrazasLog  (modulo,"\t\t\t\ti=[%d] => [%s] <= [%s]"
+                                    ,LOG05,i,pstCuotasCliente->stRegCuota[i].szFecVencimie, stCiclo.szFecEmision);
+                j=stmpCuotas.iNumCuotasCliente;
+                stmpCuotas.stRegCuota[j].lCodCliente            = pstCuotasCliente->stRegCuota[i].lCodCliente         ;
+                stmpCuotas.stRegCuota[j].lNumSecuenci           = pstCuotasCliente->stRegCuota[i].lNumSecuenci        ;
+                stmpCuotas.stRegCuota[j].iCodTipDocum           = pstCuotasCliente->stRegCuota[i].iCodTipDocum        ;
+                stmpCuotas.stRegCuota[j].lCodVendedorAgente     = pstCuotasCliente->stRegCuota[i].lCodVendedorAgente  ;
+                strcpy(stmpCuotas.stRegCuota[j].szLetra         , pstCuotasCliente->stRegCuota[i].szLetra            );
+                stmpCuotas.stRegCuota[j].iCodCentremi           = pstCuotasCliente->stRegCuota[i].iCodCentremi        ;
+                stmpCuotas.stRegCuota[j].iCodConcepto           = pstCuotasCliente->stRegCuota[i].iCodConcepto        ;
+                stmpCuotas.stRegCuota[j].iColumna               = pstCuotasCliente->stRegCuota[i].iColumna            ;
+                stmpCuotas.stRegCuota[j].iNumCuota              = pstCuotasCliente->stRegCuota[i].iNumCuota           ;
+                stmpCuotas.stRegCuota[j].iSecCuota              = pstCuotasCliente->stRegCuota[i].iSecCuota           ;
+                stmpCuotas.stRegCuota[j].lCodCiclFact           = pstCuotasCliente->stRegCuota[i].lCodCiclFact        ;
+                stmpCuotas.stRegCuota[j].iIndFacturado          = pstCuotasCliente->stRegCuota[i].iIndFacturado       ;
+                strcpy(stmpCuotas.stRegCuota[j].szFecVencimie   , pstCuotasCliente->stRegCuota[i].szFecVencimie      );
+                strcpy(stmpCuotas.stRegCuota[j].szNumFolioCTC   , pstCuotasCliente->stRegCuota[i].szNumFolioCTC      );
+                stmpCuotas.stRegCuota[j].dMtoCuota              = pstCuotasCliente->stRegCuota[i].dMtoCuota           ;
+                strcpy(stmpCuotas.stRegCuota[j].szFecCompra     , pstCuotasCliente->stRegCuota[i].szFecCompra        );
+                stmpCuotas.stRegCuota[j].lNum_Folio             = pstCuotasCliente->stRegCuota[i].lNum_Folio          ;
+                strcpy(stmpCuotas.stRegCuota[j].szPrefPlaza     , pstCuotasCliente->stRegCuota[i].szPrefPlaza        );
+                stmpCuotas.stRegCuota[j].lNumAbonado            = pstCuotasCliente->stRegCuota[i].lNumAbonado         ;
+                stmpCuotas.iNumCuotasCliente++;
+            }
+        }
+        /*** CO-0062 21.04.2006
+             Si el cliente no tiene cuotas vencidas o por vencer en el ciclo se ingresa un registro dummy
+             a la FA_CUOTCREDITO para mostrar el registro A1250 **/
+        if (stmpCuotas.iNumCuotasCliente == 0)
+        {
+            j=stmpCuotas.iNumCuotasCliente;
+            stmpCuotas.stRegCuota[j].lCodCliente            = pstCuotasCliente->stRegCuota[0].lCodCliente         ;
+            stmpCuotas.stRegCuota[j].lNumSecuenci           = pstCuotasCliente->stRegCuota[0].lNumSecuenci        ;
+            stmpCuotas.stRegCuota[j].iCodTipDocum           = pstCuotasCliente->stRegCuota[0].iCodTipDocum        ;
+            stmpCuotas.stRegCuota[j].lCodVendedorAgente     = pstCuotasCliente->stRegCuota[0].lCodVendedorAgente  ;
+            strcpy(stmpCuotas.stRegCuota[j].szLetra         , pstCuotasCliente->stRegCuota[0].szLetra            );
+            stmpCuotas.stRegCuota[j].iCodCentremi           = pstCuotasCliente->stRegCuota[0].iCodCentremi        ;
+            stmpCuotas.stRegCuota[j].iCodConcepto           = pstCuotasCliente->stRegCuota[0].iCodConcepto        ;
+            stmpCuotas.stRegCuota[j].iColumna               =  -1                                                 ;
+            stmpCuotas.stRegCuota[j].iNumCuota              = pstCuotasCliente->stRegCuota[0].iNumCuota           ;
+            stmpCuotas.stRegCuota[j].lCodCiclFact           = pstCuotasCliente->stRegCuota[0].lCodCiclFact        ;
+            stmpCuotas.stRegCuota[j].iIndFacturado          = 2                                                   ;
+            strcpy(stmpCuotas.stRegCuota[j].szFecVencimie   , stCiclo.szFecDesdeLlam                             );
+            strcpy(stmpCuotas.stRegCuota[j].szNumFolioCTC   , pstCuotasCliente->stRegCuota[0].szNumFolioCTC      );
+            stmpCuotas.stRegCuota[j].dMtoCuota              = 0                                                   ;
+            strcpy(stmpCuotas.stRegCuota[j].szFecCompra     , pstCuotasCliente->stRegCuota[0].szFecCompra        );
+            stmpCuotas.stRegCuota[j].lNum_Folio             = pstCuotasCliente->stRegCuota[0].lNum_Folio          ;
+            strcpy(stmpCuotas.stRegCuota[j].szPrefPlaza     , pstCuotasCliente->stRegCuota[0].szPrefPlaza        );
+            stmpCuotas.stRegCuota[j].lNumAbonado            = pstCuotasCliente->stRegCuota[0].lNumAbonado         ;
+            stmpCuotas.iNumCuotasCliente++;
+        }
+        /*** CO-0062 21.04.2006 ***/
+        memcpy(pstCuotasCliente , &stmpCuotas , sizeof(CUOTCREDITOCLIENTE));
+    }
+    return (1);
+}/*****************************   Fin bfnClienteDeBajaInter   ****************************/
+
+
+
+/* ******************************************************************************** */
+/*  bfnInsertCuotasFaCuotCredito()  : Inserta Cuotas del Cliente FA_CUOTCREDITO           */
+/* ******************************************************************************** */
+
+BOOL bfnInsertCuotasFaCuotCredito(CUOTCREDITOCLIENTE pstCuotasCliente)
+{
+    char modulo[]   = "bfnInsertCuotasFaCuotCredito";
+    int  i = 0;
+    int	iSecAux=0;
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        long    lhCodCliente       ;
+        long    lhNumSecuenci      ;
+        int     ihCodTipDocum      ;
+        long    lhCodVendedorAgente;
+        char    szhLetra        [2];    EXEC SQL VAR szhLetra       IS STRING (2);
+        int     ihCodCentremi      ;
+        int     ihCodConcepto      ;
+        int     ihColumna          ;
+        int     ihNumCuota         ;
+        int     ihSecCuota         ;
+        long    lhCodCiclFact      ;
+        int     ihIndFacturado     ;
+        char    szhFecVencimie [20];    EXEC SQL VAR szhFecVencimie IS STRING (20);
+        char    szhNumFolioCTC [12];    EXEC SQL VAR szhNumFolioCTC IS STRING (12);
+        double  dhMtoCuota         ;
+        char    szhFecCompra   [20];    EXEC SQL VAR szhFecCompra   IS STRING (20);
+        int     ihIndImpreso       ;
+        long    ihIndOrdentotal    ;
+        long    lhNum_Folio        ;
+        /* char    szhPref_Plaza   [11];    EXEC SQL VAR szhPref_Plaza   IS STRING (11); */ /*PGG - inc 215022 - 01-07-2022 */
+        char    szhPref_Plaza   [26];    EXEC SQL VAR szhPref_Plaza   IS STRING (26); /*PGG - inc 215022 - 01-07-2022 */
+        long    lhNumAbonado= 0L    ;
+    EXEC SQL END DECLARE SECTION    ;
+
+    vDTrazasLog  (modulo,"\t\t**(bfnInsertCuotasFaCuotCredito) Inserta Cuotas de en FA_CUOTCREDITO [%d]"
+                        , LOG04, pstCuotasCliente.iNumCuotasCliente);
+
+
+    /* PGG SOPORTE CO-084 28-04-2006 */
+    if (pstCuotasCliente.iNumCuotasCliente > 0)
+    {
+        iSecAux = pstCuotasCliente.stRegCuota[0].iSecCuota;
+        for (i=0;i<pstCuotasCliente.iNumCuotasCliente;i++)
+        {
+             if (pstCuotasCliente.stRegCuota[i].iSecCuota > iSecAux)
+                  iSecAux = pstCuotasCliente.stRegCuota[i].iSecCuota;
+        }
+    }
+
+
+    for (i=0;i<pstCuotasCliente.iNumCuotasCliente;i++)
+    {
+        lhCodCliente            =pstCuotasCliente.stRegCuota[i].lCodCliente         ;
+        lhNumSecuenci           =pstCuotasCliente.stRegCuota[i].lNumSecuenci        ;
+        ihCodTipDocum           =pstCuotasCliente.stRegCuota[i].iCodTipDocum        ;
+        lhCodVendedorAgente     =pstCuotasCliente.stRegCuota[i].lCodVendedorAgente  ;
+        strcpy(szhLetra         ,pstCuotasCliente.stRegCuota[i].szLetra             );
+        ihCodCentremi           =pstCuotasCliente.stRegCuota[i].iCodCentremi        ;
+        ihCodConcepto           =pstCuotasCliente.stRegCuota[i].iCodConcepto        ;
+        ihColumna               =pstCuotasCliente.stRegCuota[i].iColumna            ;
+        ihNumCuota              =pstCuotasCliente.stRegCuota[i].iNumCuota           ;
+        ihSecCuota              =pstCuotasCliente.stRegCuota[i].iSecCuota           ;
+        lhCodCiclFact           =pstCuotasCliente.stRegCuota[i].lCodCiclFact        ;
+        ihIndFacturado          =pstCuotasCliente.stRegCuota[i].iIndFacturado       ;
+
+	/* PGG SOPORTE CO-084 28-04-2006 */
+        if (iSecAux == pstCuotasCliente.stRegCuota[i].iSecCuota)
+            strcpy(szhFecVencimie   ,stCiclo.szFecVencimie);
+        else
+            strcpy(szhFecVencimie   ,pstCuotasCliente.stRegCuota[i].szFecVencimie       );
+
+        strcpy(szhNumFolioCTC   ,pstCuotasCliente.stRegCuota[i].szNumFolioCTC       );
+        dhMtoCuota              =pstCuotasCliente.stRegCuota[i].dMtoCuota           ;
+        strcpy(szhFecCompra     ,pstCuotasCliente.stRegCuota[i].szFecCompra         );
+        lhNum_Folio             =pstCuotasCliente.stRegCuota[i].lNum_Folio          ;
+        strcpy(szhPref_Plaza    ,pstCuotasCliente.stRegCuota[i].szPrefPlaza         );/*PHB:agregue pref_plaza*/
+        lhNumAbonado            =pstCuotasCliente.stRegCuota[i].lNumAbonado         ; /* 20051123 */
+        /** CO-0062 21.04.2006 **/
+        if (ihIndFacturado == 2) /* Si el registro corresponde a DUMMY */
+        	ihIndImpreso 		= 2;
+        else
+	        ihIndImpreso        = 0;
+
+        ihIndOrdentotal         = 0;
+
+        vDTrazasLog  (modulo,"\n**Registro de Cuotas  [%d]"
+                             "\n**lahIndOrdenTotal    [%d] => [%ld]   "
+                             "\n**lahCodCliente       [%d] => [%ld]   "
+                             "\n**lahNumSecuenci      [%d] => [%ld]   "
+                             "\n**iahCodTipDocum      [%d] => [%d]    "
+                             "\n**lahCodVendedorAgente[%d] => [%ld]   "
+                             "\n**szahLetra           [%d] => [%s]    "
+                             "\n**iahCodCentremi      [%d] => [%d]    "
+                             "\n**iahCodConcepto      [%d] => [%d]    "
+                             "\n**iahColumna          [%d] => [%d]    "
+                             "\n**iahNumCuota         [%d] => [%d]    "
+                             "\n**iahSecCuota         [%d] => [%d]    "
+                             "\n**lahCodCiclFact      [%d] => [%ld]   "
+                             "\n**iahIndFacturado     [%d] => [%d]    "
+                             "\n**szahFecVencimie     [%d] => [%s]    "
+                             "\n**szahNumFolioCTC     [%d] => [%s]    "
+                             "\n**dahMtoCuota         [%d] => [%14.4f]"
+                             "\n**szahFecCompra       [%d] => [%s]    "
+                             "\n**lhNum_Folio         [%d] => [%ld]   "
+                             "\n**szhPref_Plaza       [%d] => [%s]    "
+                             "\n**lhNumAbonado        [%d] => [%ld]   "
+                             "\n**ihIndImpreso        [%d] => [%d]    "
+                             ,LOG05,i,i,ihIndOrdentotal
+                             ,i,lhCodCliente
+                             ,i,lhNumSecuenci
+                             ,i,ihCodTipDocum
+                             ,i,lhCodVendedorAgente
+                             ,i,szhLetra
+                             ,i,ihCodCentremi
+                             ,i,ihCodConcepto
+                             ,i,ihColumna
+                             ,i,ihNumCuota
+                             ,i,ihSecCuota
+                             ,i,lhCodCiclFact
+                             ,i,ihIndFacturado
+                             ,i,szhFecVencimie
+                             ,i,szhNumFolioCTC
+                             ,i,dhMtoCuota
+                             ,i,szhFecCompra
+                             ,i,lhNum_Folio
+                             ,i,szhPref_Plaza
+                             ,i,lhNumAbonado
+                             ,i,ihIndImpreso);
+
+        EXEC SQL EXECUTE SQL_INSERT_FA_CUOTCREDITO USING :ihIndOrdentotal     ,
+                                                         :lhCodCliente        ,
+                                                         :lhNumSecuenci       ,
+                                                         :ihCodTipDocum       ,
+                                                         :lhCodVendedorAgente ,
+                                                         :szhLetra            ,
+                                                         :ihCodCentremi       ,
+                                                         :ihCodConcepto       ,
+                                                         :ihColumna           ,
+                                                         :ihNumCuota          ,
+                                                         :ihSecCuota          ,
+                                                         :lhCodCiclFact       ,
+                                                         :ihIndFacturado      ,
+                                                         :szhFecVencimie      ,
+                                                         :szhNumFolioCTC      ,
+                                                         :dhMtoCuota          ,
+                                                         :szhFecCompra        ,
+                                                         :ihIndImpreso        ,
+                                                         :lhNum_Folio         ,
+                                                         :szhPref_Plaza       ,
+                                                         :lhNumAbonado        ;
+
+        if(SQLCODE != SQLOK)
+        {
+            vDTrazasError(modulo," en Insert de Cuotas en FA_CUOTCREDITO [%s]",LOG01,SQLERRM);
+            vDTrazasLog  (modulo," en Insert de Cuotas en FA_CUOTCREDITO [%s]",LOG01,SQLERRM);
+            return (FALSE);
+        }
+    }
+    return (TRUE);
+}/***************************** Fin bfnInsertCuotasFaCuotCredito **************************/
+
+/* ******************************************************************************** */
+/*  bprocHisCuota()  : Historico de Cuotas                                          */
+/* ******************************************************************************** */
+BOOL bprocHisCuota(ARGSENTRADA stArgsEnt)
+{
+    char        modulo[]   = "bprocHisCuota";
+    char        szFecha[20]= ""             ;
+    int         iSqlCodeInt= SQLOK          ;
+    CUOTCREDITO stCuotas                    ;
+
+    if (!bfnWrapperValidaTrazaProc(stArgsEnt.lCodCiclFact, iPROC_HISTCUOTAS, iIND_FACT_ENPROCESO))
+        return (FALSE);
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperValidaTrazaProc", LOG01);
+        return (FALSE);
+    }
+
+    bfnWrapperSelectTrazaProc (stArgsEnt.lCodCiclFact, iPROC_HISTCUOTAS, &stTrazaProc);
+    bPrintTrazaProc(stTrazaProc);
+
+    /********************************************************************************/
+    /********************************************************************************/
+    iSqlCodeInt = ifnOpenCuotasFaCuotCredito(stArgsEnt);
+    while ( iSqlCodeInt == SQLOK )
+    {
+        memset(&stCuotas,0,sizeof(CUOTCREDITO));
+        iSqlCodeInt = ifnFetchCuotaFaCuotCredito(&stCuotas);
+        if (iSqlCodeInt == SQLOK)
+        {
+            vDTrazasLog  (modulo,"\n\t** Procesando Cliente [%ld]",LOG03,stCuotas.lCodCliente);
+
+            if (stCuotas.iIndImpreso == IND_IMPRESO_OK)
+                if (!bfnUpdateCuotaCartera(stCuotas))
+                    return (FALSE);
+
+            if (!bfnInsertHistCuotasCiclo(stCuotas))
+                return (FALSE);
+
+            if (!bfnDeleteHistCuotasCiclo(stCuotas))
+                return (FALSE);
+        }
+    }
+
+    if (!bfnCloseCuotasFaCuotCredito())
+        return (FALSE);
+
+    if (!bfnSelectSysDate(szFecha))
+        return FALSE;
+
+    if (iSqlCodeInt != SQLNOTFOUND )
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szFecInicio,stArgsEnt.szHoraInicProc);
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Historico de Cuotas Termino con Error");
+    }
+    else
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+        strcpy(stTrazaProc.szFecInicio,stArgsEnt.szHoraInicProc);
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Historico de Cuotas Terminado OK");
+    }
+
+    bPrintTrazaProc(stTrazaProc);
+
+    if(!bfnWrapperUpdateTrazaProc(stTrazaProc))
+        return (FALSE);
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bfnWrapperUpdateTrazaProc", LOG01);
+        vDTrazasLog  (modulo," en Commit bfnWrapperUpdateTrazaProc", LOG01);
+        return FALSE;
+    }
+
+    return (TRUE);
+}/*********************************** Fin bprocHisCuota *****************************/
+
+
+
+
+
+/* ******************************************************************************** */
+/*  ifnOpenCuotasFaCuotCredito()  : Abre Cursor de Cuotas                         */
+/* ******************************************************************************** */
+int ifnOpenCuotasFaCuotCredito(ARGSENTRADA stArgsEnt)
+{
+    char modulo[]   = "ifnOpenCuotasFaCuotCredito";
+    EXEC SQL BEGIN DECLARE SECTION;
+        long lhCodCiclFact  = stArgsEnt.lCodCiclFact;
+        long lhRngIniClie   = stArgsEnt.lClienteIni;
+        long lhRngFinClie   = stArgsEnt.lClienteFin;
+        char szhSqlCad[2048]= "";
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo,"\n\t**(ifnOpenCuotasFaCuotCredito)  Cod_CiclFact [%ld]", LOG05,stArgsEnt.lCodCiclFact);
+
+    sprintf(szhSqlCad,  "SELECT  ROWID               ,           "
+                        "\n        COD_CLIENTE         ,         "
+                        "\n        NUM_SECUENCI        ,         "
+                        "\n        COD_TIPDOCUM        ,         "
+                        "\n        COD_VENDEDOR_AGENTE ,         "
+                        "\n        LETRA               ,         "
+                        "\n        COD_CENTREMI        ,         "
+                        "\n        COD_CONCEPTO        ,         "
+                        "\n        COLUMNA             ,         "
+                        "\n        NUM_CUOTA           ,         "
+                        "\n        SEC_CUOTA           ,         "
+                        "\n        COD_CICLFACT        ,         "
+                        "\n        IND_FACTURADO       ,         "
+                        "\n        FEC_VENCIMIE        ,         "
+                        "\n        NUM_FOLIOCTC        ,         "
+                        "\n        MTO_CUOTA           ,         "
+                        "\n        FEC_COMPRA          ,         "
+                        "\n        IND_IMPRESO         ,         "
+                        "\n        NUM_FOLIO       ,             "
+                        "\n        NVL(PREF_PLAZA, '0000000000') "
+                        "\nFROM    FA_CUOTCREDITO  A             "
+                        "\nWHERE   A.COD_CICLFACT  = :v1");
+
+    if(stArgsEnt.bIngRngClientes == TRUE)
+        strcat(szhSqlCad, "\nAND A.COD_CLIENTE BETWEEN :v2 AND :v3");
+
+    vDTrazasLog  (modulo,"\n(II)\t**(ifnOpenCuotasFaCuotCredito)  Consulta SQL:\n[%s]", LOG05,szhSqlCad);
+
+    EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT = 'yyyymmddhh24miss';
+
+    EXEC SQL PREPARE sql_stmt_cuot_credito FROM :szhSqlCad;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo, " en PREPARE sql_stmt_cuot_credito FROM :szhSqlCad **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        vDTrazasLog  (modulo, " PREPARE sql_stmt_cuot_credito FROM :szhSqlCad **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    }
+
+    EXEC SQL DECLARE cCursor_Cuotas_CuotCredito CURSOR FOR  sql_stmt_cuot_credito;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo, " DECLARE cCursor_Cuotas_CuotCredito CURSOR FOR  sql_stmt_cuot_credito **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        vDTrazasLog  (modulo, " DECLARE cCursor_Cuotas_CuotCredito CURSOR FOR  sql_stmt_cuot_credito **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    }
+
+    if(stArgsEnt.bIngRngClientes == FALSE)
+        EXEC SQL OPEN cCursor_Cuotas_CuotCredito USING :lhCodCiclFact;
+    else
+        EXEC SQL OPEN cCursor_Cuotas_CuotCredito USING :lhCodCiclFact, :lhRngIniClie,:lhRngFinClie;
+
+    if(SQLCODE == SQLNOTFOUND)
+    {
+        vDTrazasLog  (modulo," ** No Existen Datos en cCursor_Cuotas_CuotCredito **",LOG01);
+        vDTrazasError(modulo," ** No Existen Datos en cCursor_Cuotas_CuotCredito **",LOG01);
+        return (SQLCODE);
+    }
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo, " en Open cCursor_Cuotas_CuotCredito **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        vDTrazasLog  (modulo, " en Open cCursor_Cuotas_CuotCredito **"
+                              "\n\t\t=> Error [%s] **",LOG01,SQLERRM);
+        return (SQLCODE);
+    }
+    return (SQLCODE);
+}/************************* Fin ifnOpenCuotasFaCuotCredito **************************/
+
+
+
+
+/* ******************************************************************************** */
+/*  ifnFetchCuotaFaCuotCredito()  : Fetch de Cuota                                  */
+/* ******************************************************************************** */
+int ifnFetchCuotaFaCuotCredito (CUOTCREDITO *pstCuotas)
+{
+    char modulo[]   = "ifnFetchCuotaFaCuotCredito";
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        char    szhRowid            [20]="" ;   EXEC SQL VAR szhRowid       IS STRING(20);
+        long    lhCodCliente                ;
+        long    lhNumSecuenci               ;
+        int     ihCodTipDocum               ;
+        long    lhCodVendedorAgente         ;
+        char    szhLetra            [2]=""  ;   EXEC SQL VAR szhLetra       IS STRING(2);
+        int     ihCodCentremi               ;
+        int     ihCodConcepto               ;
+        int     ihColumna                   ;
+        int     ihNumCuota                  ;
+        int     ihSecCuota                  ;
+        long    ihCodCiclFact               ;
+        int     ihIndFacturado              ;
+        char    szhFecVencimie      [20]="" ;   EXEC SQL VAR szhFecVencimie IS STRING(20);
+        char    szhNumFolioCTC      [12]="" ;   EXEC SQL VAR szhNumFolioCTC IS STRING(12);
+        double  dhMtoCuota                  ;
+        char    szhFecCompra        [20]="" ;   EXEC SQL VAR szhFecCompra   IS STRING(20);
+        int     ihIndImpreso                ;
+        long    lhNum_Folio                 ;
+        /* char    szhPref_Plaza       [11] ;*/ /*PGG - inc 215022 - 01-07-2022 */
+        char    szhPref_Plaza       [26] ;/*PGG - inc 215022 - 01-07-2022 */
+    EXEC SQL END DECLARE SECTION    ;
+
+    EXEC SQL FETCH cCursor_Cuotas_CuotCredito INTO
+            :szhRowid           ,
+            :lhCodCliente       ,
+            :lhNumSecuenci      ,
+            :ihCodTipDocum      ,
+            :lhCodVendedorAgente,
+            :szhLetra           ,
+            :ihCodCentremi      ,
+            :ihCodConcepto      ,
+            :ihColumna          ,
+            :ihNumCuota         ,
+            :ihSecCuota         ,
+            :ihCodCiclFact      ,
+            :ihIndFacturado     ,
+            :szhFecVencimie     ,
+            :szhNumFolioCTC     ,
+            :dhMtoCuota         ,
+            :szhFecCompra       ,
+            :ihIndImpreso       ,
+            :lhNum_Folio        ,
+            :szhPref_Plaza  ;/*PHB:agregue pref_plaza*/
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Fecth Cursor cCursor_Cuotas_CuotCredito %s ",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Fecth Cursor cCursor_Cuotas_CuotCredito %s ",LOG01,SQLERRM);
+    }
+
+    if( SQLCODE == SQLOK )
+    {
+        strcpy(pstCuotas->szRowId       ,   szhRowid            );
+        pstCuotas->lCodCliente          =   lhCodCliente        ;
+        pstCuotas->lNumSecuenci         =   lhNumSecuenci       ;
+        pstCuotas->iCodTipDocum         =   ihCodTipDocum       ;
+        pstCuotas->lCodVendedorAgente   =   lhCodVendedorAgente ;
+        strcpy(pstCuotas->szLetra       ,   szhLetra            );
+        pstCuotas->iCodCentremi         =   ihCodCentremi       ;
+        pstCuotas->iCodConcepto         =   ihCodConcepto       ;
+        pstCuotas->iColumna             =   ihColumna           ;
+        pstCuotas->iNumCuota            =   ihNumCuota          ;
+        pstCuotas->iSecCuota            =   ihSecCuota          ;
+        pstCuotas->lCodCiclFact         =   ihCodCiclFact       ;
+        pstCuotas->iIndFacturado        =   ihIndFacturado      ;
+        strcpy(pstCuotas->szFecVencimie ,   szhFecVencimie      );
+        strcpy(pstCuotas->szNumFolioCTC ,   szhNumFolioCTC      );
+        pstCuotas->dMtoCuota            =   dhMtoCuota          ;
+        strcpy(pstCuotas->szFecCompra   ,   szhFecCompra        );
+        pstCuotas->iIndImpreso          =   ihIndImpreso        ;
+        pstCuotas->lNum_Folio           =   lhNum_Folio         ;
+        strcpy(pstCuotas->szPrefPlaza   ,   szhPref_Plaza       );/*PHB:agregue pref_plaza*/
+    }
+    return (SQLCODE);
+}/************************* Fin ifnFetchCuotaFaCuotCredito  *************************/
+
+
+
+
+/* ******************************************************************************** */
+/*  bfnCloseCuotasFaCuotCredito()  : Cierra Cursor de Cuotas                        */
+/* ******************************************************************************** */
+BOOL bfnCloseCuotasFaCuotCredito(void)
+{
+    char modulo[]   = "bfnCloseCuotasFaCuotCredito";
+
+    EXEC SQL CLOSE cCursor_Cuotas_CuotCredito;
+
+    if ( SQLCODE != SQLOK )
+    {
+        vDTrazasLog  (modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        vDTrazasError(modulo," en Close de Cursor  : %d  %s **",LOG01,SQLCODE,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/************************* Fin bfnCloseCuotasFaCuotCredito *************************/
+
+
+
+
+/* ******************************************************************************** */
+/*  bfnUpdateCuotaCartera()  : Update en Cartera de Cuotas Informadas               */
+/* ******************************************************************************** */
+BOOL bfnUpdateCuotaCartera(CUOTCREDITO pstCuotas)
+{
+    char modulo[]   = "bfnUpdateCuotaCartera";
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        long    lhCodCliente                ;
+        long    lhNumSecuenci               ;
+        int     ihCodTipDocum               ;
+        long    lhCodVendedorAgente         ;
+        char    szhLetra            [2]=""  ;   EXEC SQL VAR szhLetra           IS STRING(2);
+        int     ihCodCentremi               ;
+        int     ihCodConcepto               ;
+        int     ihColumna                   ;
+        int     ihIndFacturado              ;
+        char    szhNumFolio         [12]    ;   EXEC SQL VAR szhNumFolio        IS STRING(12);
+        /* char    szhPrefPlaza        [11]    ; */ /*PGG - inc 215022 - 01-07-2022 */
+        char    szhPrefPlaza        [26]    ;/*PGG - inc 215022 - 01-07-2022 */
+        char    szhFecVencimien     [20]    ;   EXEC SQL VAR szhFecVencimien    IS STRING(20);
+    EXEC SQL END DECLARE SECTION    ;
+
+
+    lhCodCliente            =   pstCuotas.lCodCliente       ;
+    lhNumSecuenci           =   pstCuotas.lNumSecuenci      ;
+    ihCodTipDocum           =   pstCuotas.iCodTipDocum      ;
+    lhCodVendedorAgente     =   pstCuotas.lCodVendedorAgente;
+    strcpy(szhLetra         ,   pstCuotas.szLetra           );
+    ihCodCentremi           =   pstCuotas.iCodCentremi      ;
+    ihCodConcepto           =   pstCuotas.iCodConcepto      ;
+    ihColumna               =   pstCuotas.iColumna          ;
+    ihIndFacturado          =   IND_IMPRESO_OK              ;
+    strcpy(szhNumFolio      ,   pstCuotas.szNumFolioCTC     );
+    strcpy(szhPrefPlaza     ,   pstCuotas.szPrefPlaza       );/*PHB:agregue pref_plaza*/
+    strcpy(szhFecVencimien  ,   pstCuotas.szFecVencimie     );
+
+    vDTrazasLog  (modulo,"\t\t**(bfnUpdateCuotaCartera) Update Cuota Informada en Co_Cartera ", LOG03);
+
+    EXEC SQL EXECUTE SQL_UPDATE_CO_CARTERA USING :ihIndFacturado        ,
+                                                 :szhNumFolio           ,
+                                                 :szhFecVencimien       ,
+                                                 :lhCodCliente          ,
+                                                 :lhNumSecuenci         ,
+                                                 :ihCodTipDocum         ,
+                                                 :lhCodVendedorAgente   ,
+                                                 :szhLetra              ,
+                                                 :ihCodCentremi         ,
+                                                 :ihCodConcepto         ,
+                                                 :ihColumna             ;
+
+
+    if(SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Update Co_Cartera [%s]",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Update Co_Cartera [%s]",LOG01,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}
+
+/* ******************************************************************************** */
+/*  bfnInsertHistCuotasCiclo()  : Inserta Registros de Cuotas en Historico          */
+/* ******************************************************************************** */
+BOOL bfnInsertHistCuotasCiclo(CUOTCREDITO pstCuotas)
+{
+    char modulo[]   = "bfnInsertHistCuotasCiclo";
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        char    szhRowid            [20]="" ;   EXEC SQL VAR szhRowid       IS STRING(20);
+    EXEC SQL END DECLARE SECTION    ;
+
+    strcpy(szhRowid,pstCuotas.szRowId);
+
+    vDTrazasLog  (modulo,"\t\t**(bfnInsertHistCuotasCiclo) Inserta Cuotas en FA_HISTCUOTCREDITO", LOG03);
+
+    EXEC SQL EXECUTE SQL_INSERT_FA_HISTCUOTCREDITO USING :szhRowid;
+
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Insert de Cuotas en FA_HISTCUOTCREDITO [%s]",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Insert de Cuotas en FA_HISTCUOTCREDITO [%s]",LOG01,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/*************************** Fin bfnInsertHistCuotasCiclo **************************/
+
+
+/* ******************************************************************************** */
+/*  bfnDeleteHistCuotasCiclo()  : Elimina Registros de Cuotas                       */
+/* ******************************************************************************** */
+BOOL bfnDeleteHistCuotasCiclo (CUOTCREDITO pstCuotas)
+{
+    char modulo[]   = "bfnDeleteHistCuotasCiclo";
+
+    EXEC SQL BEGIN DECLARE SECTION  ;
+        char    szhRowid            [20]="" ;   EXEC SQL VAR szhRowid       IS STRING(20);
+    EXEC SQL END DECLARE SECTION    ;
+
+    strcpy(szhRowid,pstCuotas.szRowId);
+
+    vDTrazasLog  (modulo,"\t\t**(bfnDeleteHistCuotasCiclo) Elimina Cuotas de FA_CUOTCREDITO", LOG03);
+
+    EXEC SQL EXECUTE SQL_DELETE_FA_CUOTCREDITO USING :szhRowid;
+
+    if( SQLCODE != SQLNOTFOUND && SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Delete de Cuotas en FA_CUOTCREDITO [%s]",LOG01,SQLERRM);
+        vDTrazasLog  (modulo," en Delete de Cuotas en FA_CUOTCREDITO [%s]",LOG01,SQLERRM);
+        return (FALSE);
+    }
+    return (TRUE);
+}/********************************* Fin bfnDeleteHistCuotasCiclo ************************/
+
+/* ******************************************************************************** */
+/*  bprocCargaUltimoPago()  : Validacion Package                                    */
+/* ******************************************************************************** */
+BOOL bprocCargaUltimoPago(ARGSENTRADA stArgsEntrada )
+{
+    char        modulo[]   = "bprocCargaUltimoPago";
+    char        szFecha[20]= ""             ;
+    /********************************************************************************/
+    EXEC SQL BEGIN DECLARE SECTION;
+    char szResultado_fn[1024];
+    long lhCodCiclFact;
+    long lhRngIniClie      = 0L;
+    long lhRngFinClie      = 0L;
+    int  ihIngrRngClientes = 0;
+    EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog  (modulo,"(bprocCargaUltimoPago) Parametros de Entrada:"
+                         "\n\t stArgsEntrada.lCodCiclFact    :[%ld]"
+                         "\n\t stArgsEntrada.lClienteIni     :[%ld]"
+                         "\n\t stArgsEntrada.lClienteFin     :[%ld]"
+                         "\n\t stArgsEntrada.bIngRngClientes :[%d]"
+                        , LOG05
+                        , stArgsEntrada.lCodCiclFact
+                        , stArgsEntrada.lClienteIni
+                        , stArgsEntrada.lClienteFin
+                        , stArgsEntrada.bIngRngClientes);
+
+
+    lhCodCiclFact     =  stArgsEntrada.lCodCiclFact;     /* Ciclo de facturacion */
+    lhRngIniClie      =  stArgsEntrada.lClienteIni;      /* Rango inicial de clientes */
+    lhRngFinClie      =  stArgsEntrada.lClienteFin;      /* Rango final de clientes   */
+
+    ihIngrRngClientes  = (stArgsEntrada.bIngRngClientes == TRUE)?1:0;
+
+    /*Borrado de tabla  */
+
+    EXEC SQL
+        DELETE CO_ULTPAGO_TT
+        WHERE ((COD_CLIENTE BETWEEN :lhRngIniClie AND :lhRngFinClie) OR (1 <> :ihIngrRngClientes));
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasLog  (modulo,"(bprocCargaUltimoPago) Atencion: SQLCODE !=SQLOK en EXEC SQL DELETE CO_ULTPAGO_TT"
+                             "\n\t\t sqlca.sqlcode: [%d]"
+                            , LOG03
+                            , SQLCODE);
+    }
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bprocCargaUltimoPago", LOG01);
+        vDTrazasLog  (modulo," en Commit bprocCargaUltimoPago", LOG01);
+        return FALSE;
+    }
+
+    szResultado_fn[0] = '\0';
+
+    EXEC SQL EXECUTE
+        BEGIN
+         :szResultado_fn := CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN(:lhCodCiclFact, :ihIngrRngClientes, :lhRngIniClie, :lhRngFinClie);
+      END;
+    END-EXEC;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Ejecucion de CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN, sqlca.sqlcode:[%d]", LOG01,sqlca.sqlcode);
+        vDTrazasLog  (modulo," en Ejecucion de CO_ULTPAGO_PG.CO_CARGATOTALPAGOS_FN, sqlca.sqlcode:[%d]", LOG01,sqlca.sqlcode);
+        return FALSE;
+    }
+
+
+    if(szResultado_fn==NULL)
+    {
+        vDTrazasLog  (modulo,"* Atencion: szResultado_fn == NULL, Se reemplaza por cadena vacia.", LOG03);
+        strcpy(szResultado_fn, "");
+    }
+
+    vDTrazasLog  (modulo," Resultado Pagos: [%s]", LOG04, alltrim(szResultado_fn));
+
+    if (!bfnSelectSysDate(szFecha))
+    {
+        vDTrazasLog  (modulo,"\n\n\tError en funcion bfnSelectSysDate() \n",LOG01);
+        vDTrazasError(modulo,"\n\n\tError en funcion bfnSelectSysDate() \n",LOG01);
+        return FALSE;
+    }
+
+    if(strncmp(szResultado_fn,"ERROR",5)==0)
+    {
+        vDTrazasLog  (modulo,"\n\n\tError en funcion CO_CARGAPAGOS_FN \n",LOG01);
+        vDTrazasError(modulo,"\n\n\tError en funcion CO_CARGAPAGOS_FN \n",LOG01);
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szFecInicio,stArgsEntrada.szHoraInicProc);
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Generacion CO_CARGAPAGOS_FN con Error");
+    }
+    else
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+        strcpy(stTrazaProc.szFecInicio,stArgsEntrada.szHoraInicProc);
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Generacion CO_CARGAPAGOS_FN  Terminado OK");
+    }
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bprocCargaUltimoPago", LOG01);
+        vDTrazasLog  (modulo," en Commit bprocCargaUltimoPago", LOG01);
+        return FALSE;
+    }
+
+    vDTrazasLog  (modulo," Procesa Ajustes, Ciclo [%ld] ", LOG04, lhCodCiclFact);
+
+    EXEC SQL EXECUTE
+        BEGIN
+         :szResultado_fn := CO_ULTPAGO_PG.CO_CARGAJUSTES_FN(:lhCodCiclFact, :ihIngrRngClientes, :lhRngIniClie, :lhRngFinClie);
+      END;
+    END-EXEC;
+
+    if(SQLCODE != SQLOK)
+    {
+        vDTrazasError(modulo," en Ejecucion de CO_ULTPAGO_PG.CO_CARGAJUSTES_FN, sqlca.sqlcode:[%d]", LOG01,sqlca.sqlcode);
+        vDTrazasLog  (modulo," en Ejecucion de CO_ULTPAGO_PG.CO_CARGAJUSTES_FN, sqlca.sqlcode:[%d]", LOG01,sqlca.sqlcode);
+        return FALSE;
+    }
+
+    if(szResultado_fn==NULL)
+    {
+        vDTrazasLog  (modulo,"* Atencion: szResultado_fn == NULL, Se reemplaza por cadena vacia.", LOG03);
+        strcpy(szResultado_fn, "");
+    }
+
+    vDTrazasLog  (modulo," Resultado Ajustes: [%s]", LOG04, alltrim(szResultado_fn));
+
+    if (!bfnSelectSysDate(szFecha))
+    {
+        vDTrazasLog  (modulo,"\n\n\tError en funcion bfnSelectSysDate() \n",LOG01);
+        vDTrazasError(modulo,"\n\n\tError en funcion bfnSelectSysDate() \n",LOG01);
+        return FALSE;
+    }
+
+    if(strncmp(szResultado_fn,"ERROR",5)==0)
+    {
+        vDTrazasLog  (modulo,"\n\n\tError en funcion CO_CARGAPAGOS_FN.CO_CARGAJUSTES_FN \n",LOG01);
+        vDTrazasError(modulo,"\n\n\tError en funcion CO_CARGAPAGOS_FN.CO_CARGAJUSTES_FN \n",LOG01);
+        stTrazaProc.iCodEstaProc = iPROC_EST_ERR;
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Generacion CO_CARGAJUSTES_FN con Error");
+    }
+    else
+    {
+        stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+        strcpy(stTrazaProc.szFecTermino,szFecha);
+        strcpy(stTrazaProc.szGlsProceso,"Proceso Generacion CO_CARGAJUSTES_FN Terminado OK");
+    }
+
+    bPrintTrazaProc(stTrazaProc);
+
+    if(!bfnWrapperUpdateTrazaProc(stTrazaProc))
+        return FALSE;
+
+    if (!bfnOraCommit ())
+    {
+        vDTrazasError(modulo," en Commit bprocCargaUltimoPago", LOG01);
+        vDTrazasLog  (modulo," en Commit bprocCargaUltimoPago", LOG01);
+        return FALSE;
+    }
+
+    if(  stTrazaProc.iCodEstaProc == iPROC_EST_ERR)
+     return FALSE;
+
+    return TRUE;
+
+}
+
+#ifndef isnull
+    #define isnull(name) (name==(char )NULL )
+#endif
+#ifndef strnull
+    #define strnull(name) (name==(char *)NULL || name[0]==(char)NULL)
+#endif
+
+char *ltrim(char *s)
+{
+    char *p=s;
+    if( strnull(s) )
+        return(s);
+    while( *p<=32 && *p>1 )
+        p++;
+    strcpy(s,p);
+    return(s);
+}
+
+char *rtrim(char *s)
+{
+    char *p=NULL;
+    if( strnull(s) )
+        return(s);
+    p=(s+strlen(s)-1);
+    while( *p<=32 && *p>1 )
+        p--;
+    *(++p)=0;
+    return(s);
+}
+
+char *alltrim(char *s)
+{
+    return(ltrim(rtrim(s)));
+}
+
+
+void vfnImprimirArgsEntrada(int iDestino, ARGSENTRADA stArgsEntrada)
+{
+
+    char *modulo="vfnImprimirArgsEntrada";
+
+    switch(iDestino)
+    {
+        case CONSOLA:
+            fprintf(stdout, "(II)\tArgumentos de entrada:\n"
+                        "\t\tiModProceso      : [%d] \n"
+                        "\t\tlCodCiclFact     : [%ld]\n"
+                        "\t\tszOraAccount     : [%s] \n"
+                        "\t\tszOraPasswd      : [%s] \n"
+                        "\t\tiLogLevel        : [%d] \n"
+                        "\t\tlClienteIni      : [%ld]\n"
+                        "\t\tlClienteFin      : [%ld]\n"
+                        "\t\tbIngRngClientes  : [%d]\n"
+                        "\t\tiCodCiclo        : [%d]\n"
+                        ,stArgsEntrada.iModProceso
+                        ,stArgsEntrada.lCodCiclFact
+                        ,stArgsEntrada.szOraAccount
+                        ,stArgsEntrada.szOraPasswd
+                        ,stArgsEntrada.iLogLevel
+                        ,stArgsEntrada.lClienteIni
+                        ,stArgsEntrada.lClienteFin
+                        ,stArgsEntrada.bIngRngClientes
+                        ,stArgsEntrada.iCodCiclo);
+            break;
+        case TRAZASLOG:
+            vDTrazasLog(modulo, "(II)\tArgumentos de entrada:\n"
+                        "\t\tiModProceso      : [%d] \n"
+                        "\t\tlCodCiclFact     : [%ld]\n"
+                        "\t\tszOraAccount     : [%s] \n"
+                        "\t\tszOraPasswd      : [%s] \n"
+                        "\t\tiLogLevel        : [%d] \n"
+                        "\t\tlClienteIni      : [%ld]\n"
+                        "\t\tlClienteFin      : [%ld]\n"
+                        "\t\tbIngRngClientes  : [%d]\n"
+                        "\t\tiCodCiclo        : [%d]\n"
+                        ,LOG05
+                        ,stArgsEntrada.iModProceso
+                        ,stArgsEntrada.lCodCiclFact
+                        ,stArgsEntrada.szOraAccount
+                        ,stArgsEntrada.szOraPasswd
+                        ,stArgsEntrada.iLogLevel
+                        ,stArgsEntrada.lClienteIni
+                        ,stArgsEntrada.lClienteFin
+                        ,stArgsEntrada.bIngRngClientes);
+            break;
+    }
+    return;
+}
+
+/*
+ * Funcion      : bfnValidarTrazaDeProceso
+ * Descripcion  : Funcion "wrapper" que ejecuta la validacion de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperValidaTrazaProc(long lCodCiclFact,int iCodProceso, int iIndFacturacion)
+{
+
+    char szHostId[25];
+
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnValidaTrazaProc( lCodCiclFact, iCodProceso, iIndFacturacion))
+            return (FALSE);
+
+    }
+    else
+    {
+        if (!bfnValidaTrazaProcHost( lCodCiclFact, iCodProceso, iIndFacturacion, szHostId))
+            return (FALSE);
+
+    }
+
+    return (TRUE);
+
+}
+
+/*
+ * Funcion      : bfnWrapperSelectTrazaProc
+ * Descripcion  : Funcion "wrapper" que selecciona datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperSelectTrazaProc (long lCicloFac,int iCodProc, TRAZAPROC * pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnSelectTrazaProc (lCicloFac, iCodProc, pstTraza))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnSelectTrazaProcHost (lCicloFac, iCodProc, pstTraza, szHostId))
+            return (FALSE);
+    }
+
+    return (TRUE);
+
+}
+
+/*
+ * Funcion      : bfnWrapperUpdateTrazaProc
+ * Descripcion  : Funcion "wrapper" que actualiza datos de traza de acuerdo a
+ *                si existe o no defincion de Host_id en la configuracion de maquina.
+ */
+BOOL bfnWrapperUpdateTrazaProc (TRAZAPROC pstTraza)
+{
+    char szHostId[25];
+
+    if( (ifnGetHostId(szHostId))!=0 )
+    {
+        if (!bfnUpdateTrazaProc (pstTraza))
+            return (FALSE);
+    }
+    else
+    {
+        if (!bfnUpdateTrazaProcHost (pstTraza, szHostId))
+            return (FALSE);
+    }
+
+    return (TRUE);
+
+}
+
+void    vfnIniciarEstProc( ESTADISTICAS *pstEstad)
+{
+
+    time(&pstEstad->tmTiempoProcIni);
+    pstEstad->clTiempoCPUIni = clock();
+}
+
+void    vfnImprimirEstProc( ESTADISTICAS *pstEstad)
+{
+    char    *modulo="vfnImprimirEstProc";
+    double  dDifProc = 0.0;
+    double  dDifCPU  = 0.0;
+
+    time(&pstEstad->tmTiempoProcFin);
+    pstEstad->clTiempoCPUFin = clock();
+
+    dDifProc = difftime (pstEstad->tmTiempoProcFin,pstEstad->tmTiempoProcIni);
+    dDifCPU  = ((double) (pstEstad->clTiempoCPUFin - pstEstad->clTiempoCPUIni)) / CLOCKS_PER_SEC;
+    vDTrazasLog(modulo,
+                    "\n----------------------------------"
+                    "\n|ESTADISTICAS DE TIEMPO DEL PROCESO|"
+                    "\n----------------------------------"
+                    "\nTiempo total del Proceso : [%10.2f] segundos."
+                    "\nTiempo total de  CPU     : [%10.2f] segundos."
+                    ,LOG03
+                    ,dDifProc
+                    ,dDifCPU);
+
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

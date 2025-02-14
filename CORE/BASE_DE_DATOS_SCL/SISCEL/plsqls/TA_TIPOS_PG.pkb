@@ -1,0 +1,11 @@
+CREATE OR REPLACE PACKAGE BODY TA_tipos_PG
+IS
+	FUNCTION TA_INICIA_PLANTARIF_QT_FN
+	RETURN TA_PLANTARIF_QT
+	IS
+	BEGIN
+		 RETURN TA_plantarif_QT(null,null,null,null,null,null,null,null,null);
+	END;
+END TA_tipos_PG;
+/
+SHOW ERRORS

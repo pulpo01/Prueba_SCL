@@ -1,0 +1,331 @@
+/*****************************************************************************/
+/*  Fichero    : PlanVcto.pc                                                 */
+/*  Descripcion: Planes de Descuento                                         */
+/*****************************************************************************/
+#define _PLANVCTO_PC_
+
+
+#include "PlanVcto.h"
+
+EXEC SQL INCLUDE sqlca;
+EXEC SQL BEGIN DECLARE SECTION;
+    char    szFormatoFec  [17];EXEC SQL VAR szFormatoFec IS STRING(17);
+    long    lhCodCliente    ;
+    long    lhCodCuenta     ;
+    int     ihCodTipMovimien;
+    char    szhFecEmision  [15];EXEC SQL VAR szhFecEmision IS STRING(15);
+EXEC SQL END DECLARE SECTION;
+
+EXEC SQL DECLARE Cur_Venci CURSOR FOR
+	SELECT B.NUM_DIASVENCIMIE
+      FROM FAT_PLANVENCICLIE A, FAD_PLANVENCIMIE B
+     WHERE A.COD_CLIENTE       =:lhCodCliente
+       AND COD_TIPMOVIMIENT=:ihCodTipMovimien
+       AND A.COD_PLANVENCIMIE=B.COD_PLANVENCIMIE
+       AND TO_DATE(:szhFecEmision, :szFormatoFec) BETWEEN FEC_DESDE AND FEC_HASTA
+	UNION ALL
+	SELECT B.NUM_DIASVENCIMIE
+	  FROM FAT_PLANVENCICTA A, FAD_PLANVENCIMIE B
+     WHERE A.COD_CUENTA			=:lhCodCuenta
+       AND COD_TIPMOVIMIENT		=:ihCodTipMovimien
+       AND A.COD_PLANVENCIMIE	=B.COD_PLANVENCIMIE
+       AND TO_DATE(:szhFecEmision, :szFormatoFec) BETWEEN FEC_DESDE AND FEC_HASTA;
+
+/* **************************************************************** */
+access BOOL bGetNumDiasPlanVcto (long plCodCliente,
+                                 long plCodCuenta,
+                                 int  piCodTipMovimien,
+                                 char *szFecEmision,
+                                 int  *iNumDias)
+{
+    char modulo[]   = "bGetNumDiasPlanVcto";
+
+	EXEC SQL BEGIN DECLARE SECTION;
+	    int     ihNumDias     = 0;
+	    int     ihNumDias2    = 0;
+	    char    szhCodRegion   [4];EXEC SQL VAR szhCodRegion IS STRING(4);
+	    char    szhCodProvincia[6];EXEC SQL VAR szhCodProvincia IS STRING(6);
+	    char    szhCodCiudad   [6];EXEC SQL VAR szhCodCiudad IS STRING(6);
+	    int     ihIndEstado   = 1;
+	EXEC SQL END DECLARE SECTION;
+
+
+    ihNumDias     = 0;
+
+    ihCodTipMovimien	= piCodTipMovimien;
+    strcpy(szhFecEmision, szFecEmision);
+    lhCodCliente		= plCodCliente;
+    lhCodCuenta			= plCodCuenta;
+    strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+
+    vDTrazasLog  (modulo,"\tCarga de Vencimientos diferidos %s"
+    					 "\n\t\tCodigo Cliente : [%ld]"
+    					 "\n\t\tCodigo Cuenta  : [%ld]"
+    					 ,LOG05,modulo,lhCodCliente,lhCodCuenta);
+
+
+	EXEC SQL OPEN Cur_Venci;
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(modulo,"Al consultar FAT_PLANVENCICLIE/FAT_PLANVENCICTA/GAD_PLANVENCIMIE\n%s\n"
+                         ,LOG01,sqlca.sqlerrm.sqlerrmc);
+    	vDTrazasLog  (modulo,"Al consultar FAT_PLANVENCICLIE/FAT_PLANVENCICTA/GAD_PLANVENCIMIE\n%s\n"
+    		             ,LOG01,sqlca.sqlerrm.sqlerrmc);
+    	return FALSE;
+
+    }
+    if (!SQLCODE)
+    {
+        EXEC SQL FETCH Cur_Venci INTO :ihNumDias;
+
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+            vDTrazasError(modulo,"Al Fetch FAT_PLANVENCICTA/GAD_PLANVENCIMIE\n%s\n"
+                             ,LOG01,sqlca.sqlerrm.sqlerrmc);
+        	vDTrazasLog  (modulo,"Al Fetch FAT_PLANVENCICTA/GAD_PLANVENCIMIE\n%s\n"
+        		             ,LOG01,sqlca.sqlerrm.sqlerrmc);
+        	return FALSE;
+
+        }
+	}
+
+	EXEC SQL CLOSE Cur_Venci;
+	if (SQLCODE != SQLOK )
+    {
+        vDTrazasError(modulo,"Al Cerrar FAT_PLANVENCICTA/GAD_PLANVENCIMIE\n%s\n"
+                         ,LOG01,sqlca.sqlerrm.sqlerrmc);
+    	vDTrazasLog  (modulo,"Al Cerrar FAT_PLANVENCICTA/GAD_PLANVENCIMIE\n%s\n"
+    		             ,LOG01,sqlca.sqlerrm.sqlerrmc);
+    	return FALSE;
+
+    }
+
+	strcpy (szhCodRegion   ,stCliente.szCodRegion)   ;
+	strcpy (szhCodProvincia,stCliente.szCodProvincia);
+	strcpy (szhCodCiudad   ,stCliente.szCodCiudad)   ;
+	ihIndEstado = 1;
+
+	EXEC SQL
+	SELECT B.NUM_DIASVENCIMIE
+	  INTO :ihNumDias2
+	  FROM FA_VENCIMIENTO_ZONA_GEOGRAF_TO A, FAD_PLANVENCIMIE B
+	 WHERE A.COD_VENCIME 	 = :szhCodCiudad
+	   AND A.COD_REGION  	 = :szhCodRegion
+	   AND A.COD_PROVINCIA 	 = :szhCodProvincia
+	   AND B.COD_PLANVENCIMIE= A.COD_PLANVENCIMIE
+	   AND A.IND_ESTADO      = :ihIndEstado;
+
+	if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+    {
+        vDTrazasError(modulo,"Al consultar FA_VENCIMIENTO_TO/FAD_PLANVENCIMIE B\n%s\n"
+                         ,LOG01,sqlca.sqlerrm.sqlerrmc);
+    	vDTrazasLog  (modulo,"Al consultar FA_VENCIMIENTO_TO/GAD_PLANVENCIMIE\n%s\n"
+    		             ,LOG01,sqlca.sqlerrm.sqlerrmc);
+    	return FALSE;
+
+	}
+
+	ihNumDias += ihNumDias2;
+
+    if (ihNumDias > 0)
+    {
+        *iNumDias=ihNumDias;
+    }
+    else
+    {
+        *iNumDias=0;
+    }
+    return TRUE;
+
+}
+
+/* **************************************************************** */
+/*****************************************************************************/
+/*  Funcion : bfnDiasVencimiento                                             */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bfnDiasVencimiento (long lCliente,
+                         long lCuenta,
+                         int  iCodTipMovimien,
+                         char *szFecEmision,
+                         char *szFecVencimi,
+                         char *szFecFinal)
+{
+    char modulo[]   = "bfnDiasVencimiento";
+    int iNumDias=0;
+
+    vDTrazasLog (modulo,"\n\t*****---> Inicio Funcion de Plan de Vencimientos <---- *****",LOG04);
+
+    if (!bGetNumDiasPlanVcto (lCliente, lCuenta, iCodTipMovimien, szFecEmision, &iNumDias))
+    {
+        vDTrazasError(modulo,"Al rescatar dias de Plan Vcto. \n%s\n"
+                             ,LOG01,sqlca.sqlerrm.sqlerrmc);
+        vDTrazasLog  (modulo,"Al rescatar dias de Plan Vcto. \n%s\n"
+                            ,LOG01,sqlca.sqlerrm.sqlerrmc);
+        return FALSE;
+    }
+    vDTrazasLog (modulo,"\t\t Cantidad de Dias de Vcto. [%d] Fecha de Vencinmiento [%s]\n" ,LOG05,iNumDias,szFecVencimi);
+
+    if (iNumDias> 0)
+    {
+        if (!bSumaDias ( szFecFinal, szFecVencimi, iNumDias))         /* Antes szFecEmision */
+        {
+            vDTrazasError(modulo,"Al sumar dias a la fecha de emision \n%s\n"
+                                ,LOG01,sqlca.sqlerrm.sqlerrmc);
+            vDTrazasLog  (modulo,"Al sumar dias a la fecha de emision \n%s\n"
+                                ,LOG01,sqlca.sqlerrm.sqlerrmc);
+            return FALSE;
+        }
+        vDTrazasLog(modulo,"\t\t Encontrado Plan Vcto. Fecha Vcto. [%s]\n",LOG05,szFecFinal);
+        if (!bBuscaDiaHabil (szFecFinal, szFecFinal))
+        {
+            vDTrazasError(modulo,"Al buscar dia habil \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+            vDTrazasLog  (modulo,"Al buscar dia habil \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+            return FALSE;
+        }
+        vDTrazasLog(modulo,"\t\t Fecha Vcto. Habil [%s]\n",LOG05,szFecFinal);
+    }
+    else
+    {
+        strcpy ( szFecFinal, szFecVencimi );
+    }
+    return TRUE;
+}
+
+/* **************************************************************** */
+/* **************************************************************** */
+BOOL bBuscaDiaHabil (char *pszFecha, char *pszFecFinal)
+{
+    char modulo[]   = "bBuscaDiaHabil";
+
+    int iIndHabil=0;
+    int iIndFeria=0;
+    vDTrazasLog  (modulo,"\tempezando %s\n",LOG05,modulo);
+    while (1)
+    {
+        if(!bDiaFeriado(pszFecha, &iIndFeria))
+        {
+            vDTrazasError(modulo,"Al determinar dia feriado \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+            vDTrazasLog  (modulo,"Al determinar dia feriado \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+            return (FALSE);
+        }
+        else
+        {
+            if (iIndFeria==0)
+            {
+                if (!bGetTipoDia(pszFecha, &iIndHabil))
+                {
+                    vDTrazasError(modulo,"Al determinar dia habil \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+                    vDTrazasLog  (modulo,"Al determinar dia habil \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+                    return (FALSE);
+                }
+            }
+        }
+        if (iIndFeria==1 || iIndHabil==0)
+        {
+            if (!bSumaDias ( pszFecha, pszFecha, 1))
+            {
+                vDTrazasError(modulo,"Al sumar dias a la fecha inhabil \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+                vDTrazasLog  (modulo,"Al sumar dias a la fecha inhabil \n%s\n",LOG01,sqlca.sqlerrm.sqlerrmc);
+                return (FALSE);
+            }
+            vDTrazasLog  (modulo,"Fecha sumada  %s\n",LOG05,pszFecha);
+        }
+        else
+        {
+            break;
+        }
+    }
+    strcpy (pszFecFinal, pszFecha);
+    return (TRUE);
+}
+
+/* **************************************************************** */
+/* **************************************************************** */
+BOOL bGetTipoDia (char *pszFecha, int *iIndHab)
+{
+    char modulo[]   = "bGetTipoDia";
+
+	int d,m,y;
+	char cadena [10];
+	int iNumDia;
+
+	vDTrazasLog  (modulo,"\tempezando %s\n",LOG05,modulo);
+
+    sprintf ( cadena, "%c%c", pszFecha[6],pszFecha[7]);
+    d = atoi (cadena);       /* el día del mes -- [1,31] */
+    sprintf ( cadena, "%c%c", pszFecha[4],pszFecha[5]);
+    m  = atoi (cadena);      /* los meses desde Enero -- [0,11] */
+    sprintf ( cadena, "%c%c%c%c", pszFecha[0],pszFecha[1],pszFecha[2],pszFecha[3]);
+    y = atoi (cadena) ;      /* los años */
+
+   /** a 45 character C expression by Keith    **/
+   /** With 0=Sunday, 1=Monday, ... 6=Saturday **/
+   iNumDia =  (d+=m<3?y--:y-2,23*m/9+d+4+y/4-y/100+y/400)%7;
+
+   iNumDia ++; /* se suma un dia para compatibilizar con ORACLE */
+
+	switch(iNumDia)
+	{
+   		case	2:
+   		case 	3:
+   		case	4:
+   		case	5:
+   		case    6:
+   			*iIndHab = 1;
+   			break;
+   		default:
+   			*iIndHab = 0;
+   			break;
+    }
+	return(TRUE);
+}
+
+/* **************************************************************** */
+/* **************************************************************** */
+BOOL bDiaFeriado (char *pszFecha, int *iIndFeria)
+{
+    int i;
+    char modulo[]   = "bDiaFeriado";
+
+	vDTrazasLog  (modulo,"\tempezando %s\n",LOG05,modulo);
+
+    *iIndFeria=0;
+    for (i=0; i<=NUM_FERIADOS;i++)
+    {
+        vDTrazasLog  (modulo,"feriados \n%s\n",LOG06, pstFeriados[i].szFecFeriado );
+        if (strncmp (pszFecha, pstFeriados[i].szFecFeriado, 8) == 0)
+        {
+            *iIndFeria=1;
+            break;
+        }
+    }
+
+    return (TRUE);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

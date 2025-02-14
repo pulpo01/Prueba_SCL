@@ -1,0 +1,33 @@
+CREATE OR REPLACE PACKAGE GR_IORETENCIONES_PG
+AS
+
+PROCEDURE GR_OSSRET_PR(p_num_ficha   IN  RET_FICHAS_TH.NUM_FICHA%TYPE,
+                       p_cod_estado_ooss IN  RET_FICHAS_TH.COD_ESTADO_OOSS%TYPE,
+						nCod_Error 		   OUT NUMBER,
+						sMen_Error 		   OUT VARCHAR2,
+						nEvento 		   OUT NUMBER);
+
+PROCEDURE GR_DETOFERTAFICHA_PR(p_nnum_ficha  IN  RET_FICHAS_TH.NUM_FICHA%TYPE);
+
+FUNCTION GR_GRABAERROR_FN (NOM_PL       IN  VARCHAR2,
+                            NOM_TABLA    IN  VARCHAR2,
+                            NumError     IN  NUMBER,
+					        Descripcion  IN  VARCHAR2,
+					        EVENTO       OUT NUMBER )  RETURN BOOLEAN;
+
+PROCEDURE GR_DATOSFICHA_PR(p_nnum_ficha IN RET_FICHAS_TH.NUM_FICHA%TYPE,
+				          v_nnum_abonado OUT RET_FICHAS_TH.NUM_ABONADO%TYPE,
+				          v_ncod_cliente OUT RET_FICHAS_TH.COD_CLIENTE%TYPE,
+				          v_dfec_ultimo_contacto OUT RET_FICHAS_TH.FEC_ULTIMO_CONTACTO%TYPE,
+				          v_ncod_tipo_oferta OUT RET_CONTACTOS_TH.COD_TIPO_OFERTA%TYPE);
+
+PROCEDURE GR_RECUPERAGEDCODIGO_PR(v_ncod_tipo_oferta IN RET_CONTACTOS_TH.COD_TIPO_OFERTA%TYPE,
+		  						  v_ncod_valor OUT GED_CODIGOS.COD_VALOR%TYPE,
+								  v_vdes_valor OUT GED_CODIGOS.DES_VALOR%TYPE);
+
+PROCEDURE GR_GRABAFICHA_PR(v_num_ficha IN RET_FICHAS_OFERTA_TH.NUM_FICHA%TYPE,
+		  				   v_cod_comp_oferta IN RET_FICHAS_OFERTA_TH.COD_COMP_OFERTA%TYPE,
+						   v_det_comp_oferta IN RET_FICHAS_OFERTA_TH.DET_COMP_OFERTA%TYPE);
+END GR_IORETENCIONES_PG;
+/
+SHOW ERRORS

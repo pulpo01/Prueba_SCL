@@ -1,0 +1,33 @@
+package com.tmmas.scl.framework.customerDomain.businessObject.dao.interfaces;
+
+import com.tmmas.scl.framework.customerDomain.dataTransferObject.ParametrosValidacionVentasDTO;
+import com.tmmas.scl.framework.customerDomain.dataTransferObject.RegistroEvaluacionRiesgoDTO;
+import com.tmmas.scl.framework.customerDomain.dataTransferObject.ResultadoValidacionVentaDTO;
+import com.tmmas.scl.framework.customerDomain.exception.CustomerBillException;
+
+
+
+
+public interface RegistroEvaluacionRiesgoDAOIT {
+	
+	public void actualizaTerminalesVendidos(RegistroEvaluacionRiesgoDTO registroEvaluacionRiesgoDTO)throws CustomerBillException;
+	
+	public ResultadoValidacionVentaDTO existeEvalRiesgoPlanTarif(ParametrosValidacionVentasDTO parametroEvaluacion) throws CustomerBillException;
+	
+	public ResultadoValidacionVentaDTO existeEvaluacionRiesgo(ParametrosValidacionVentasDTO parametroEvaluacion) throws CustomerBillException;
+	
+	public RegistroEvaluacionRiesgoDTO getEvalRiesgoPlanTarif(RegistroEvaluacionRiesgoDTO parametroEvaluacion) throws CustomerBillException;
+	
+	public RegistroEvaluacionRiesgoDTO getEvaluacionRiesgo(RegistroEvaluacionRiesgoDTO parametroEvaluacion) throws CustomerBillException;
+	
+	public RegistroEvaluacionRiesgoDTO getEvaluacionRiesgoVigenteCliente(RegistroEvaluacionRiesgoDTO entrada) throws CustomerBillException;
+	
+	public RegistroEvaluacionRiesgoDTO getExcepcion(RegistroEvaluacionRiesgoDTO entrada)throws CustomerBillException;
+	
+	public RegistroEvaluacionRiesgoDTO[] getListPlanTarifarioAutoriz(RegistroEvaluacionRiesgoDTO entrada)throws CustomerBillException;
+	
+	public RegistroEvaluacionRiesgoDTO getRegEvaluacionRiesgo(RegistroEvaluacionRiesgoDTO entrada)	throws CustomerBillException;
+	
+	public void insSolicitudVenta(RegistroEvaluacionRiesgoDTO registroEvaluacionRiesgoDTO)	throws CustomerBillException;
+	
+}

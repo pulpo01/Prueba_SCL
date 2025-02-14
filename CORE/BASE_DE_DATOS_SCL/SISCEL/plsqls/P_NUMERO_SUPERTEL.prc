@@ -1,0 +1,52 @@
+CREATE OR REPLACE PROCEDURE        P_NUMERO_SUPERTEL(
+  VP_CLIENTE IN NUMBER ,
+  VP_ABONADO IN NUMBER ,
+  VP_TELEFIJA IN VARCHAR2 ,
+  VP_INDSUPERTEL IN NUMBER,
+  VP_OPREDFIJA IN NUMBER,
+  VP_CICLO IN NUMBER ,
+  VP_FECSYS IN DATE ,
+  VP_PROC IN OUT VARCHAR2 ,
+  VP_TABLA IN OUT VARCHAR2 ,
+  VP_ACT IN OUT VARCHAR2 ,
+  VP_SQLCODE IN OUT VARCHAR2 ,
+  VP_SQLERRM IN OUT VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento que refleja el numero de telefonia fija asociado a la linea
+-- de supertelefono en las tablas de interfase con facturacion
+--
+--            Los posibles retornos del procedimiento son :
+--                - '0' Actualizaciones realizadas correctamente
+--                - '4' Error en el proceso
+--
+   V_CICLFACT GA_INFACCEL.COD_CICLFACT%TYPE;
+BEGIN
+    VP_PROC := 'P_NUMERO_SUPERTEL';
+    VP_TABLA := 'FA_CICLFACT';
+    VP_ACT := 'S';
+    SELECT COD_CICLFACT
+      INTO V_CICLFACT
+      FROM FA_CICLFACT
+     WHERE COD_CICLO = VP_CICLO
+       AND VP_FECSYS BETWEEN FEC_DESDELLAM
+                         AND FEC_HASTALLAM;
+    VP_TABLA := 'GA_INFACCEL';
+    VP_ACT := 'U';
+    UPDATE GA_INFACCEL
+       SET NUM_TELEFIJA = VP_TELEFIJA,
+	   IND_SUPERTEL = VP_INDSUPERTEL,
+	   COD_SUPERTEL = VP_OPREDFIJA
+     WHERE COD_CLIENTE  = VP_CLIENTE
+       AND NUM_ABONADO  = VP_ABONADO
+       AND COD_CICLFACT = V_CICLFACT
+       AND IND_ACTUAC <> 6;
+EXCEPTION
+   WHEN OTHERS THEN
+ VP_SQLCODE := SQLCODE;
+ VP_SQLERRM := SQLERRM;
+        VP_ERROR := '4';
+END;
+/
+SHOW ERRORS

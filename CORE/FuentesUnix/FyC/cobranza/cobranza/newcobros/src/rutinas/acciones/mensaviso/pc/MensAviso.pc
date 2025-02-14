@@ -1,0 +1,607 @@
+/* ============================================================================= */
+/*
+    Tipo        :  ACCION
+    Nombre      :  MensAviso.pc ("MENAV"->szfnMensAviso)
+    Descripcion :  Genera Mensaje Corto para todos los abonados ( Celular Digital )
+                   del rut del cliente dado.
+    Recibe      :  by Val -> Cod Cliente 
+    Devuelve    :  "SQL"  -> Ocurrio un error de oracle ( queda registrado en el log )
+                   "NOMSJ"-> No hay mensajes definidos y/o generados
+                   "OK"   -> La accion se ejecuto correctamente
+Modificacion    :  12-11-2004
+		   Por proyecto P_MAS-04037 se agregan 2 parametros a la accion
+                   Puntero de archivo log tipo Hilo. 
+                   Variable de contexto para instancia de BD tipo hilo                   
+*/ 
+/* ============================================================================= */
+
+#define _COLIBGENERALES_PC_ /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+#define _COLIBACCIONES_PC_  /* Agregado por PGonzalez 20-10-2004 MAS-04037 */
+
+#include "MensAviso.h"
+EXEC SQL INCLUDE sqlca;
+
+/* ============================================================================= */
+/* Envia mensajes cortos a abonados del cliente  */
+/* ============================================================================= */
+char  *szfnMensAviso(FILE **ptArchLog, long lCliente,  sql_context ctxCont )
+{
+char modulo[] = "szfnMensAviso";
+int  iError = 0, i = 0, iMsgGenerados = 0, rr, ilong = 0;
+char szCodIdiomaAux[6];
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente           = 0  ;
+	char	szhCodMensaje[13]      = "" ;
+	int   ihCodMensaje = 0;
+	int	ihCodCentralMens       = 0  ;
+	char	szhDescripcionIdioma[257];	
+	int	ihCodProdCelular       = 0  ;
+	int	ihCodProdBeeper        = 0  ;   
+	char	szhCadena [1024]       =""  ; EXEC SQL VAR szhCadena IS STRING (1024);
+	int	ihCodProducto          = 0  ;
+	long	lhNumAbonado           = 0  ;
+	long	lhNumCelularBeeper     = 0  ;
+	int	ihCodCentral           = 0  ;
+	int	ihIndPlexsys           = 0  ;
+	int	ihCodCentralPlex       = 0  ;
+	long	lhNumCelularPlex       = 0  ;
+	char	szhNumSerieHex[9]      =""  ; EXEC SQL VAR szhNumSerieHex IS STRING (9);
+	char	szhTipTerminal[2]      =""  ; EXEC SQL VAR szhTipTerminal IS STRING (2);
+	char	szhNumMin[4]           =""  ; EXEC SQL VAR szhNumMin IS STRING (4);
+	char	szhCodTecnologia[iLENCODTECNO]    =""  ; EXEC SQL VAR szhCodTecnologia IS STRING (iLENCODTECNO);
+	char	szhNumSerie[iLENNUMSERIE] ="" ; EXEC SQL VAR szhNumSerie IS STRING (iLENNUMSERIE);
+	char	szhNumImei[iLENNUMIMEI]   ="" ; EXEC SQL VAR szhNumImei IS STRING (iLENNUMIMEI);
+	char	szhNumImsi[iLENNUMIMSI]   ="" ; EXEC SQL VAR szhNumImsi IS STRING (iLENNUMIMSI);
+	
+	long	lhNumMovimiento        = 0  ;
+	long	lhNumMovimiento2       = 0  ;
+	
+	char	szhTs[2]               =""  ; EXEC SQL VAR szhTs IS STRING(2);
+	long	lhId                   = 0  ; 
+	long	lhCc                   = 0  ; 
+	char	szhTp[2]               =""  ; EXEC SQL VAR szhTp IS STRING(2);
+	char	szhPro[3]              =""  ; EXEC SQL VAR szhPro IS STRING(3);
+	char	szhVel[5]              =""  ; EXEC SQL VAR szhVel IS STRING(5);
+	int		ihFre                  = 0  ;	
+	char	szhFre[2]              =""  ; EXEC SQL VAR szhFre IS STRING(2);
+	char	szhCob[4]              =""  ; EXEC SQL VAR szhCob IS STRING(4);
+	char	szhNom[51]             =""  ; EXEC SQL VAR szhNom IS STRING(51);
+	char	szhGm1[8]              =""  ; EXEC SQL VAR szhGm1 IS STRING(8);
+	char	szhGm2[8]              =""  ; EXEC SQL VAR szhGm2 IS STRING(8);
+	char	szhGm3[8]              =""  ; EXEC SQL VAR szhGm3 IS STRING(8);
+	char	szhGm4[8]              =""  ; EXEC SQL VAR szhGm4 IS STRING(8);
+	char	szhGm5[8]              =""  ; EXEC SQL VAR szhGm5 IS STRING(8);
+	char	szhRut[iLENNUMIDENT]   =""  ; EXEC SQL VAR szhRut IS STRING(iLENNUMIDENT);
+	char	szhSta[2]              =""  ; EXEC SQL VAR szhSta IS STRING(2);
+	char	szhMarp[21]            =""  ; EXEC SQL VAR szhMarp IS STRING(21);
+	char	szhModp[51]            =""  ; EXEC SQL VAR szhModp IS STRING(51);
+	char	szhNser[31]            =""  ; EXEC SQL VAR szhNser IS STRING(31);
+	char	szhTcue[2]             =""  ; EXEC SQL VAR szhTcue IS STRING(2);
+	char	szhEmp[51]             =""  ; EXEC SQL VAR szhEmp IS STRING(51);
+	int	ihCodActuacionCelu     = 0  ;
+	int	ihCodActuacionBeep     = 0  ;
+	char	szhActAbo[3]           =""  ; EXEC SQL VAR szhActAbo IS STRING(3);
+	char	szhFlgSta[2]           =""  ; EXEC SQL VAR szhFlgSta IS STRING(2);
+	char	szhCodIdioma[6]			= ""; EXEC SQL VAR szhCodIdioma IS STRING(6);
+	long	lhSecuenciaMensaje		= 0;
+	
+EXEC SQL END DECLARE SECTION;
+FILE *pfLog = *ptArchLog;
+sql_context CXX;
+struct sqlca sqlca;
+
+	EXEC SQL CONTEXT USE DEFAULT;
+	ifnTrazaHilos( modulo,&pfLog, "Ingreso modulo => [%s].", LOG03, modulo );
+	ifnTrazaHilos( modulo,&pfLog, "VERSION : [%s].", LOG03, szVersion);
+	
+	lhCodCliente = lCliente;
+	iAboCeluGlobal = 0;
+	iAboBeepGlobal = 0;
+	
+	memset( szhDescripcionIdioma, '\0', sizeof( szhDescripcionIdioma ) );
+	memset( szhCodTecnologia, '\0', sizeof( szhCodTecnologia ) );
+	memset( szhNumSerie, '\0', sizeof( szhNumSerie ) );
+	memset( szhNumImei, '\0', sizeof( szhNumImei ) );
+	memset( szhNumImsi, '\0', sizeof( szhNumImsi ) );
+
+	
+	/* se obtienen datos generales */
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT	B.PROD_CELULAR,
+			B.PROD_BEEPER
+	INTO	:ihCodProdCelular,
+			:ihCodProdBeeper
+	FROM	GE_DATOSGENER B;
+	
+	if( sqlca.sqlcode != SQLOK )
+	{   
+		ifnTrazasLog( modulo, "(Cliente:%ld) Error al recuperar parametros generales => [%s] ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );
+		return "SQL";
+	}
+
+	ifnTrazasLog( modulo, "(Cliente:%ld) Celular => [%d], Beepers => [%d].", LOG05, lhCodCliente, ihCodProdCelular, ihCodProdBeeper );  
+
+	/*-Determina el mensaje que le corresponde al cliente-*/
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT A.COD_MENSAJE,
+			 I.COD_CENTRAL
+	  INTO :szhCodMensaje,
+	  		 :ihCodCentralMens
+	  FROM ICG_MENSAJE I, CO_AVISOS_VENCIMIENTO_TD A
+	 WHERE A.COD_MENSAJE = I.COD_MENSAJE
+	   AND I.COD_PRODUCTO = 1;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "(Cliente:%ld) Error al consultar CO_AVISOS_VENCIMIENTO_TD %s ", LOG00, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "ERRDT";   
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND ) /* si existe la accion el cliente debe obligadamente estar en la tabla CO_MENSAJES */
+	{   
+		ifnTrazasLog( modulo, "(Cliente:%ld) no esta en CO_AVISOS_VENCIMIENTO_TD %s ", LOG01, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+		return "NEAMJ";   
+	}
+    
+    rtrim(szhCodMensaje);
+	
+	ifnTrazasLog( modulo, "(Cliente:%ld) Codigo de mensaje => [%s] ", LOG03, lhCodCliente, szhCodMensaje );  
+
+	/* seleccionamos el idioma del cliente */
+	if( !bfnSelectIdiomaClienteAviso( lhCodCliente, szhCodIdioma ) )
+		return "SQL";   
+	
+	rtrim( szhCodIdioma );
+
+	ifnTrazasLog( modulo, "(Cliente:%ld) Codigo de Idioma => [%s] ", LOG03, lhCodCliente, szhCodIdioma );  
+
+	/* seleccionamos la secuencia del mensaje que corresponde al cliente de acuerdo a mensaje/idioma */
+	if( !bfnSelectDescripcionMensajeAviso( szhCodMensaje, szhCodIdioma, szhDescripcionIdioma) )
+	{
+		if( !strcmp( szhDescripcionIdioma, "X" ) )
+			return "NESMD";
+		else	
+			return "SQL";   
+	}
+	
+	rtrim( szhDescripcionIdioma );
+	
+	ifnTrazasLog( modulo, "(Cliente:%ld) Secuencia de Mensaje => [%d] ", LOG03, lhCodCliente, lhNumMovimiento );  
+
+	/* selecciona el universo de todos los abonados (celulares y beepers) del cliente dado */
+	sprintf( szhCadena, "SELECT COD_PRODUCTO,\n" 
+						"       NUM_ABONADO,\n" 
+						"       NUM_CELULAR,\n"  
+						"       COD_CENTRAL,\n" 
+						"       NVL( IND_PLEXSYS, 0 ),\n"
+						"       NVL( COD_CENTRAL_PLEX, 0 ),\n"
+						"       NVL( NUM_CELULAR_PLEX, -1 ),\n"
+						"       NVL( NUM_SERIEHEX, '0'),\n"
+						"       TIP_TERMINAL,\n"
+						"       NVL( NUM_MIN, 730 ),\n"
+						"       COD_TECNOLOGIA,\n"
+						"       DECODE( COD_TECNOLOGIA, 'GSM',  NUM_SERIE, ' ' ),\n "
+						"       NVL( NUM_IMEI, ' ' ),\n"
+						"       DECODE( COD_TECNOLOGIA, 'GSM', fRecuperSIMCARD_FN( NUM_SERIE, 'IMSI'), ' ' ) IMSI\n"
+						"  FROM GA_ABOCEL "
+						" WHERE COD_CLIENTE = %ld "
+						"   AND TIP_TERMINAL = 'D' "            /* SOLO TELEFONO DIGITAL */
+						"   AND COD_USO != 3 "                  /* QUE NO SEA AMISTAR */
+						"   AND COD_SITUACION != 'BAA' "        /* Y QUE NO ESTE DE BAJA */ 
+						, lhCodCliente  );
+
+	ifnTrazasLog(modulo,"Query Dinamico Cursor :%s ",LOG05,szhCadena);  
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL PREPARE sqlDinamico FROM :szhCadena;
+	if( sqlca.sqlcode != SQLOK )
+	{   
+		ifnTrazasLog(modulo,"(Cliente:%ld) Prepare %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+		return "SQL";    
+	}
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL DECLARE curAbonados CURSOR FOR sqlDinamico;
+	if( sqlca.sqlcode != SQLOK )
+	{   
+		ifnTrazasLog(modulo,"(Cliente:%ld) Declare %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+		return "SQL";    
+	}
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL OPEN curAbonados;
+	if( sqlca.sqlcode != SQLOK )
+	{   
+		ifnTrazasLog(modulo,"(Cliente:%ld) Open %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+		return "SQL";    
+	}
+		
+	/*- Recorre el cursor de todos los abonados del cliente dado ------------------*/
+	for( ; ; ) /* forever */
+	{
+		sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL FETCH curAbonados 
+		INTO 	:ihCodProducto, 
+				:lhNumAbonado, 
+				:lhNumCelularBeeper,
+				:ihCodCentral, 
+				:ihIndPlexsys,
+				:ihCodCentralPlex,
+				:lhNumCelularPlex,
+				:szhNumSerieHex,
+				:szhTipTerminal,
+				:szhNumMin,
+				:szhCodTecnologia,
+				:szhNumSerie,
+				:szhNumImei,
+				:szhNumImsi;
+
+		if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND ) 
+		{   
+			iError = 1;
+			break;    
+		}  /* fin del ciclo */
+		
+		if( sqlca.sqlcode == SQLNOTFOUND ) 
+		{
+			ifnTrazasLog( modulo, "Ok. EL cliente (%ld) No tiene mas abonados ", LOG05, lhCodCliente );  
+			break;    /* termino de datos */
+		}
+
+		ifnTrazasLog( modulo, "Verificando Abonado %s (%ld) del cliente (%ld) "
+							  ,LOG06, ( ihCodProducto == 1 ) ? "Celular" : "Beeper", 
+							  lhNumAbonado, lhCodCliente ); 
+							  
+		/* limpiamos de blancos las variables */
+		rtrim( szhNumSerieHex );
+		rtrim( szhTipTerminal );
+		rtrim( szhNumMin );
+		rtrim( szhCodTecnologia );
+		rtrim( szhNumSerie );
+		rtrim( szhNumImei );
+		rtrim( szhNumImsi );
+ 
+
+		/*ihCodActuacionCelu = 102; */
+		ihCodActuacionBeep = 103;
+
+		strcpy( szhFlgSta, "S" ) ;
+		strcpy( szhActAbo, "MJ" ) ;	
+		
+		if( ( ihCodActuacionCelu = ifnGetActuacionCentralCelularAcc(&pfLog, szhActAbo, 1, szMODULOCOBRANZA, szhCodTecnologia, CXX ) ) < 0 )
+		{
+			iError = 1;
+			break;    
+		}	
+		
+		sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+		EXEC SQL
+		SELECT	ICC_SEQ_NUMMOV.NEXTVAL
+		INTO	:lhNumMovimiento
+		FROM	DUAL;
+		
+		if( sqlca.sqlcode ) 
+		{  
+			iError = 2; /* error sql */
+			break;  
+		} /* fin del ciclo */
+		
+		/* transformamos el codigo de mensaje a valor numerico */
+		ihCodMensaje = atoi( szhCodMensaje );
+		
+		if( ihCodProducto == ihCodProdCelular )
+		{
+			ifnTrazasLog( modulo, "Valores a insertar ICC_MOVIMIENTO.\n"
+									"\t\t   lhNumAbonado         => [%ld],\n"
+									"\t\t   ihCodActuacionCelu   => [%d],\n"
+									"\t\t   szhActAbo            => [%s],\n"
+									"\t\t   ihCodCentralMens     => [%d],\n"
+									"\t\t   lhNumCelularBeeper   => [%ld],\n"
+									"\t\t   szhNumSerieHex       => [%s],\n"
+									"\t\t   szhTipTerminal       => [%s],\n" 
+									"\t\t   szhNumMin            => [%s],\n"
+									"\t\t   szhFlgSta            => [%s],\n"
+									"\t\t   szhDescripcionIdioma => [%s],\n" 
+									"\t\t   ihCodMensaje         => [%d],\n"
+									"\t\t   szhCodTecnologia     => [%s],\n"
+									"\t\t   szhNumImei           => [%s],\n"
+									"\t\t   szhNumImsi           => [%s],\n"
+									"\t\t   szhNumSerie          => [%s].\n",
+									LOG06,
+									lhNumAbonado,
+									ihCodActuacionCelu,
+									szhActAbo,
+									ihCodCentralMens,
+									lhNumCelularBeeper,
+									szhNumSerieHex,
+									szhTipTerminal,
+									szhNumMin,
+									szhFlgSta,
+									szhDescripcionIdioma, 
+									ihCodMensaje,
+									szhCodTecnologia,
+									szhNumImei,
+									szhNumImsi,
+									szhNumSerie );			
+			
+						
+			/* Inserta en ICC_MOVIMIENTO */
+			if( ihIndPlexsys == 0 ) /* Si no es Plexsys */
+			{
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				INSERT INTO ICC_MOVIMIENTO
+				(
+					NUM_MOVIMIENTO,     NUM_ABONADO,		COD_ESTADO,
+					COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+					COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+					FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+					NUM_SERIE,          TIP_TERMINAL,       IND_BLOQUEO,         
+					NUM_MIN,            STA,                DES_MENSAJE,		 
+					COD_MENSAJE,        TIP_TECNOLOGIA,     IMEI,				
+					IMSI,				ICC 
+				)
+				VALUES
+				(
+					:lhNumMovimiento,		:lhNumAbonado,		1,
+					'CO',                  	0,                  'PENDIENTE',
+					:ihCodActuacionCelu,   	:szhActAbo,         USER,
+					SYSDATE,               	:ihCodCentralMens,  :lhNumCelularBeeper,
+					:szhNumSerieHex,       	:szhTipTerminal,    0,                     
+					:szhNumMin,            	:szhFlgSta,         :szhDescripcionIdioma, 
+					:ihCodMensaje,         	:szhCodTecnologia,
+   					DECODE( :szhNumImei, ' ', NULL, :szhNumImei ),
+  					DECODE( :szhNumImsi, ' ', NULL, :szhNumImsi ),
+					DECODE( :szhNumSerie, ' ', NULL, :szhNumSerie )
+				);
+				if( sqlca.sqlcode )
+				{
+					iError = 2; /* error sql */
+					break;  
+				} /* fin del ciclo */
+			}
+			else /* Si es Plexsys*/
+			{
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				SELECT	ICC_SEQ_NUMMOV.NEXTVAL
+				INTO	:lhNumMovimiento2
+				FROM	DUAL;
+				
+				if( sqlca.sqlcode ) 
+				{  
+					iError = 2; /* error sql */
+					break;  
+				} /* fin del ciclo */
+				
+				/* Inserta primer movimiento */
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				INSERT  INTO ICC_MOVIMIENTO
+				(
+					NUM_MOVIMIENTO,		NUM_ABONADO,		COD_ESTADO,
+					COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+					COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+					FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+					NUM_SERIE,          TIP_TERMINAL,       IND_BLOQUEO,         
+					NUM_MOVPOS,         NUM_MIN,			STA,				 
+					DES_MENSAJE,		COD_MENSAJE,        TIP_TECNOLOGIA,
+					IMEI,				IMSI,				ICC 
+				)
+				VALUES
+				(
+					:lhNumMovimiento,      	:lhNumAbonado,      1,
+					'CO',                  	0,                  'PENDIENTE',
+					:ihCodActuacionCelu,   	:szhActAbo,         USER,
+					SYSDATE,               	:ihCodCentralMens,  :lhNumCelularBeeper,
+					:szhNumSerieHex,       	:szhTipTerminal,    0,                   
+					:lhNumMovimiento2,     	:szhNumMin,		   	:szhFlgSta,
+					:szhDescripcionIdioma, 	:ihCodMensaje,      :szhCodTecnologia,
+   					DECODE( :szhNumImei, ' ', NULL, :szhNumImei ),
+   					DECODE( :szhNumImsi, ' ', NULL, :szhNumImsi ),
+					DECODE( :szhNumSerie, ' ', NULL, :szhNumSerie )
+				);
+				if (sqlca.sqlcode) 
+				{  
+					iError = 2; /* error sql */
+					break;  
+				} /* fin del ciclo */
+				
+				/*Inserta segundo movimiento*/
+				sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+				EXEC SQL
+				INSERT INTO ICC_MOVIMIENTO
+				(
+					NUM_MOVIMIENTO,     NUM_ABONADO,		COD_ESTADO,
+					COD_MODULO,         NUM_INTENTOS,       DES_RESPUESTA,
+					COD_ACTUACION,      COD_ACTABO,         NOM_USUARORA,
+					FEC_INGRESO,        COD_CENTRAL,        NUM_CELULAR,
+					NUM_SERIE,          TIP_TERMINAL,       IND_BLOQUEO,          
+					NUM_MOVANT,         NUM_MIN,			STA,
+					DES_MENSAJE,		COD_MENSAJE,        TIP_TECNOLOGIA,
+					IMEI,				IMSI,				ICC 
+				)
+				VALUES
+				(
+					:lhNumMovimiento2,     :lhNumAbonado,        1,
+					'CO',                  0,                    'PENDIENTE',
+					:ihCodActuacionCelu,   :szhActAbo,           USER,
+					SYSDATE,               :ihCodCentralPlex,    :lhNumCelularPlex, 
+					:szhNumSerieHex,       :szhTipTerminal,      0,                    
+					:lhNumMovimiento,      :szhNumMin,			:szhFlgSta,
+					:szhDescripcionIdioma, :ihCodMensaje,       :szhCodTecnologia,
+   					DECODE( :szhNumImei, ' ', NULL, :szhNumImei ),
+   					DECODE( :szhNumImsi, ' ', NULL, :szhNumImsi ),
+					DECODE( :szhNumSerie, ' ', NULL, :szhNumSerie )
+				);               
+				if( sqlca.sqlcode ) 
+				{  
+					iError = 2; /* error sql */
+					break;  
+				} /* fin del ciclo */
+			} /* Fin Plexsys */
+			iAboCeluGlobal ++;
+		} /* if( ihCodProducto == ihCodProdCelular ) */
+
+		iMsgGenerados++;                   
+	} /* endfor */
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL CLOSE curAbonados ;
+	if( sqlca.sqlcode )
+	{
+		ifnTrazasLog(modulo,"(Cliente:%ld) Close %s ",LOG00,lhCodCliente,sqlca.sqlerrm.sqlerrmc);  
+		iError = 1;
+	}
+	
+	if( iError != 0 )
+	{
+		ifnTrazasLog( modulo, "(Cliente:%ld)(Abonado:%ld)(producto:%d) %s",
+								LOG00, lhCodCliente, lhNumAbonado, ihCodProducto, sqlca.sqlerrm.sqlerrmc );  
+		return "SQL";
+	}
+	
+	if( iMsgGenerados > 0 ) 
+	{
+		/* se debe borrar el registro de la CO_PARAM_ACCIONES */
+	/*	if( !bfnActualizarCoMensajes( lhNumSecuencia ) )
+		{
+			ifnTrazasLog( modulo, "(Cliente:%ld) Error en bfnBorrarCoParamAcc.", LOG01, lhCodCliente, sqlca.sqlerrm.sqlerrmc );  
+			return "SQL";   
+		}	 */
+		return "OK";   
+	}
+	else 
+	{
+		ifnTrazasLog( modulo, "(Cliente:%ld) NO SE GENERARON MENSAJES ", LOG02, lhCodCliente );  
+		return "NOMSJ";
+	}    
+}
+
+/*==================================================================================================*/
+/* Funcion que Selecciona el idioma del cliente	exclusivo para esta accion por el trazalog			 */
+/*==================================================================================================*/
+BOOL bfnSelectIdiomaClienteAviso( long lCodCliente, char *szCodIdioma)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long	lhCodCliente;
+	char	szhCodIdioma[6];
+	int   ihUno_Negat = -1;
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "bfnSelectIdiomaClienteAviso";
+	
+	memset( szhCodIdioma, '\0', sizeof( szhCodIdioma ) );
+	lhCodCliente = lCodCliente;
+	
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL
+	SELECT NVL( COD_IDIOMA, :ihUno_Negat )
+	INTO	 :szhCodIdioma
+	FROM	 GE_CLIENTES
+	WHERE	 COD_CLIENTE = :lhCodCliente;
+	
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )	{
+		ifnTrazasLog( modulo, "Error al recuperar idioma cliente ==> [%ld].", LOG00, lhCodCliente );  
+		return FALSE;		
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )	{
+		ifnTrazasLog( modulo, "Cliente ==> [%ld], no existe en SISCEL.", LOG01, lhCodCliente );  
+		return FALSE;		
+	}
+
+	strcpy( szCodIdioma, szhCodIdioma );
+	return TRUE;
+
+} /* fin bfnSelectIdiomaClienteAviso */
+
+/*==================================================================================================*/
+/* Funcion que Selecciona el texto del mensaje a enviar al cliente y central de envio               */
+/* exclusivo para esta accion por el trazalog                                                       */
+/*==================================================================================================*/
+BOOL bfnSelectDescripcionMensajeAviso( char *szCodMensaje, char *szCodIdioma, char *szpDescMensaje)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	char	szhCodConcepto[13];
+	char	szhCodIdioma[6];
+	long	lhSecuenciaMensaje = -1;
+	char	szhDescMensaje[257];
+	char  szhICG_MENSA  [12];
+	char  szhCOD_MENSA  [12];
+   int   ihValor_uno  = 1;	
+EXEC SQL END DECLARE SECTION;
+char 	modulo[] = "bfnSelectDescripcionMensajeAviso";
+int	rr, ilong = 0;
+
+	memset(szhCodConcepto, '\0', sizeof( szhCodConcepto ) );
+	memset(szhCodIdioma, '\0', sizeof( szhCodIdioma ) );
+	memset(szhDescMensaje, '\0', sizeof( szhDescMensaje ) );
+	
+	strcpy(szhCodConcepto, szCodMensaje );
+	strcpy(szhCodIdioma, szCodIdioma );
+	strcpy(szhICG_MENSA,"ICG_MENSAJE");
+	strcpy(szhCOD_MENSA,"COD_MENSAJE");
+	
+	ilong = strlen( szhCodConcepto ) - 1;
+	for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szhCodConcepto[rr] != ' ') break ;
+	szhCodConcepto[rr + 1] = '\0';
+
+	ilong = strlen( szhCodIdioma ) - 1;
+	for( rr = ilong; rr >= 0; rr = rr - 1 ) if( szhCodIdioma[rr] != ' ') break ;
+	szhCodIdioma[rr + 1] = '\0';
+
+	sqlca.sqlcode=0; /* se resetea la vble sql para evitar rebalsamiento de memoria*/
+	EXEC SQL 
+	SELECT DES_CONCEPTO
+	INTO	 :szhDescMensaje	
+	FROM	 GE_MULTIIDIOMA
+	WHERE	 NOM_TABLA	 = :szhICG_MENSA
+	AND	 NOM_CAMPO	 = :szhCOD_MENSA
+	AND	 COD_CONCEPTO= :szhCodConcepto
+	AND	 COD_IDIOMA	 = :szhCodIdioma
+	AND 	 COD_PRODUCTO= :ihValor_uno;
+
+	if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Codigo => [%s], Idioma => [%s], error al Texto del Mensaje ==> [%s].", LOG00, szhCodConcepto, szhCodIdioma, sqlca.sqlerrm.sqlerrmc );  
+		return FALSE;		
+	}
+
+	if( sqlca.sqlcode == SQLNOTFOUND )
+	{
+		ifnTrazasLog( modulo, "Codigo => [%s], Idioma => [%s], , no existe Texto de Mensaje asociado.", LOG01, szhCodConcepto, szhCodIdioma );  
+		strcpy( szpDescMensaje, "X" );
+		return FALSE;		
+	}
+
+	strcpy( szpDescMensaje, szhDescMensaje );
+	return TRUE;
+
+}/* fin bfnSelectDescripcionMensajeAviso */
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

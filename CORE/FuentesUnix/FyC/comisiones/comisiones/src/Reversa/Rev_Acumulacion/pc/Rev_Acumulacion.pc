@@ -1,0 +1,280 @@
+/************************************************************************/
+/* Actualiza estados de cartera: Estados y situaciones de abonados para */
+/*                               ser considerados en proceso.           */
+/* Ingresa nuevas ventas periodo: Para lo que recurre a Siscel para     */
+/*                                recuperar las nuevas ventas.          */
+/* Discrimina clientes/abonados a ser procesados.                       */
+/*----------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                             */
+/* Inicio: Lunes 13 de Agosto del 2001.                                 */
+/* Por Fabian Aedo Ramirez.                                             */
+/*----------------------------------------------------------------------*/
+/* 20030930 Marcelo Quiroz G. Versionado Cuzco.                         */
+/* Se filtra carga de tablas mediante el campo ID_PERIODO               */
+/*                                                                      */
+/************************************************************************/
+#include "Rev_Acumulacion.h"
+#include "GEN_biblioteca.h"
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+EXEC SQL BEGIN DECLARE SECTION;
+	char    szhUser[30]="";
+	char    szhPass[30]="";
+	char    szhSysDate [17]="";
+	char    szFechaYYYYMMDD[9]="";	
+	char    szhIdPeriodo[11];
+    long    lhCodPeriodo;           	
+EXEC SQL END DECLARE SECTION;
+
+/*****************************************************************************/
+/* RUTINA PARA LIMPIEZA DE LA ACUMULACION ESTANDARD (CMT_ACUMULADOS).        */
+/*****************************************************************************/
+void    vRevAcumulados()
+{
+        
+        fprintf(pfLog, "\nElimina desde Acumulados. \n");
+                        
+        EXEC SQL delete FROM CMT_ACUMULADOS
+                WHERE ID_PERIODO = :szhIdPeriodo;
+                
+        stStatusProc.lCantAcumula = sqlca.sqlerrd[2];
+}
+/*****************************************************************************/
+/* RUTINA PARA LIMPIEZA DE LA ACUMULACION DE FONDOS COAP. (CMT_FONDOS_COAP). */
+/*****************************************************************************/
+void    vRevFondosCoap()
+{
+        
+       fprintf(pfLog, "\nElimina desde Fondos Coap. \n");
+                
+        EXEC SQL delete FROM CMT_FONDOS_COAP
+                WHERE COD_PERIODO = :lhCodPeriodo;
+                
+        stStatusProc.lCantFondosCoap = sqlca.sqlerrd[2];
+}
+/*****************************************************************************/
+/* RUTINA PARA LIMPIEZA ACUMULACION DE CONSUMOS COAP (CMT_CONSUMOS_COAP).    */
+/*****************************************************************************/
+void    vRevConsumosCoap()
+{
+        fprintf(pfLog, "\nElimina desde Consumos Coap. \n");
+        
+        EXEC SQL delete FROM CMT_CONSUMOS_COAP
+                WHERE COD_PERIODO = :lhCodPeriodo;
+                
+        stStatusProc.lCantConsumosCoap= sqlca.sqlerrd[2];
+}
+
+/*****************************************************************************/
+/* Rutina principal.                                                         */
+/*****************************************************************************/
+int     main (int argc, char *argv[])
+{       
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+		int     ibiblio = 0;
+		long    lSegIni, lSegFin;	
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+        lSegIni=lGetTimer();	
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+        memset(&stCiclo, 0, sizeof(reg_ciclo)); 
+        memset(&stStatusProc, 0, sizeof(rg_estadistica));
+        stArgs.bFlagUser = FALSE;
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+        memset(&stArgs, 0, sizeof(rg_argumentos));
+        vManejaArgs(argc, argv);
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+		fprintf(stderr, "\nstArgs.szUser        [%s]\n", stArgs.szUser);
+		fprintf(stderr, "\nstArgs.szPass        [%s]\n", stArgs.szPass);
+	
+		strcpy(szhUser, stArgs.szUser);                                                      
+		strcpy(szhPass, stArgs.szPass);                                                    
+		if(fnOraConnect(szhUser, szhPass) == FALSE)                                          
+		{                                                                                  
+		   	fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+		   	exit(EXIT_205);                                                            
+		}                                                                                  
+		else                                                                               
+		{                                                                                  
+	   		fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");     
+	   		fprintf(stderr, "Username: %s\n\n", szhUser);                              
+		}
+/*---------------------------------------------------------------------------*/
+/* Inicia estructura de proceso y bloques.                                   */
+/*---------------------------------------------------------------------------*/
+        vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);
+        ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);
+        if (ibiblio)
+        {
+            fprintf(stderr, "Error al Abrir Traza");
+            fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);
+            exit(ibiblio);
+        }
+/*---------------------------------------------------------------------------*/
+/* Configuracion de idioma espanol para tratamiento de fechas.               */
+/*---------------------------------------------------------------------------*/
+        if(strcmp(getenv("LC_TIME"), LC_TIME_SPANISH) == 0)
+        {
+                setlocale(LC_TIME, LC_TIME_SPANISH);
+        }
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+        fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");
+        if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)
+        {
+                exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));
+        }
+        fprintf(stderr, "Directorio de Logs            : [%s]\n", (char *)pszEnvLog);   
+/*---------------------------------------------------------------------------*/
+/* Generacion del nombre y creacion del archivo de log.                      */
+/*---------------------------------------------------------------------------*/
+		strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+                strncpy(szhSysDate, pszGetDateLog(),16);                                                            
+		strcpy(stArgsLog.szProceso,LOGNAME);                                                                     
+		strncpy(stArgsLog.szSysDate,szhSysDate,16);                                                                  
+		sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);                       
+	                                                                                                         
+		if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)                                                          
+		{                                                                                                        
+		    fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", LOGNAME);                                 
+	    	fprintf(stderr, "Revise su existencia.\n");                                                          
+	    	fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                
+	    	fprintf(stderr, "Proceso finalizado con error.\n");                                                  
+        	exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_301,"ARCHIVO DE DATOS NO PUDO SER ABIERTO.",0,0));
+		}                                                                                                               
+/*---------------------------------------------------------------------------*/
+/* Header.                                                                   */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();                                                               
+    	fprintf(stderr, "Procesando ...\n");                                        
+    	fprintf(pfLog, "%s\n", szRaya);                    
+    	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    	fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    	fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    	fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    	fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    	fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    	fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+/*---------------------------------------------------------------------------*/
+/* Modificacion de configuracion ambiental, para manejo de fechas en Oracle. */
+/*---------------------------------------------------------------------------*/
+        EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy hh24:mi:ss';        
+/*---------------------------------------------------------------------------*/
+/* Procesamiento principal:                                                  */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+    	fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    	fprintf(pfLog,  "Carga estructura de ciclo de proceso...\n\n");       
+    	fprintf(stderr, "Carga estructura de ciclo de proceso...\n\n");       
+    	if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    	{
+	    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    		fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    		fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    		fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    		exit(EXIT_101);
+    	}
+    	strcpy(szhIdPeriodo , stArgs.szIdPeriodo);   
+    	lhCodPeriodo        = stCiclo.lCodCiclComis ;  
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA LIMPIEZA DE LA ACUMULACION ESTANDARD (CMT_ACUMULADOS).        */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vRevAcumulados) Eliminando registros desde CMT_ACUMULADOS...\n");
+		fprintf(stderr,"\n(vRevAcumulados) Eliminando registros desde CMT_ACUMULADOS...\n");
+        vRevAcumulados();
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA LIMPIEZA DE LA ACUMULACION DE FONDOS COAP. (CMT_FONDOS_COAP). */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vRevFondosCoap) Eliminando registros desde CMT_FONDOS_COAP...\n");
+		fprintf(stderr,"\n(vRevFondosCoap) Eliminando registros desde CMT_FONDOS_COAP...\n");
+        vRevFondosCoap();
+/*---------------------------------------------------------------------------*/
+/* RUTINA PARA LIMPIEZA ACUMULACION DE CONSUMOS COAP (CMT_CONSUMOS_COAP).    */
+/*---------------------------------------------------------------------------*/
+    	vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vRevConsumosCoap) Eliminando registros desde CMT_CONSUMOS_COAP....\n");
+		fprintf(stderr,"\n(vRevConsumosCoap) Eliminando registros desde CMT_CONSUMOS_COAP....\n");
+        vRevConsumosCoap();
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+        lSegFin=lGetTimer();
+        stStatusProc.lSegProceso = lSegFin - lSegIni;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+		fprintf(pfLog,  "Estadistica del proceso\n");
+		fprintf(pfLog,  "------------------------\n");
+		fprintf(pfLog,  "Segundos Reales Utilizados             : [%d]\n\n", stStatusProc.lSegProceso);
+		fprintf(pfLog,  "Registros Acumulacion Estandard        : [%d]\n"  , stStatusProc.lCantAcumula);
+		fprintf(pfLog,  "Registros de Fondos COAP               : [%d]\n"  , stStatusProc.lCantFondosCoap);
+		fprintf(pfLog,  "Registros de Consumos COAP             : [%d]\n"  , stStatusProc.lCantConsumosCoap);
+	
+		fprintf(stderr, "Estadistica del proceso\n");
+		fprintf(stderr,"------------------------\n");
+		fprintf(stderr, "Segundos Reales Utilizados             : [%d]\n\n", stStatusProc.lSegProceso);
+		fprintf(stderr, "Registros Acumulacion Estandard        : [%d]\n"  , stStatusProc.lCantAcumula);
+		fprintf(stderr, "Registros de Fondos COAP               : [%d]\n"  , stStatusProc.lCantFondosCoap);
+		fprintf(stderr, "Registros de Consumos COAP             : [%d]\n"  , stStatusProc.lCantConsumosCoap);
+
+        ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,EXIT_0,"",stStatusProc.lSegProceso,0);
+        if (ibiblio)
+                exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));
+        EXEC SQL COMMIT WORK RELEASE; 
+          
+		vFechaHora();
+		fprintf(stderr, "Programa [%s] finalizado ok.\n", basename(argv[0]));
+		fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+		fprintf(pfLog, "Proceso [%s] finalizado ok.\n", basename(argv[0]));
+		fclose(pfLog);
+		return(EXIT_0);        
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

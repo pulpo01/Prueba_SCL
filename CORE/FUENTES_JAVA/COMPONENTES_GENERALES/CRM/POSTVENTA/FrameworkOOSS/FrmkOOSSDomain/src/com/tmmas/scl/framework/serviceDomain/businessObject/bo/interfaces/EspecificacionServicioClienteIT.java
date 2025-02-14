@@ -1,0 +1,17 @@
+package com.tmmas.scl.framework.serviceDomain.businessObject.bo.interfaces;
+
+import com.tmmas.scl.framework.productDomain.dataTransferObject.EspecProductoDTO;
+import com.tmmas.scl.framework.serviceDomain.dataTransferObject.EspecProvisionamientoListDTO;
+import com.tmmas.scl.framework.serviceDomain.dataTransferObject.EspecServicioClienteListDTO;
+import com.tmmas.scl.framework.serviceDomain.dataTransferObject.EspecServicioListaDTO;
+import com.tmmas.scl.framework.serviceDomain.dataTransferObject.ReglasListaNumerosListDTO;
+import com.tmmas.scl.framework.serviceDomain.exception.ServiceSpecEntitiesException;
+
+public interface EspecificacionServicioClienteIT {
+
+	public EspecProductoDTO obtenerEspecificacionServicioCliente (EspecProductoDTO especProducto) throws ServiceSpecEntitiesException;
+	
+	public EspecProvisionamientoListDTO obtenerEspecificacionesProvisionamiento (EspecServicioClienteListDTO espServCliList) throws ServiceSpecEntitiesException;
+	
+	public ReglasListaNumerosListDTO obtenerEspecificacionServicioLista(EspecServicioListaDTO especServicioLista) throws ServiceSpecEntitiesException;
+}

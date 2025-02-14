@@ -1,0 +1,1238 @@
+/****************************************************************************/
+/*                                                                          */
+/*    Descripcion : Funciones generales del modulo de Cobros                */
+/*                                                                          */
+/*    Modulo      : COBROS.                                                 */
+/*                                                                          */
+/*    Fichero     : genco.pc                                                */
+/*                                                                          */
+/*    Programador : Julia Serrano Pozo.                                     */
+/*                                                                          */
+/*    Fecha       : 21-01-1997                                              */
+/*                                                                          */
+/*    Modificacion: 21-01-1997                                              */
+/*                                                                          */
+/****************************************************************************/
+/*                                                                          */
+/*    Modificacion: 17-03-2004                                              */
+/*    Programador: PGonzalez 		                                    */
+/****************************************************************************/
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include <GenTypes.h>
+#include <geora.h>
+#include <GenORA.h>
+#include <genco.h>
+
+/****************************************************************************/
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+
+BOOL bfnDBValFecValor(char *szFecValor)
+/**
+Valida si la fecha pasada por argumento es menor o igual que SYSDATE.
+Si en mayor devuelve FALSE.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhFecha[9]   ; EXEC SQL VAR szhFecha IS STRING(9);
+	EXEC SQL END DECLARE SECTION;
+	
+	EXEC SQL
+	SELECT	TO_CHAR(SYSDATE,'yyyymmdd')
+	INTO	:szhFecha
+	FROM	DUAL;
+	
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr,"* Error recuperando fecha de sistema- %d\n",
+		sqlca.sqlcode);
+		fflush(stderr);                     
+		return FALSE;
+	}
+	
+	if (strcmp(szFecValor,szhFecha) > 0)
+		return FALSE;
+	else
+		return TRUE ;
+
+} /* Fin bfnDBValFecValor() */
+
+/*****************************************************************************/
+BOOL bfnDBSecCol(DATCON *stCon)
+/**
+Descripcion: Funcion que obtiene la secuencia de la proxima columna.
+Entrada:     stCon, estructura de datos de concepto generado.
+Salida:      TRUE, si todo va bien.
+             FALSE, si falla algo.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int     ihCodTipDocum;
+		long    lhCodAgente  ;
+		char    *szhLetra    ; EXEC SQL VAR szhLetra IS STRING(2);
+		int     ihCodCentremi;
+		long    lhNumSecuenci;
+		int     ihCodConcepto;
+		int     ihColumna    ;
+		short   shIndColumna ;
+	EXEC SQL END DECLARE SECTION;
+
+	ihCodTipDocum = stCon->iCodTipDocum;
+	lhCodAgente   = stCon->lCodAgente  ;
+	szhLetra      = stCon->szLetra     ;
+	ihCodCentremi = stCon->iCodCentremi;
+	lhNumSecuenci = stCon->lNumSecuenci;
+	ihCodConcepto = stCon->iCodConcepto;
+	
+	EXEC SQL
+	SELECT	COLUMNA
+	INTO	:ihColumna:shIndColumna
+	FROM	CO_SECARTERA
+	WHERE	NUM_SECUENCI   = :lhNumSecuenci
+	AND		COD_TIPDOCUM     = :ihCodTipDocum
+	AND		COD_VENDEDOR_AGENTE     = :lhCodAgente
+	AND		LETRA          = :szhLetra
+	AND		COD_CENTREMI   = :ihCodCentremi
+	AND		COD_CONCEPTO   = :ihCodConcepto
+	FOR UPDATE;
+	
+	if (sqlca.sqlcode < 0 && sqlca.sqlcode != NOT_FOUND)
+	{
+		fprintf(stderr,"* Error al obtener la secuencia de la columna %d\n", sqlca.sqlcode);
+		return FALSE ;
+	}
+	
+	if (sqlca.sqlcode == NOT_FOUND || shIndColumna == ORA_NULL)
+	{
+		ihColumna		= 0;
+		shIndColumna	= 0;
+		
+		EXEC SQL
+		INSERT INTO CO_SECARTERA (  NUM_SECUENCI  ,
+									COD_TIPDOCUM  ,
+									COD_VENDEDOR_AGENTE    ,
+									LETRA         ,
+									COD_CENTREMI  ,
+									COD_CONCEPTO  ,
+									COLUMNA       )
+		VALUES ( 					:lhNumSecuenci,
+									:ihCodTipDocum,
+									:lhCodAgente  ,
+									:szhLetra     ,
+									:ihCodCentremi,
+									:ihCodConcepto,
+									:ihColumna   :shIndColumna );
+		
+		if (sqlca.sqlcode != SQLOK)
+		{
+			fprintf(stderr,"Error al insertar en CO_SECARTERA %d\n", sqlca.sqlcode);
+			fflush(stderr);
+			return FALSE;
+		}
+	}
+	else
+	{
+		if (ihColumna == 9999)
+			ihColumna = 1;
+		else
+			ihColumna++;
+	}
+	
+	EXEC SQL
+	UPDATE	CO_SECARTERA
+	SET 	COLUMNA = :ihColumna
+	WHERE	NUM_SECUENCI   = :lhNumSecuenci
+	AND		COD_TIPDOCUM   = :ihCodTipDocum
+	AND		COD_VENDEDOR_AGENTE     = :lhCodAgente
+	AND		LETRA          = :szhLetra
+	AND		COD_CENTREMI   = :ihCodCentremi
+	AND		COD_CONCEPTO   = :ihCodConcepto;
+	
+	if( sqlca.sqlcode < 0 )
+	{
+		fprintf(stderr,"* Error al obtener la secuencia de la columna %d\n", sqlca.sqlcode);
+		return FALSE ;
+	}
+	stCon->iColumna = ihColumna;
+	return TRUE;
+} /* Fin bfnDBSecCol() */
+
+/*****************************************************************************/
+BOOL bfnDBIntCartera(DATCON *stConGen,long lCodCliente)
+/**
+Descripcion: Funcion que introduce en cartera el concepto generado.
+Entrada:     stConGen, estructura de concepto generado.
+             lCodCliente, codigo de cliente.
+Salida:      TRUE, si todo va bien.
+             FALSE, si falla algo.
+**/
+{
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		long    lhCodCliente          ;
+		int     ihCodTipDocum         ;
+		long    lhCodAgente           ;
+		char    *szhLetra             ; EXEC SQL VAR szhLetra IS STRING(2);
+		int     ihCodCentremi         ;
+		long    lhNumSecuenci         ;
+		int     ihCodConcepto         ;
+		int     ihColumna             ;
+		double  dhImporteDebe         ;
+		double  dhImporteHaber        ;
+		int     ihCodProducto         ;
+		int     ihIndContado          ;
+		int     ihIndFacturado        ;
+		char    szhFecEfectividad  [9]; EXEC SQL VAR szhFecEfectividad IS STRING(9);
+		char    szhFecVencimie     [9]; EXEC SQL VAR szhFecVencimie IS STRING(9);
+		char    szhFecCaducida     [9]; EXEC SQL VAR szhFecCaducida IS STRING(9);
+		char    szhFecAntiguedad   [9]; EXEC SQL VAR szhFecAntiguedad IS STRING(9);
+		char    szhFecPago         [9]; EXEC SQL VAR szhFecPago IS STRING(9);
+		long    lhNumAbonado          ;
+		long    lhNumFolio            ;
+		long    lhNumCuota            ;
+		int     ihSecCuota            ;
+		long    lhNumTransa           ;
+		long    lhNumVenta            ;
+		char    szhFolioCTC       [12]; EXEC SQL VAR szhFolioCTC IS STRING(12);
+		short   shIndFecVencimie      ;
+		short   shIndFecCaducida      ;
+		short   shIndFecAntiguedad    ;
+		short   shIndFecPago	      ;
+		short   shIndNumAbonado       ;
+		short   shIndNumFolio         ;
+		short   shIndNumCuota         ;
+		short   shIndSecCuota         ;
+		short   shIndNumTransa        ;
+		short   shIndNumVenta         ;
+		short   shIndFolioCTC         ;
+		char    szhPrefPlaza      [25+1]; EXEC SQL VAR szhPrefPlaza IS STRING(25+1);
+		char    szhCodOperadoraScl [6]; EXEC SQL VAR szhCodOperadoraScl IS STRING(6);
+		char    szhCodPlaza        [6]; EXEC SQL VAR szhCodPlaza IS STRING(6);
+		short   shIndPrefPlaza        ;
+		short   shIndCodOperadoraScl  ;
+		short   shIndCodPlaza         ;
+		
+	EXEC SQL END DECLARE SECTION;
+	
+	BOOL bResul;
+
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )
+	{
+		fprintf( stderr, "Error al realizar carga de bGetParamDecimales()." );
+		return FALSE;
+	}
+
+	lhCodCliente  = lCodCliente           ;
+	ihCodTipDocum = stConGen->iCodTipDocum;
+	lhCodAgente   = stConGen->lCodAgente  ;
+	szhLetra      = stConGen->szLetra     ;
+	ihCodCentremi = stConGen->iCodCentremi;
+	lhNumSecuenci = stConGen->lNumSecuenci;
+	ihCodConcepto = stConGen->iCodConcepto;
+	ihCodProducto = stConGen->iCodProducto;
+	
+	bResul = bfnDBSecCol(stConGen);
+	
+	if (!bResul)
+		return FALSE;
+
+	ihColumna = stConGen->iColumna;
+	
+	dhImporteDebe = stConGen->dImporteDebe;
+	dhImporteHaber = stConGen->dImporteHaber;
+	
+	ihIndContado = stConGen->iIndContado;
+	ihIndFacturado = stConGen->iIndFacturado;
+	
+	strcpy(szhFecEfectividad,stConGen->szFecEfectividad);
+
+	if (strlen(stConGen->szFecVencimie) == 0)
+	{
+		strcpy(szhFecVencimie,"");
+		shIndFecVencimie = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhFecVencimie,stConGen->szFecVencimie);
+		shIndFecVencimie = 0;
+	}
+	
+	if (strlen(stConGen->szFecCaducida) == 0)
+	{
+		strcpy(szhFecCaducida,"");
+		shIndFecCaducida = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhFecCaducida,stConGen->szFecCaducida);
+		shIndFecCaducida = 0;
+	}
+	
+	if (strlen(stConGen->szFecAntiguedad) == 0)
+	{
+		strcpy(szhFecAntiguedad,"");
+		shIndFecAntiguedad = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhFecAntiguedad,stConGen->szFecAntiguedad);
+		shIndFecAntiguedad = 0;
+	}
+
+	if (strlen(stConGen->szFecPago) == 0)
+	{
+		strcpy(szhFecPago,"");
+		shIndFecPago = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhFecPago,stConGen->szFecPago);
+		shIndFecPago = 0;
+	}
+	
+	if (stConGen->lNumAbonado == ORA_NULL)
+	{
+		lhNumAbonado = ORA_NULL;
+		shIndNumAbonado = ORA_NULL;
+	}
+	else
+	{
+		shIndNumAbonado = 0;
+		lhNumAbonado = stConGen->lNumAbonado;
+	}
+
+	if (stConGen->lNumFolio == ORA_NULL)
+	{
+		lhNumFolio = ORA_NULL;
+		shIndNumFolio = ORA_NULL;
+	}
+	else
+	{
+		shIndNumFolio = 0;
+		lhNumFolio = stConGen->lNumFolio;
+	}
+
+	if (stConGen->lNumCuota == ORA_NULL)
+	{
+		lhNumCuota = ORA_NULL;
+		shIndNumCuota = ORA_NULL;
+	}
+	else
+	{
+		shIndNumCuota = 0;
+		lhNumCuota = stConGen->lNumCuota;
+	}
+
+	if (stConGen->iSecCuota == ORA_NULL)
+	{
+		ihSecCuota = ORA_NULL;
+		shIndSecCuota = ORA_NULL;
+	}
+	else
+	{
+		shIndSecCuota = 0;
+		ihSecCuota = stConGen->iSecCuota;
+	}
+
+	if (stConGen->lNumTransa == ORA_NULL)
+	{
+		lhNumTransa = ORA_NULL;
+		shIndNumTransa = ORA_NULL;
+	}
+	else
+	{
+		shIndNumTransa = 0;
+		lhNumTransa = stConGen->lNumTransa;
+	}
+
+	if (stConGen->lNumVenta == ORA_NULL)
+	{
+		lhNumVenta = ORA_NULL;
+		shIndNumVenta = ORA_NULL;
+	}
+	else
+	{
+		shIndNumVenta = 0;
+		lhNumVenta = stConGen->lNumVenta;
+	}
+
+	if (strlen(stConGen->szFolioCTC) == 0)
+	{
+		strcpy(szhFolioCTC,"");
+		shIndFolioCTC = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhFolioCTC,stConGen->szFolioCTC);
+		shIndFolioCTC = 0;
+	}
+	
+	if (strlen(stConGen->szPrefPlaza) == 0)
+	{
+		strcpy(szhPrefPlaza,"");
+		shIndPrefPlaza = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhPrefPlaza,stConGen->szPrefPlaza);
+		shIndPrefPlaza = 0;
+	}
+
+	if (strlen(stConGen->szCodOperadoraScl) == 0)
+	{
+		strcpy(szhCodOperadoraScl,"");
+		shIndCodOperadoraScl = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhCodOperadoraScl,stConGen->szCodOperadoraScl);
+		shIndCodOperadoraScl = 0;
+	}
+
+	if (strlen(stConGen->szCodPlaza) == 0)
+	{
+		strcpy(szhCodPlaza,"");
+		shIndPrefPlaza = ORA_NULL;
+	}
+	else
+	{
+		strcpy(szhCodPlaza,stConGen->szCodPlaza);
+		shIndCodPlaza = 0;
+	}
+		
+	/* manejo de decimales segun la operadora local */
+	dhImporteDebe = fnCnvDouble( dhImporteDebe, 0 );
+	/* manejo de decimales segun la operadora local */
+	dhImporteHaber = fnCnvDouble( dhImporteHaber, 0 );
+
+	/***************************************************/
+	fprintf( stdout,"cliente           [%ld]\n", lhCodCliente );
+	fprintf( stdout,"tipdocum          [%d]\n",	ihCodTipDocum );
+	fprintf( stdout,"agente            [%ld]\n", lhCodAgente );
+	fprintf( stdout,"letra             [%s]\n",	szhLetra );
+	fprintf( stdout,"centremi          [%d]\n",	ihCodCentremi );
+	fprintf( stdout,"numsecuenci       [%ld]\n", lhNumSecuenci );
+	fprintf( stdout,"concepto          [%d]\n",	ihCodConcepto );
+	fprintf( stdout,"columna           [%d]\n",	ihColumna );
+	fprintf( stdout,"producto          [%d]\n",	ihCodProducto );
+	fprintf( stdout,"importe debe      [%f]\n",	dhImporteDebe );
+	fprintf( stdout,"importe haber     [%f]\n",	dhImporteHaber );
+	fprintf( stdout,"contado           [%d]\n",	ihIndContado );
+	fprintf( stdout,"facturado         [%d]\n",	ihIndFacturado );
+	fprintf( stdout,"fecha efectividad [%s]\n",	szhFecEfectividad );
+	fprintf( stdout,"fecha vencimiento [%s]\n",	szhFecVencimie );
+	fprintf( stdout,"fecha caducidad   [%s]\n",	szhFecCaducida );
+	fprintf( stdout,"fecha antiguedad  [%s]\n",	szhFecAntiguedad );
+	fprintf( stdout,"fecha Pago        [%s]\n",	szhFecPago );
+	fprintf( stdout,"num abonado       [%ld]\n", lhNumAbonado );
+	fprintf( stdout,"num folio         [%ld]\n", lhNumFolio );
+	fprintf( stdout,"num cuota         [%ld]\n", lhNumCuota );
+	fprintf( stdout,"sec cuota         [%d]\n",	ihSecCuota );
+	fprintf( stdout,"num transa        [%ld]\n", lhNumTransa );
+	fprintf( stdout,"num venta         [%ld]\n", lhNumVenta );
+	fprintf( stdout,"FolioCTC          [%s]\n",	szhFolioCTC );
+	fprintf( stdout,"prefijo plaza     [%s]\n",	szhPrefPlaza );        
+	fprintf( stdout,"codigo operadora  [%s]\n",	szhCodOperadoraScl );  
+	fprintf( stdout,"codigo plaza      [%s]\n",	szhCodPlaza );         
+	fflush(stdout);
+	/***************************************************/
+	
+	EXEC SQL 
+	INSERT INTO CO_CARTERA	(	COD_CLIENTE   ,
+								NUM_SECUENCI  ,
+								COD_TIPDOCUM  ,
+								COD_VENDEDOR_AGENTE    ,
+								LETRA         ,
+								COD_CENTREMI  ,
+								COD_CONCEPTO  ,
+								COLUMNA       ,
+								COD_PRODUCTO  ,
+								IMPORTE_DEBE  ,
+								IMPORTE_HABER ,
+								IND_CONTADO   ,
+								IND_FACTURADO ,
+								FEC_EFECTIVIDAD,
+								FEC_VENCIMIE  ,
+								FEC_CADUCIDA  ,
+								FEC_ANTIGUEDAD,
+								FEC_PAGO	,
+								NUM_ABONADO   ,
+								NUM_FOLIO     ,
+								NUM_CUOTA     ,
+								SEC_CUOTA     ,
+								NUM_TRANSACCION,
+								NUM_VENTA     ,
+								NUM_FOLIOCTC  ,
+						                PREF_PLAZA    ,
+                				                COD_OPERADORA_SCL,
+                				                COD_PLAZA         )
+	VALUES					(	:lhCodCliente ,
+								:lhNumSecuenci,
+								:ihCodTipDocum,
+								:lhCodAgente  ,
+								:szhLetra     ,
+								:ihCodCentremi,
+								:ihCodConcepto,
+								:ihColumna    ,
+								:ihCodProducto,
+								:dhImporteDebe,
+								:dhImporteHaber,
+								:ihIndContado ,
+								:ihIndFacturado,
+								TO_DATE(:szhFecEfectividad,'YYYYMMDD'),
+								TO_DATE(:szhFecVencimie:shIndFecVencimie,'YYYYMMDD'),
+								SYSDATE, /* antes TO_DATE(TO_CHAR(:szhFecCaducida:shIndFecCaducida),'YYYYMMDD'), */
+								TO_DATE(:szhFecAntiguedad:shIndFecAntiguedad,'YYYYMMDD'),
+								TO_DATE(:szhFecPago:shIndFecPago,'YYYYMMDD'),
+								:lhNumAbonado:shIndNumAbonado,
+								:lhNumFolio:shIndNumFolio,
+								:lhNumCuota:shIndNumCuota,
+								:ihSecCuota:shIndSecCuota,
+								:lhNumTransa:shIndNumTransa,
+								:lhNumVenta:shIndNumVenta,
+								:szhFolioCTC:shIndFolioCTC,
+						       	        :szhPrefPlaza:shIndPrefPlaza,
+	          					        :szhCodOperadoraScl:shIndCodOperadoraScl,
+	          					        :szhCodPlaza:shIndCodPlaza );
+
+	if( sqlca.sqlcode != 0 )
+	{
+		fprintf(stderr,"ERROR al insertar en CO_CARTERA %d : %s\n",sqlca.sqlcode,sqlca.sqlerrm.sqlerrmc);
+		fflush(stderr);
+		return FALSE;
+	}
+	fprintf( stdout, "se ha insertado un registro en cartera\n" );
+	fflush(stdout);
+	return TRUE;
+
+}/* Fin bfnDBIntCartera() */
+/*****************************************************************************/
+BOOL bfnDBUpdCartera(DATCON *stCon,long lCodCliente)
+/**
+Descripcion: Modifica el importe del concepto
+Salida     : True, si todo va ok
+             False, si se genera algun error
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		int    ihCodTipDocum   ;
+		long   lhCodAgente     ;
+		char   *szhLetra       ; EXEC SQL VAR szhLetra     IS STRING(2);
+		int    ihCodCentrEmi   ;
+		long   lhNumSecuenci   ;
+		int    ihCodConcepto   ;
+		int    ihColumna       ;
+		char   *szhFecHistorico; EXEC SQL VAR szhFecHistorico IS STRING(9);
+		int    ihCodProducto   ;
+		long   lhNumAbonado    ;
+		double dhImporteHaber  ;
+		double dhImporteDebe   ;
+		long   lhCodCliente    ;
+		long   lhNumFolio      ;
+		int    ihFlgCastigo    ;
+		double dhImpHaberAnt   ;
+		double dhMtoPago       ;
+		int    ihSecCuota      ;
+	EXEC SQL END DECLARE SECTION;
+	
+	lhCodCliente  = lCodCliente;
+	lhNumFolio    = stCon->lNumFolio   ;
+	ihCodTipDocum = stCon->iCodTipDocum;
+	ihCodCentrEmi = stCon->iCodCentremi;
+	lhNumSecuenci = stCon->lNumSecuenci;
+	lhCodAgente   = stCon->lCodAgente ;
+	szhLetra      = stCon->szLetra     ;
+	ihCodConcepto = stCon->iCodConcepto;
+	ihColumna     = stCon->iColumna;
+	ihCodProducto = stCon->iCodProducto;
+	lhNumAbonado  = stCon->lNumAbonado;
+	dhImporteHaber= stCon->dImporteHaber;
+	dhImporteDebe = stCon->dImporteDebe;
+
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )
+	{
+		fprintf( stderr, "Error al realizar carga de bGetParamDecimales()." );
+		return FALSE;
+	}
+
+	/*if ( ihCodTipDocum == 1 || ihCodTipDocum == 2 || ihCodTipDocum == 18 || ihCodTipDocum == 23 ) */
+	if( ihCodConcepto != 2 && ihCodConcepto != 6  ) /* MGG_31-01-02 por mandato de JLR */
+	{
+		/* Valida si tiene Castigos asociados */
+		EXEC SQL
+		SELECT	NVL(COUNT(*),0)
+		INTO	:ihFlgCastigo
+		FROM	CO_CARTERA
+		WHERE	COD_CLIENTE = :lhCodCliente
+		AND		NUM_FOLIO = :lhNumFolio
+		AND		COD_CONCEPTO = 6; /* castigo */
+		
+		if( ihFlgCastigo )
+		{
+			EXEC SQL
+			SELECT	IMPORTE_HABER
+			INTO	:dhImpHaberAnt
+			FROM	CO_CARTERA
+			WHERE	COD_CLIENTE    = :lhCodCliente
+			AND		NUM_SECUENCI   = :lhNumSecuenci
+			AND		COD_TIPDOCUM   = :ihCodTipDocum
+			AND		COD_VENDEDOR_AGENTE = :lhCodAgente
+			AND		LETRA          = :szhLetra
+			AND		COD_CENTREMI   = :ihCodCentrEmi
+			AND		COD_CONCEPTO   = :ihCodConcepto
+			AND		COLUMNA        = :ihColumna;
+		
+			if( sqlca.sqlcode != 0 )
+			{
+				fprintf(stderr,"\nError en SELECT a la CO_CARTERA %d\n",sqlca.sqlcode);
+				fflush(stderr);
+				return FALSE;
+			}
+			
+			dhMtoPago = dhImporteHaber - dhImpHaberAnt;
+			if(dhMtoPago > 0)
+			{
+				if(!bfnDBUpdCastigo(lhCodCliente,lhNumFolio,dhMtoPago))
+				{
+					fprintf(stderr,"\nERROR en llamada a procedimiento bfnDBUpdCastigo\n");
+					fflush(stderr);
+					return FALSE;
+				}
+			}
+		}
+	}
+	
+	dhImporteHaber = fnCnvDouble( dhImporteHaber, 0 );
+	dhImporteDebe = fnCnvDouble( dhImporteDebe, 0 );
+	
+	/* Modifica de cartera el importe */
+	EXEC SQL
+	UPDATE	CO_CARTERA
+	SET		IMPORTE_HABER	= :dhImporteHaber,
+			IMPORTE_DEBE	= :dhImporteDebe,
+			FEC_PAGO		= SYSDATE
+	WHERE	COD_CLIENTE = :lhCodCliente
+	AND		NUM_SECUENCI   	= :lhNumSecuenci
+	AND		COD_TIPDOCUM   	= :ihCodTipDocum
+	AND		COD_VENDEDOR_AGENTE = :lhCodAgente
+	AND		LETRA          	= :szhLetra
+	AND		COD_CENTREMI   	= :ihCodCentrEmi
+	AND		COD_CONCEPTO   	= :ihCodConcepto
+	AND		COLUMNA        	= :ihColumna;
+
+	if( sqlca.sqlcode != 0 )
+	{
+		fprintf(stderr,"* Error en update co_cartera %d\n",sqlca.sqlcode);
+		fflush(stderr);
+		return FALSE;
+	}
+	
+	return TRUE;
+} /* Fin bfnDBUpdCartera() */
+/*****************************************************************************/
+BOOL bfnDBLlevarACanCtos(DATCON *stCon,long lCodCliente,char *szFecHis)
+/**
+Descripcion: Mueve el concepto de argumento y todos sus relacionados de
+             cartera a cancelados.
+Salida     : En caso de error devuelve FALSE.
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long   lhCodCliente    ;
+		int    ihCodTipDocum   ;
+		long   lhCodAgente     ;
+		char   *szhLetra       ; EXEC SQL VAR szhLetra     IS STRING(2);
+		int    ihCodCentrEmi   ;
+		long   lhNumSecuenci   ;
+		int    ihCodConcepto   ;
+		int    ihColumna       ;
+		char   *szhFecHistorico; EXEC SQL VAR szhFecHistorico IS STRING(9);
+		int    ihCodProducto   ;
+		long   lhNumAbonado    ;
+	EXEC SQL END DECLARE SECTION;
+	
+	fprintf(stdout,"\bfnDBLlevarACanCtos() \n");
+	
+	/* Prepara datos para "move" */
+	lhCodCliente  = lCodCliente ;
+	ihCodTipDocum = stCon->iCodTipDocum;
+	lhCodAgente   = stCon->lCodAgente ;
+	szhLetra      = stCon->szLetra     ;
+	ihCodCentrEmi = stCon->iCodCentremi;
+	lhNumSecuenci = stCon->lNumSecuenci;
+	ihCodConcepto = stCon->iCodConcepto;
+	ihColumna     = stCon->iColumna;
+	ihCodProducto = stCon->iCodProducto;
+	lhNumAbonado  = stCon->lNumAbonado;
+	
+	szhFecHistorico = szFecHis;
+	fprintf(stdout,"Cliente %ld\n",lhCodCliente);
+	fprintf(stderr, "\nFecha HISTORI: %s\n", szhFecHistorico);
+	fprintf(stdout,"tipdocum %d\n",ihCodTipDocum);
+	fprintf(stdout,"agente %ld\n",lhCodAgente);
+	fprintf(stdout,"letra %s\n",szhLetra);
+	fprintf(stdout,"centremi %d\n",ihCodCentrEmi);
+	fprintf(stdout,"secuen %d\n",lhNumSecuenci);
+	fprintf(stdout,"concepto %d\n",ihCodConcepto); 
+	fprintf(stdout,"columna %d\n",ihColumna); 
+	
+	EXEC SQL 
+	INSERT INTO CO_CANCELADOS (	COD_CLIENTE    ,
+								NUM_SECUENCI   ,
+								COD_TIPDOCUM   ,
+								COD_VENDEDOR_AGENTE     ,
+								LETRA          ,
+								COD_CENTREMI   ,
+								COD_CONCEPTO   ,
+								COLUMNA        ,
+								COD_PRODUCTO   ,
+								IMPORTE_DEBE   ,
+								IMPORTE_HABER  ,
+								IND_CONTADO    ,
+								IND_FACTURADO  ,
+								FEC_EFECTIVIDAD,
+								FEC_CANCELACION,
+								IND_PORTADOR   ,
+								FEC_VENCIMIE   ,
+								FEC_CADUCIDA   ,
+								FEC_ANTIGUEDAD ,
+								FEC_PAGO       ,
+								NUM_ABONADO    ,
+								NUM_FOLIO      ,
+								NUM_CUOTA      ,
+								SEC_CUOTA      ,
+								NUM_TRANSACCION,
+								NUM_VENTA      ,
+								NUM_FOLIOCTC   ,
+						                PREF_PLAZA         , 
+                				                COD_OPERADORA_SCL  , 
+                				                COD_PLAZA          ) 
+	SELECT	COD_CLIENTE    ,
+			NUM_SECUENCI   ,
+			COD_TIPDOCUM   ,
+			COD_VENDEDOR_AGENTE     ,
+			LETRA          ,
+			COD_CENTREMI   ,
+			COD_CONCEPTO   ,
+			COLUMNA        ,
+			COD_PRODUCTO   ,
+			IMPORTE_DEBE   ,
+			IMPORTE_HABER  ,
+			IND_CONTADO    ,
+			IND_FACTURADO  ,
+			FEC_EFECTIVIDAD,
+			TO_DATE(:szhFecHistorico,'yyyymmdd'),
+			0,
+			FEC_VENCIMIE   ,
+			FEC_CADUCIDA   ,
+			FEC_ANTIGUEDAD ,
+			SYSDATE        ,
+			NUM_ABONADO    ,
+			NUM_FOLIO      ,
+			NUM_CUOTA      ,
+			SEC_CUOTA      ,
+			NUM_TRANSACCION,
+			NUM_VENTA      ,
+			NUM_FOLIOCTC   ,
+                        PREF_PLAZA         ,
+			COD_OPERADORA_SCL  ,
+			COD_PLAZA           
+	FROM	CO_CARTERA
+	WHERE	COD_CLIENTE        = :lhCodCliente
+	AND		NUM_SECUENCI   = :lhNumSecuenci
+	AND		COD_TIPDOCUM   = :ihCodTipDocum
+	AND		COD_VENDEDOR_AGENTE     = :lhCodAgente
+	AND		LETRA          = :szhLetra
+	AND		COD_CENTREMI   = :ihCodCentrEmi
+	AND		COD_PRODUCTO   = :ihCodProducto
+	AND		NUM_ABONADO    = :lhNumAbonado
+	AND		COD_CONCEPTO   = :ihCodConcepto
+	AND		COLUMNA        = :ihColumna;
+	
+	if( sqlca.sqlcode != 0 )
+	{
+		fprintf(stderr,"* Error en Insert CANCELADOS %s\n", sqlca.sqlerrm.sqlerrmc);
+		fflush(stderr);
+		return FALSE;
+	}
+	
+	/* Borramos de cartera */
+	EXEC SQL
+	DELETE 	CO_CARTERA
+	WHERE  	COD_CLIENTE    = :lhCodCliente
+	AND		NUM_SECUENCI   = :lhNumSecuenci
+	AND		COD_TIPDOCUM   = :ihCodTipDocum
+	AND		COD_VENDEDOR_AGENTE	= :lhCodAgente
+	AND		LETRA          = :szhLetra
+	AND		COD_CENTREMI   = :ihCodCentrEmi
+	AND		COD_CONCEPTO   = :ihCodConcepto
+	AND		COLUMNA        = :ihColumna
+	AND		COD_PRODUCTO   = :ihCodProducto
+	AND		NUM_ABONADO    = :lhNumAbonado;
+	
+	if (sqlca.sqlcode != 0)
+	{
+	fprintf(stderr,"* Error en Delete %s\n",sqlca.sqlerrm.sqlerrmc);
+	fflush(stderr);
+	return FALSE;
+	}
+	
+	return TRUE;
+} /* Fin DBLlevarACanCtos(.)  */
+
+/*****************************************************************************/
+BOOL bfnDBObtConCre(int *iCodConcepto)
+/**
+Descripcion: Obtener el codigo de concepto credito
+Salida     : True, si todo va ok
+             False, si se genera algun error
+**/
+{
+  EXEC SQL BEGIN DECLARE SECTION;
+
+      int    ihCodConcepto   ;
+
+   EXEC SQL END DECLARE SECTION;
+
+  	/* Obtener el concepto abono */
+  	EXEC SQL
+		SELECT A.COD_CONCEPTO
+		INTO :ihCodConcepto
+		FROM CO_CONCEPTOS A, CO_TIPCONCEP B
+		WHERE A.COD_TIPCONCE = B.COD_TIPCONCE
+		AND   B.IND_ABONO = 1;
+
+  	if (sqlca.sqlcode != 0)
+  	{
+    	 fprintf(stderr,"* Error al obtener el concepto abono %d\n",sqlca.sqlcode);
+         fflush(stderr);																				
+     	 return FALSE;
+  	}
+
+	*iCodConcepto = ihCodConcepto;
+
+   return TRUE;
+
+} /* Fin bfnDBObtConCre() */
+/*****************************************************************************/
+int iDBTomarSecuencia(int iCodTipDocum,int iCodCentrEmi,char *szLetra, long* lNumSec)
+{
+/** Funcion que recupera el numero de secuencia de la tabla que le corresponda
+en funcion del tipo de documento   **/
+
+  EXEC SQL BEGIN DECLARE SECTION;
+
+   long lhNumSec    ;
+
+  EXEC SQL END DECLARE SECTION;
+
+  fprintf(stderr,"DBTomarSecuencia() \n");
+  fprintf(stdout,"Documento : %d \n",iCodTipDocum);
+
+	switch(iCodTipDocum)
+	{
+		case iDOCPAGO:
+  			EXEC SQL 
+				SELECT CO_SEQ_PAGO.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCNCI:
+  			EXEC SQL 
+				SELECT CO_SEQ_NCI.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCNDI:
+  			EXEC SQL 
+				SELECT CO_SEQ_NDI.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCCARTAPAGO:
+  			EXEC SQL 
+				SELECT CO_SEQ_CARTAPAGO.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCPAGOCUOTA:
+  			EXEC SQL 
+				SELECT CO_SEQ_PAGOCUOTA.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCPAGOCARRIER:
+  			EXEC SQL 
+				SELECT CO_SEQ_PAGOCARRIER.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCRESPALDO:
+  			EXEC SQL 
+				SELECT CO_SEQ_RESPALDO.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCPAGARE:
+  			EXEC SQL 
+				SELECT CO_SEQ_PAGARE.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCRECEXT:
+  			EXEC SQL 
+				SELECT CO_SEQ_RECEXT.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+		case iDOCCCONTA:
+  			EXEC SQL 
+				SELECT CO_SEQ_CASTCONTABLE.NEXTVAL INTO :lhNumSec
+             FROM DUAL;
+			break;
+	}
+
+  	if(sqlca.sqlcode != 0) 
+    		return sqlca.sqlcode;
+
+  	fprintf(stdout,"Secuencia : %d \n",lhNumSec);
+  *lNumSec = lhNumSec;
+
+  return 0;
+
+} /* Fin ifnDBTomarSecuencia(...) */
+
+/****************************************************************************
+	Crea Directorio(si no existe) con la Fecha del dia en el PATH 
+	asociado al campo de la CO_DATGEN que recibe por parametro
+****************************************************************************/
+BOOL bfnDBCreaDirPath(char *szColumnName, char *szRetPath)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+
+char szhColumnName[20]   ; EXEC SQL VAR szhColumnName IS STRING(20);
+char szhDatGenPath[255]  ; EXEC SQL VAR szhDatGenPath IS STRING(255);
+char szhQuery     [50]   ; EXEC SQL VAR szhQuery      IS STRING(50);
+char szhFecha     [11]   ; EXEC SQL VAR szhFecha      IS STRING(11);
+char szhMkDir     [300]  ; EXEC SQL VAR szhMkDir      IS STRING(300);
+
+EXEC SQL END DECLARE SECTION;
+
+	if (strncmp(szColumnName,"PATH",4))
+   	{
+		fprintf(stderr,"ERROR en bfnDBCreaDirPath : el parametro recibido no comienza con PATH.\n");
+		fflush(stderr);
+		return FALSE;
+	}
+
+	strcpy(szhQuery,"SELECT ");
+	strcat(szhQuery,szColumnName);
+	strcat(szhQuery," FROM CO_DATGEN ");
+
+	EXEC SQL PREPARE sql_query_alias FROM :szhQuery;
+	if ( sqlca.sqlcode != SQLOK )
+   	{
+		fprintf(stderr,"ERROR en bfnDBCreaDirPath : en SQL-PREPARE del select.\n");
+		fflush(stderr);
+		return FALSE;
+	}
+
+	EXEC SQL DECLARE cursor_alias CURSOR FOR sql_query_alias;
+	if ( sqlca.sqlcode != SQLOK )
+   	{
+		fprintf(stderr,"ERROR en bfnDBCreaDirPath : en declaracion del Cursor.\n");
+		fflush(stderr);
+		return FALSE;
+	}
+
+	EXEC SQL OPEN cursor_alias;
+	if ( sqlca.sqlcode != SQLOK )
+   	{
+		fprintf(stderr,"ERROR en bfnDBCreaDirPath : en Open del Cursor.\n");
+		fflush(stderr);
+		return FALSE;
+	}
+
+	for (;;)
+	{
+		EXEC SQL FETCH cursor_alias INTO :szhDatGenPath;
+		if ( sqlca.sqlcode == NOT_FOUND )
+			break;
+	}
+	EXEC SQL CLOSE cursor_alias;
+
+	EXEC SQL
+		SELECT TO_CHAR(SYSDATE,'dd-mm-yyyy')
+		INTO :szhFecha
+		FROM DUAL;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr,"ERROR en bfnDBCreaDirPath : Al seleccionar Fecha.\n");
+		fflush(stderr);
+		return FALSE;
+	}
+	strcat(szhDatGenPath,"/");
+	strcat(szhDatGenPath,szhFecha);
+	strcpy(szRetPath,szhDatGenPath);
+
+	strcpy(szhMkDir,"mkdir -p ");
+	strcat(szhMkDir,szhDatGenPath);
+
+	if (system(szhMkDir)) 
+	{
+		fprintf(stderr,"ERROR en bfnDBCreaDirPath : Al Crear directorio %s\n",szRetPath);
+		fflush(stderr);
+		return FALSE;
+	}
+
+	return TRUE;
+
+} /* Fin bfnDBCreaDirPath() */
+
+/*****************************************************************************/
+BOOL bfnDBUpdCastigo(long lCodCliente,long lNumFolio,double dMtoPago)
+/**
+Descripcion: Modifica el importe Debe del Castigo
+Salida     : True, si todo va ok
+             False, si se genera algun error
+**/
+{
+	DATCON	stCon;
+  EXEC SQL BEGIN DECLARE SECTION;
+
+      char   szhLetra[2]     ; EXEC SQL VAR szhLetra IS STRING(2);
+      int    ihCodCentrEmi   ;
+      long   lhNumSecuenci   ;
+      long   lhNumAbonado    ;
+      long   lhCodVendedorAgente   ;
+      int    ihColumna       ;
+      int    ihCodProducto   ;
+      int    ihCodCentremi   ;
+      int    ihFlgCancelados ;
+      double dhMtoSaldo      ;
+      double dhMtoDebe       ;
+      char   szhFecHist[9]   ; EXEC SQL VAR szhFecHist IS STRING(9);
+      int    ihSecCuota      ;
+   EXEC SQL END DECLARE SECTION;
+
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )
+	{
+		fprintf( stderr, "Error al realizar carga de bGetParamDecimales()." );
+		return FALSE;
+	}
+
+   EXEC SQL DECLARE CASTIGOS_ASOC CURSOR FOR
+		SELECT	NUM_SECUENCI,
+			COD_VENDEDOR_AGENTE,
+			LETRA,
+			COD_CENTREMI,
+			COLUMNA,
+			IMPORTE_HABER - IMPORTE_DEBE,
+			TO_CHAR(SYSDATE,'YYYYMMDD'),
+			NUM_ABONADO,
+			COD_PRODUCTO,
+			NVL(SEC_CUOTA,-1)
+		FROM	CO_CARTERA
+		WHERE	COD_CLIENTE = :lCodCliente
+		AND	NUM_FOLIO   = :lNumFolio
+		AND	COD_TIPDOCUM = 39;
+
+	EXEC SQL OPEN CASTIGOS_ASOC;
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf(stderr,"\nERROR al Abrir Cursor CASTIGOS_ASOC.\n");
+		fflush(stderr);
+		return FALSE;
+	}
+
+	while(1)
+	{
+		EXEC SQL FETCH CASTIGOS_ASOC INTO
+			:lhNumSecuenci,
+			:lhCodVendedorAgente,
+			:szhLetra,
+			:ihCodCentremi,
+			:ihColumna,
+			:dhMtoSaldo,
+			:szhFecHist,
+			:lhNumAbonado,
+			:ihCodProducto,
+			:ihSecCuota;
+		if (sqlca.sqlcode == NOT_FOUND)
+			break;
+
+		if (dMtoPago >= dhMtoSaldo)
+		{
+			dhMtoDebe = dhMtoSaldo;
+			dMtoPago = dMtoPago - dhMtoSaldo;
+			ihFlgCancelados = 1;
+		}
+		else
+		{
+			dhMtoDebe = dMtoPago;
+			dMtoPago = 0;
+			ihFlgCancelados = 0;
+		}
+
+		/* manejo de decimales segun la operadora local */
+		dhMtoDebe = fnCnvDouble( dhMtoDebe, 0 );
+
+        if ( ihSecCuota == -1 ) /* Valor Null */
+        {
+			EXEC SQL
+			UPDATE	CO_CARTERA
+			SET		IMPORTE_DEBE = IMPORTE_DEBE + :dhMtoDebe,
+					FEC_PAGO = TO_DATE(:szhFecHist,'YYYYMMDD')
+			WHERE	COD_CLIENTE = :lCodCliente
+			AND		NUM_SECUENCI = :lhNumSecuenci
+			AND		COD_TIPDOCUM = 39
+			AND		COD_VENDEDOR_AGENTE = :lhCodVendedorAgente
+			AND		LETRA = :szhLetra
+			AND		COD_CENTREMI = :ihCodCentremi
+			AND		COD_CONCEPTO = 6
+			AND		COLUMNA = :ihColumna
+			AND		SEC_CUOTA IS NULL ;
+	    }
+	    else /* Valor No Null */
+	    {
+			EXEC SQL
+			UPDATE	CO_CARTERA
+			SET		IMPORTE_DEBE = IMPORTE_DEBE + :dhMtoDebe,
+					FEC_PAGO = TO_DATE(:szhFecHist,'YYYYMMDD')
+			WHERE	COD_CLIENTE = :lCodCliente
+			AND		NUM_SECUENCI = :lhNumSecuenci
+			AND		COD_TIPDOCUM = 39
+			AND		COD_VENDEDOR_AGENTE = :lhCodVendedorAgente
+			AND		LETRA = :szhLetra
+			AND		COD_CENTREMI = :ihCodCentremi
+			AND		COD_CONCEPTO = 6
+			AND		COLUMNA = :ihColumna
+			AND		SEC_CUOTA = :ihSecCuota ;
+	    }
+	    
+		if (sqlca.sqlcode != SQLOK)
+		{
+			fprintf(stderr,"\nERROR al ACTUALIZAR la CO_CARTERA %s\n", sqlca.sqlerrm.sqlerrmc);
+			fflush(stderr);
+			return FALSE;
+		}
+
+		if (ihFlgCancelados) /* si cancelo el registro, lo pasa a Cancelados */
+		{
+			stCon.lNumSecuenci = lhNumSecuenci;
+			stCon.iCodTipDocum = 39;
+			stCon.lCodAgente   = lhCodVendedorAgente;
+			strcpy(stCon.szLetra,szhLetra);
+			stCon.iCodCentremi = ihCodCentremi;
+			stCon.iCodConcepto = 6;
+			stCon.iColumna     = ihColumna;
+			stCon.iCodProducto = ihCodProducto;
+			stCon.lNumAbonado  = lhNumAbonado ;
+
+			if (!bfnDBLlevarACanCtos(&stCon,lCodCliente,szhFecHist))
+			{
+				fprintf(stderr,"\nERROR en llamada a procedimiento bfnDBLlevarACanCtos\n");
+				fflush(stderr);
+				return FALSE;
+			}
+		}
+
+		if (dMtoPago < 1) /* si no queda mas dinero */
+			break;
+	} /* end while */
+
+	return TRUE;
+}
+/*****************************************************************************/
+double fnRedondea(double dMonto,int iCntDecimales)
+{
+	char szTemp[20]="";
+	sprintf(szTemp,"%.*f",iCntDecimales, dMonto + 0.0000001);
+	return (double)atof(szTemp);
+}
+
+/* ============================================================================= */
+/* szGetTime : Recupera la fecha del sistema en el formato deseado (pudiendo ser */
+/*             fecha y hora) Permite cualquier valor numerico, con las sgtes     */
+/*             restricciones                                                     */
+/*              fmto = 0 : fecha de hoy en fmto por defecto (dd/mm/yyyy)         */
+/*              fmto > 0 : fecha de hoy en fmto definido en el switch (y/u hora) */
+/*              fmto < 0 : fecha pasada en fmto 2(yyyymmdd), vuelve 'fmto' dias  */
+/* ============================================================================= */
+char *szGetTime(int fmto)
+{
+	char modulo[]="szGetTime";
+
+	static time_t timer;
+	static size_t nbytes;
+	static char szTime[26]="";
+	int iDia = 86400;
+
+	memset(szTime,'\0',26);
+	
+	if (fmto >= 0)
+	{	
+		timer = time((time_t *)0);
+	}
+	else
+	{	
+		timer = time((time_t *)0)+fmto*iDia; 
+		fmto = 2;
+	}
+
+	switch (fmto)
+	{
+		case 1 :
+				nbytes = strftime(szTime, 26, "[%d-%b-%Y] [%H:%M:%S]", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> [04-Feb-2000] [11:22:38] (escritura de log)*/
+		case 2 :
+				nbytes = strftime(szTime, 26, "%Y%m%d", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000->  20000204  (nombre de archivo) */
+		case 3 :
+				nbytes = strftime(szTime, 26, "[%H:%M:%S]", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 11 horas, 22 minutos, 38 segundos ->  [11:22:38] (escritura de log) */
+		case 4 :
+				nbytes = strftime(szTime, 26, "%H%M%S", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 11 horas, 22 minutos, 38 segundos ->  112238 (nombre de archivo) */
+		case 5 :
+				nbytes = strftime(szTime, 26, "%Y%m%d_%H%M%S", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 20000204_112238 (nombre de archivo: 1_3)*/
+		case 6 :
+				nbytes = strftime(szTime, 26, "%j", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 035 (fecha juliana 001-366 )*/
+		case 7 :
+				nbytes = strftime(szTime, 26, "%Y%m%d%H%M%S", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 20000204112238 (tipo Oracle)*/
+		default :
+				nbytes = strftime(szTime, 26, "%d/%m/%Y", (struct tm *)localtime(&timer));	
+				break; /* Ej.: 4 de febrero de 2000 -> 04/02/2000 (formato comun)*/
+	}
+	
+	return (char *) szTime;
+}
+
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

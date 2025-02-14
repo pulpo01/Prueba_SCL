@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="868" height="500" initialize="init();" xmlns:ns1="Cliente.*" alpha="1.0" backgroundAlpha="1.0">
+
+
+	<mx:Script>
+	<![CDATA[
+		import generated.webservices.orquestador.GetDetalleClienteResultEvent;
+	
+		import mx.core.Application;
+		import mx.controls.Alert;
+		import mx.rpc.events.FaultEvent;
+		import mx.collections.ArrayCollection;
+		import mx.utils.ArrayUtil;
+		import mx.managers.PopUpManager;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import flash.display.DisplayObject;
+		
+		import generated.webservices.orquestador.*;
+		import user.libreria.clases.StringUtil;
+		
+		import mx.events.ModuleEvent;
+		import mx.events.CloseEvent;
+	    import mx.modules.ModuleManager;
+	   	import mx.modules.IModuleInfo;
+	
+		import user.libreria.clases.Utilidades; 
+		
+		public var searchingPopUpView:Class = BarraDeProgreso2;
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject;
+		
+		public var wsORQCliente:WSSEGPortal = new WSSEGPortal();
+		public var wsORQListado:WSSEGPortal = new WSSEGPortal();
+			
+		public var flagCarga:Number = 0;
+
+		[Bindable]
+		public var dsGridTotal:ArrayCollection = new ArrayCollection([{labelTotal:"TOTAL ABONADOS ", total:0}]);
+
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getError(event:FaultEvent):void    {
+			        
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {
+				/*
+				var mensaje:String = new String();
+		     	Alert.show(StringUtil.getValor("mensajeDefaultErrorHttpService","VALOR"), "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	  		}
+		} // getError
+		
+		// --------------------------------------------------------------------------------
+
+		private function getDataCliente(event:GetDetalleClienteResultEvent):void	{
+		
+			hideScrollBar();
+			if (event.result != null)	{
+				var detCliente:DetalleClienteDTO = new DetalleClienteDTO();
+				detCliente = event.result;
+				
+				txtCodCliente.text = Application.application.codClienteDetalle.toString();
+				txtCatTributaria.text = detCliente.codCatribut;
+				txtCicloFacturacion.text = detCliente.codCiclo.toString();
+				txtCategoria.text = detCliente.desCategoria;
+				txtFecAcepVenta.text = StringUtil.nulo2String(detCliente.fecAceptVenta);
+				txtFechaAlta.text =  detCliente.fecAlta;
+				txtFechaBaja.text =  StringUtil.nulo2String(detCliente.fecBaja);
+				txtNomCliente.text = detCliente.nomCliente;
+				txtIdentificacion.text = "(" + detCliente.desTipIndet + ") " + detCliente.numIdent;
+				txtTipoPersona.text = detCliente.tipPersona;
+				txtTelefono.text = StringUtil.nulo2String(detCliente.telCliente1);
+				txtEmail.text = StringUtil.nulo2String(detCliente.email);
+				txtSalario.text = StringUtil.nulo2String(detCliente.ingresoSalarial);
+				indDebito.text = StringUtil.nulo2String(detCliente.indDebito);
+				numTarjeta.text = StringUtil.nulo2String(detCliente.numTarjeta);
+				FecVenciTarj.text = StringUtil.nulo2String(detCliente.fecVenciTarj);
+				
+				if (detCliente.desCatImpositiva != null && detCliente.desCatImpositiva != "")
+					txtCatImpositiva.text = "(" + detCliente.codCatImpositiva.toString() + ") " + detCliente.desCatImpositiva;
+				
+				if (detCliente.esDealer==0)
+					txtDealer.text = "NO";
+				else 
+					txtDealer.text = "SI";
+			} // if
+			
+		} // getData  
+					
+		// --------------------------------------------------------------------------------	
+	
+		private function getDataListado(event:UmtsAbonadosXCodClienteResultEvent):void	{
+			
+			hideScrollBar();
+			if (event.result.arrayUmtsAbonados != null)	{
+				for (var fila1:Number=0; fila1 < event.result.arrayUmtsAbonados.length; fila1++)	{
+					event.result.arrayUmtsAbonados[fila1]["desSituacion"] = "(" + 
+																			event.result.arrayUmtsAbonados[fila1]["codSituacion"] + 
+																			") "+
+																			event.result.arrayUmtsAbonados[fila1]["desSituacion"];
+				} // for
+				
+				gridConceptos.dataProvider = event.result.arrayUmtsAbonados;
+				gridConceptos.selectedIndex = 0;
+
+				var sumaTotal:Number=0;
+				for (var fila:Number=0; fila < event.result.arrayUmtsAbonados.length; fila++)	{
+					sumaTotal=sumaTotal+ parseInt(event.result.arrayUmtsAbonados[fila]["total"]);
+				} // for
+				
+				dsGridTotal[0]["total"]=sumaTotal;	
+				dsGridTotal.refresh();
+			} // if
+			
+		} // getData  
+				
+		// --------------------------------------------------------------------------------	
+		
+		private function executeWS():void	{
+	
+			// Se invocan 2 servicios para eliminar el scrollbar de pantalla
+			this.flagCarga = 2;
+
+			var codCliente:Number = parseInt(Application.application.codClienteDetalle);
+			var nomUsuario:String = Application.application.usuario.username;
+			var codEvento:String = Application.application.codEvento; 
+
+			// se muestra el scrollbar
+		    popUpParent = Application.application.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			
+			// Datos del cliente
+			wsORQCliente.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			wsORQCliente.addWSSEGPortalFaultEventListener(getError);
+			wsORQCliente.addgetDetalleClienteEventListener(getDataCliente);
+			wsORQCliente.getDetalleCliente(codCliente, nomUsuario, codEvento);
+			
+			// Listado
+			wsORQListado.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			wsORQListado.addWSSEGPortalFaultEventListener(getError);
+			wsORQListado.addumtsAbonadosXCodClienteEventListener(getDataListado);
+			wsORQListado.umtsAbonadosXCodCliente(codCliente);
+				
+		} // executeWS
+
+		// --------------------------------------------------------------------------------			
+	  	
+	  	private function init():void {
+			executeWS();
+		} // init
+	
+		// --------------------------------------------------------------------------------
+		
+		private function cerrar():void {
+			PopUpManager.removePopUp(this);
+		} // cerrar
+		
+		// --------------------------------------------------------------------------------
+	
+		// Si se terminaron de cargar todos los servicios de la pagina entonces se oculta el scrollbar
+		private function hideScrollBar():void	{
+		
+			this.flagCarga--;
+			if (this.flagCarga==0)
+				PopUpManager.removePopUp(popUpWindow);
+		} 
+		// --------------------------------------------------------------------------------
+				
+		]]>
+	</mx:Script>
+	
+	<mx:Panel width="855" height="490" layout="absolute" title="&gt;&gt; Información del Cliente" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="1" alpha="1.0" borderAlpha="1.0" verticalCenter="-3">
+		<mx:Button x="733" y="409.9" label="Cerrar" width="92" height="31" fontSize="10" click="cerrar()">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/libIcons/16x16/close.png')</mx:icon>
+		</mx:Button>
+		<mx:Label text="Código de Cliente" styleName="TituloCampo" x="14.5" y="5"/>
+		<mx:Label text="Nombre del Cliente" styleName="TituloCampo" x="14.5" y="31"/>
+		<mx:Label text="Identificación" styleName="TituloCampo" x="13.5" y="58"/>
+		<mx:Label text="Categoría" styleName="TituloCampo" x="15" y="141"/>
+		<mx:TextInput x="175.5" y="3" width="268" fontSize="10" editable="false" id="txtCodCliente"/>
+		<mx:TextInput x="175.5" y="29" width="268" fontSize="10" editable="false" id="txtNomCliente"/>
+		<mx:TextInput x="175.5" y="56" width="268" fontSize="10" editable="false" id="txtIdentificacion"/>
+		<mx:TextInput x="175.35" y="139" width="268.16666" fontSize="10" editable="false" id="txtCategoria" height="22"/>
+		<mx:TextInput x="601.45" y="110" width="223" fontSize="10" editable="false" id="txtTipoPersona"/>
+		<mx:TextInput x="601.45" y="29" width="223" fontSize="10" editable="false" id="txtSalario"/>
+		<mx:Label text="Ingreso Salarial" styleName="TituloCampo" x="467.45" y="31"/>
+		<mx:TextInput x="601.45" y="3" width="223" fontSize="10" editable="false" id="txtDealer"/>
+		<mx:Label text="Tipo Persona" styleName="TituloCampo" x="467.45" y="113"/>
+		<mx:TextInput x="602" y="138" width="223" fontSize="10" editable="false" id="txtTelefono"/>
+		<mx:Label text="Fecha Alta" styleName="TituloCampo" x="467.45" y="58"/>
+		<mx:Label text="Fecha Aceptación Venta" styleName="TituloCampo" x="15" y="113"/>
+		<mx:Label text="Dealer" styleName="TituloCampo" x="467.45" y="5"/>
+		<mx:Label text="Teléfono Contacto" styleName="TituloCampo" x="467.5" y="141"/>
+		<mx:Label text="Ciclo de Facturación" styleName="TituloCampo" x="468" y="169"/>
+		<mx:Label text="Categoría Tributaria" styleName="TituloCampo" x="15" y="169"/>
+		<mx:Label text="Resumen de Abonados" styleName="TituloCampo" x="15" y="247" fontSize="11" fontWeight="bold"/>
+		<mx:Label text="Fecha de Baja" styleName="TituloCampo" x="467.45" y="86"/>
+		<mx:TextInput x="601.45" y="56" width="223" fontSize="10" editable="false" id="txtFechaAlta"/>
+		<mx:Label text="E-Mail" styleName="TituloCampo" x="14" y="87"/>
+		<mx:TextInput x="175.5" y="84" width="268" fontSize="10" editable="false" id="txtEmail"/>
+		<mx:TextInput x="175.5" y="111" width="268" fontSize="10" editable="false" id="txtFecAcepVenta"/>
+		<mx:TextInput x="601.45" y="165" width="223" fontSize="10" editable="false" id="txtCicloFacturacion" height="22"/>
+		<mx:TextInput x="175.35" y="167" width="268.15" fontSize="10" editable="false" id="txtCatTributaria" height="22"/>
+		<mx:Label text="Categoría Impositiva" styleName="TituloCampo" x="15" y="197"/>
+		<mx:TextInput x="175.35" y="195" width="268.15" fontSize="10" editable="false" id="txtCatImpositiva" height="22"/>
+		<mx:TextInput x="601.95" y="83" width="223" fontSize="10" editable="false" id="txtFechaBaja" height="22"/>
+		
+		<mx:AdvancedDataGrid sortExpertMode="true"  id="gridConceptos" width="815" fontSize="10" textAlign="left" height="112.1"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" x="10" y="266">
+			<mx:columns>
+				<mx:AdvancedDataGridColumn headerText="Cod.Contrato" dataField="codTipoPlan" paddingLeft="5" textAlign="right" width="90"/>
+				<mx:AdvancedDataGridColumn headerText="Contrato" dataField="desTipoPlan" paddingRight="5" textAlign="left"  width="110"/>
+				<mx:AdvancedDataGridColumn headerText="Tecnología" dataField="desTecnologia" paddingLeft="5" textAlign="left" width="120" />
+				<mx:AdvancedDataGridColumn headerText="Situación" dataField="desSituacion" paddingLeft="5" textAlign="left" width="300" />
+				<mx:AdvancedDataGridColumn headerText="Abonados" dataField="total" paddingLeft="5" textAlign="right" width="90"/>
+			</mx:columns>
+		</mx:AdvancedDataGrid>
+		
+		<mx:AdvancedDataGrid dataProvider="{dsGridTotal}" selectable="false" fontWeight="bold" showHeaders="false" rowCount="1" id="gridTotal" width="815" fontSize="9" textAlign="left" height="25"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" x="10" y="378.1">
+				<mx:columns>
+				 	<mx:AdvancedDataGridColumn dataField="labelTotal" paddingRight="10" textAlign="right" id="labelTotal" width="150"/>			
+					<mx:AdvancedDataGridColumn dataField="total" paddingRight="5" textAlign="left" id="colTotal"/>
+				</mx:columns>
+			</mx:AdvancedDataGrid>
+		<mx:Label x="468" y="197" text="Debito Automático" styleName="TituloCampo"/>
+		<mx:TextInput x="601.45" y="193" width="223" fontSize="10" editable="false" id="indDebito" height="22"/>
+		<mx:Label x="15" y="225" text="N° Tarjeta de Crédito" height="23" styleName="TituloCampo"/>
+		<mx:TextInput x="175.35" y="223" width="268.15" fontSize="10" editable="false" id="numTarjeta" height="22"/>
+		<mx:Label x="468" y="225" text="Fecha de Vencimiento" styleName="TituloCampo" height="18" width="129"/>
+		<mx:Label x="468" y="242" text="Tarjeta de  Crédito" styleName="TituloCampo"/>
+		<mx:TextInput x="601.45" y="223" width="223" fontSize="10" editable="false" id="FecVenciTarj" height="22"/>
+	</mx:Panel>
+	
+</mx:Module>

@@ -1,0 +1,52 @@
+CREATE OR REPLACE PROCEDURE P_ALTA_CELULAR_PREPAGO
+( VP_ABONADO  IN NUMBER   ,
+  VP_CLASEABO IN VARCHAR2 ,
+  VP_FECSYS   IN DATE )IS
+--
+-- *************************************************************
+-- * procedimiento      : P_ALTA_CELULAR_PREPAGO
+-- * Descripcisn        : Procedimiento de Actualizacion de parametros en la tabla de abonados
+-- *                      de la red celular al activarles desde la venta en oficina.
+-- * Fecha de creacisn  :
+-- * Responsable        : CRM
+-- *************************************************************
+--
+--
+V_CODSITUA GA_ABOCEL.COD_SITUACION%TYPE;
+V_PROCED VARCHAR2(25) := NULL;
+
+V_IMP_LIMCONSUMO TA_LIMCONSUMO.IMP_LIMCONSUMO%TYPE;
+V_COD_PLANCOM GA_CLIENTE_PCOM.COD_PLANCOM%TYPE;
+V_COD_CLIENTE GE_CLIENTES.COD_CLIENTE%TYPE;
+V_NUM_IMSI GA_INTARCEL.NUM_IMSI%TYPE;
+V_NUM_SERIE GA_ABOCEL.NUM_SERIE%TYPE;
+V_TECNOLOGIA GA_ABOCEL.COD_TECNOLOGIA%TYPE;
+V_TECNOLOGIA_GSM GA_ABOCEL.COD_TECNOLOGIA%TYPE;
+V_INDTOL GED_PARAMETROS.VAL_PARAMETRO%TYPE;
+V_IND_TELE GED_PARAMETROS.VAL_PARAMETRO%TYPE;
+
+ERROR_PROCESO EXCEPTION;
+sPostVenta varchar2(1);
+
+BEGIN
+
+     /* modificacion Joel soporte Incidencia CH-110620030877 */
+     SELECT VAL_PARAMETRO
+     INTO  V_IND_TELE
+     FROM GED_PARAMETROS
+     WHERE NOM_PARAMETRO = 'IND_TELEF_PREPA';
+
+     V_PROCED := 'P_ALTA_CELULAR_PREPAGO|t1';
+
+     UPDATE GA_ABOAMIST
+        SET FEC_ACTCEN         = VP_FECSYS,
+            PERFIL_ABONADO     = VP_CLASEABO,
+            IND_TELEFONO       = V_IND_TELE
+     WHERE NUM_ABONADO    = VP_ABONADO;
+
+EXCEPTION
+   WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR (-20204,V_PROCED||' '||SQLERRM);
+END;
+/
+SHOW ERRORS

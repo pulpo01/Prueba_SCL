@@ -1,0 +1,2550 @@
+#ifndef NO_INDENT
+#ident "@(#)$RCSfile: pasocobrosCiclo.pc,v $ $Revision: 1.26 $ $Date: 2008/07/01 19:14:04 $"
+#endif
+
+/**********************************************************************************/
+/* Funcion    : PASOCOBROS  (... The George Lizama's Master Piece ...)            */
+/* 16/05/2000 : RBR : by George Lizama's Intructions                              */
+/**********************************************************************************/
+/* Modificaciones                                                                 */
+/* 16-04-2003   Se restringe los documentos a considerar al momento de            */
+/*                 actualizar la traza de facturacion                             */
+/* 17-07-2003  Se agrega condicion stHistDocu.iIndFactur == 1 antes de            */
+/*                pasar a cobros.                                                 */
+/* 15-10-2003  Modificacion para proyecto Calculo de IVA.                         */
+/*                 Se reemplaza tabla FA_REPPASOCOBROS por tabla FA_REPDETALLE_TO */
+/**********************************************************************************/
+/* 24-12-2004  Modificado por Proyecto MAS_03043 Mejoras Cancelacion de Credito   */
+/**********************************************************************************/
+
+#define _PASOC_PC_
+/*#include <geora.h>
+#include <ORAcarga.h>
+#include <deftypes.h>
+#include <New_Interfact.h>
+#include <GenFA.h>
+#include <genco.h>
+#include <intCobFac.h>*/
+#include "pasocobrosCiclo.h"
+/*#include <New_Interfact.h>
+#include <rutinasgen.h>
+#include <trazafact.h>
+#include <FaORA.h>*/
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                    -- Declaracion de Variables Globales --                */
+/*****************************************************************************/
+EXEC SQL BEGIN DECLARE SECTION;
+    char szPrefPlazaDefault[26];
+    char szEntGestion[2];        /* 18-05-2004 XM-200405180055 */
+    int  ihValor_cero = 0;
+    int  ihValor_uno  = 1;
+    int  ihValor_dos  = 2;
+    int  ihValor_tres = 3;
+    char szInd_TotalFactura[2];EXEC SQL VAR szInd_TotalFactura IS STRING(2);   /*RA-200601130570 19.01.2006 Soporte RyC */
+    long lTotalConcCartera;
+
+long        lNumProcPasoCob;
+int         iProcTermOk  = iESTAPROC_TERMINADO_OK;
+int         iProcTermErr = iESTAPROC_TERMINADO_ERROR;
+
+char        szHost_Id[21];EXEC SQL VAR szHost_Id IS STRING(21);
+long lhClieIni;
+long lhClieFin;
+int ihExisteRango=0;
+
+EXEC SQL END DECLARE SECTION;
+
+static char szExePasoC [1024];
+static char szUsage [] =
+                        "\nUso : pasocobrosCiclo -u [Usuario]/[Password] [Opciones]"
+                        "\n\tOpciones :"
+                        "\n\t-Batch "
+                        "\n\t-d CodTipDocum "
+                        "\n\t[-c Ciclo] "
+                        "\n\t[-l NivelLog] "
+                        "\n\t[-n Max.Array] "
+                        "\n\t[-g Cliente Inicial] "
+                        "\n\t[-h Cliente Final]";
+
+int         iCodEstaDocEnt;
+int         iCodEstaDocSal;
+
+/* Variables de uso general para proceso de documentos con error */
+long        giCntRegistrosProc; /* Requerimiento de Soporte - 41321 - 07.06.2007 */
+int         giEstadoDocumento  = 0;
+long        glTotalDoctosInter = 0;
+
+long        lTotAbonados       = 0; /* Rsis-P-ECU-07032 - Ecuador - 06.08.2007 */
+long        lTotalConceptos    = 0; /* Rsis-P-ECU-07032 - Ecuador - 30.08.2007 */
+
+int         iVal=0;
+
+/*****************************************************************************/
+/*                       funcion : main                                      */
+/* -Lanza el proceso de Paso a Cobros basicamente toma los conceptos factura-*/
+/*  dos y los incorpora a la cartera de Cobros, actualizando asi la cartera  */
+/* -Valores de Retorno : 0 => Todo OK                                        */
+/*                      !0 => Error en algunas de las funciones que ejecuta  */
+/*                           el main.                                        */
+/*****************************************************************************/
+int main (int argc, char* argv[])
+{
+extern int   opterr;
+extern int   optopt;
+extern char *optarg;
+
+char opt[]  = "u:B:d:c:l:n:g:h:";
+int  iOpt          = 0;
+
+char szUsuario[61] = "";
+char *pszTmp       = (char *)"";
+char szFecha  [20] = "";
+
+    CONFIG stConfig;
+    memset (&stConfig,0,sizeof (CONFIG));
+    memset (&stStatus,0,sizeof (STATUS));
+
+    /* asigna valores por Default definidas en .h  GAC 08-08-2003*/
+    strcpy( szPrefPlazaDefault, szPREF_PLAZA_DEFAULT );
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF)
+    {
+          switch (iOpt)
+             {
+                case 'u':
+                   if ( strlen (optarg) )
+                   {
+                            strcpy (szUsuario,optarg)  ;
+                            stConfig.bOptUsuario = true;
+                   }
+                   break;
+                case 'U':
+                   if ( strlen (optarg) )
+                   {
+                        if (!strcmp (optarg,"nico"))
+                        {
+                            stConfig.bOptUnico = true;
+                        }
+                   }
+                   break;
+                case 'B':
+                   if ( strlen (optarg) )
+                   {
+                        if (!strcmp (optarg,"atch"))
+                            stConfig.bOptBatch = true;
+                   }
+                   break;
+                case 'd':
+                   if ( strlen (optarg) )
+                   {
+                        stConfig.bOptCodTipDocum = true         ;
+                        stConfig.iCodTipDocum    = atoi(optarg);
+                   }
+                   break;
+                case 'c':
+                    if ( strlen (optarg) )
+                    {
+                        stConfig.bOptCodCicloFact= true         ;
+                        stConfig.lCodCicloFact  = atol(optarg);
+                    }
+                    break;
+                case 'l':
+                    if ( strlen (optarg) )
+                    {
+                        stConfig.bOptNivelLog = true;
+                        stConfig.iNivelLog    = atoi(optarg);
+                    }
+                    break;
+                case 'n':
+                    if ( strlen (optarg) )
+                    {
+                        stConfig.bMaxArray = true;
+                        stConfig.lMaxArray = atol(optarg);
+                    }
+                    break;
+                case 'g':
+                    if (strlen (optarg))
+                    {
+                        stConfig.lClienteIni = atoi (optarg);
+                        stConfig.bClienteIni = 1;
+                    }
+                    else
+                    {
+                        fprintf(stderr,"Error, Falta parametro Cliente Inicial\n" );
+                        return 1;
+                    }
+                    break;
+                case 'h':
+                    if (strlen (optarg))
+                    {
+                        stConfig.lClienteFin = atoi (optarg);
+                        stConfig.bClienteFin = 1;
+                    }
+                    else
+                    {
+                        fprintf(stderr,"Error, Falta parametro Cliente Final\n" );
+                        return 1;
+                    }
+                    break;
+             }/* fin switch */
+    }/* fin While de Opciones */
+    if (!stConfig.bOptUsuario)
+    {
+         fprintf(stderr,"\n\tError Falta Usuario en Parametros de Entrada: \n%s\n", szUsage);
+         return (1);
+    }
+    else
+    {
+       if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL)
+       {
+             fprintf (stderr,"\n\tFormato Usuario Oracle Incorrecto:\n%s\n", szUsage);
+             return (1);
+       }
+       else
+       {
+          strncpy (stConfig.szUsuario ,szUsuario,pszTmp-szUsuario);
+          strcpy  (stConfig.szPassWord, pszTmp+1);
+       }
+    }
+
+    if ( !( stConfig.bOptBatch && stConfig.bOptCodCicloFact && stConfig.bOptCodTipDocum )  )
+    {
+           fprintf (stderr, "\n\tError Faltan parametros de Entrada : %s\n",szUsage);
+           return (1);
+    }
+
+    if ( !stConfig.bOptNivelLog )
+         stConfig.iNivelLog = iNIVEL_DEF;
+
+    if (( !stConfig.bMaxArray  ) || ( stConfig.lMaxArray > 10000 ))
+         stConfig.lMaxArray = 10000;
+
+    if( (stConfig.bClienteIni==1 && stConfig.bClienteFin==FALSE) || (stConfig.bClienteIni==FALSE && stConfig.bClienteFin==1))
+    {
+        fprintf (stderr,"\n(EE)\t<< Error : falta opcion '-g' o '-h' >>\n%s\n",szUsage);
+        return (1);
+    }
+
+    if((stConfig.bClienteIni==1 && stConfig.bClienteFin==1))
+        ihExisteRango = 1;
+    else
+        ihExisteRango = 0;
+
+    if ( stConfig.lClienteFin < stConfig.lClienteIni )
+    {
+        fprintf(stderr, "\n\tCliente Final Menor que Cliente Inicial\n");
+        fprintf(stderr,"%s\n",szUsage);
+        return (1);
+    }
+
+    lhClieIni = stConfig.lClienteIni;
+    lhClieFin = stConfig.lClienteFin;
+
+    if ( !bfnInitPasoCobros( &stConfig, &stStatus ) )
+    {
+        fflush(stderr);
+        fclose(stStatus.LogFile);
+        fclose(stStatus.ErrFile);
+        return (2);
+    }        
+
+    if ( !bfnPasoCobros( stConfig, &stStatus ) )
+         iDError( szExePasoC, ERR042, vInsertarIncidencia );
+    else
+        vDTrazasLog (szExePasoC,(char *)"\n\t*** Proceso Paso a Cobros OK ***\n",LOG03);
+
+    if (stConfig.bOptCodCicloFact)
+    {
+    	/* if(bfbFinPasocobros(stConfig.lCodCicloFact)) Requerimiento de Soporte - 69137 - 18.08.2008 */
+        if(bfbFinPasocobros(stConfig.lCodCicloFact, lhClieIni, lhClieFin ))
+        {
+            fflush(stderr);
+            if (!bfnSelectSysDate(szFecha))
+                 return false;
+
+            stTrazaProc.iCodEstaProc = iPROC_EST_OK;
+            strcpy(stTrazaProc.szFecTermino,szFecha);
+            strcpy(stTrazaProc.szGlsProceso,"Proceso de Paso a Cobros OK");
+            bPrintTrazaProc(stTrazaProc);
+
+            if (iVal)
+            {
+                if(!bfnUpdateTrazaProcHost(stTrazaProc, szHost_Id))
+                     return false;
+            }
+            else
+            {
+                if(!bfnUpdateTrazaProc(stTrazaProc))
+                    return false;
+            }
+
+            if (!bfnOraCommit ())
+            {
+                 iDError (szExePasoC,ERR000,vInsertarIncidencia, "CommitWork",szfnORAerror());
+                 return false;
+            }
+        }
+    }
+    bfnExitPasoCobros (&stConfig);
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+/*    EXEC SQL ALTER SESSION SET sql_trace=false; */
+    return (0);
+}/***************************** Final main ***********************************/
+/*static bool bfbFinPasocobros(long lhCodCiclFact) Requerimiento de Soporte - 69137 - 18.08.2008 */
+static bool bfbFinPasocobros(long lhCodCiclFact, long lhClienteInicial, long lhClienteFinal)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhNumReg = 0;
+    char szhMODULO   [3];    EXEC SQL VAR szhMODULO  IS STRING(3);     
+    char szhCOLUMNA  [51];   EXEC SQL VAR szhCOLUMNA IS STRING(51);     
+    char szhTABLA    [31];   EXEC SQL VAR szhTABLA   IS STRING(31);    
+    
+    /* Inicio Requerimiento de Soporte - 69137 - 18.08.2008 */
+    long lClienteInicial;
+    long lClienteFinal;
+    /* Fin Requerimiento de Soporte - 69137 - 18.08.2008 */
+    
+EXEC SQL END DECLARE SECTION;
+
+    CLEAR(szhMODULO);
+    CLEAR(szhCOLUMNA);
+    CLEAR(szhTABLA);
+
+    strcpy(szhMODULO,"CO");
+    strcpy(szhCOLUMNA,"COD_TIPDOCUM");
+    strcpy(szhTABLA,"FA_FACTDOCU");
+
+    /* Inicio Requerimiento de Soporte - 69137 - 18.08.2008 */
+    lClienteInicial= lhClienteInicial;
+    lClienteFinal  = lhClienteFinal;
+    /* Fin Requerimiento de Soporte - 69137 - 18.08.2008 */
+
+
+    EXEC SQL
+        SELECT 
+            COUNT(1)
+        INTO 
+            :lhNumReg
+        FROM 
+            fa_documentos_sy
+        WHERE   COD_CLIENTE >= :lClienteInicial        /* Requerimiento de Soporte - 69137 - 18.08.2008 */
+            AND COD_CLIENTE <= :lClienteFinal          /* Requerimiento de Soporte - 69137 - 18.08.2008 */                            
+            AND IND_PASOCOBRO <= 0 
+            AND IND_ANULADA  = 0 
+            AND COD_TIPDOCUM NOT IN ( SELECT COD_VALOR 
+                                        FROM GED_CODIGOS 
+                                        WHERE NOM_TABLA = :szhTABLA
+                                        AND NOM_COLUMNA = :szhCOLUMNA
+                                        AND COD_MODULO = :szhMODULO );
+
+    if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)    
+    {
+        vDTrazasError( szExeName, (char *)"Error en FETCH cur_count_pasocobros Error => [%d][%s].", LOG01, SQLCODE, SQLERRM );
+        return false;
+    }
+
+    vDTrazasLog ( szExeName ,   (char *)"\n\t ********* Documentos Sin Pasar A Cobros ************"
+                                "\t\t\t\t  ==> Cod_CiclFact          [%ld]\n"
+                                "\t\t\t\t  ==> Numero de Facturas    [%ld]"
+                            ,   (lhNumReg==0?LOG03:LOG02),lhCodCiclFact,lhNumReg);
+
+    if (lhNumReg > 0)    
+    {
+        vDTrazasError( szExeName ,  (char *)"\n\t ** Documentos Sin Pasar A Cobros **"
+                                    "\n\t\t\t\t  ==> Cod_CiclFact          [%ld]"
+                                    "\n\t\t\t\t  ==> Numero de Facturas    [%ld]"
+                                 ,  LOG02,lhCodCiclFact,lhNumReg);
+        return false;
+    }
+    return true;
+}
+
+/*****************************************************************************/
+/*                            funcion : bfnInitPasoCobros                    */
+/* -Valores Retorno : Error->false, !Error->true                             */
+/*****************************************************************************/
+static bool bfnInitPasoCobros (CONFIG *pstConfig, STATUS *pstStatus)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+   short    row = 0;
+   int      ihCodTipDocum;
+   long     lNumFolio;
+   short    sIndPasoCobro;
+   short    sIndAnulada;
+   double   dSaldo_Debe;
+   double   dSaldo_Haber;
+   char     szhCodModGener[4];EXEC SQL VAR szhCodModGener IS STRING(4);
+   char     szhddmmyy  [7];
+   char     szhPUNTUAL [8];
+   char     szNumProceso[13];EXEC SQL VAR szNumProceso IS STRING(13);
+   
+   long     snError;
+   char     svMensaje[200];EXEC SQL VAR svMensaje IS STRING(200);
+   long     lhCiclo;
+EXEC SQL END DECLARE SECTION;
+char szFechDesde [15]= "";
+char szFechHasta [15]= "";
+char szComando [255]= "";
+char *szDirLogs;
+char szhDocumentoCero[2];
+
+    strcpy(szhddmmyy,"ddmmyy");
+    strcpy(szhPUNTUAL,"PUNTUAL");
+
+    szDirLogs   =(char *)malloc(1024);
+
+    if ((szDirLogs = szGetEnv((char *)"XPFACTUR_LOG")) == (char *)NULL)
+    {
+        fprintf( stderr, "Error en carga de <XPFACTUR_LOG> \n" );
+        return false;
+    }
+    /* MULTIHOST */
+    if( (ifnGetHostId(szHost_Id))==0 )
+        iVal = 1;
+    /* - */
+
+    if( !bfnConnectORA( pstConfig->szUsuario, pstConfig->szPassWord ) )   {
+        fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+        return false;
+    }
+/*    EXEC SQL ALTER SESSION SET sql_trace=true;    */
+
+    if (!bfnSelectSysDate(szSysDate))
+         return false;
+
+    glCicloFact  = pstConfig->lCodCicloFact; /* Requerimiento de Soporte - 69137 - 18.08.2008 */
+
+    if (pstConfig->bOptCodCicloFact)
+        sprintf(szDirLogs,"%s/pasocobros/%ld/",szDirLogs,pstConfig->lCodCicloFact);
+
+    sprintf (pstStatus->LogName, "%s/PasoCobrosCiclo_%d_%s.log", szDirLogs, pstConfig->iCodTipDocum,szSysDate);
+    sprintf (pstStatus->ErrName, "%s/PasoCobrosCiclo_%d_%s.err", szDirLogs, pstConfig->iCodTipDocum,szSysDate);
+
+    sprintf(szComando,"/usr/bin/mkdir -p %s",szDirLogs);
+    if (system (szComando))
+    {
+        printf( "\n\t***   Fallo mkdir de Directorio LOG : %s \n",szComando);
+        return false;
+    }
+
+    unlink (pstStatus->LogName);
+    unlink (pstStatus->ErrName);
+
+    if (!bOpenLog (pstStatus->LogName))
+    {
+        vDTrazasError (szExePasoC, (char *)"\n\t=> No se puede Abrir el fichero de Log\n",LOG01);
+        return false;
+    }
+    if (!bOpenError (pstStatus->ErrName))
+    {
+        vDTrazasError (szExePasoC, (char *)"\n\t=> No se puede Abrir el fichero de Err\n",LOG01);
+        return false;
+    }
+
+    printf("\n\t Directorio Log : %s\n",szDirLogs);
+    strcpy (szExePasoC,"Paso Cobros");
+
+    pstStatus->LogNivel = pstConfig->iNivelLog;
+
+    vDTrazasLog  (szExePasoC,   (char *)"\n     *******************************************************************"
+                                "\n     *                   PASO A COBROS => %s                         *"
+                                "\n     *******************************************************************", LOG03, szVERSION );
+
+    vDTrazasError(szExePasoC,   (char *)"\n     *******************************************************************"
+                                "\n     *                   PASO A COBROS => %s                         *"
+                                "\n     *******************************************************************", LOG03, szVERSION );
+
+
+    /* Datos Iniciales de Tiempo */
+    cpu_ini = clock();
+    time (&real_ini) ;
+    pstStatus->OraConnected = true;
+
+    if (!bGetDatosGener (&stDatosGener,szSysDate))
+    {
+        fprintf( stderr, "Error al realizar carga de bGetDatosGener().\n" );
+        return  false;
+    }
+
+    /* Carga la estructura de manejo de decimales para la operadora local */
+
+
+    if (!_mymemCob.chargeGedParametros())
+    {
+        iDError (szExePasoC,ERR043,vInsertarIncidencia,0,"chargeGedParametros");
+        return  false;
+    }
+    if (!_mymemCob.settinParameters())
+    {
+        iDError (szExePasoC,ERR043,vInsertarIncidencia,0,"settinParameters");
+        return  false;
+    }
+
+    pstParamGener.iNumDecimal = _mymemCob.getDecimal();
+    strcpy (pstParamGener.szSepMilesMonto, _mymemCob.get_sep_miles_montos());
+    strcpy (pstParamGener.szSepDecMontos, _mymemCob.get_sep_decimales_montos());
+    strcpy (pstParamGener.szSepDecOracle, _mymemCob.get_sep_decimales_oracle());
+    pstParamGener.iNumDecimalFact= _mymemCob.get_num_decimal_fact();
+    pstParamGener.iTipoFoliacion = _mymemCob.get_cod_tipo_foliacion();
+    pstParamGener.iConsConcTrafico = _mymemCob.get_cod_par_trafico();
+    pstParamGener.iIndZonaImpCic = _mymemCob.get_ind_zonaimpocic();
+    pstParamGener.iMtoMinAjuste = _mymemCob.get_mto_min_ajuste();
+    pstParamGener.iZonaImpoDefec = _mymemCob.get_zona_imp_defecto();
+    strcpy(szhDocumentoCero,_mymemCob.get_documento_cero());
+    pstParamGener.sDocumentoCero = szhDocumentoCero[0];
+    strcpy(pstParamGener.szCodIdioma,"1");
+
+    strcpy(szNumProceso,pstConfig->szNumProceso);
+/*CONTROL SINONIMO */
+    HighResolutionClock hrClock;
+    hrClock.markStart();
+
+    lhCiclo = pstConfig->lCodCicloFact;
+    EXEC SQL EXECUTE
+        BEGIN
+                co_pasocobros_util_pg.co_inicializar_pasocobros_fn(:lhCiclo, :szHost_Id, :snError, :svMensaje );
+        END;
+    END-EXEC;
+    if (sqlca.sqlcode != SQLOK ) 
+    {
+        printf ("Error [%ld] problemas al iniciar sinónimo del ciclo \n", sqlca.sqlcode);
+        return(false);
+    }
+    if (snError != 0 ) 
+    {
+        printf ("Evento [%d] Mensaje [%s]\n",snError, svMensaje);
+        return(false);
+    }
+
+    hrClock.markEnd();
+    cout << "\t[co_inicializar_pasocobros_fn]: eTimeMSEC = [" << hrClock.getElapsedTimeMSEC() << "]..." << endl;
+    cout << "\t[co_inicializar_pasocobros_fn]: eTimeSEC  = [" << hrClock.getElapsedTimeSEC()  << "]..." << endl << endl;
+/* - */
+    if (pstConfig->bOptCodCicloFact)
+    {
+        cout << "\tHost a validar [" << szHost_Id << "]..." << endl;
+        if (iVal)
+        {
+            if (!bfnValidaTrazaProcHost(pstConfig->lCodCicloFact, iPROC_PASOCOBROS, iIND_FACT_ENPROCESO, szHost_Id))
+            {
+                cout << "\tError en bfnValidaTrazaProcHost..." << endl;
+                cout << "\t[" << pstConfig->lCodCicloFact << "]..." << endl;
+                cout << "\t[" << iPROC_PASOCOBROS << "]..." << endl;
+                cout << "\t[" << iIND_FACT_ENPROCESO << "]..." << endl;
+                return false;
+            }
+        }
+        else
+        {
+            if (!bfnValidaTrazaProc(pstConfig->lCodCicloFact, iPROC_PASOCOBROS, iIND_FACT_ENPROCESO))
+               return false;
+        }
+
+        if (!bfnOraCommit ())
+        {
+            iDError (szExePasoC,ERR000,vInsertarIncidencia, "CommitWork",szfnORAerror());
+            return false;
+        }
+        
+        if (iVal)
+            bfnSelectTrazaProcHost ( pstConfig->lCodCicloFact, iPROC_PASOCOBROS, &stTrazaProc, szHost_Id);
+        else
+            bfnSelectTrazaProc ( pstConfig->lCodCicloFact, iPROC_PASOCOBROS, &stTrazaProc);
+        
+        bPrintTrazaProc(stTrazaProc);
+
+        if (!bCargaConversion (pstConversion, &NUM_CONVERSION, szFechDesde,szFechHasta))
+            return false;
+
+        if (!bfnInsFaRepPasocobros(pstConfig, pstConfig->szUsuario))
+            return false;
+    }
+
+    return true;
+}/************************** Final bfnInitPasoCobros *************************/
+/*****************************************************************************/
+/*                       funcion : bfnInsFaRepPasocobros                     */
+/* -Valores Retorno : Error->false, !Error->true                             */
+/*****************************************************************************/
+static bool bfnInsFaRepPasocobros (CONFIG *pstConfig, char* szUsuario)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+    double dhSaldoDebe;
+    double dhSaldoHaber;
+    char   szhPUNTUAL [8];
+EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhPUNTUAL,"PUNTUAL");
+
+    /* Inicio Requerimiento de Soporte - 41321_3 - 13.07.2007 */
+    /* Se comenta insert a tabla FA_REPPASOCOBROS */
+    /* Inicio Requerimiento de Soporte - 39289 - 27.04.2007 */
+    EXEC SQL
+    SELECT FA_SEQ_PROCPASOCOB.NEXTVAL
+    INTO :lNumProcPasoCob
+    FROM DUAL;
+
+    if( SQLCODE != SQLOK )  {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, "Select Secuencia", szfnORAerror() );
+        return false;
+    }
+
+    vDTrazasLog( szExePasoC, (char *)"\n\t\tSECUENCIA FA_SEQ_PROCPASOCOB => [%d].\n", LOG03, lNumProcPasoCob );
+
+    return true;
+}/************************** Final bfnInsFaRepPasocobros *************************/
+
+/*****************************************************************************/
+/*                           funcion : bfnExitPasoCobros                     */
+/* -Funcion que cierra Logs, libera memoria, se desconecta de Oracle,...     */
+/* -Valores Retorno : Error->false, !Error->true                             */
+/*****************************************************************************/
+static bool bfnExitPasoCobros (CONFIG *pstConfig)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+   long     snError;
+   char     svMensaje[200];EXEC SQL VAR svMensaje IS STRING(200);
+   long     lhCiclo;
+EXEC SQL END DECLARE SECTION;
+       
+/*CONTROL SINONIMO */
+    HighResolutionClock hrClock;
+    hrClock.markStart();
+    lhCiclo = pstConfig->lCodCicloFact;
+    EXEC SQL EXECUTE
+        BEGIN
+                co_pasocobros_util_pg.co_finalizar_pasocobros_fn(:lhCiclo, :szHost_Id, :snError, :svMensaje );
+        END;
+    END-EXEC;
+    if (sqlca.sqlcode != SQLOK ) 
+    {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, "En co_finalizar_pasocobros_fn.\n", szfnORAerror() );
+        exit(-1);
+    }
+    if (snError != 0 ) 
+    {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, svMensaje );
+        exit(-1);
+    }
+    hrClock.markEnd();
+    cout << "\t[co_finalizar_pasocobros_fn]: eTimeMSEC = [" << hrClock.getElapsedTimeMSEC() << "]..." << endl;
+    cout << "\t[co_finalizar_pasocobros_fn]: eTimeSEC  = [" << hrClock.getElapsedTimeSEC()  << "]..." << endl << endl;
+/* - */    
+    
+    /* Desconexion Oracle */
+    if (!bfnDisconnectORA(0))
+    {
+        iDError(szExePasoC,ERR000,vInsertarIncidencia,"Desconexion",szfnORAerror());
+        return false;
+    }
+    stStatus.OraConnected = false;
+    vDTrazasLog (szExePasoC,(char *)"\n\t\t*** Desconexion a Oracle ***\n",LOG04);
+
+    /* Datos Fin de Tiempo */
+    times (&tms);
+    cpu_fin = clock();
+    time (&real_fin);
+
+    real = (real_fin - real_ini);
+    cpu  = (float)cpu_fin/(float)CLOCKS_PER_SEC;
+
+    vDTrazasLog( szExePasoC, (char *)"\n\t=> Tiempo de CPU : [%g]\n\t=> Tiempo Real   : [%g]", LOG03, cpu,real );
+}/*************************** Final bfnExitPasoCobros ************************/
+
+/*****************************************************************************/
+/*                          funcion : bfnPasoCobros                          */
+/*****************************************************************************/
+static bool bfnPasoCobros( CONFIG stConfig, STATUS *pstStatus )
+{
+int      iRes           = 0;    /* Resultado de la Funcion ifnFetchHistDocu */
+int      i              = 0;
+int      j              = 0;
+long     lCantConc      = 0;
+bool     bError         = false;
+bool     bBreak         = false;
+int      iCodAbono      = 0;
+long     lNumDocPasoCob = 0;
+double   dTotPasoCob    = 0;
+int      ihCodModVenta;
+
+bool     bConcepNegativos;
+
+DATOS_FACT  stHistDocu;
+DATCON      stCobros;
+
+DATDOC      stDatDoc;
+DATPAG      stDatPag;
+DATCON      stConc;
+
+int  iAux                       ;
+long xx;
+
+long yy;
+
+double lTotalFactura ; /*XO-200508310542 Soporte RyC capc 05-09-2005*/
+
+long lNumCuotas                 ;
+double lValorCuota              ; /*XO-200508310542 Soporte RyC capc 05-09-2005*/
+ldiv_t stDiv                    ;
+
+/* Inicio Rsis-P-ECU-07032 - Ecuador - 30.08.2007 */
+double  lhTotfactura    = 0;
+double  lTotfactura     = 0;
+/* Fin Rsis-P-ECU-07032 - Ecuador - 30.08.2007 */
+
+EXEC SQL BEGIN DECLARE SECTION  ;
+    int  ihCodEstaDocSal;
+    long lhNumProceso;
+    long    lhCodCliente;
+    char    szhFechaCuota[9];
+    char    szhFechaCuotaUno[9];
+    char    szhSgteCuota [9];
+    int     ihIndCuotas = 0;
+    int     ihMoroso = 0;
+    char    szhFecVencimiento[9]= "" ;  EXEC SQL VAR szhFecVencimiento IS STRING (9);
+    short   shFecVenc       ;
+    char    szhNumIdent[21]     = "" ;  EXEC SQL VAR szhNumIdent IS STRING(21);
+    char    szhCodTipIdent[3]   = "" ;  EXEC SQL VAR szhCodTipIdent IS STRING(3);
+    char    szhNumIdent_a[21]   = "" ;  EXEC SQL VAR szhNumIdent_a IS STRING(21);
+    char    szhCodTipIdent_a[3] = "" ;  EXEC SQL VAR szhCodTipIdent_a IS STRING(3);
+    double  dhSaldoVenc;
+    double  dhSaldoNoVenc;
+    int     ihIndPagado         = 0;
+    int     ihCodCauPago        = 0;
+    char    szhDesPago[41]      = "" ;  EXEC SQL VAR szhDesPago IS STRING(41);
+    long    lhNumVenta;
+    double  dhImpAbono;
+    double  dhImpAbonoAcumulado; /* RA-200601260641 27.01.2006 Soporte RyC */
+    double  dhImpAbono_aux     ; /* RA-200601260641 27.01.2006 Soporte RyC */
+    double  dhImpVenta         ; /* RA-200601260641 27.01.2006 Soporte RyC */
+    double  lTotalConcepto     ; /* RA-200601260641 27.01.2006 Soporte RyC */
+    char    szhGA      [3];             EXEC SQL VAR szhGA IS STRING(3);      
+    char    szhCO      [3];             EXEC SQL VAR szhCO IS STRING(3);     
+    char    szhENTIDAD[20];             EXEC SQL VAR szhENTIDAD IS STRING(20);     
+    char    szhINDTOTFACTURA    [17];   EXEC SQL VAR szhINDTOTFACTURA IS STRING(17);     
+    char    szhDIAS_VCTO_FACTURA[18];   EXEC SQL VAR szhDIAS_VCTO_FACTURA IS STRING(18); 
+    char    szD_Vcto_Fact       [10];   EXEC SQL VAR szD_Vcto_Fact IS STRING(10);        
+
+    int iCodModVenta;
+
+    int     iResultadoFuncion=0; /* Rsis-P-ECU-07032 - Ecuador - 04.10.2007  Inc-44310 */
+    int     iNC_Cuotas         ; /* Rsis-P-ECU-07032 - Ecuador - 05.10.2007  Inc-44310 */
+    int     iResultado         ; /* Rsis-P-ECU-07032 - Ecuador - 05.10.2007  Inc-44310 */
+    int     bRet;
+/*Cobranza Externa*/
+    int  ihcte_cero=0;
+    char szcte_M[5];   EXEC SQL VAR szcte_M IS STRING(5);
+    char szcte_SM[5];   EXEC SQL VAR szcte_SM IS STRING(5);
+    char szcte_B[5];   EXEC SQL VAR szcte_B IS STRING(5);
+    char szcte_R[5];   EXEC SQL VAR szcte_R IS STRING(5);
+    char szcte_I[5];   EXEC SQL VAR szcte_I IS STRING(5);
+    char szcte_G[5];   EXEC SQL VAR szcte_G IS STRING(5);
+    char szcte_V[5];   EXEC SQL VAR szcte_V IS STRING(5);
+    char szcte_E[5];   EXEC SQL VAR szcte_E IS STRING(5);
+    char szcte_N[5];   EXEC SQL VAR szcte_N IS STRING(5);
+    char szcte_C[5];   EXEC SQL VAR szcte_C IS STRING(5);
+
+    long lhnum_procpasocobro;
+    long ihind_pasocobro;
+    long lhind_ordentotal;
+
+    char szhCOLUMNA  [51];   EXEC SQL VAR szhCOLUMNA IS STRING(51);     
+    char szhTABLA    [31];   EXEC SQL VAR szhTABLA   IS STRING(31);     
+
+EXEC SQL END DECLARE SECTION    ;
+
+    vDTrazasLog (szExePasoC,(char *)"\n\t\t* Paso A Cobros\n",LOG03);
+    strcpy(szhCO,"CO");
+    strcpy(szhENTIDAD,"ENTIDAD_GESTION_COB");
+    strcpy(szhINDTOTFACTURA,"IND_TOTALFACTURA");      /* RA-200601130570 19.01.2006 Soporte RyC */
+    strcpy(szhDIAS_VCTO_FACTURA,"DIAS_VCTO_FACTURA"); /* Soporte RyC MCO-200606060001 17-07-2006 capc */
+    dhImpAbonoAcumulado = 0; /* RA-200601260641 27.01.2006 Soporte RyC */
+    dhImpAbono_aux      = 0; /* RA-200601260641 27.01.2006 Soporte RyC */
+    dhImpVenta          = 0; /* RA-200601260641 27.01.2006 Soporte RyC */
+
+    strcpy(szcte_M,"M");
+    strcpy(szcte_SM,"SM");
+    strcpy(szcte_B,"B");
+    strcpy(szcte_R,"R");
+    strcpy(szcte_I,"I");
+    strcpy(szcte_G,"G");
+    strcpy(szcte_V,"V");
+    strcpy(szcte_E,"E");
+    strcpy(szcte_N,"N");
+    strcpy(szcte_C,"C");
+
+    /* 18-05-2004 XM-200405180055 */
+    /* Obtiene ENTIDAD DE GESTION DE COBRANZA desde la tabla GED_PARAMETROS */
+
+    strncpy(szEntGestion,_mymemCob.GedCharParamFromGedParametros(szhCO,szhENTIDAD),2);
+    if (strcmp(szEntGestion,"")==0)
+    {
+        iDError( szExePasoC, ERR043, vInsertarIncidencia, iRes, "Select szEntGestion" );
+        return false;
+    }
+
+    /* Inicio RA-200601130570 19.01.2006 Soporte RyC */
+    /* Obtiene Indicador Total Factura desde la tabla GED_PARAMETROS */
+
+    strcpy(szInd_TotalFactura,_mymemCob.GedCharParamFromGedParametros(szhCO,szhINDTOTFACTURA));
+
+    if (strcmp(szInd_TotalFactura,"")==0)
+        strcpy( szInd_TotalFactura, "N" );
+
+    vDTrazasLog( szExePasoC, (char *)"\n szInd_TotalFactura [%s].", LOG03, szInd_TotalFactura);
+    /*Fin RA-200601130570 19.01.2006 Soporte RyC */
+
+    /* Inicio Soporte RyC MCO-200606060001 17-07-2006 capc*/
+    /* Obtiene DIAS DE VENCIMIENTO QUE SE AGREGAN A LAS CUOTAS desde la tabla GED_PARAMETROS */
+    strcpy(szhGA,"GA");
+    strcpy(szD_Vcto_Fact,_mymemCob.GedCharParamFromGedParametros(szhGA, szhDIAS_VCTO_FACTURA));
+    if (strcmp(szD_Vcto_Fact,"")==0)
+    {
+        iDError( szExePasoC, ERR043, vInsertarIncidencia, iRes, "Select szD_Vcto_Fact" );
+        return false;
+    }
+    /* fin Soporte RyC MCO-200606060001 17-07-2006 capc*/
+    /* Rsis-P-ECU-07032 - Ecuador - 09.08.2007. Verificando que esten todos los conceptos configurados */
+    if (!bfnDBVerificaConceptos(stConfig)) return false;
+
+    if (!_mymemCob.chargeConCreFA())
+    {
+        iDError (szExePasoC,ERR043,vInsertarIncidencia,0,"chargeConCreFA");
+        return  false;
+    }
+    iCodAbono = _mymemCob.getConCreFA();
+    if (!_mymemCob.chargeModVenta())
+    {
+        iDError (szExePasoC,ERR043,vInsertarIncidencia,0,"chargeModVenta");
+        return  false;
+    }
+    /* MULTIHOST */
+    if (iVal)
+    {
+        bRet = 0;
+        bRet = ifnBuscarRangosClientesBD(stConfig.lCodCicloFact,&lhClieIni, &lhClieFin, &ihExisteRango);
+    }
+    /* - */
+    
+    if (ihExisteRango)
+        printf("Rango de clientes a aplicar [%ld] - [%ld] \n",lhClieIni,lhClieFin);
+    else
+        printf("Sin Rangos de clientes\n");
+
+    while (1)   /* CICLO DOCUMENTOS */
+    {
+        _vec_dcto_clientes.clear();
+
+        if (!_mydbProc.getDoctosClientesArray(_vec_dcto_clientes,stConfig.iCodTipDocum,stConfig.lCodCicloFact, lhClieIni , lhClieFin, stConfig.lMaxArray, ihExisteRango ))
+        {
+            iDError( szExePasoC, ERR043, vInsertarIncidencia, iRes, "Descarga de Documentos a intercalar" );
+            return false;
+        }
+
+        if (_vec_dcto_clientes.size() == 0)
+            break;
+
+        glTotalDoctosInter = _vec_dcto_clientes.size();
+
+        for(unsigned int xx=0; xx < glTotalDoctosInter; xx++ )
+        {
+            vDTrazasLog( szExePasoC, (char *)"\nPROCESANDO REGISTRO => [%d] de un TOTAL DE [%d] Documentos.", LOG03, xx + 1, glTotalDoctosInter);
+
+            bError = false;
+            bConcepNegativos = false;
+            memset( &stHistDocu, 0, sizeof( DATOS_FACT ) );
+
+            if( !bfnCargaEstructuraWork( xx, &stHistDocu ) )  {
+                iDError( szExePasoC, ERR043, vInsertarIncidencia, iRes, "Cargar estructura de Trabajo" );
+                return false;
+            }
+
+            memset( &stConc     , 0 ,sizeof( DATCON ) );
+            memset( &stDatDoc   , 0 ,sizeof( DATDOC ) );
+            memset( &stDatPag   , 0 ,sizeof( DATPAG ) );
+
+            if( strcmp(_vec_dcto_clientes[xx].szhNumIdent," ")==0 )
+            {
+                vDTrazasError( szExePasoC, (char *)"Error al recuperar datos del CLIENTE.", LOG01 );
+                giEstadoDocumento = iNOEXISTECLIE;
+                bError = true;
+            }
+            else
+            {
+                /* Ve si la modalidad de venta se intercala pagada o no jlr_04.01.01 */
+                iCodModVenta=stHistDocu.iCodModVenta;
+
+                bRet = 0;
+                bRet = _mymemCob.selectModVenta( iCodModVenta, _mod_Venta );
+                if (!bRet )
+                {
+                    iDError( szExePasoC, ERR043, vInsertarIncidencia, iRes, "Select Ge_ModVenta" );
+                    bError = true;
+                }
+                else
+                {
+                    if (bRet == -1)
+                    {
+                        ihIndPagado  = 0;
+                        ihCodCauPago = stDatosGener.iCauPagoRegalo;
+                        strcpy( szhDesPago, "Pago Regalo" );
+                    }
+                    else
+                    {
+                        ihIndPagado = _mod_Venta.iIndPagado;
+                        ihCodCauPago = _mod_Venta.iCodCauPago;
+                        strcpy(szhDesPago,_mod_Venta.szDesCauPago);
+                    }
+
+                    vDTrazasLog (szExePasoC,(char *)"\n\t\t*** ihIndPagado             : [%d] \n", LOG06, ihIndPagado);
+                    vDTrazasLog (szExePasoC,(char *)"\n\t\t*** stHistDocu.iIndSuperTel : [%d] \n", LOG06, stHistDocu.iIndSuperTel);
+                    vDTrazasLog (szExePasoC,(char *)"\n\t\t*** stHistDocu.iIndFactur   : [%d] \n", LOG06, stHistDocu.iIndFactur);
+
+                    if( (ihIndPagado == 1 || stHistDocu.iIndSuperTel == 1 || stHistDocu.iIndFactur == 0 ) && stHistDocu.dTotFactura > 0.0)
+                    {
+                        stDatDoc.iCodTipDocum = (stHistDocu.iIndFactur)?stHistDocu.iCodTipDocum:stDatosGener.iDocStaff;
+                        stDatDoc.lCodAgente   = stDatosGener.lAgenteInterno;
+                        strcpy (stDatDoc.szLetra, stDatosGener.szLetraCobros);
+                        strcpy (stDatPag.szNomUsu, stConfig.szUsuario);
+                        stDatPag.iCodTipDocum = stDatosGener.iDocStaff;
+                        stDatPag.iCodSisPago  = stDatosGener.iSisPagoRegalo;
+                        stDatPag.iCodCauPago  = (stHistDocu.iIndSuperTel == 1)?iCAUPAGOSUPERTEL:ihCodCauPago;
+                        stDatPag.iCodOriPago  = stDatosGener.iOriPagoRegalo;
+                        stDatPag.iCodForPago  = 0;
+                        strcpy (stDatDoc.szDesPago,(stHistDocu.iIndFactur)?szhDesPago:"Pago Staff");
+                    }
+                    stConc.iCodTipDocum = stHistDocu.iCodTipDocum;
+                    stConc.lCodAgente   = stHistDocu.lCodVendedorAgente;
+                    stConc.lNumSecuenci = stHistDocu.lNumSecuenci;
+                    strcpy (stConc.szLetra, stHistDocu.szLetra);
+                    stConc.iCodCentremi = stHistDocu.iCodCentrEmi;
+
+                    strncpy (stConc.szFecVencimie   , stHistDocu.szFecVencimie, 8);
+                    strncpy (stConc.szFecEfectividad, stHistDocu.szFecEmision , 8);
+                    strncpy (stConc.szFecCaducida   , stHistDocu.szFecCaducida, 8);
+                    strncpy (stConc.szFecAntiguedad , szSysDate               , 8);
+                    strncpy (stConc.szFecPago       , szSysDate               , 8);
+                    stConc.szFecVencimie    [8] = '\0';
+                    stConc.szFecEfectividad [8] = '\0';
+                    stConc.szFecCaducida    [8] = '\0';
+                    stConc.szFecAntiguedad  [8] = '\0';
+                    stConc.szFecPago        [8] = '\0';
+
+                    if (!bfnDBCargaAcumulaConceptos( &stHistDocu, &bConcepNegativos ) )
+                    {
+                        _vec_dcto_clientes[xx].ihIndPasoCobro = stHistDocu.iIndPasoCobro;
+                        
+                        if (!bUpdateDocumento(_vec_dcto_clientes[xx].ihIndPasoCobro, lNumProcPasoCob, _vec_dcto_clientes[xx].szhIndOrdenTotal))
+                            return false;
+
+                        continue;
+                    }
+
+                    if( bConcepNegativos )
+                    {
+                        bError = true;
+                        giEstadoDocumento = iDOCTOCONCEPNEG;
+                    }
+                    else
+                    {
+                        if( (ihIndPagado == 1 || stHistDocu.iIndSuperTel == 1 || stHistDocu.iIndFactur == 0 ) && stHistDocu.dTotFactura > 0.0)
+                        {
+                            stDatPag.lCodCliente  = stHistDocu.lCodCliente;
+                            stDatPag.dImpPago     = stHistDocu.dTotFactura;
+                            stDatDoc.iCodCentrEmi = stHistDocu.iCodCentrEmi;
+                            strcpy(stDatPag.szNomUsu, stConfig.szUsuario);
+                            if( !bfnDBInsertPagos (&stDatDoc, &stDatPag, stDatosGener.szOficinaPago) )
+                            {
+                                /* return false; */
+                                bError = true;      /* error se hara ROLLBACK */
+                            }
+                        } /* end if( (ihIndPagado == 1  .... */
+                    } /* end if( bConcepNegativos ) */
+
+                    bBreak = false;
+
+                    vDTrazasLog( szExePasoC, (char *)"\n  Cantidad Abonados => [%d]", LOG03, _acumabo.pAboCobr.size() );
+                    dhImpAbonoAcumulado = 0; /* RA-200603160926 16.03.2006 Soporte RyC */
+                    lCantConc = 1;
+
+                    if (!_mydbProc.LimpiarCarteras())
+                        bError = true;
+
+                    for( j = 0; ( j < _acumabo.pAboCobr.size() && !bError && !bBreak ); j++ )
+                    {
+                        vDTrazasLog( szExePasoC, (char *)"\n  Cantidad Conceptos => [%d]", LOG03, _acumabo.pAboCobr[j].pConcCobr.size() );
+
+                        for( i = 0; ( i < _acumabo.pAboCobr[j].pConcCobr.size() && !bError && !bBreak ); i++ )
+                        {
+                            _acumabo.pAboCobr[j].pConcCobr[i].dImpConcCobr=fnCnvDouble(_acumabo.pAboCobr[j].pConcCobr[i].dImpConcCobr, pstParamGener.iNumDecimal);/* 28-12-2004 Homolog. TM-872 GAC*/
+                            if (_acumabo.pAboCobr[j].pConcCobr[i].dImpConcCobr != 0.0)
+                            {
+                                if (( ihIndPagado == 1 || stHistDocu.iIndSuperTel == 1 || stHistDocu.iIndFactur == 0 )&& stHistDocu.dTotFactura > 0.0)
+                                {
+                                    if (stHistDocu.iIndSuperTel == 1)
+                                    {
+                                        stDatDoc.iCodTipDocum = stHistDocu.iCodTipDocum      ;
+                                        stDatDoc.lCodAgente   = stHistDocu.lCodVendedorAgente;
+                                        strcpy (stDatDoc.szLetra , stHistDocu.szLetra) ;
+                                    }
+
+                                    stConc.lNumFolio     = stHistDocu.lNumFolio;
+                                    strcpy(stConc.szFolioCTC, stHistDocu.szNumCTC) ;
+                                    stConc.dImporteHaber = fnCnvDouble (_acumabo.pAboCobr[j].pConcCobr[i].dImpConcCobr, 4);
+                                    stConc.dImporteDebe  = fnCnvDouble (_acumabo.pAboCobr[j].pConcCobr[i].dImpConcCobr, 4);
+
+                                    stConc.iCodConcepto = _acumabo.pAboCobr[j].pConcCobr[i].iCodConcCobr;
+                                    stConc.iCodProducto = _acumabo.pAboCobr[j].iCodProducto             ;
+                                    stConc.lNumAbonado  = _acumabo.pAboCobr[j].lNumAbonado              ;
+                                    stConc.lNumTransa   = stHistDocu.lNumTransaccion   ;
+                                    stConc.lNumVenta    = stHistDocu.lNumVenta         ;
+
+                                    strcpy(stConc.szPrefPlaza, stHistDocu.szPrefPlaza);
+                                    strcpy(stConc.szCodOperadoraScl,stHistDocu.szCodOperadoraScl);
+                                    strcpy(stConc.szCodPlaza,  stHistDocu.szCodPlaza);
+
+                                    if( !bfnPagado (&stDatDoc, &stDatPag, &stConc ) )
+                                    {
+                                        bError = true;
+                                        break;
+                                        /* return false; */
+                                    }
+                                }
+                                else
+                                {
+                                    memset (&stCobros,0,sizeof (DATCON));
+                                    if( !bfnGetCobros(  &stCobros, iCodAbono, _acumabo.pAboCobr[j], _acumabo.pAboCobr[j].pConcCobr[i], stHistDocu ) )
+                                    {
+                                        bError = true;
+                                        break;
+                                        /* return false; */
+                                    }
+
+                                    if ( stHistDocu.dTotFactura > 0.0)
+                                    {
+                                        lhCodCliente  = stHistDocu.lCodCliente;
+                                        ihCodModVenta = stHistDocu.iCodModVenta;
+                                        lhNumVenta    = stHistDocu.lNumVenta;
+
+                                        if( stHistDocu.iNumCuotas <= 0 )
+                                        {
+                                            stCobros.lNumCuota = 0;
+                                            stCobros.iSecCuota = 0;
+
+                                                stCobros.iIndFacturado = 1;
+
+                                            if (!bAcumulaSecCartera (&stCobros))
+                                            {
+                                                bError = true;
+                                                return false;
+                                            }
+                                            if (!bAcumulaCartera( &stCobros, stHistDocu.lCodCliente ))
+                                            {
+                                                iDError (szExePasoC,ERR043, vInsertarIncidencia, 0,"bAcumulaCartera");
+                                                bError = true;
+                                                break;
+                                            }
+
+                                        }
+                                    }/* fin TotFactura > 0.0*/
+                                }/* fin ihIndPagado == 1, supertel ...*/
+                            }/* fin if Imp != 0.0 */
+                        }/* fin for i ... */
+
+                        if( bError )
+                            break;
+                    }/* fin for j ... */
+
+                    if ((!bError) && (_mydbProc.vec_sec_cartera.size() > 0))
+                    {
+                        if (!_mydbProc.InsertaSecCarteras())
+                        {
+                            vDTrazasLog( szExePasoC, (char *)"\t\tERROR AL INSERTAR REGISTROS EN SECARTERA.\n\n", LOG01 );
+                            bError = true;
+                        }
+                    }
+
+                    if ((!bError) && (_mydbProc.vec_cartera.size() > 0))
+                    {
+                        if (!_mydbProc.InsertaCarteras())
+                        {
+                            vDTrazasLog( szExePasoC, (char *)"\t\tERROR AL INSERTAR REGISTROS CARTERA.\n\n", LOG01 );
+                            bError = true;
+                        }
+                    }
+
+                    if( _acumabo.iNumReg > 0 && !bError && stHistDocu.dTotFactura > 0.0 )
+                    {
+                        if( !bError && (stHistDocu.iCodTipMovimie == stDatosGener.iCodCiclo
+                                    ||( stHistDocu.iCodTipMovimie == stDatosGener.iCodMiscela && ihIndPagado == 0 )
+                                    ||  stHistDocu.iCodTipMovimie == stDatosGener.iCodBaja
+                                    ||  stHistDocu.iCodTipMovimie == stDatosGener.iCodLiquidacion ) )
+                        {
+
+                            if( stHistDocu.iCodTipMovimie == stDatosGener.iCodCiclo )
+                            {
+                                /* si el documento es de ciclo, vemos pago limite consumo */
+                                if( !bProcesaPagoLimiteConsumo( stHistDocu.lCodCliente ) )
+                                {
+                                    vDTrazasLog( szExePasoC, (char *)"\t\tERROR AL PROCESAR PAGO LIMITE CONSUMO.\n\n", LOG01 );
+                                    bError = true;
+                                }
+                            }
+
+                            if( !bError )
+                            {
+                                if( !bfnInicializaLogFac( pstStatus->LogFile ) )
+                                {
+                                    vDTrazasLog( szExePasoC, (char *)"\t\tERROR AL INICIALIZAR ARCHIVO LOG FAC.\n\n", LOG01 );
+                                    bError = true;
+                                }
+                                else
+                                {
+                                    /*iRes = ifnCancelacionCreditos( stHistDocu.lCodCliente, &stCobros, iCodAbono, stHistDocu.szFecEmision, 0 );*/
+                                    iRes = ifnLlamaCancelacion( stHistDocu.lCodCliente, stHistDocu.szFecEmision, xx + 1 );
+                                    if( iRes != 0 )
+                                    {
+                                        iDError( szExePasoC, ERR043, vInsertarIncidencia, iRes, "ifnLlamaCancelacion" );
+                                        bError = true;
+                                    }
+                                } /* end if( !bfnInicializaLogFac( pstStatus->LogFile ) ) */
+                            } /* end if( !bError )*/
+                        } /* end if( !bError && (stHistDocu. ....*/
+                    }
+                    if( !bError )
+                    {
+                        _vec_dcto_clientes[xx].ihIndPasoCobro = 1;
+
+                        /* redondeamos a la cantidad de decimales configurados para la operadora */
+                        dTotPasoCob = fnCnvDouble( stHistDocu.dTotFactura, pstParamGener.iNumDecimal ); /*TM-200412091155 13-06-2005 Desarrollo RyC */
+
+                        ihMoroso = 0;
+
+                        EXEC SQL
+                        SELECT  COUNT(1)
+                        INTO    :ihMoroso
+                        FROM    CO_MOROSOS
+                        WHERE   COD_CLIENTE = :lhCodCliente;
+
+                        if (SQLCODE != SQLOK)
+                        {
+                            iDError (szExePasoC,ERR043,vInsertarIncidencia, iRes, "Select Co_Morosos");
+                            bError = true;
+                        }
+
+                        if( ihMoroso ) /* si es moroso recalcula la deuda */
+                        {
+                            CLEAR(szhCOLUMNA);
+                            CLEAR(szhTABLA);
+                            strcpy(szhCOLUMNA,"COD_TIPDOCUM");
+                            strcpy(szhTABLA,"CO_CARTERA");
+
+                            EXEC SQL
+                            SELECT  TO_CHAR(MIN(FEC_VENCIMIE),'YYYYMMDD'),
+                                    NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),0)
+                            INTO    :szhFecVencimiento:shFecVenc,
+                                    :dhSaldoVenc
+                            FROM    CO_CARTERA
+                            WHERE   COD_CLIENTE   = :lhCodCliente
+                            AND     IND_FACTURADO = 1
+                            AND     FEC_VENCIMIE < TRUNC(SYSDATE)
+                            AND     COD_TIPDOCUM NOT IN (   SELECT  TO_NUMBER(COD_VALOR)
+                                                            FROM    CO_CODIGOS
+                                                            WHERE   NOM_TABLA   = :szhTABLA
+                                                                AND NOM_COLUMNA = :szhCOLUMNA ); /* jlr_23.01.01 */
+                            if( SQLCODE != SQLOK )
+                            {
+                                iDError (szExePasoC,ERR043,vInsertarIncidencia, iRes, "Select Co_Cartera(1)");
+                                bError = true;
+                            }
+
+                            EXEC SQL
+                            SELECT  NVL(SUM(IMPORTE_DEBE - IMPORTE_HABER),0)
+                            INTO    :dhSaldoNoVenc
+                            FROM    CO_CARTERA
+                            WHERE   COD_CLIENTE   = :lhCodCliente
+                            AND     IND_FACTURADO = 1
+                            AND     FEC_VENCIMIE >= TRUNC(SYSDATE);
+
+                            if (SQLCODE != SQLOK)
+                            {
+                                iDError (szExePasoC,ERR043,vInsertarIncidencia, iRes, "Select Co_Cartera(2)");
+                                bError = true;
+                            }
+
+                            strcpy(szhFecVencimiento,(shFecVenc==ORA_NULL)?"":szhFecVencimiento);
+
+                            EXEC SQL
+                            UPDATE CO_MOROSOS
+                               SET FEC_DEUDVENC = TO_DATE(:szhFecVencimiento,'YYYYMMDD'),
+                                   DEU_VENCIDA  = :dhSaldoVenc,
+                                   DEU_NOVENC   = :dhSaldoNoVenc
+                            WHERE   COD_CLIENTE = :lhCodCliente;
+
+                            if (SQLCODE != SQLOK)
+                            {
+                                iDError (szExePasoC,ERR043,vInsertarIncidencia, iRes, "Update Co_Morosos");
+                                bError = true;
+                            }
+                        } /* end if( ihMoroso )*/
+
+                        strcpy(szhNumIdent_a,_vec_dcto_clientes[xx].szhNumIdent);
+                        strcpy(szhCodTipIdent_a,_vec_dcto_clientes[xx].szhCodTipIdent);
+
+                        EXEC SQL
+                        UPDATE CO_COBEXTERNA
+                           SET COD_MOVIMIENTO = :szcte_M,
+                               FEC_MOVIMIENTO = SYSDATE
+                        WHERE NUM_IDENT     = :szhNumIdent
+                        AND COD_TIPIDENT    = :szhCodTipIdent
+                        AND COD_CLIENTE     = DECODE(cod_cliente, 0, 0,:lhCodCliente)
+                        AND COD_MOVIMIENTO  = :szcte_SM
+                        AND COD_ENVIO NOT IN ( :szcte_B, :szcte_R, :szcte_I, :szcte_G, :szcte_V, :szcte_E, :szcte_N )
+                        AND COD_CLIENTE    = DECODE(:szEntGestion, :szcte_C, :lhCodCliente, COD_CLIENTE );
+
+                        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+                        {
+                            vDTrazasError(szExeName,(char *)"\n\t**  Error en UPDATE CO_COBEXTERNA **"
+                                                    "\n\t\t=> Error : [%d]  [%s] ",LOG00,SQLCODE,SQLERRM);
+                            iDError (szExePasoC,ERR043,vInsertarIncidencia, iRes, "Update Co_Cobexterna");
+                            bError = true;
+                        }
+                    } /* fin (!bError) */
+                }  /*if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND) */
+            } /* if( !bfnGetDatosCliente( lhCodCliente ) ) */
+
+            /* aca marcamos el documento con error y deshacemos los cambios o grabamos OK */
+            if( bError )
+            {
+                if(!bfnOraRollBack() )
+                {
+                    iDError( szExePasoC, ERR000, vInsertarIncidencia, "RollBackWork Docto ERROR", szfnORAerror() );
+                    _acumabo.pAboCobr.clear();
+                    return false ;
+                }
+
+                if( giEstadoDocumento != iDOCTOCONCEPNEG && giEstadoDocumento != iNOEXISTECLIE  && giEstadoDocumento != iTOTALFACTURA0) /* no viene con error */
+                    giEstadoDocumento = iDOCTOCONERROR;
+
+                vDTrazasLog( szExeName, (char *)"CLIENTE => [%d] SECUENCIA => [%d] DOCUMENTO CON ERROR => [%d].",
+                                          LOG03, stHistDocu.lCodCliente, stHistDocu.lNumSecuenci, giEstadoDocumento );
+
+                /* guardamos datos de los documentos con error, para insertarlos mas tarde */
+
+                _vec_dcto_clientes[xx].ihIndPasoCobro = giEstadoDocumento;
+
+                giCntRegistrosProc++;
+                giEstadoDocumento = 0;
+
+                iRes = 0; /* continuamos con el siguiente registro */
+            } /* fin (bError) */
+
+            if (!bUpdateDocumento(_vec_dcto_clientes[xx].ihIndPasoCobro, lNumProcPasoCob, _vec_dcto_clientes[xx].szhIndOrdenTotal))
+                return false;
+
+        }/* for( xx = 0; xx < glTotalDoctosInter; xx++ ) */
+
+    }/* CICLO DOCUMENTOS */
+
+    return true;
+
+} /* fin bfnPasoCobros()*/
+
+/*****************************************************************************/
+/*Funcion : ifnLlamaCancelacion                                                   */
+/*****************************************************************************/
+int ifnLlamaCancelacion( long lCodCliente, char *szFec_pago, int k)
+{
+int      iResul = 0;
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhNum_Transaccion      ;
+    long lhCodCliente           ;
+    char szhFec_Pago        [9]; EXEC SQL VAR szhFec_Pago IS STRING(9);
+    int  ihRetorno              ;
+    char szhGlosa          [500];
+    int  ihCarrier          = 0 ;
+    char szhYYYYMMDD         [9];
+    char szhYYYYMMDDHH24MISS[17];
+    char szhCodOperadora     [4]; EXEC SQL VAR szhCodOperadora IS STRING(4);
+    int  ihdecimal;
+EXEC SQL END DECLARE SECTION;
+
+    /*---------------------------------------------------------------------*/
+    vDTrazasLog( szExeName,(char *)"En funcion ifnLlamaCancelacion() \n",LOG03);
+    vDTrazasLog( szExeName,(char *)"CO_CANCELACION_PG.CO_CANCELACREDITOS_PR\n",LOG03);
+
+    memset(szhGlosa,'\0',sizeof(szhGlosa));
+    strcpy(szhYYYYMMDDHH24MISS,"YYYYMMDDHH24MISS");
+    strcpy(szhYYYYMMDD,"YYYYMMDD");
+    ihRetorno=99;
+
+    EXEC SQL
+    SELECT GA_SEQ_TRANSACABO.NEXTVAL
+    INTO   :lhNum_Transaccion
+    FROM   DUAL;
+    if (sqlca.sqlcode != SQLOK) {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, "En SELECT GA_SEQ_TRANSACABO.NEXTVAL.", szfnORAerror() );
+        return -1;
+    }
+
+    lhCodCliente=lCodCliente;
+    memset(szhFec_Pago,'\0',sizeof(szhFec_Pago));
+    strncpy(szhFec_Pago,szFec_pago,8);
+    szhFec_Pago[8] = '\0';
+
+    vDTrazasLog( szExeName,(char *)"\n\t****** Registro #[%03d] ******"
+                           "\n\t\t=> lhCodCliente      [%ld]"
+                           "\n\t\t=> szFecPago         [%s] "
+                           "\n\t\t=> lhNum_Transaccion [%ld]\n\n",LOG03,k ,lhCodCliente ,szhFec_Pago, lhNum_Transaccion );
+    ihdecimal=pstParamGener.iNumDecimal;
+    EXEC SQL EXECUTE
+        BEGIN
+                CO_CANCELACION_PG.CO_CANCELACREDITOS_PR(:lhCodCliente, TO_DATE(:szhFec_Pago,:szhYYYYMMDD), :lhNum_Transaccion , :ihdecimal, :ihCarrier , NULL , NULL , NULL, :ihRetorno , :szhGlosa );
+        END;
+    END-EXEC;
+
+    /*if (sqlca.sqlcode != SQLOK ) {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, "En CO_CANCELACREDITOS_PR.\n", szfnORAerror() );
+
+    }*/
+    if (sqlca.sqlcode != SQLOK ) {
+        if (sqlca.sqlcode != -1405 ) {  /* Soporte RyC 34635 - Colombia 16.11.2006 */
+            iDError( szExePasoC, ERR000, vInsertarIncidencia, "En CO_CANCELACREDITOS_PR.\n", szfnORAerror() );
+        }
+    }
+
+    if (ihRetorno == 99) {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, "Valor de Retorno es 99. Posible error en la PL\n", szfnORAerror() );
+    }
+    else if (ihRetorno != 0)   {
+        rtrim(szhGlosa);
+        vDTrazasLog( szExeName,(char *)"Valor ihRetorno [%d]",LOG03,ihRetorno);
+        vDTrazasLog( szExeName,(char *)"En CO_CANCELACREDITOS_PR. [%s]\n ",LOG03,szhGlosa);
+
+    }
+
+    vDTrazasLog( szExeName,(char *)"Fin a Cancelacion de Creditos. <== %d ==>\n\n",LOG03,ihRetorno);
+    return ihRetorno;
+
+}/* Fin ifnLlamaCancelacion() */
+
+/**************************** Final bfnPasoCobros ***************************/
+
+/*****************************************************************************/
+static bool bfnCargaEstructuraWork( int lRow, DATOS_FACT *pstHistDocu)
+{
+    char    szhRowid[19];
+    long    lhNumSecuenci;
+    int     ihCodTipDocum;
+    long    lhCodVendedorAgente;
+    char    szhLetra[2];
+    int     ihCodCentrEmi;
+    double  dhTotFactura;
+    long    lhCodCliente;
+    char    szhFecEmision[17];
+    char    szhIndOrdenTotal[13];
+    short   shIndSuperTel;
+    long    lhNumFolio;
+    char    szhNumCTC[13];
+    char    szhFecVencimie[17];
+    char    szhFecCaducida[17];
+    long    lhNumSecuRel;
+    char    szhLetraRel[2];
+    int     ihCodTipDocumRel;
+    long    lhCodVendedorAgenteRel;
+    int     ihCodCentrRel;
+    long    lhNumVenta;
+    long    lhNumTransaccion;
+    int     ihCodModVenta;
+    int     ihIndFactur;
+    long    lhNumProceso;
+    char    szhPrefPlaza[26];
+    char    szhCodOperadoraScl[6];
+    char    szhCodPlaza[6];
+    /*int     ihCodTipMovimie;
+    int     ihNumCuotas;*/
+    char    szhNomUsuarORA[31];
+    char    szhCodTipIdent[3];
+    char    szhNumIdent[21];
+
+    strcpy( pstHistDocu->szRowid        ,    _vec_dcto_clientes[lRow].szhRowid );
+    strcpy( pstHistDocu->szLetra        ,    _vec_dcto_clientes[lRow].szhLetra );
+    strcpy( pstHistDocu->szFecEmision   ,    _vec_dcto_clientes[lRow].szhFecEmision );
+    strcpy( pstHistDocu->szIndOrdenTotal,    _vec_dcto_clientes[lRow].szhIndOrdenTotal );
+    strcpy( pstHistDocu->szFecVencimie  ,    _vec_dcto_clientes[lRow].szhFecVencimie );
+    strcpy( pstHistDocu->szFecCaducida  ,    _vec_dcto_clientes[lRow].szhFecCaducida );
+    strcpy( pstHistDocu->szLetraRel     ,    _vec_dcto_clientes[lRow].szhLetraRel );
+    strcpy( pstHistDocu->szNumCTC       ,    _vec_dcto_clientes[lRow].szhNumCTC );
+    strcpy( pstHistDocu->szNomUsuarioORA,    _vec_dcto_clientes[lRow].szhNomUsuarORA);
+    pstHistDocu->lNumSecuenci       =    _vec_dcto_clientes[lRow].lhNumSecuenci;
+    pstHistDocu->iCodTipDocum       =    _vec_dcto_clientes[lRow].ihCodTipDocum;
+    pstHistDocu->lCodVendedorAgente =    _vec_dcto_clientes[lRow].lhCodVendedorAgente;
+    pstHistDocu->iCodCentrEmi       =    _vec_dcto_clientes[lRow].ihCodCentrEmi;
+    pstHistDocu->dTotFactura        =    _vec_dcto_clientes[lRow].dhTotFactura;
+    pstHistDocu->lCodCliente        =    _vec_dcto_clientes[lRow].lhCodCliente;
+    pstHistDocu->iIndSuperTel       =    _vec_dcto_clientes[lRow].shIndSuperTel;
+    pstHistDocu->lNumFolio          =    _vec_dcto_clientes[lRow].lhNumFolio;
+    pstHistDocu->iIndFactur         =    _vec_dcto_clientes[lRow].ihIndFactur;
+/*  pstHistDocu->iCodTipMovimie     =    _vec_dcto_clientes[lRow].iCodTipMovimie; */
+    pstHistDocu->iCodTipMovimie     =    stDatosGener.iCodCiclo;
+    pstHistDocu->lNumProceso        =    _vec_dcto_clientes[lRow].lhNumProceso;
+/*  pstHistDocu->iNumCuotas         =    _vec_dcto_clientes[lRow].iNumCuotas;*/
+    pstHistDocu->iNumCuotas         =    0;
+    pstHistDocu->lNumSecuRel        =    _vec_dcto_clientes[lRow].lhNumSecuRel;
+    pstHistDocu->iCodTipDocumRel    =    _vec_dcto_clientes[lRow].ihCodTipDocumRel;
+    pstHistDocu->lCodVendedorAgenteRel =  _vec_dcto_clientes[lRow].lhCodVendedorAgenteRel;
+    pstHistDocu->iCodCentrRel       =    _vec_dcto_clientes[lRow].ihCodCentrRel;
+    pstHistDocu->lNumVenta          =    _vec_dcto_clientes[lRow].lhNumVenta;
+    pstHistDocu->lNumTransaccion    =    _vec_dcto_clientes[lRow].lhNumTransaccion;
+    pstHistDocu->iCodModVenta       =    _vec_dcto_clientes[lRow].ihCodModVenta;
+    pstHistDocu->iIndPasoCobro      =    _vec_dcto_clientes[lRow].ihIndPasoCobro;
+    strcpy( pstHistDocu->szPrefPlaza      , _vec_dcto_clientes[lRow].szhPrefPlaza );
+    strcpy( pstHistDocu->szCodOperadoraScl, _vec_dcto_clientes[lRow].szhCodOperadoraScl );
+    strcpy( pstHistDocu->szCodPlaza       , _vec_dcto_clientes[lRow].szhCodPlaza );
+    
+    return true;
+}
+
+/*****************************************************************************/
+/*                        funcion : vfnPrintAcumAbo                          */
+/*****************************************************************************/
+static bool vfnPrintAcumAbo( int *iErrorNeg )
+{
+/**int i = 0;
+   int j = 0;  Requerimiento de Soporte - 41321 - 07.06.2007 */
+long i = 0;
+long j = 0;
+
+    lTotalConcCartera= 0;
+    vDTrazasLog( szExePasoC, (char *)"\n\t\t*** Acumulados por Abonado-Producto ***"
+                             "\n\t\t=> Numero de Registros [%d]            ", LOG04, _acumabo.iNumReg );
+    for( i = 0; i < _acumabo.pAboCobr.size(); i++ )
+    {
+        vDTrazasLog( szExePasoC, (char *)"\t\t[%d]-Num.Abonado  [%ld]", LOG04, i,_acumabo.pAboCobr[i].lNumAbonado  );
+        vDTrazasLog( szExePasoC, (char *)"\t\t[%d]-Cod.Producto [%d] ", LOG04, i,_acumabo.pAboCobr[i].iCodProducto );
+        vDTrazasLog( szExePasoC, (char *)"\t\t[%d]-Num.Conceptos[%d]\n",LOG04, i,_acumabo.pAboCobr[i].iNumConceptos );
+
+        for( j = 0; j < _acumabo.pAboCobr[i].pConcCobr.size(); j++ )
+        {
+            vDTrazasLog( szExePasoC, (char *)"\t\t\t[%d]-Cod.ConcCobr  [%d]"  , LOG04, j,_acumabo.pAboCobr[i].pConcCobr[j].iCodConcCobr );
+            vDTrazasLog( szExePasoC, (char *)"\t\t\t[%d]-Imp.ConcCobr  [%f]"  , LOG04, j,_acumabo.pAboCobr[i].pConcCobr[j].dImpConcCobr); /*GAC 22-06-2205 Homol. a TM-200505251430 27.05.2005 Soporte RyC CAPC*/
+            vDTrazasLog( szExePasoC, (char *)"\t\t\t[%d]-Seq.Cuotas    [%d]"  , LOG04, j,_acumabo.pAboCobr[i].pConcCobr[j].lSeqCuotas );
+            vDTrazasLog( szExePasoC, (char *)"\t\t\t[%d]-Ord.Cuota     [%d]\n", LOG04, j,_acumabo.pAboCobr[i].pConcCobr[j].iOrdCuota );
+            vDTrazasLog( szExePasoC, (char *)"\t\t\t[%d]-Ind.Factur    [%d]\n", LOG04, j,_acumabo.pAboCobr[i].pConcCobr[j].iIndFactur );
+
+            if( _acumabo.pAboCobr[i].pConcCobr[j].dImpConcCobr < -0.01 ) /* conceptos negativos */
+            {
+                vDTrazasLog( szExePasoC, (char *)"ATENCION => Documento presenta CONCEPTOS NEGATIVOS", LOG01 );
+                *iErrorNeg = 1;
+            }
+
+            if( _acumabo.pAboCobr[i].pConcCobr[j].dImpConcCobr > 0.00 ) /* conceptos contabilizables  */
+            {
+                lTotalConcCartera++;
+            }
+        }
+    }
+
+    vDTrazasLog( szExePasoC, (char *)"\t\t[%ld]- Total de Documentos en Cartera ", LOG03, lTotalConcCartera );
+    return true;
+
+}/************************** Final vfnPrintAcumAbo ***************************/
+
+/*****************************************************************************/
+/*                            funcion : bfnGetCobros                         */
+/* -Funcion que rellena la estructura pstCobros para realizar el Interface   */
+/*  con el modulo de Cobros y asi actualizar la Cartera.                     */
+/* -Valores Retorno : Error->false, !Error->true                             */
+/*****************************************************************************/
+static bool bfnGetCobros( DATCON *pstCobros, int iCodAbono,  NewtagAboCobr &stAboCobr, NewtagConcCobr &stConcCobr, DATOS_FACT stHistDocu )
+{
+static double dImpConcepto = 0.0;
+
+    /*stConcCobr.dImpConcCobr = fnCnvDouble(stConcCobr.dImpConcCobr, 1);  /28-12-2004 Homolog. TM-872 GAC*/
+    stConcCobr.dImpConcCobr = fnCnvDouble(stConcCobr.dImpConcCobr, pstParamGener.iNumDecimal);  /*TM-200412091155 13-06-2004 Desarrollo RyC */
+    if( stConcCobr.dImpConcCobr != 0.0 )
+    {
+        /****************************************************************/
+        /* if(stHistDocu.iCodTipMovimie != stDatosGener.iCodCiclo)      */
+        /*        pstCobros->szFolioCTC[0]=0;                           */
+        /* else                                                         */
+        /*        strcpy (pstCobros->szFolioCTC,stHistDocu.szNumCTC);   */
+        /****************************************************************/
+        /*  Se Cambio para que todos los documentos se carge el Numero  */
+        /*  de Folio CTC, cilclo y no ciclo                             */
+        /****************************************************************/
+        strcpy (pstCobros->szFolioCTC,stHistDocu.szNumCTC)     ;
+        /****************************************************************/
+        pstCobros->iCodTipDocum = stHistDocu.iCodTipDocum      ;
+        pstCobros->lCodAgente   = stHistDocu.lCodVendedorAgente;
+        strcpy (pstCobros->szLetra,stHistDocu.szLetra)         ;
+        pstCobros->iCodCentremi = stHistDocu.iCodCentrEmi      ;
+        pstCobros->lNumSecuenci = stHistDocu.lNumSecuenci      ;
+        pstCobros->iColumna     = 1                            ;
+        pstCobros->iCodProducto = stAboCobr.iCodProducto       ;
+        pstCobros->iCodConcepto = (stHistDocu.iCodTipMovimie == stDatosGener.iCodNotaCre)?iCodAbono:stConcCobr.iCodConcCobr;
+
+        dImpConcepto            = stConcCobr.dImpConcCobr      ;
+
+        if( !bConverMoneda( stDatosGener.szCodMoneFact, stDatosGener.szMonedaCobros, szSysDate,
+                            &dImpConcepto, stHistDocu.iCodTipDocum ) )
+            return false;
+
+        /******************************************************************/
+        /* En las Notas de Credito se actuac de la siguiente manera:      */
+        /*    # if (dImpConcepto < 0) Debe = (-1)*ImpConcepto             */
+        /*      else Haber = (-1)*ImpConcepto                             */
+        /******************************************************************/
+        if( dImpConcepto > 0.0 )
+        {
+
+                pstCobros->dImporteDebe = dImpConcepto;
+                pstCobros->dImporteHaber= 0;
+        }
+        else
+        {
+                pstCobros->dImporteHaber = dImpConcepto * (-1); /* para que genere el valor positivo */
+                pstCobros->dImporteDebe  = 0;
+        }
+        pstCobros->iIndContado   = 0;
+        pstCobros->iIndFacturado = 1;
+
+        strncpy (pstCobros->szFecEfectividad, stHistDocu.szFecEmision ,8);
+        strncpy (pstCobros->szFecVencimie   , stHistDocu.szFecVencimie,8);
+        strncpy (pstCobros->szFecCaducida   , stHistDocu.szFecCaducida,8);
+        strncpy (pstCobros->szFecAntiguedad , stHistDocu.szFecVencimie,8);
+        strcpy  (pstCobros->szFecPago       , "")                        ;
+
+        pstCobros->szFecEfectividad[8] ='\0';
+        pstCobros->szFecVencimie   [8] ='\0';
+        pstCobros->szFecCaducida   [8] ='\0';
+        pstCobros->szFecAntiguedad [8] ='\0';
+
+        pstCobros->iDiasVencimiento = 0                               ;
+        pstCobros->lNumAbonado      = stAboCobr.lNumAbonado           ;
+        pstCobros->lNumFolio        = stHistDocu.lNumFolio            ;
+
+        pstCobros->lNumCuota        = (stConcCobr.lSeqCuotas > 0)?stConcCobr.lSeqCuotas:0;
+        pstCobros->iSecCuota        = (stConcCobr.iOrdCuota  > 0)?stConcCobr.iOrdCuota :0;
+
+        pstCobros->lNumTransa       = stHistDocu.lNumTransaccion      ;
+        pstCobros->lNumVenta        = stHistDocu.lNumVenta            ;
+
+        strncpy (pstCobros->szPrefPlaza      , stHistDocu.szPrefPlaza ,     25);
+        strncpy (pstCobros->szCodOperadoraScl, stHistDocu.szCodOperadoraScl,5);
+        strncpy (pstCobros->szCodPlaza       , stHistDocu.szCodPlaza,       5);
+        rtrim( pstCobros->szPrefPlaza );
+        rtrim( pstCobros->szCodOperadoraScl );
+        rtrim( pstCobros->szCodPlaza );
+
+        vDTrazasLog (szExeName, (char *)"\n\t\t* Contenido stCobros  "
+                                "\n\t\t=> Cod.TipDocum  [%d] "
+                                "\n\t\t=> Cod.Agente    [%ld]"
+                                "\n\t\t=> Letra         [%s] "
+                                "\n\t\t=> Cod.CentrEmi  [%d] "
+                                "\n\t\t=> Num.Secuenci  [%ld]"
+                                "\n\t\t=> Columna       [%d] "
+                                "\n\t\t=> Cod.Producto  [%d] "
+                                "\n\t\t=> Cod.Concepto  [%d] "
+                                "\n\t\t=> Imp.Haber     [%f] "
+                                "\n\t\t=> Imp.Debe      [%f] "
+                                "\n\t\t=> Num.Transacc. [%ld]"
+                                "\n\t\t=> Num.Venta     [%ld]"
+                                "\n\t\t=> Num.Cuota     [%ld]"
+                                "\n\t\t=> Sec.Cuotra    [%d] "
+                                "\n\t\t=> Num.Folio     [%ld]"
+                                "\n\t\t=> Num.Abonado   [%ld]"
+                                "\n\t\t=> Ind.Contado   [%d] "
+                                "\n\t\t=> Ind.Facturado [%d] "
+                                "\n\t\t=> Fec.Vencimie  [%s] "
+                                "\n\t\t=> Fec.Efectivid.[%s] "
+                                "\n\t\t=> Fec.Caducida  [%s] "
+                                "\n\t\t=> Fec.Antiguedad[%s] "
+                                "\n\t\t=> Fec.Pago      [%s] "
+                                "\n\t\t=> Num.CTC       [%s] "
+                                "\n\t\t=> Dias.Vencimie.[%d] "
+                                "\n\t\t=> Prefijo Plaza [%s] "
+                                "\n\t\t=> Cod. Operadora[%s] "
+                                "\n\t\t=> Codigo Plaza  [%s] "
+                                , LOG04,
+                                pstCobros->iCodTipDocum,
+                                pstCobros->lCodAgente             ,
+                                pstCobros->szLetra                ,
+                                pstCobros->iCodCentremi           ,
+                                pstCobros->lNumSecuenci           ,
+                                pstCobros->iColumna               ,
+                                pstCobros->iCodProducto           ,
+                                pstCobros->iCodConcepto           ,
+                                pstCobros->dImporteHaber          ,
+                                pstCobros->dImporteDebe           ,
+                                pstCobros->lNumTransa             ,
+                                pstCobros->lNumVenta              ,
+                                pstCobros->lNumCuota              ,
+                                pstCobros->iSecCuota              ,
+                                pstCobros->lNumFolio              ,
+                                pstCobros->lNumAbonado            ,
+                                pstCobros->iIndContado            ,
+                                pstCobros->iIndFacturado          ,
+                                pstCobros->szFecVencimie          ,
+                                pstCobros->szFecEfectividad       ,
+                                pstCobros->szFecCaducida          ,
+                                pstCobros->szFecAntiguedad        ,
+                                pstCobros->szFecPago              ,
+                                pstCobros->szFolioCTC             ,
+                                pstCobros->iDiasVencimiento       ,
+                                pstCobros->szPrefPlaza            , /* jlr_11.01.03 */
+                                pstCobros->szCodOperadoraScl      , /* jlr_11.01.03 */
+                                pstCobros->szCodPlaza             );/* jlr_11.01.03 */
+    }
+
+    return true;
+
+}/**************************** Final bfnGetCobros ****************************/
+
+
+/*****************************************************************************/
+/*                           funcion : bfnPagado                             */
+/*****************************************************************************/
+static bool bfnPagado (DATDOC *pstDatDoc, DATPAG *pstDatPag, DATCON *pstConc)
+{
+    pstConc->iCodTipDocum   = pstDatDoc->iCodTipDocum;
+    pstDatDoc->iCodTipDocum = pstDatPag->iCodTipDocum; /* jlr_05.01.01 */
+    pstConc->iCodCentremi   = pstDatDoc->iCodCentrEmi;
+    pstConc->lNumSecuenci   = pstDatDoc->lNumSecuenci;
+
+    strcpy (pstConc->szLetra, pstDatDoc->szLetra);
+
+    pstConc->lNumCuota     =  0                  ; /*rbr -1*/
+    pstConc->iSecCuota     = -1                  ;
+    pstConc->iIndContado   =  1                  ;
+    pstConc->iIndFacturado =  1                  ;
+
+    printf( "\n\t\t* Llamada a bfnDBSecCol "
+            "\n\t\t* pstConc->lNumSecuenci  [%d] "
+            "\n\t\t* pstConc->iCodTipDocum  [%d] "
+            "\n\t\t* pstConc->szLetra       [%s] "
+            "\n\t\t* pstConc->iCodCentremi  [%d] "
+            "\n\t\t* pstConc->iCodConcepto  [%d] "
+            "\n\t\t* pstConc->lCodAgente    [%d] ",
+            pstConc->lNumSecuenci,
+            pstConc->iCodTipDocum,
+            pstConc->szLetra,
+            pstConc->iCodCentremi,
+            pstConc->iCodConcepto,
+            pstConc->lCodAgente  );
+
+/*SECARTERA
+    if (!bfnDBSecCol (pstConc))
+       return false;
+*/
+    if (!bAcumulaSecCartera (pstConc))
+        return false;
+
+    if (!bfnDBInsertPagosConc(*pstDatDoc, *pstConc))
+    {
+        vDTrazasError (szExeName, (char *)"\n\t\t=> Error funcion (Cobros) : bfnDBInsPagoConc", LOG03);
+        return         false ;
+    }
+
+    if (!bfnDBInsertCancelados (*pstConc, pstDatPag->lCodCliente))
+    {
+        vDTrazasError (szExeName, (char *)"\n\t\t=> Error funcion (Cobros) : bfnDBInsertCancelados", LOG03);
+        return         false ;
+    }
+
+    return true;
+
+}/****************************** Final bfnPagado *****************************/
+
+/*****************************************************************************/
+/*                             funcion : bfnDBInsertPagos                    */
+/*****************************************************************************/
+static bool bfnDBInsertPagos (DATDOC *pstDatDoc, DATPAG *pstDatPag, char *szOficina)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+int iCodTipDocum;
+int iCodCentrEmi;
+long lNumSecuenci;
+long lCodAgente;
+char szLetra[2];    EXEC SQL VAR szLetra IS STRING(2);
+long lCodCliente;
+double dImpPago;
+char szNomUsu[31];   EXEC SQL VAR szNomUsu IS STRING(31);
+int iCodForPago;
+int iCodSisPago;
+int iCodOriPago;
+int iCodCauPago;
+char szDesPago[41];  EXEC SQL VAR szDesPago IS STRING(41);
+EXEC SQL END DECLARE SECTION  ;
+    if (!bGetCentrEmi (szOficina, pstDatPag->iCodTipDocum, &pstDatDoc->iCodCentrEmi))
+        return false;
+    if (!bGenNumSecuenciasEmi (pstDatPag->iCodTipDocum, pstDatDoc->szLetra, pstDatDoc->iCodCentrEmi,&pstDatDoc->lNumSecuenci))
+        return false;
+    CLEAR(szLetra);
+    CLEAR(szNomUsu);
+    CLEAR(szDesPago);
+    iCodTipDocum=pstDatPag->iCodTipDocum;
+    iCodCentrEmi=pstDatDoc->iCodCentrEmi;
+    lNumSecuenci=pstDatDoc->lNumSecuenci;
+    lCodAgente=pstDatDoc->lCodAgente;
+    strcpy(szLetra,pstDatDoc->szLetra);
+    lCodCliente=pstDatPag->lCodCliente;
+    dImpPago=pstDatPag->dImpPago;
+    strcpy(pstDatPag->szNomUsu,szNomUsu);
+    iCodForPago=pstDatPag->iCodForPago;
+    iCodSisPago=pstDatPag->iCodSisPago;
+    iCodOriPago=pstDatPag->iCodOriPago;
+    iCodCauPago=pstDatPag->iCodCauPago;
+    strcpy(szDesPago,pstDatDoc->szDesPago);
+
+    vDTrazasLog (szExeName, (char *)"\n\t\t* Insert=> Co_Pagos"
+                            "\n\t\t=> Cod.TipDocum [%d] "
+                            "\n\t\t=> Cod.CentrEmi [%d] "
+                            "\n\t\t=> Num.Secuenci [%ld]"
+                            "\n\t\t=> Cod.Vendedor [%ld]"
+                            "\n\t\t=> Letra        [%s] "
+                            "\n\t\t=> Cod.Cliente  [%ld]"
+                            "\n\t\t=> Imp.Pago     [%f] "
+                            "\n\t\t=> Nom.UsuarOra [%s] "
+                            "\n\t\t=> Cod.ForPago  [%d] "
+                            "\n\t\t=> Cod.SisPago  [%d] "
+                            "\n\t\t=> Cod.OriPago  [%d] "
+                            "\n\t\t=> Cod.CauPago  [%d] "
+                            "\n\t\t=> Des.Pago     [%s] " , LOG05,
+                            pstDatPag->iCodTipDocum, pstDatDoc->iCodCentrEmi ,
+                            pstDatDoc->lNumSecuenci, pstDatDoc->lCodAgente   ,
+                            pstDatDoc->szLetra     , pstDatPag->lCodCliente  ,
+                            pstDatPag->dImpPago    , pstDatPag->szNomUsu     ,
+                            pstDatPag->iCodForPago ,
+                            pstDatPag->iCodSisPago , pstDatPag->iCodOriPago  ,
+                            pstDatPag->iCodCauPago , pstDatDoc->szDesPago);
+
+
+     EXEC SQL INSERT INTO CO_PAGOS
+             (COD_TIPDOCUM       ,
+              COD_CENTREMI       ,
+              NUM_SECUENCI       ,
+              COD_VENDEDOR_AGENTE,
+              LETRA              ,
+              COD_CLIENTE        ,
+              IMP_PAGO           ,
+              FEC_EFECTIVIDAD    ,
+              FEC_VALOR          ,
+              NOM_USUARORA       ,
+              COD_FORPAGO        ,
+              COD_SISPAGO        ,
+              COD_ORIPAGO        ,
+              COD_CAUPAGO        ,
+              COD_BANCO          ,
+              COD_TIPTARJETA     ,
+              COD_SUCURSAL       ,
+              CTA_CORRIENTE      ,
+              NUM_TARJETA        ,
+              DES_PAGO           ,
+              PREF_PLAZA)           /* GAC 08-08-2003 */
+       VALUES(:iCodTipDocum ,
+              :iCodCentrEmi ,
+              :lNumSecuenci ,
+              :lCodAgente   ,
+              :szLetra      ,
+              :lCodCliente  ,
+              :dImpPago     ,
+               SYSDATE                 ,
+               SYSDATE                 ,
+              USER                       , /*:pstDatPag->szNomUsu     ,*/
+              0                        ,
+              :iCodSisPago  ,
+              :iCodOriPago  ,
+              :iCodCauPago  ,
+              NULL                     ,
+              NULL                     ,
+              NULL                     ,
+              NULL                     ,
+              NULL                     ,
+              :szDesPago    ,
+              :szPrefPlazaDefault);       /* GAC 08-08-2003 */
+
+    if (SQLCODE)
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Insert=> Co_Pagos", szfnORAerror ());
+
+    vDTrazasLog (szExeName,(char *)"\n\t\t* Insert=> Co_Pagos OK ", LOG05 );      /*TM-200412091155 13-12-2004 Soporte RyC PRM*/
+
+    return (SQLCODE)?false:true;
+}/**************************** Final bfnDBInsertPagos ************************/
+
+
+/*****************************************************************************/
+/*                            funcion : bfnDBInsertPagosConc                 */
+/*****************************************************************************/
+static bool bfnDBInsertPagosConc (DATDOC stPago, DATCON stPagConc)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+   static short i_shCodTipDocRel  ;
+   static short i_shCodCentrRel   ;
+   static short i_shNumSecuRel    ;
+   static short i_shLetraRel      ;
+   static short i_shCodAgenteRel  ;
+   static short i_shCodConcepto   ;
+   static short i_shImpConcepto   ;
+   static short i_shColumna       ;
+   static short i_shNumAbonado    ;
+   static short i_shNumFolio      ;
+   static short i_shNumCuota      ;
+   static short i_shSecCuota      ;
+   static short i_shNumTransa     ;
+   static short i_shNumVenta      ;
+   static short i_shFolioCTC      ;
+
+   /*TM-200412091155 13-12-2004 Soporte RyC PRM*/
+   /*Se declaran Variables locales, para asignar valores de la estructura de co_pagos y co_pagosconc */
+   int     ihCodTipDocum;
+   long    lhCodAgente;
+   char    szhLetra[2];                 EXEC SQL VAR szhLetra IS STRING(2);
+   int     ihCodCentremi;
+   long    lhNumSecuenci;
+   int     ihCodTipDocum_P;
+   long    lhCodAgente_P;
+   char    szhLetra_P[2];               EXEC SQL VAR szhLetra_P IS STRING(2);
+   int     ihCodCentremi_P;
+   long    lhNumSecuenci_P;
+   int     ihCodConcepto;
+   int     ihColumna;
+   int     ihCodProducto;
+   double  dhImporteDebe;
+   double  dhImporteHaber;
+   int     ihIndContado;
+   int     ihIndFacturado;
+   char    szhFecEfectividad[9];        EXEC SQL VAR szhFecEfectividad IS STRING(9);
+   char    szhFecVencimie[9];           EXEC SQL VAR szhFecVencimie IS STRING(9);
+   char    szhFecCaducida[9];           EXEC SQL VAR szhFecCaducida IS STRING(9);
+   char    szhFecAntiguedad[9];         EXEC SQL VAR szhFecAntiguedad IS STRING(9);
+   char    szhFecPago[9];               EXEC SQL VAR szhFecPago IS STRING(9);
+   int     ihDiasVencimiento;
+   long    lhNumAbonado;
+   long    lhNumFolio;
+   long    lhNumCuota;
+   int     ihSecCuota;
+   long    lhNumTransa;
+   long    lhNumVenta;
+   char    szhFolioCTC[12];             EXEC SQL VAR szhFolioCTC IS STRING(12);
+   char    szhPrefPlaza[26];            EXEC SQL VAR szhPrefPlaza IS STRING(11);
+   char    szhCodOperadoraScl[6];       EXEC SQL VAR szhCodOperadoraScl IS STRING(6);
+   char    szhCodPlaza[6];              EXEC SQL VAR szhCodPlaza IS STRING(6);
+
+EXEC SQL END DECLARE SECTION  ;
+
+    /*TM-200412091155 13-12-2004 Soporte RyC PRM*/
+    /*Asignación de Variables desde las estructuras de pagos a variables locales*/
+
+    /*Estructura de CO_PAGOS*/
+    ihCodTipDocum   =   stPago.iCodTipDocum;
+    ihCodCentremi   =   stPago.iCodCentrEmi;
+    lhNumSecuenci   =   stPago.lNumSecuenci;
+    lhCodAgente     =   stPago.lCodAgente;
+    strcpy(szhLetra,stPago.szLetra);
+
+    /*Estructura de CO_PAGOSCONC*/
+    dhImporteDebe   =   stPagConc.dImporteDebe;
+    ihCodProducto   =   stPagConc.iCodProducto;
+    ihCodTipDocum_P =   stPagConc.iCodTipDocum;
+    lhCodAgente_P   =   stPagConc.lCodAgente;
+    ihCodCentremi_P =   stPagConc.iCodCentremi;
+    lhNumSecuenci_P =   stPagConc.lNumSecuenci;
+    strcpy(szhLetra_P, stPagConc.szLetra);
+    ihCodConcepto   =   stPagConc.iCodConcepto;
+    ihColumna       =   stPagConc.iColumna;
+    lhNumAbonado    =   stPagConc.lNumAbonado;
+    lhNumFolio      =   stPagConc.lNumFolio;
+    lhNumCuota      =   stPagConc.lNumCuota;
+    ihSecCuota      =   stPagConc.iSecCuota;
+    lhNumTransa     =   stPagConc.lNumTransa;
+    lhNumVenta      =   stPagConc.lNumVenta;
+    strcpy(szhFolioCTC, stPagConc.szFolioCTC);
+    strcpy(szhPrefPlaza, stPagConc.szPrefPlaza);
+    strcpy(szhCodOperadoraScl, stPagConc.szCodOperadoraScl);
+    strcpy(szhCodPlaza, stPagConc.szCodPlaza);
+
+    vDTrazasLog (szExeName,
+                (char *)"\n\t\t* Insert=> Co_PagosConc"
+                "\n\t\t=> Cod.TipDocum  [%d] "
+                "\n\t\t=> Cod.CentrEmi  [%d] "
+                "\n\t\t=> Num.Secuenci  [%ld]"
+                "\n\t\t=> Cod.Agente    [%ld]"
+                "\n\t\t=> Letra         [%s] "
+                "\n\t\t=> Imp.Concepto  [%f] "
+                "\n\t\t=> Cod.Producto  [%d] "
+                "\n\t\t=> Cod.TipDocRel [%d] "
+                "\n\t\t=> Cod.AgenteRel [%ld]"
+                "\n\t\t=> Cod.CentrRel  [%ld]"
+                "\n\t\t=> Num.SecuRel   [%ld]"
+                "\n\t\t=> LetraRel      [%s] "
+                "\n\t\t=> Cod.Concepto  [%d] "
+                "\n\t\t=> Columna       [%d] "
+                "\n\t\t=> Num.Abonado   [%ld]"
+                "\n\t\t=> Num.Folio     [%ld]"
+                "\n\t\t=> Num.Cuota     [%ld]"
+                "\n\t\t=> Sec.Cuota     [%ld]"
+                "\n\t\t=> Num.Transacc. [%ld]"
+                "\n\t\t=> Num.Venta     [%ld]"
+                "\n\t\t=> Num.FolioCTC  [%s] "
+                "\n\t\t=> Prefijo Plaza [%s] " /* jlr_11.01.03 */
+                "\n\t\t=> Cod.Operadora [%s] " /* jlr_11.01.03 */
+                "\n\t\t=> Codigo Plaza  [%s] " /* jlr_11.01.03 */
+                ,LOG05,
+                stPago.iCodTipDocum      , stPago.iCodCentrEmi   ,
+                stPago.lNumSecuenci      , stPago.lCodAgente     ,
+                stPago.szLetra           , stPagConc.dImporteDebe,
+                stPagConc.iCodProducto   , stPagConc.iCodTipDocum,
+                stPagConc.lCodAgente     , stPagConc.iCodCentremi,
+                stPagConc.lNumSecuenci   , stPagConc.szLetra     ,
+                stPagConc.iCodConcepto   , stPagConc.iColumna    ,
+                stPagConc.lNumAbonado    , stPagConc.lNumFolio   ,
+                stPagConc.lNumCuota      , stPagConc.iSecCuota   ,
+                stPagConc.lNumTransa     , stPagConc.lNumVenta   ,
+                stPagConc.szFolioCTC     ,
+                stPagConc.szPrefPlaza    ,    /* jlr_11.01.03 */
+                stPagConc.szCodOperadoraScl , /* jlr_11.01.03 */
+                stPagConc.szCodPlaza     );   /* jlr_11.01.03 */
+
+    /*TM-200412091155 13-12-2004 Soporte RyC PRM*/
+    i_shCodCentrRel    = (ihCodCentremi_P    == -1)?-1:0;
+    i_shCodTipDocRel   = (ihCodTipDocum_P    == -1)?-1:0;
+    i_shLetraRel       = (szhLetra_P        ==  0)?-1:0;
+    i_shNumSecuRel     = (lhNumSecuenci_P    == -1)?-1:0;
+    i_shCodAgenteRel   = (lhCodAgente_P      == -1)?-1:0;
+    i_shCodConcepto    = (ihCodConcepto     == -1)?-1:0;
+    i_shColumna        = (ihColumna         == -1)?-1:0;
+    i_shNumAbonado     = (lhNumAbonado      == -1)?-1:0;
+    i_shNumFolio       = (lhNumFolio        == -1)?-1:0;
+    i_shNumCuota       = (lhNumCuota        == -1)?-1:0;
+    i_shSecCuota       = (ihSecCuota        == -1)?-1:0;
+    i_shNumVenta       = (lhNumVenta        == -1)?-1:0;
+    i_shNumTransa      = (lhNumTransa       == -1)?-1:0;
+    i_shFolioCTC       = (szhFolioCTC       ==  0)?-1:0;
+
+    EXEC SQL INSERT INTO CO_PAGOSCONC
+                       (COD_TIPDOCUM       ,
+                        COD_CENTREMI       ,
+                        NUM_SECUENCI       ,
+                        COD_VENDEDOR_AGENTE,
+                        LETRA              ,
+                        IMP_CONCEPTO       ,
+                        COD_PRODUCTO       ,
+                        COD_TIPDOCREL      ,
+                        COD_CENTRREL       ,
+                        NUM_SECUREL        ,
+                        COD_AGENTEREL      ,
+                        LETRA_REL          ,
+                        COD_CONCEPTO       ,
+                        COLUMNA            ,
+                        NUM_ABONADO        ,
+                        NUM_FOLIO          ,
+                        NUM_CUOTA          ,
+                        SEC_CUOTA          ,
+                        NUM_TRANSACCION    ,
+                        NUM_VENTA          ,
+                        NUM_FOLIOCTC       ,
+                        PREF_PLAZA         , /* jlr_11.01.03 */
+                        COD_OPERADORA_SCL  , /* jlr_11.01.03 */
+                        COD_PLAZA          ) /* jlr_11.01.03 */
+                 VALUES(:ihCodTipDocum      ,
+                        :ihCodCentremi      ,
+                        :lhNumSecuenci      ,
+                        :lhCodAgente        ,
+                        :szhLetra           ,
+                        :dhImporteDebe      ,
+                        :ihCodProducto      ,
+                        :ihCodTipDocum_P    :i_shCodTipDocRel  ,
+                        :ihCodCentremi_P    :i_shCodCentrRel   ,
+                        :lhNumSecuenci_P    :i_shNumSecuRel    ,
+                        :lhCodAgente_P      :i_shCodAgenteRel  ,
+                        :szhLetra_P         :i_shLetraRel      ,
+                        :ihCodConcepto      :i_shCodConcepto   ,
+                        :ihColumna          :i_shColumna       ,
+                        :lhNumAbonado       :i_shNumAbonado    ,
+                        :lhNumFolio         :i_shNumFolio      ,
+                        :lhNumCuota         :i_shNumCuota      ,
+                        :ihSecCuota         :i_shSecCuota      ,
+                        :lhNumTransa        :i_shNumTransa     ,
+                        :lhNumVenta         :i_shNumVenta      ,
+                        :szhFolioCTC        :i_shFolioCTC      ,
+                        :szhPrefPlaza       ,
+                        :szhCodOperadoraScl ,
+                        :szhCodPlaza        );
+    if (SQLCODE)
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Insert=> Co_PagosConc", szfnORAerror ());
+
+    return (SQLCODE)?false:true;
+
+}/******************************* Final bfnDBInsertPagosConc *****************/
+
+/*****************************************************************************/
+/*                             funcion : bfnDBInsertCancelados               */
+/*****************************************************************************/
+static bool bfnDBInsertCancelados (DATCON stConc, long lCodCliente)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        static long  lhCodCliente      ;
+        static short i_shFecEfectividad;
+        static short i_shFecVencimie   ;
+        static short i_shFecCaducida   ;
+        static short i_shFecAntiguedad ;
+        static short i_shFecPago       ;
+        static short i_shNumAbonado    ;
+        static short i_shNumTransa     ;
+        static short i_shNumVenta      ;
+        static short i_shNumCuota      ;
+        static short i_shSecCuota      ;
+        static short i_shNumFolio      ;
+        static short i_shFolioCTC      ;
+
+        /*TM-200412091155 13-06-2005 Desarrollo */
+        /*Se declaran Variables locales, para asignar valores de la estructura de CO_CANCELADOS*/
+        int     ihCodTipDocum;
+        long    lhCodAgente;
+        char    szhLetra[2];                EXEC SQL VAR szhLetra IS STRING(2);
+        int     ihCodCentremi;
+        long    lhNumSecuenci;
+        int     ihCodConcepto;
+        int     ihColumna;
+        int     ihCodProducto;
+        double  dhImporteDebe;
+        double  dhImporteHaber;
+        int     ihIndContado;
+        int     ihIndFacturado;
+        char    szhFecEfectividad[9];       EXEC SQL VAR szhFecEfectividad IS STRING(9);
+        char    szhFecVencimie[9];          EXEC SQL VAR szhFecVencimie IS STRING(9);
+        char    szhFecCaducida[9];          EXEC SQL VAR szhFecCaducida IS STRING(9);
+        char    szhFecAntiguedad[9];        EXEC SQL VAR szhFecAntiguedad IS STRING(9);
+        char    szhFecPago[9];              EXEC SQL VAR szhFecPago IS STRING(9);
+        long    lhNumAbonado;
+        long    lhNumFolio;
+        long    lhNumCuota;
+        int     ihSecCuota;
+        long    lhNumTransa;
+        long    lhNumVenta;
+        char    szhFolioCTC[12];            EXEC SQL VAR szhFolioCTC IS STRING(12)  ;
+        char    szhPrefPlaza[26];           EXEC SQL VAR szhPrefPlaza IS STRING(26);
+        char    szhCodOperadoraScl[6];      EXEC SQL VAR szhCodOperadoraScl IS STRING(6);
+        char    szhCodPlaza[6];             EXEC SQL VAR szhCodPlaza IS STRING(6);
+
+    EXEC SQL END DECLARE SECTION  ;
+
+    /*TM-200412091155 13-12-2004 Soporte RyC PRM*/
+    /*Asignación de Variables desde las estructuras de pagos a variables locales*/
+    /*Estructura de CO_CANCELADOS*/
+    lhNumSecuenci       =   stConc.lNumSecuenci;
+    ihCodTipDocum       =   stConc.iCodTipDocum;
+    lhCodAgente         =   stConc.lCodAgente;
+    strcpy(szhLetra,        stConc.szLetra);
+    ihCodCentremi       =   stConc.iCodCentremi;
+    ihCodConcepto       =   stConc.iCodConcepto;
+    ihColumna           =   stConc.iColumna;
+    ihCodProducto       =   stConc.iCodProducto;
+    dhImporteDebe       =   stConc.dImporteDebe;
+    dhImporteHaber      =   stConc.dImporteHaber;
+    ihIndContado        =   stConc.iIndContado;
+    ihIndFacturado      =   stConc.iIndFacturado;
+    strcpy(szhFecEfectividad,stConc.szFecEfectividad);
+    strcpy(szhFecVencimie,  stConc.szFecVencimie);
+    strcpy(szhFecCaducida,  stConc.szFecCaducida);
+    strcpy(szhFecAntiguedad,stConc.szFecAntiguedad);
+    strcpy(szhFecPago,      stConc.szFecPago);
+    lhNumAbonado        =   stConc.lNumAbonado;
+    lhNumFolio          =   stConc.lNumFolio;
+    lhNumCuota          =   stConc.lNumCuota;
+    ihSecCuota          =   stConc.iSecCuota;
+    lhNumTransa         =   stConc.lNumTransa;
+    lhNumVenta          =   stConc.lNumVenta;
+    strcpy(szhFolioCTC,     stConc.szFolioCTC);
+    strcpy(szhPrefPlaza,    stConc.szPrefPlaza);
+    strcpy(szhCodOperadoraScl, stConc.szCodOperadoraScl);
+    strcpy(szhCodPlaza,     stConc.szCodPlaza);
+
+    vDTrazasLog (szExeName,
+                (char *)"\n\t\t* Insert Co_Cancelados"
+                "\n\t\t=> Cod.Cliente [%ld]"
+                "\n\t\t=> Cod.TipDocum[%d] "
+                "\n\t\t=> Cod.Agente  [%ld]"
+                "\n\t\t=> Letra       [%s] "
+                "\n\t\t=> Cod.CentrEmi[%d] "
+                "\n\t\t=> Num.Secuenci[%ld]"
+                "\n\t\t=> Cod.Concepto[%d] "
+                "\n\t\t=> Cod.Producto[%d] "
+                "\n\t\t=> Imp.Debe    [%f] "
+                "\n\t\t=> Imp.Haber   [%f] "
+                "\n\t\t=> Fec.Efectivi[%s] "
+                "\n\t\t=> Fec.Vencimie[%s] "
+                "\n\t\t=> Fec.Caducida[%s] "
+                "\n\t\t=> Fec.Antigued[%s] "
+                "\n\t\t=> Fec.Pago    [%s] "
+                "\n\t\t=> Num.Abonado [%ld]"
+                "\n\t\t=> Num.Folio   [%ld]"
+                "\n\t\t=> Num.Cuota   [%ld]"
+                "\n\t\t=> Sec.Cuota   [%d] "
+                "\n\t\t=> Num.Transacc[%ld]"
+                "\n\t\t=> Num.Venta   [%ld]"
+                "\n\t\t=> Num.CTC     [%s] "
+                "\n\t\t=> Pref. Plaza [%s] " /* jlr_11.01.03 */
+                "\n\t\t=> Cod.Operador[%s] " /* jlr_11.01.03 */
+                "\n\t\t=> Codigo Plaza[%s] " /* jlr_11.01.03 */
+                ,LOG05,
+                lCodCliente            , stConc.iCodTipDocum   ,
+                stConc.lCodAgente      , stConc.szLetra        ,
+                stConc.iCodCentremi    , stConc.lNumSecuenci   ,
+                stConc.iCodConcepto    , stConc.iCodProducto   ,
+                stConc.dImporteDebe    , stConc.dImporteHaber  ,
+                stConc.szFecEfectividad, stConc.szFecVencimie  ,
+                stConc.szFecCaducida   , stConc.szFecAntiguedad,
+                stConc.szFecPago       , stConc.lNumAbonado    ,
+                stConc.lNumFolio       , stConc.lNumCuota      ,
+                stConc.iSecCuota       , stConc.lNumTransa     ,
+                stConc.lNumVenta       , stConc.szFolioCTC     ,
+                stConc.szPrefPlaza     ,    /* jlr_11.01.03 */
+                stConc.szCodOperadoraScl,   /* jlr_11.01.03 */
+                stConc.szCodPlaza      );   /* jlr_11.01.03 */
+
+    lhCodCliente       = lCodCliente ;
+
+   /*TM-200412091155 13-06-2005 Desarrollo */
+    i_shFecEfectividad = (szhFecEfectividad     ==  0)?-1:0;
+    i_shFecVencimie    = (szhFecVencimie    ==  0)?-1:0;
+    i_shFecCaducida    = (szhFecCaducida    ==  0)?-1:0;
+    i_shFecPago        = (szhFecPago            ==  0)?-1:0;
+    i_shNumFolio       = (lhNumFolio         == -1)?-1:0;
+    i_shSecCuota       = (ihSecCuota         == -1)?-1:0;
+    i_shNumVenta       = (lhNumVenta         == -1)?-1:0;
+    i_shNumTransa      = (lhNumTransa        == -1)?-1:0;
+    i_shFolioCTC       = (szhFolioCTC           ==  0)?-1:0;
+
+    EXEC SQL INSERT
+            INTO CO_CANCELADOS
+                 (COD_CLIENTE    ,
+                  NUM_SECUENCI   ,
+                  COD_TIPDOCUM   ,
+                  COD_VENDEDOR_AGENTE,
+                  LETRA          ,
+                  COD_CENTREMI   ,
+                  COD_CONCEPTO   ,
+                  COLUMNA        ,
+                  COD_PRODUCTO   ,
+                  IMPORTE_DEBE   ,
+                  IMPORTE_HABER  ,
+                  IND_CONTADO    ,
+                  IND_FACTURADO  ,
+                  FEC_EFECTIVIDAD,
+                  FEC_VENCIMIE   ,
+                  FEC_CADUCIDA   ,
+                  FEC_ANTIGUEDAD ,
+                  FEC_PAGO       ,
+                  NUM_ABONADO    ,
+                  NUM_FOLIO      ,
+                  NUM_CUOTA      ,
+                  SEC_CUOTA      ,
+                  NUM_TRANSACCION,
+                  NUM_VENTA      ,
+                  FEC_CANCELACION,
+                  IND_PORTADOR   ,
+                  NUM_FOLIOCTC   ,
+                  PREF_PLAZA         , /* jlr_11.01.03 */
+                  COD_OPERADORA_SCL  , /* jlr_11.01.03 */
+                  COD_PLAZA          ) /* jlr_11.01.03 */
+            VALUES
+                 (:lhCodCliente        ,
+                  :lhNumSecuenci ,
+                  :ihCodTipDocum ,
+                  :lhCodAgente   ,
+                  :szhLetra      ,
+                  :ihCodCentremi ,
+                  :ihCodConcepto ,
+                  :ihColumna     ,
+                  :ihCodProducto ,
+                  :dhImporteDebe ,
+                  :dhImporteHaber,
+                  :ihIndContado  ,
+                  :ihIndFacturado,
+                  TO_DATE(:szhFecEfectividad, 'YYYYMMDD'),
+                  TO_DATE(:szhFecVencimie    :i_shFecVencimie  , 'YYYYMMDD'),
+                  TO_DATE(:szhFecCaducida    :i_shFecCaducida  , 'YYYYMMDD'),
+                  TO_DATE(:szhFecAntiguedad  :i_shFecAntiguedad, 'YYYYMMDD'),
+                  TO_DATE(:szhFecPago        :i_shFecPago      , 'YYYYMMDD'),
+                  :lhNumAbonado              :i_shNumAbonado   ,
+                  :lhNumFolio                :i_shNumFolio     ,
+                  :lhNumCuota                :i_shNumCuota     ,
+                  :ihSecCuota                :i_shSecCuota     ,
+                  :lhNumTransa               :i_shNumTransa    ,
+                  :lhNumVenta                :i_shNumVenta     ,
+                  SYSDATE                                      ,
+                  0                                            ,
+                  :szhFolioCTC               :i_shFolioCTC     ,
+                  :szhPrefPlaza         ,
+                  :szhCodOperadoraScl   ,
+                  :szhCodPlaza          );
+    if (SQLCODE)
+       iDError (szExeName,ERR000,vInsertarIncidencia,"Insert=> Co_Cancelados", szfnORAerror ());
+
+    return (SQLCODE)?false:true;
+
+}/**************************** Final bfnDBInsertCancelados *******************/
+
+/****************************************************************************************************/
+/* rtrim()                                                                                          */
+/****************************************************************************************************/
+void rtrim( char *szCadena )
+/*
+    Definicion      :   Quita los espacios en blanco a la derecha de una cadena.
+
+    Parametros      :   szCadena    cadena de trabajo.
+
+*/
+{
+    char modulo[] = "rtrim";
+     int i, iLen, iCnt;
+
+    iLen = strlen( szCadena ) - 1;
+    for( iCnt = iLen; iCnt >= 0; iCnt-- ) if( szCadena[iCnt] != ' ' && szCadena[iCnt] != '\0' ) break;
+    szCadena[ iCnt + 1 ] = '\0';    /* reemplaza primer ' ' por '\0' produciendo un rtrim */
+    return;
+} /* void rtrim( char *szCadena ) */
+
+/****************************************************************************************************/
+/* bProcesaPagoLimiteConsumo()                                                                      */
+/****************************************************************************************************/
+bool bProcesaPagoLimiteConsumo( long lCodCliente )
+{
+/*
+    Definicion      :   Verifica si el cliente tiene pago por limite de consumo y si lo hubiera
+                        deja el indicador ind_facturado de 3 en 1..
+    Parametros      :   lCodCliente     Codigo de Cliente.
+*/
+EXEC SQL BEGIN DECLARE SECTION;
+    long lhCodCliente;
+    int  ihCntDoc;
+    char szhCARTERA    [11];
+    char szhCONSUMO    [16];
+    char szhCO          [3];
+    int  ihValor_uno = 1   ;
+EXEC SQL END DECLARE SECTION;
+
+    lhCodCliente = lCodCliente;
+    strcpy(szhCARTERA,"CO_CARTERA");
+    strcpy(szhCONSUMO,"PAG_LIM_CONSUMO");
+    strcpy(szhCO,"CO");
+    
+    EXEC SQL
+    SELECT COUNT(1)
+    INTO  :ihCntDoc
+    FROM  CO_CARTERA
+    WHERE COD_CLIENTE = :lhCodCliente
+    AND   COD_TIPDOCUM IN ( SELECT COD_VALOR
+                            FROM GED_CODIGOS
+                            WHERE NOM_TABLA = :szhCARTERA
+                              AND NOM_COLUMNA = :szhCONSUMO
+                              AND COD_MODULO  = :szhCO );
+    if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+    {
+        iDError( szExePasoC, ERR043, vInsertarIncidencia, "Comprobando Pagos Limite Consumo." );
+        return false;
+    }
+    vDTrazasLog( szExePasoC, (char *)"Cliente => [%d] Documentos Pago. Limite de Consumo => [%d].", LOG03, lhCodCliente, ihCntDoc );
+    if( ihCntDoc > 0 )
+    {
+        /* debemos cambiar el valor del campo ind_facturado de 3 a 1 */
+        EXEC SQL
+        UPDATE CO_CARTERA SET
+               IND_FACTURADO = :ihValor_uno
+        WHERE  COD_CLIENTE   = :lhCodCliente
+        AND    COD_TIPDOCUM IN (SELECT COD_VALOR
+                                FROM GED_CODIGOS
+                                WHERE NOM_TABLA = :szhCARTERA
+                                  AND NOM_COLUMNA = :szhCONSUMO
+                                  AND COD_MODULO  = :szhCO );
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND )
+        {
+            iDError( szExePasoC, ERR043, vInsertarIncidencia, "Actualizando Pagos Limite de Consumo." );
+            return false;
+        }
+    } /* if( ihCntDoc > 0 ) */
+
+    return true;
+} /* bProcesaPagoLimiteConsumo( long lCodCliente ) */
+
+/*****************************************************************************/
+/* Inicio Rsis-P-ECU-07032 - 07.08.2007 */
+/*****************************************************************************/
+/*                         funcion : bfnDBCargaAcumulaConceptos              */
+/* -Funcion que carga todos los conceptos de una Factura (Fa_HistConc),      */
+/*  reemplaza a la funcion bfnDBCargaHistConc()                              */
+/* -El Campo IndOrdenTotal identifica dicha Factura.                         */
+/*  Se cargan los conceptos de Fa_HistConc de la Factura en proceso,         */
+/*  pstAcumAbo se van agrupando por abonado y producto los conceptos de      */
+/*  Facturacion que se trasforman en un Concepto de Cobros, con dos          */
+/*  observaciones :                                                          */
+/*     1.-  No se recogen los Conceptos Recargos ya que son generados por el */
+/*        modulo de Cobros.                                                  */
+/*     2.-  En el caso de ser parte de una Cuota el Concepto de Facturacion  */
+/*        la relacion con los conceptos de Cobros es uno a uno y no se acumu-*/
+/*        la, y se informa el SeqCuota y OrdCuota.                           */
+/* -Valores Retorno : Error->false, !Error->true                             */
+/*****************************************************************************/
+static bool bfnDBCargaAcumulaConceptos( DATOS_FACT *stFactDocu, bool *bConcepNegativos )
+{
+int  iRes      = 0;
+int  iErrorNeg = 0;
+bool bError    = false;
+int  ihOrdenTotal;
+
+    lTotalConceptos = 0;
+    ihOrdenTotal = atoi(stFactDocu->szIndOrdenTotal);
+
+    _acumabo.pAboCobr.clear();
+    _acumabo.iNumReg=0;
+
+    iRes = _mydbProc.getAbonadoConcepto2(_acumabo, ihOrdenTotal, stDatosGener.iCodRecargo);
+    lTotAbonados = _acumabo.pAboCobr.size();
+    
+	vDTrazasLog( szExePasoC, (char *)"\n\t\t=> Numero de Abonados [%ld]", LOG04, lTotAbonados );
+
+    if( iRes == 0 || lTotAbonados >= 9999 )
+    {
+    	stFactDocu->iIndPasoCobro = iDOCTOABONADOS;
+        return bError;
+    }
+    	
+    lTotAbonados = _acumabo.pAboCobr.size();
+
+    if (lTotAbonados == 0 )
+    {
+        vDTrazasLog( szExePasoC, (char *)"\n\t\t=> Documento NO contiene detalle - szIndOrdenTotal [%s]", LOG04, stFactDocu->szIndOrdenTotal);
+        stFactDocu->iIndPasoCobro = 1;
+
+        return bError;
+    }
+
+    if( lTotAbonados > 0)
+    {
+        vDTrazasLog( szExePasoC, (char *)"\n\t\t=> Numero de Abonados [%ld]", LOG04, lTotAbonados );
+        vfnPrintAcumAbo( &iErrorNeg );
+
+        if( iErrorNeg )
+            *bConcepNegativos = true;
+    }
+
+    return true;
+
+}/* End bfnDBCargaAcumulaConceptos */
+
+/*****************************************************************************/
+/*                          funcion : bfnDBVerificaConceptos                 */
+/*****************************************************************************/
+bool bfnDBVerificaConceptos(CONFIG stConfig)
+{
+bool bHayRegistros   = true ;
+EXEC SQL BEGIN DECLARE SECTION;
+   int ihCntConcepto       ;
+EXEC SQL END DECLARE SECTION;
+
+    ihCntConcepto = 0;
+    EXEC SQL 
+    SELECT 
+        COUNT(1) 
+    INTO  
+        :ihCntConcepto 
+    FROM 
+        FA_CONCEPTOSDOC_CICLO_SY C 
+    WHERE NOT EXISTS 
+        (SELECT COD_CONCFACT 
+            FROM FA_FACTCOBR F 
+		    WHERE C.COD_CONCEPTO = F.COD_CONCFACT);
+
+        if( SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND ) 
+        {
+            iDError( szExePasoC, ERR043, vInsertarIncidencia, "Comprobando Conceptos de Facturacion." );
+            return false;
+        }
+
+        if (ihCntConcepto > 0) 
+        {
+            vDTrazasLog (szExePasoC,(char *)"\n\n\t ERROR...!!!! Algunos Conceptos No se encuentran configurados ", LOG05);
+            iDError( szExePasoC, ERR043, vInsertarIncidencia, " Algunos Conceptos No se encuentran configurados... \n");
+            return false;
+        }
+
+    return true;
+}/* end bfnDBVerificaConceptos */
+
+
+/* Nueva Funcion para Acumular CO_SECARTERA en vector  */
+static bool bAcumulaSecCartera(DATCON *stCon)
+{
+int bSecuencia;
+
+    bSecuencia=false;
+    if (_mydbProc.vec_sec_cartera.size() > 0)
+    {
+        for (long j=0;j<_mydbProc.vec_sec_cartera.size() ;j++ )
+        {
+            if ( (_mydbProc.vec_sec_cartera[j].num_secuenci == stCon->lNumSecuenci ) &&
+                 (_mydbProc.vec_sec_cartera[j].cod_tipdocum == stCon->iCodTipDocum ) &&
+                 (_mydbProc.vec_sec_cartera[j].cod_vendedor_agente == stCon->lCodAgente ) &&
+                 ( strcmp(_mydbProc.vec_sec_cartera[j].letra,stCon->szLetra) == 0 ) &&
+                 (_mydbProc.vec_sec_cartera[j].cod_centremi == stCon->iCodCentremi ) &&
+                 (_mydbProc.vec_sec_cartera[j].cod_concepto == stCon->iCodConcepto ) )
+            {
+                bSecuencia = true;
+        		if (_mydbProc.vec_sec_cartera[j].columna == 9999)
+        			_mydbProc.vec_sec_cartera[j].columna = 1;
+        		else
+        			_mydbProc.vec_sec_cartera[j].columna++;
+
+                stCon->iColumna = _mydbProc.vec_sec_cartera[j].columna;
+                break;
+            }
+        }
+    }
+    if (!bSecuencia)
+    {
+        sec_cartera_s this_sec_cartera;
+        this_sec_cartera.num_secuenci = stCon->lNumSecuenci;
+        this_sec_cartera.cod_tipdocum = stCon->iCodTipDocum;
+        this_sec_cartera.cod_vendedor_agente = stCon->lCodAgente;
+        strcpy(this_sec_cartera.letra,stCon->szLetra);
+        this_sec_cartera.cod_centremi = stCon->iCodCentremi;
+        this_sec_cartera.cod_concepto = stCon->iCodConcepto;
+        this_sec_cartera.columna = 0;
+        if (!_mydbProc.AcumSecCartera(this_sec_cartera))
+            return false;
+        stCon->iColumna = this_sec_cartera.columna ;
+    }
+    return true;
+}/* End bAcumulaSecCartera */
+
+/* Nueva Funcion para Acumular CO_CARTERA en vector  */
+static bool bAcumulaCartera(DATCON *stConGen,long lCodCliente)
+{
+    cartera_s this_cartera;
+
+    this_cartera.cod_cliente=lCodCliente;
+    this_cartera.num_secuenci=stConGen->lNumSecuenci;
+    this_cartera.cod_tipdocum=stConGen->iCodTipDocum;
+    this_cartera.cod_vendedor_agente=stConGen->lCodAgente;
+    strcpy(this_cartera.letra,stConGen->szLetra);
+    this_cartera.cod_centremi=stConGen->iCodCentremi;
+    this_cartera.cod_concepto=stConGen->iCodConcepto;
+    this_cartera.columna=stConGen->iColumna;
+    this_cartera.cod_producto=stConGen->iCodProducto;
+    this_cartera.importe_debe=stConGen->dImporteDebe;
+    this_cartera.importe_haber=stConGen->dImporteHaber;
+    this_cartera.ind_contado=stConGen->iIndContado;
+    this_cartera.ind_facturado=stConGen->iIndFacturado;
+    strcpy(this_cartera.fec_efectividad,stConGen->szFecEfectividad);
+    strcpy(this_cartera.fec_vencimie,stConGen->szFecVencimie);
+    strcpy(this_cartera.fec_caducida,stConGen->szFecCaducida);
+    strcpy(this_cartera.fec_antiguedad,stConGen->szFecAntiguedad);
+    this_cartera.num_abonado=stConGen->lNumAbonado;
+    this_cartera.num_folio=stConGen->lNumFolio;
+    strcpy(this_cartera.fec_pago,stConGen->szFecPago);
+    this_cartera.num_cuota=stConGen->lNumCuota;
+    this_cartera.sec_cuota=stConGen->iSecCuota;
+    this_cartera.num_transaccion=stConGen->lNumTransa;
+    this_cartera.num_venta=stConGen->lNumVenta;
+    strcpy(this_cartera.num_folioctc,stConGen->szFolioCTC);
+    strcpy(this_cartera.cod_operadora_scl,stConGen->szCodOperadoraScl);
+    strcpy(this_cartera.cod_plaza,stConGen->szCodPlaza);
+    strcpy(this_cartera.pref_plaza,stConGen->szPrefPlaza);
+
+    if (!_mydbProc.AcumCartera(this_cartera))
+        return false;
+
+    return true;
+}/* End bAcumulaCartera */
+
+static bool bUpdateDocumento(int iIndPasoCobro, long lNumProcPasoCobro, char *szIndOrdenTotal)
+{
+EXEC SQL BEGIN DECLARE SECTION    ;
+long lhnum_procpasocobro;
+int  ihind_pasocobro;
+long lhind_ordentotal;
+EXEC SQL END DECLARE SECTION    ;
+int iRes=0;
+    
+    lhnum_procpasocobro = lNumProcPasoCobro;
+    ihind_pasocobro = iIndPasoCobro;
+    lhind_ordentotal = atol(szIndOrdenTotal);
+    
+    if (ihind_pasocobro > 0) 
+    {
+        EXEC SQL 
+            UPDATE 
+                fa_documentos_sy d
+            SET 
+                d.num_procpasocobro = :lhnum_procpasocobro, 
+                d.ind_pasocobro = :ihind_pasocobro
+            WHERE 
+                d.ind_ordentotal = :lhind_ordentotal;
+    }
+    else
+    {
+        EXEC SQL 
+            UPDATE 
+                fa_documentos_sy d
+            SET 
+                d.num_procpasocobro = NULL, 
+                d.ind_pasocobro = :ihind_pasocobro
+            WHERE 
+                d.ind_ordentotal = :lhind_ordentotal;
+    }
+
+    if (SQLCODE != SQLOK)
+    {
+        vDTrazasError(szExeName,(char *)"\n\t**  Error en UPDATE FA_FACTDOCU **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG00,SQLCODE,SQLERRM);
+        iDError (szExePasoC,ERR043,vInsertarIncidencia, iRes, "Update Fa_FactDocu");
+        
+        if(!bfnOraRollBack() )
+        {
+            iDError( szExePasoC, ERR000, vInsertarIncidencia, "RollBackWork Docto ERROR", szfnORAerror() );
+            _acumabo.pAboCobr.clear();
+            return false ;
+        }
+    }
+
+    if( !bfnOraCommit() )
+    {
+        iDError( szExePasoC, ERR000, vInsertarIncidencia, "CommitWork", szfnORAerror() );
+        _acumabo.pAboCobr.clear();
+        return false;
+    }
+    
+    return true;
+
+}
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

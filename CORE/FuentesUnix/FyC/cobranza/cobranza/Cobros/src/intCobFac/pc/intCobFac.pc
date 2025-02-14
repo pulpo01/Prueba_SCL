@@ -1,0 +1,1713 @@
+/***************************************************************************************************************
+Fichero     :  intCobFac.pc
+Modulo      :  COBROS
+Proceso     :  Interface entre modulo COBROS y FACTURACION
+Fecha       :  20-11-1997
+Autor       :  Miguel Acero
+Descripcion :  Este programa es llamado desde el modulo de facturacion cuando
+               se genera una NC o una ND.
+               Recibe los cinco campos que identifican a la NC o ND, los cinco
+               campos que identifica a la factura asociada y el codigo del
+               cliente.
+Modificaciones:
+03-04-2002	Se agregan rutinas para manejo de decimales de acuerdo a la definicion de la operadora local
+16-05-2002	Se agrega a query de filtro para creditos a recuperar la restriccion ind_facturado = 1
+21-11-2002	Se agregan salidas a archivo LOG, en vez de a la salida estandar (PANTALLA).
+*****************************************************************************************************************
+*****************************************************************************************************************
+Modificado por Proyecto MAS_03043 Mejoras Cancelacion de Creditos
+*****************************************************************************************************************/
+
+EXEC SQL INCLUDE sqlca;
+
+#include <geora.h>
+#include <GenTypes.h>
+#include <GenORA.h>
+#include <coerr.h>
+#include <genco.h>
+#include "intCobFac.h"
+
+EXEC SQL BEGIN DECLARE SECTION; 
+	char szPrefPlazaDefault[26];
+EXEC SQL END DECLARE SECTION;
+
+static FILE *fArchLogIn = stdout;
+char  szNomUsuarioOraMain[31];
+
+/****************************************************************************/
+/****************************************************************************/
+BOOL bfnInicializaLogNc( FILE *fpLOG )
+{
+	fArchLogIn = ( fpLOG == (FILE *)NULL ) ? fArchLogIn : fpLOG;
+	return TRUE;
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+int ifnPasoCobNcNd(	long lNumSecuenciC, int	 iCodTipDocC, 		 long  AgenteC		 , 
+					char *szLetraC	  , int	 iCentremiC , 		 long  lNumSecuenciF , 
+					int	 iCodTipDocF  , long AgenteF	, 		 char  *szLetraF	 , 
+					int	 iCentremiF	  , long lCodCliente, 		 int   iCodTipMovimie, /* se agrego iCodTipMovimie jlr_03.05.01 */
+					char *szPrefPlaza , char *szCodOperadoraScl, char  *szCodPlaza, /* jlr_11.01.03 */
+					char *szNomUsuarioOra)                     /* GAC 08-08-2003 (Homolog.) */
+{
+	int    iRet;
+	int    iDis;
+	char   szDia[5];
+	char   lLog[384];
+	int    bResul;
+
+	fprintf( fArchLogIn, "Modulo ifnPasoCobNcNd. <<intCobFac.pc>>\n" );
+	
+	/* Carga la estructura de manejo de decimales para la operadora local */
+	if( !bGetParamDecimales() )
+	{
+	    fprintf( fArchLogIn, "Error al realizar carga de bGetParamDecimales().\n" );
+		return ERR_DECIMAL;
+	}
+
+	/* obtenemos fecha juliana */
+	bResul = bfnDBObtFechaFA( szDia );
+	if( !bResul )
+		return ERR_DATGEN;
+
+	/* obtenemos concepto credito */
+	bResul = bfnDBObtConCre( &TiG.iCodCredito );
+	if( !bResul )
+		return ERR_CONCREDITO;
+
+        /* GAC 08-08-2003 (Homolog.) */
+        strcpy(szNomUsuarioOraMain,szNomUsuarioOra);
+		
+
+	/*datos nota credito/debito*/
+	stDatNota.lNumSecuenci = lNumSecuenciC;
+	stDatNota.iCodTipDocum = iCodTipDocC;
+	stDatNota.lCodAgente   = AgenteC;
+	strcpy( stDatNota.szLetra, szLetraC );
+	stDatNota.iCodCentremi = iCentremiC;
+
+	fprintf( fArchLogIn, "\n\n Cliente         ....: %d", lCodCliente );
+   	fprintf( fArchLogIn, "\nTipo Movimiento  ....: %d", iCodTipMovimie );
+
+	fprintf( fArchLogIn, "\n\n ***** DATOS NOTA CREDITO *****" );
+   	fprintf( fArchLogIn, "\n\tNumero Secuencia....: %d", lNumSecuenciC );
+   	fprintf( fArchLogIn, "\n\tTipo Documento  ....: %d", iCodTipDocC );
+   	fprintf( fArchLogIn, "\n\tAgente          ....: %d", AgenteC );
+   	fprintf( fArchLogIn, "\n\tLetra           ....: %s", szLetraC );
+   	fprintf( fArchLogIn, "\n\tCentro Emisor   ....: %ld", iCentremiC ); 
+   	fprintf( fArchLogIn, "\n\tNom Usuario ORA ....: %s",szNomUsuarioOraMain);  /* GAC 08-08-2003 (Homolog.) */
+                          
+	/*datos factura asociada*/
+	stDatFact.lNumSecuenci = lNumSecuenciF;
+	stDatFact.iCodTipDocum = iCodTipDocF;
+	stDatFact.lCodAgente   = AgenteF;
+	strcpy( stDatFact.szLetra, szLetraF );
+	stDatFact.iCodCentremi = iCentremiF;
+	strcpy( stDatFact.szPrefPlaza, szPrefPlaza );			  /* jlr_11.01.03 */
+	strcpy( stDatFact.szCodOperadoraScl, szCodOperadoraScl ); /* jlr_11.01.03 */
+	strcpy( stDatFact.szCodPlaza, szCodPlaza );  			  /* jlr_11.01.03 */
+
+	fprintf( fArchLogIn, "\n\n *****   DATOS FACTURA    *****");
+   	fprintf( fArchLogIn, "\n\tNumero Secuencia....: %d", lNumSecuenciF);
+   	fprintf( fArchLogIn, "\n\tTipo Documento  ....: %d", iCodTipDocF);
+   	fprintf( fArchLogIn, "\n\tAgente          ....: %d", AgenteF);
+   	fprintf( fArchLogIn, "\n\tLetra           ....: %s", szLetraF);
+   	fprintf( fArchLogIn, "\n\tCentro Emisor   ....: %d", iCentremiF); 
+   	fprintf( fArchLogIn, "\n\tPrefijo Plaza   ....: %s", szPrefPlaza); 		/* jlr_11.01.03 */ 
+   	fprintf( fArchLogIn, "\n\tCod. Operadora  ....: %s", szCodOperadoraScl);/* jlr_11.01.03 */ 
+   	fprintf( fArchLogIn, "\n\tCodigo Plaza    ....: %s", szCodPlaza); 		/* jlr_11.01.03 */ 
+                          
+	fprintf(fArchLogIn, "\nOK : [%d]\n", OK );
+
+	/*codigo de cliente*/
+	TiG.lCodCliente = lCodCliente;
+	iRet = ifnProcNota( iCodTipMovimie );
+	return iRet;
+} /* Fin main() */
+
+/******************************************************************************/
+int ifnProcNota( int  iCodTipMovimie )
+{
+	int iResul;
+	if( iCodTipMovimie == NCRE )
+	{
+		iResul = ifnDBProcCredito();
+		if( iResul )
+		{
+			fprintf( fArchLogIn, "Retorno ifnDBProcCredito iResul = %d.\n", iResul );
+			return( iResul == 69 ) ? 69 : ERR_PROCREDITO;
+		}
+	}
+	else
+	{
+		iResul = ifnProcDebito();
+		if( iResul )
+		{
+			fprintf( fArchLogIn, "Retorno ifnProcDebito iResul = %d.\n", iResul );
+			return ERR_PRODEBITO;
+		}
+	}
+	return OK;
+}/*fin ifnProcNota*/
+/******************************************************************************/
+int ifnDBProcCredito()
+/* 
+Se modifica funcion completa por Incidencia XO-200509130656, 27-09-2005 rvc Soporte RyC
+*/
+/*
+Se reemplaza funcion completa por una que funciona RA-200603160921 13-07-2006 capc Soporte RyC
+*/
+{
+ EXEC SQL BEGIN DECLARE SECTION;
+  long   lhNumSecuenciC;
+  int    ihCodTipDocumC;
+  long   lhCodAgenteC;
+  char   *szhLetraC;     EXEC SQL VAR szhLetraC IS STRING(2);
+  int    ihCodCentrEmiC;
+  double dhImpDebeC;
+  double dhImpHaberC;
+  int    ihCodConceptoC;
+  int    ihColumnaC;
+  long   lhNumSecuenciF;
+  int    ihCodTipDocumF;
+  long   lhCodAgenteF;
+  long   lhCodClienteF;
+  long   lhNumFolioF;
+  char   *szhLetraF;     EXEC SQL VAR szhLetraF IS STRING(2);
+  int    ihCodCentrEmiF;
+  double dhImpDebeF;
+  double dhImpHaberF;
+  int    ihCodConceptoF;
+  int    ihColumnaF;
+  int	 ihSecCuotaF;
+  int	 ihSecCuotaC;
+  char   szhFechaP_ddmmyyyy[9]   ; EXEC SQL VAR szhFechaP_ddmmyyyy IS STRING(9);
+ EXEC SQL END DECLARE SECTION;
+ 
+ int  iResul;
+ BOOL bResul;
+ int  iError = 0;
+ double dImporteC;
+ double dImporteF;
+ double dImporteCTot = 0.0;
+ double dImpCastigo = 0.0;
+ double	dhValoraPagar;
+ 
+ fprintf( fArchLogIn, "En Funcion ifnDBProcCredito(). <<intCobFac.pc>>\n" );
+
+ lhNumSecuenciC = stDatNota.lNumSecuenci;
+ ihCodTipDocumC = stDatNota.iCodTipDocum;
+ lhCodAgenteC   = stDatNota.lCodAgente;
+ szhLetraC      = stDatNota.szLetra;
+ ihCodCentrEmiC = stDatNota.iCodCentremi;
+ 
+ lhNumSecuenciF = stDatFact.lNumSecuenci;
+ ihCodTipDocumF = stDatFact.iCodTipDocum;
+ lhCodAgenteF   = stDatFact.lCodAgente;
+ szhLetraF      = stDatFact.szLetra;
+ ihCodCentrEmiF = stDatFact.iCodCentremi;
+ 
+ /* Inicio RA-200602070720 Soporte RyC 09-02-2006 capc*/
+
+	EXEC SQL
+	SELECT	TO_CHAR(SYSDATE,'ddmmyyyy')
+	INTO	:szhFechaP_ddmmyyyy
+	FROM	DUAL;
+	
+	if (sqlca.sqlcode)
+	{
+		fprintf(stderr,"* Error recuperando fecha de sistema szhFechaP_ddmmyyyy - %d\n",sqlca.sqlcode);
+		return FALSE;
+	}
+
+	fprintf( fArchLogIn, "szhFechaP_ddmmyyyy => [%s].\n", szhFechaP_ddmmyyyy );	
+	
+/* Fin RA-200602070720 Soporte RyC 09-02-2006 capc*/	
+ 
+ EXEC SQL DECLARE C_CREDITO CURSOR FOR
+ SELECT IMPORTE_DEBE,
+   		IMPORTE_HABER,
+   		COD_CONCEPTO,
+   		COLUMNA,
+   		SEC_CUOTA
+ FROM  CO_CARTERA
+ WHERE  NUM_SECUENCI = :lhNumSecuenciC
+ AND  COD_TIPDOCUM = :ihCodTipDocumC
+ AND  COD_VENDEDOR_AGENTE = :lhCodAgenteC
+ AND  LETRA        = :szhLetraC
+ AND  COD_CENTREMI = :ihCodCentrEmiC
+ --GROUP BY SEC_CUOTA,COD_CONCEPTO,COLUMNA
+ ORDER BY SEC_CUOTA;
+ 
+ EXEC SQL OPEN C_CREDITO;
+ if( sqlca.sqlcode )
+ {
+  fprintf( fArchLogIn, "ERROR OPEN C_CREDITO => [%s].\n", szfnORAerror() );
+  return ERR_OPENCURSOR;
+ }
+ 
+ while( TRUE )
+ {
+  EXEC SQL 
+  FETCH C_CREDITO
+   INTO :dhImpDebeC,
+     :dhImpHaberC,
+     :ihCodConceptoC,
+     :ihColumnaC,
+     :ihSecCuotaC;
+   
+  if( sqlca.sqlcode != SQLOK && sqlca.sqlcode != NOT_FOUND )
+  {
+   fprintf( fArchLogIn, "ERROR FETCH C_CREDITO => [%s].\n", szfnORAerror() );
+   iError = ERR_FETCH;
+   break;
+  }
+  
+  if( sqlca.sqlcode == NOT_FOUND ) /*no quedan mas clientes*/
+   break;
+  
+  stDatNota.iCodConcepto = ihCodConceptoC;
+  stDatNota.iColumna     = ihColumnaC;
+  stDatNota.iSecCuota     = ihSecCuotaC;
+  dImporteC = dhImpHaberC - dhImpDebeC;
+  
+  /* manejo de decimales segun la operadora local */
+  dImporteC = fnCnvDouble( dImporteC, 0 );
+  dImporteCTot += dImporteC;
+  
+  EXEC SQL DECLARE C_FACTURA CURSOR FOR
+  SELECT SUM(A.IMPORTE_DEBE),
+      	SUM(A.IMPORTE_HABER),
+      	/*A.COD_CONCEPTO,
+      	A.COLUMNA,
+      	A.COD_CLIENTE,
+      	A.NUM_FOLIO,*/
+      	A.SEC_CUOTA
+    FROM CO_CARTERA A
+   WHERE A.NUM_SECUENCI = :lhNumSecuenciF
+     AND A.COD_TIPDOCUM = :ihCodTipDocumF
+     AND A.COD_VENDEDOR_AGENTE = :lhCodAgenteF
+     AND A.LETRA        = :szhLetraF
+     AND A.COD_CENTREMI = :ihCodCentrEmiF
+  GROUP BY A.SEC_CUOTA
+  ORDER BY A.SEC_CUOTA;
+  
+  EXEC SQL OPEN C_FACTURA;
+  
+  if( sqlca.sqlcode )
+  {
+   fprintf( fArchLogIn, "ERROR OPEN C_FACTURA => [%s].\n", szfnORAerror() );
+   iError = ERR_OPENCURSOR;
+   break;
+  }
+  
+  while( TRUE )
+  {
+   EXEC SQL 
+   FETCH C_FACTURA
+    INTO :dhImpDebeF,
+      :dhImpHaberF,
+      /*:ihCodConceptoF,
+      :ihColumnaF,
+      :lhCodClienteF,
+      :lhNumFolioF,*/
+      :ihSecCuotaF;
+   
+   if( sqlca.sqlcode < 0 )
+   {
+    fprintf( fArchLogIn, "ERROR FETCH C_FACTURA => [%s].\n", szfnORAerror() );
+    iError = ERR_FETCH;
+    break;
+   }
+ 
+   if( sqlca.sqlcode == NOT_FOUND ) /*no quedan mas clientes*/
+    break;
+ 
+   /*stDatFact.iCodConcepto = ihCodConceptoF;
+   stDatFact.iColumna     = ihColumnaF;*/
+   
+   /* manejo de decimales segun la operadora local */
+   dhImpDebeF = fnCnvDouble( dhImpDebeF, 0 );
+   dhImpHaberF = fnCnvDouble( dhImpHaberF, 0 );
+   
+   dImporteF = dhImpDebeF - dhImpHaberF;
+   dImporteF = fnCnvDouble( dImporteF, 0 );
+   
+   if( dImporteC > 0.00 )
+   {
+/*    if( dImporteC >= dImporteF )   {*/
+
+		dhValoraPagar = 0.00;
+  		
+  		if (dImporteC > dImporteF)
+			dhValoraPagar = dImporteF;
+		else 
+			dhValoraPagar = dImporteC;
+
+   		/*****************************************************************************/	
+	    fprintf( fArchLogIn, " \n Procesando Registros NC de la CO_CARTERA  \n\n");
+		
+		iResul = ifnCancelacionParcialCreditos( TiG.lCodCliente  , lhNumSecuenciF, ihCodTipDocumF, 
+										 		lhCodAgenteF  , szhLetraF     , ihCodCentrEmiF,
+										   		ihSecCuotaF   , dhValoraPagar, lhNumSecuenciC ,
+										   		ihCodTipDocumC, lhCodAgenteC  , szhLetraC,
+										   		ihCodCentrEmiC, szhFechaP_ddmmyyyy);
+		if (iResul != OK)
+			return iResul;
+		/*********************************************************************************/
+
+     	if( dImporteC >= dImporteF ) {     
+     		bResul = bfnDBUpdCartNC( stDatNota, dhValoraPagar, 0 ); /* aumenta el debe de la NCredito */
+     		if (!bResul) {
+      			iError = ERR_UPDCARTERA;
+      			break;
+     		}
+     	}
+     	else if( dImporteC < dImporteF ) {
+     	   	bResul = bfnDBInsCancNC( stDatNota, 0 ); /* pasa la N. Credito a cancelados */
+     		if (!bResul) {
+      			iError = ERR_INSCANCE;
+      			break;
+    		}
+    		bResul = bfnDBDelCartNC( stDatNota );
+     		if (!bResul) {
+      			iError = ERR_DELCARTERA;
+      			break;
+     		}
+     	}
+      	dImporteC -= dhValoraPagar;/*dImporteF;*/
+     	dImporteC = fnCnvDouble( dImporteC, 0 );    
+     	/*dImpCastigo = dImporteF;*/
+
+/*    else
+    {
+     	bResul = bfnDBInsCancNC( stDatNota, 0 ); * pasa la N. Credito a cancelados *
+     	if (!bResul) {
+      		iError = ERR_INSCANCE;
+      		break;
+     		}
+     
+     	bResul = bfnDBInsPagConNC( stDatNota, stDatFact, dImporteC );
+     	if (!bResul)
+     	{
+      	iError = ERR_INSPAGOSCON;
+      	break;
+     	}
+     
+     	bResul = bfnDBDelCartNC( stDatNota );
+     	if (!bResul)
+     	{
+      	iError = ERR_DELCARTERA;
+      	break;
+     	}
+     
+     	dImporteF -= dImporteC;
+     	dImporteF = fnCnvDouble( dImporteF, 0 );
+	 
+     	bResul = bfnDBUpdCartNC( stDatFact, dImporteC, 1 ); * aumenta el haber de la Factura *
+     	if (!bResul)
+     	{
+      		iError = ERR_UPDCARTERA;
+      		break;
+     	}
+     
+     	dImpCastigo = dImporteC;
+     	dImporteC = 0.00;
+    }
+*/    
+    
+    /* llama a rutina que rebaja Castigo asociado a la Factura si corresponde *
+    bResul = bfnDBUpdCastigoNC( lhCodClienteF, lhNumFolioF, dImpCastigo );
+    
+    if (!bResul)
+    {
+     iError = ERR_UPDCARTERA;
+     break;
+    }*/
+   } /* if (dImporteC > 0.00) */
+   
+   if( dImporteC == 0.00 )
+    break;
+  }/*fin while*/
+  
+  EXEC SQL CLOSE C_FACTURA;
+  if( sqlca.sqlcode != 0 )
+  {
+   fprintf( fArchLogIn, "Error CLOSE C_FACTURA => [%s].\n", szfnORAerror() );
+   iError = ERR_CLOSECURSOR;
+  }
+  
+  if( iError != OK )
+   break;
+ }/*fin while*/
+ 
+ EXEC SQL CLOSE C_CREDITO;
+ if( sqlca.sqlcode != 0 )
+ {
+  fprintf( fArchLogIn, "Error CLOSE C_CREDITO => [%s].\n", szfnORAerror() );
+  iError = ERR_CLOSECURSOR;
+ }
+ 
+ if( iError != OK )
+  return iError;
+   
+ if( dImporteC > 0.00 )
+ {
+  /*iResul = ifnCancelacionCreditosNC( TiG.lCodCliente, &stDatNota, TiG.iCodCredito, TiG.szFecActual, 0 );*/
+  iResul = ifnLlamaCancelacionCred( TiG.lCodCliente, TiG.szFecActual );
+  if( iResul )
+   return ERR_CANCCRED;
+ }
+ 
+ iResul = ifnDBInsDatosPago( TiG.lCodCliente, &stDatNota, dImporteCTot );
+ if( iResul != OK )
+ {
+  return iResul;
+ }
+ 
+ return OK;
+
+}/*fin ifnDBProcCredito*/
+
+/*===========================================================================
+Funcion    : ifnCancelacionParcialCreditos()
+Se crea funcion por Incidencia XO-200509130656, 27-09-2005 rvc Soporte RyC
+Descripcion: Funcion encargada de cancelar parcialmente los creditos para un cliente.
+Entrada    : lCodCliente 
+             stConCre 
+             lNumSecuenci 
+             iCodTipDocum
+             lCodAgente 
+             szLetra    
+             iCodCentremi
+             iCuota 
+             szFecPago			 
+Salida     : TRUE, si todo ha ido bien.
+			 ERR_xxx, si falla algo.
+===========================================================================*/
+int ifnCancelacionParcialCreditos(long lCodCliente , long lNumSecuenciF, int iCodTipDocumF, 
+								  long lCodAgenteF , char * szLetraF   , int  iCodCentremiF, 
+								  int  iCuotaF     , double dImporteF,   long lNumSecuenciP, 
+								  int iCodTipDocumP, long lCodAgenteP,   char * szLetraP,
+								  int  iCodCentremiP,char * szFecP )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long   lhCodCliente          ;
+	long   lhNumSecuenciaF       ;
+	int    ihCodTipDocumF        ;
+	long   lhCodAgenteF          ;
+	char   szhLetraF          [2];
+	int    ihCodCentremiF        ;
+	int    ihCuotaF              ;
+	double dhImporteF            ;
+
+	long   lhNumSecuenciaP   ;
+	int    ihCodTipDocumP    ;
+	long   lhCodAgenteP      ;
+	char   szhLetraP      [2];
+	int    ihCodCentremiP    ;
+	char   szhFecP       [20];
+
+
+EXEC SQL END DECLARE SECTION;
+
+   fprintf( fArchLogIn, "En Funcion ifnCancelacionParcialCreditos(). <<intCobFac.pc>>\n" );
+
+	lhCodCliente        = lCodCliente;
+	lhNumSecuenciaF     = lNumSecuenciF;
+	ihCodTipDocumF      = iCodTipDocumF;
+	lhCodAgenteF        = lCodAgenteF;
+	strcpy(szhLetraF, szLetraF);
+	ihCodCentremiF      = iCodCentremiF;
+	ihCuotaF            = iCuotaF;
+	dhImporteF          = dImporteF;
+
+	lhNumSecuenciaP = lNumSecuenciP;
+	ihCodTipDocumP  = iCodTipDocumP;
+	lhCodAgenteP    = lCodAgenteP;
+	strcpy(szhLetraP, szLetraP);
+	ihCodCentremiP  = iCodCentremiP;
+	strcpy(szhFecP, szFecP);
+
+    fprintf(fArchLogIn,"lhCodCliente          [%ld]\n",lhCodCliente );      
+    fprintf(fArchLogIn,"lhNumSecuenciaF       [%ld]\n",lhNumSecuenciaF );      
+    fprintf(fArchLogIn,"ihCodTipDocumF        [%d]\n",ihCodTipDocumF );      
+    fprintf(fArchLogIn,"lhCodAgenteF          [%ld]\n",lhCodAgenteF );      
+    fprintf(fArchLogIn,"szhLetraF             [%s]\n",szhLetraF );      
+    fprintf(fArchLogIn,"ihCodCentremiF        [%d]\n",ihCodCentremiF );      
+    fprintf(fArchLogIn,"lhNumSecuenciaP       [%ld]\n",lhNumSecuenciaP );      
+    fprintf(fArchLogIn,"ihCodTipDocumP        [%d]\n",ihCodTipDocumP );      
+    fprintf(fArchLogIn,"lhCodAgenteP          [%ld]\n",lhCodAgenteP );      
+    fprintf(fArchLogIn,"szhLetraP             [%s]\n",szhLetraP );      
+    fprintf(fArchLogIn,"ihCodCentremiP        [%d]\n",ihCodCentremiP );      
+    fprintf(fArchLogIn,"dhImporteF            [%f]\n",dhImporteF );      
+    fprintf(fArchLogIn,"ihCuotaF              [%d]\n",ihCuotaF );      
+    fprintf(fArchLogIn,"szhFecP               [%s]\n",szhFecP );      
+    
+	EXEC SQL EXECUTE
+		BEGIN
+		  CO_P_PAGO_PARCIALES_FACTURA(:lhCodCliente    , :lhNumSecuenciaF , :ihCodTipDocumF , 
+                                      :lhCodAgenteF    , :szhLetraF       , :ihCodCentremiF , 
+                                      :lhNumSecuenciaP , :ihCodTipDocumP  , :lhCodAgenteP   , 
+                                      :szhLetraP       , :ihCodCentremiP  , :dhImporteF     , 
+                                      :ihCuotaF        , :szhFecP) ;
+		END;
+	END-EXEC;
+	
+  	fprintf(fArchLogIn,"\n Fin a Cancelacion Parcial de Creditos.\n\n");
+
+	return 0;
+
+} /* end if ifnCancelacionParcialCreditos()*/
+
+/******************************************************************************/
+int ifnProcDebito()
+/**
+**/
+{
+int   iResul;
+
+	/*iResul = ifnCancelacionCreditosNC( TiG.lCodCliente, &stDatFact, TiG.iCodCredito, TiG.szFecActual, 0 );*/
+	iResul = ifnLlamaCancelacionCred( TiG.lCodCliente, TiG.szFecActual );
+	if( iResul )
+	{
+		return ERR_CANCCRED;
+	}
+	
+	return OK;
+}/*fin ifnProcDebito*/
+/******************************************************************************/
+BOOL bfnDBInsCancNC( DATCON stGen, int iDebeHaber )
+/**
+**/
+{
+   EXEC SQL BEGIN DECLARE SECTION;
+      long lhNumSecuenci;
+      int  ihCodTipDocum;
+      long lhCodAgente;
+      char szhLetra[2]; EXEC SQL VAR szhLetra IS STRING(2);
+      int  ihCodCentrEmi;
+      int  ihCodConcepto;
+      int  ihDebeHaber;
+      int  ihColumna;
+      int  ihSecCuota;
+      char szhFecPago[9]; EXEC SQL VAR szhFecPago IS STRING(9);
+   EXEC SQL END DECLARE SECTION;
+
+	lhNumSecuenci = stGen.lNumSecuenci;
+	ihCodTipDocum = stGen.iCodTipDocum;
+	lhCodAgente   = stGen.lCodAgente;
+	strcpy(szhLetra, stGen.szLetra);
+	ihCodCentrEmi = stGen.iCodCentremi;
+	ihCodConcepto = stGen.iCodConcepto;
+	ihColumna     = stGen.iColumna;
+	ihSecCuota    = stGen.iSecCuota;
+	strcpy(szhFecPago, TiG.szFecActual);
+	ihDebeHaber   = iDebeHaber;
+
+   fprintf( fArchLogIn, "En Funcion bfnDBInsCancNC(). <<intCobFac.pc>>\n" );
+
+	fprintf( fArchLogIn, 	"Parametros entrada bfnDBInsCancNC\n"
+						"\tlhNumSecuenci => [%d]\n"
+						"\tihCodTipDocum => [%d]\n"
+						"\tlhCodAgente   => [%d]\n"
+						"\tszhLetra      => [%s]\n"
+						"\tihCodCentrEmi => [%d]\n"
+						"\tihCodConcepto => [%d]\n"
+						"\tihColumna     => [%d]\n"
+						"\tihSecCuota    => [%d]\n"
+						"\tszhFecPago    => [%s]\n"
+						"\tihDebeHaber   => [%d]\n\n",
+						lhNumSecuenci,
+						ihCodTipDocum,
+						lhCodAgente,
+						szhLetra,
+						ihCodCentrEmi,
+						ihCodConcepto,
+						ihColumna,
+						ihSecCuota,						
+						szhFecPago,
+						ihDebeHaber );
+
+
+	if (ihDebeHaber) /* Cancela la Factura */
+	{
+   		EXEC SQL 
+   		INSERT INTO CO_CANCELADOS (	COD_CLIENTE, 
+   									NUM_SECUENCI, 
+   									COD_TIPDOCUM, 
+   									COD_VENDEDOR_AGENTE,
+                    				LETRA, 
+                    				COD_CENTREMI, 
+                    				COD_CONCEPTO, 
+                    				COLUMNA, 
+                    				COD_PRODUCTO, 
+                    				IMPORTE_DEBE, 
+                    				IMPORTE_HABER,
+                    				IND_CONTADO, 
+                    				IND_FACTURADO, 
+                    				FEC_EFECTIVIDAD, 
+                    				FEC_CANCELACION, 
+                    				IND_PORTADOR, 
+                    				FEC_VENCIMIE,
+                    				FEC_CADUCIDA, 
+                    				FEC_ANTIGUEDAD, 
+                    				NUM_ABONADO, 
+                    				NUM_FOLIO, 
+                    				FEC_PAGO, 
+                    				NUM_CUOTA, 
+                    				SEC_CUOTA,
+                    				NUM_TRANSACCION, 
+                    				NUM_VENTA, 
+                    				NUM_FOLIOCTC,
+					                PREF_PLAZA         , /* jlr_11.01.03 */
+       								COD_OPERADORA_SCL  , /* jlr_11.01.03 */
+       								COD_PLAZA          ) /* jlr_11.01.03 */
+		SELECT	COD_CLIENTE, 
+				NUM_SECUENCI, 
+				COD_TIPDOCUM, 
+				COD_VENDEDOR_AGENTE, 
+				LETRA, 
+				COD_CENTREMI,
+				COD_CONCEPTO,
+				COLUMNA, 
+				COD_PRODUCTO, 
+				IMPORTE_DEBE, 
+				IMPORTE_DEBE, /* el haber debe ser igual al debe */
+				IND_CONTADO, 
+				IND_FACTURADO, 
+				FEC_EFECTIVIDAD, 
+				SYSDATE, 
+				0, 
+				FEC_VENCIMIE, 
+				FEC_CADUCIDA,
+				FEC_ANTIGUEDAD, 
+				NUM_ABONADO, 
+				NUM_FOLIO, 
+				TO_DATE( :szhFecPago, 'yyyymmdd' ), 
+				NUM_CUOTA,
+				SEC_CUOTA, 
+				NUM_TRANSACCION, 
+				NUM_VENTA, 
+				NUM_FOLIOCTC,
+	        	NVL(PREF_PLAZA,' ')         , /* jlr_11.01.03 */
+				NVL(COD_OPERADORA_SCL,' ')  , /* jlr_11.01.03 */
+				NVL(COD_PLAZA,' ')            /* jlr_11.01.03 */
+		FROM 	CO_CARTERA
+		WHERE	NUM_SECUENCI = :lhNumSecuenci 
+		AND		COD_TIPDOCUM = :ihCodTipDocum 
+		AND		COD_VENDEDOR_AGENTE = :lhCodAgente 
+		AND		LETRA = :szhLetra 
+		AND		COD_CENTREMI = :ihCodCentrEmi 
+		AND     SEC_CUOTA    = :ihSecCuota
+		AND		COD_CONCEPTO = :ihCodConcepto 
+		AND		COLUMNA      = :ihColumna;
+	}
+	else /* cancela la Nota de Credito */
+	{
+		EXEC SQL 
+		INSERT INTO CO_CANCELADOS (	COD_CLIENTE, 
+									NUM_SECUENCI, 
+									COD_TIPDOCUM, 
+									COD_VENDEDOR_AGENTE,
+									LETRA, 
+									COD_CENTREMI, 
+									COD_CONCEPTO, 
+									COLUMNA, 
+									COD_PRODUCTO, 
+									IMPORTE_DEBE, 
+									IMPORTE_HABER,
+									IND_CONTADO, 
+									IND_FACTURADO, 
+									FEC_EFECTIVIDAD, 
+									FEC_CANCELACION, 
+									IND_PORTADOR, 
+									FEC_VENCIMIE,
+									FEC_CADUCIDA, 
+									FEC_ANTIGUEDAD, 
+									NUM_ABONADO, 
+									NUM_FOLIO, 
+									FEC_PAGO,
+									NUM_CUOTA,
+									SEC_CUOTA,
+									NUM_TRANSACCION,
+									NUM_VENTA,
+									NUM_FOLIOCTC,
+					                PREF_PLAZA         , /* jlr_11.01.03 */
+       								COD_OPERADORA_SCL  , /* jlr_11.01.03 */
+       								COD_PLAZA          ) /* jlr_11.01.03 */
+		SELECT	COD_CLIENTE, 
+				NUM_SECUENCI, 
+				COD_TIPDOCUM, 
+				COD_VENDEDOR_AGENTE, 
+				LETRA, 
+				COD_CENTREMI,
+				COD_CONCEPTO, 
+				COLUMNA, 
+				COD_PRODUCTO, 
+				IMPORTE_HABER, /* el Debe debe ser igual al Haber */ 
+				IMPORTE_HABER,
+				IND_CONTADO, 
+				IND_FACTURADO, 
+				FEC_EFECTIVIDAD, 
+				SYSDATE, 
+				0, 
+				FEC_VENCIMIE, 
+				FEC_CADUCIDA,
+				FEC_ANTIGUEDAD, 
+				NUM_ABONADO, 
+				NUM_FOLIO, 
+				TO_DATE( :szhFecPago, 'yyyymmdd' ), 
+				NUM_CUOTA,
+				SEC_CUOTA, 
+				NUM_TRANSACCION, 
+				NUM_VENTA, 
+				NUM_FOLIOCTC,
+	        	NVL(PREF_PLAZA,' ')         , /* jlr_11.01.03 */
+				NVL(COD_OPERADORA_SCL,' ')  , /* jlr_11.01.03 */
+				NVL(COD_PLAZA,' ')            /* jlr_11.01.03 */
+		FROM 	CO_CARTERA
+		WHERE	NUM_SECUENCI = :lhNumSecuenci 
+		AND		COD_TIPDOCUM = :ihCodTipDocum 
+		AND		COD_VENDEDOR_AGENTE = :lhCodAgente 
+		AND		LETRA = :szhLetra 
+		AND		COD_CENTREMI = :ihCodCentrEmi 
+		AND     SEC_CUOTA    = :ihSecCuota
+		AND		COD_CONCEPTO = :ihCodConcepto 
+		AND		COLUMNA      = :ihColumna;
+	}
+
+	if( sqlca.sqlcode )
+	{
+		fprintf( fArchLogIn, "Error INSERT CO_CANCELADOS => [%s].\n", szfnORAerror() );
+		return FALSE;
+	}
+
+   return TRUE;
+}/*fin bfnDBInsCancNC(.)*/
+/******************************************************************************/
+BOOL bfnDBInsPagConNC(DATCON stGenNota, DATCON stGenFact, double dImporte)
+/**
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long   lhNumSecuenci;
+		int    ihCodTipDocum;
+		long   lhCodAgente;
+		char   szhLetra[2];     EXEC SQL VAR szhLetra IS STRING(2);
+		int    ihCodCentrEmi;
+		double dhImporte;
+		long   lhNumSecuenciF;
+		int    ihCodTipDocumF;
+		long   lhCodAgenteF;
+		char   szhLetraF[2];    EXEC SQL VAR szhLetraF IS STRING(2);
+		int    ihCodCentrEmiF;
+		int    ihCodConceptoF;
+		int    ihColumnaF;
+		char   szhPrefPlazaF[26];       EXEC SQL VAR szhPrefPlazaF IS STRING(26);
+		char   szhCodOperadoraSclF[6]; EXEC SQL VAR szhCodOperadoraSclF IS STRING(6); /* jlr_11.01.03 */
+		char   szhCodPlazaF[6];        EXEC SQL VAR szhCodPlazaF IS STRING(6);        /* jlr_11.01.03 */
+	EXEC SQL END DECLARE SECTION;
+
+   fprintf( fArchLogIn, "En Funcion bfnDBInsPagConNC(). <<intCobFac.pc>>\n" );
+   
+	lhNumSecuenci  = stGenNota.lNumSecuenci;
+	ihCodTipDocum  = stGenNota.iCodTipDocum;
+	lhCodAgente    = stGenNota.lCodAgente;
+	strcpy(szhLetra, stGenNota.szLetra);
+	ihCodCentrEmi  = stGenNota.iCodCentremi;
+	dhImporte      = dImporte;
+	lhNumSecuenciF = stGenFact.lNumSecuenci;
+	ihCodTipDocumF = stGenFact.iCodTipDocum;
+	lhCodAgenteF   = stGenFact.lCodAgente;
+	strcpy(szhLetraF, stGenFact.szLetra);
+	ihCodCentrEmiF = stGenFact.iCodCentremi;
+	ihCodConceptoF = stGenFact.iCodConcepto;
+	ihColumnaF     = stGenFact.iColumna;
+	strcpy(szhPrefPlazaF, stGenFact.szPrefPlaza);			/* jlr_11.01.03 */
+	strcpy(szhCodOperadoraSclF,stGenFact.szCodOperadoraScl);/* jlr_11.01.03 */
+	strcpy(szhCodPlazaF, stGenFact.szCodPlaza);				/* jlr_11.01.03 */
+
+	/* manejo de decimales segun la operadora local */
+	dhImporte = fnCnvDouble( dhImporte, 0 );
+
+	fprintf( fArchLogIn, 	"Parametros entrada bfnDBInsPagConNC\n\n"
+						"\tlhNumSecuenci  => [%d]\n"
+						"\tihCodTipDocum  => [%d]\n"
+						"\tlhCodAgente    => [%d]\n"
+						"\tszhLetra       => [%s]\n"
+						"\tihCodCentrEmi  => [%d]\n"
+						"\tdhImporte      => [%.2f]\n"
+						"\tlhNumSecuenciF => [%d]\n"
+						"\tihCodTipDocumF => [%d]\n"
+						"\tlhCodAgenteF   => [%d]\n"
+						"\tszhLetraF      => [%s]\n"
+						"\tihCodCentrEmiF => [%d]\n"
+						"\tihCodConceptoF => [%d]\n"
+						"\tihColumnaF     => [%d]\n"
+						"\tszPrefPlazaF   => [%s]\n"   /* jlr_11.01.03 */
+						"\tszCodOperadoraF=> [%s]\n"   /* jlr_11.01.03 */
+						"\tszCodPlazaF    => [%s]\n\n" /* jlr_11.01.03 */
+						,
+						lhNumSecuenci,
+						ihCodTipDocum,
+						lhCodAgente,
+						szhLetra,
+						ihCodCentrEmi,
+						dhImporte,
+						lhNumSecuenciF,
+						ihCodTipDocumF,
+						lhCodAgenteF,
+						szhLetraF,
+						ihCodCentrEmiF,
+						ihCodConceptoF,
+						ihColumnaF,
+						szhPrefPlazaF,       /* jlr_11.01.03 */
+						szhCodOperadoraSclF, /* jlr_11.01.03 */
+						szhCodPlazaF         /* jlr_11.01.03 */
+						 );
+
+   EXEC SQL INSERT INTO CO_PAGOSCONC
+                        (NUM_SECUENCI,
+                         COD_TIPDOCUM,
+                         COD_VENDEDOR_AGENTE,
+                         LETRA,
+                         COD_CENTREMI,
+                         IMP_CONCEPTO,
+                         COD_PRODUCTO,
+                         NUM_SECUREL,
+                         COD_TIPDOCREL,
+                         COD_AGENTEREL,
+                         LETRA_REL,
+                         COD_CENTRREL,
+                         COD_CONCEPTO,
+                         COLUMNA,
+                         NUM_ABONADO,
+                         NUM_FOLIO,
+                         NUM_CUOTA,
+                         SEC_CUOTA,
+                         NUM_TRANSACCION,
+                         NUM_VENTA,
+			 			 NUM_FOLIOCTC,
+			 			 PREF_PLAZA         , /* jlr_11.01.03 */
+						 COD_OPERADORA_SCL  , /* jlr_11.01.03 */
+						 COD_PLAZA            /* jlr_11.01.03 */
+			 )
+              SELECT :lhNumSecuenci,
+                     :ihCodTipDocum,
+                     :lhCodAgente,
+                     :szhLetra,
+                     :ihCodCentrEmi,
+                     :dhImporte,
+                     COD_PRODUCTO,
+                     NUM_SECUENCI,
+                     COD_TIPDOCUM,
+                     COD_VENDEDOR_AGENTE,
+                     LETRA,
+                     COD_CENTREMI,
+                     COD_CONCEPTO, 
+                     COLUMNA,
+                     NUM_ABONADO,
+                     NUM_FOLIO,
+                     NUM_CUOTA,
+                     SEC_CUOTA,
+                     NUM_TRANSACCION,
+                     NUM_VENTA,
+					 NUM_FOLIOCTC,
+		     		 NVL(PREF_PLAZA,' '), 			/* jlr_11.01.03 */
+		     		 NVL(COD_OPERADORA_SCL,' '), 	/* jlr_11.01.03 */
+		     		 NVL(COD_PLAZA,' ')         	/* jlr_11.01.03 */
+             FROM CO_CARTERA
+             WHERE NUM_SECUENCI = :lhNumSecuenciF AND
+                   COD_TIPDOCUM = :ihCodTipDocumF AND
+                   COD_VENDEDOR_AGENTE = :lhCodAgenteF AND
+                   LETRA = :szhLetraF AND
+                   COD_CENTREMI = :ihCodCentrEmiF AND
+                   COD_CONCEPTO = :ihCodConceptoF AND
+                   COLUMNA = :ihColumnaF;
+
+	if (sqlca.sqlcode)
+	{
+		fprintf( fArchLogIn, "Error INSERT CO_PAGOSCONC => [%s].\n", szfnORAerror() );
+		return FALSE;
+	}
+
+   return TRUE;
+}/*fin bfnDBInsPagConNC*/
+/******************************************************************************/
+BOOL bfnDBDelCartNC(DATCON stGen)
+/**
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		long lhNumSecuenci;
+		int  ihCodTipDocum;
+		long lhCodAgente;
+		char szhLetra[2]; EXEC SQL VAR szhLetra IS STRING(2);
+		int  ihCodCentrEmi;
+		int  ihCodConcepto;
+		int  ihColumna;
+		int  ihSecCuota;
+		char szhFecPago[9]; EXEC SQL VAR szhFecPago IS STRING(9);
+	EXEC SQL END DECLARE SECTION;
+	
+   fprintf( fArchLogIn, "En Funcion bfnDBDelCartNC(). <<intCobFac.pc>>\n" );
+
+	lhNumSecuenci = stGen.lNumSecuenci;
+	ihCodTipDocum = stGen.iCodTipDocum;
+	lhCodAgente   = stGen.lCodAgente;
+	strcpy(szhLetra, stGen.szLetra);
+	ihCodCentrEmi = stGen.iCodCentremi;
+	ihCodConcepto = stGen.iCodConcepto;
+	ihColumna     = stGen.iColumna;
+	ihSecCuota    = stGen.iSecCuota;	
+
+	fprintf( fArchLogIn,	"Datos de Entrada bfnDBDelCartNC \n\n"
+						"\tlhNumSecuenci => [%d],\n"
+						"\tihCodTipDocum => [%d],\n"
+						"\tlhCodAgente   => [%d],\n"
+						"\tszhLetra      => [%s],\n"
+						"\tihCodCentrEmi => [%d],\n"
+						"\tihCodConcepto => [%d],\n"
+						"\tihColumna     => [%d],\n"
+						"\tihSecCuota    => [%d],\n\n",
+						lhNumSecuenci,
+						ihCodTipDocum,
+						lhCodAgente,
+						szhLetra,
+						ihCodCentrEmi,
+						ihCodConcepto,
+						ihColumna,
+						ihSecCuota );
+
+   EXEC SQL DELETE CO_CARTERA 
+            WHERE NUM_SECUENCI = :lhNumSecuenci AND
+                  COD_TIPDOCUM = :ihCodTipDocum AND
+                  COD_VENDEDOR_AGENTE = :lhCodAgente AND
+                  LETRA        = :szhLetra AND
+                  COD_CENTREMI = :ihCodCentrEmi AND
+                  SEC_CUOTA    = :ihSecCuota AND
+                  COD_CONCEPTO = :ihCodConcepto AND
+                  COLUMNA      = :ihColumna;
+
+   if (sqlca.sqlcode)
+   {
+		fprintf( fArchLogIn, "Error DELETE CO_CARTERA => [%s].\n", szfnORAerror() );
+		return FALSE;
+   }
+
+   return TRUE;
+}/*fin bfnDBDelCartNC(.)*/
+/******************************************************************************/
+BOOL bfnDBUpdCartNC(DATCON stGen, double dImporte, int iDebHab)
+/**
+**/
+{
+	BOOL bResul;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		long   lhNumSecuenci;
+		int    ihCodTipDocum;
+		long   lhCodAgente;
+		char   szhLetra[2]; EXEC SQL VAR szhLetra IS STRING(2);
+		int    ihCodCentrEmi;
+		int    ihCodConcepto;
+		int    ihColumna;
+		int    ihSecCuota;
+		char   szhFecPago[9]; EXEC SQL VAR szhFecPago IS STRING(9);
+		double dhImporte;
+		double dhImpD;
+		double dhImpH;
+	EXEC SQL END DECLARE SECTION;
+
+   fprintf( fArchLogIn, "En Funcion bfnDBUpdCartNC(). <<intCobFac.pc>>\n" );
+
+	lhNumSecuenci = stGen.lNumSecuenci;
+	ihCodTipDocum = stGen.iCodTipDocum;
+	lhCodAgente   = stGen.lCodAgente;
+	strcpy(szhLetra, stGen.szLetra);
+	ihCodCentrEmi = stGen.iCodCentremi;
+	ihCodConcepto = stGen.iCodConcepto;
+	ihColumna     = stGen.iColumna;
+	ihSecCuota    = stGen.iSecCuota;
+	dhImporte     = dImporte;
+
+	fprintf( fArchLogIn,	" Datos de Entrada bfnDBUpdCartNC \n\n"
+						"\tlhNumSecuenci => [%d],\n"
+						"\tihCodTipDocum => [%d],\n"
+						"\tlhCodAgente   => [%d],\n"
+						"\tszhLetra      => [%s],\n"
+						"\tihCodCentrEmi => [%d],\n"
+						"\tihCodConcepto => [%d],\n"
+						"\tihColumna     => [%d],\n"
+						"\tihSecCuota    => [%d],\n"
+						"\tdhImporte     => [%.2f],\n"
+						"\tiDebHab       => [%d],\n\n",
+						lhNumSecuenci,
+						ihCodTipDocum,
+						lhCodAgente,
+						szhLetra,
+						ihCodCentrEmi,
+						ihCodConcepto,
+						ihColumna,
+						ihSecCuota,
+						dhImporte,
+						iDebHab );
+
+	if( !iDebHab ) /*aumentamos el debe de la NCredito*/
+	{
+		/* manejo de decimales segun la operadora local */
+		dImporte = fnCnvDouble( dImporte, 0 );
+
+		EXEC SQL
+		UPDATE	CO_CARTERA
+		SET		IMPORTE_DEBE = IMPORTE_DEBE + :dImporte
+		WHERE	NUM_SECUENCI = :lhNumSecuenci
+		AND		COD_TIPDOCUM = :ihCodTipDocum 
+		AND		COD_VENDEDOR_AGENTE = :lhCodAgente
+		AND		LETRA		 = :szhLetra
+		AND		COD_CENTREMI = :ihCodCentrEmi
+		AND     SEC_CUOTA    = :ihSecCuota
+		AND		COD_CONCEPTO = :ihCodConcepto
+		AND		COLUMNA 	 = :ihColumna;
+	}
+	else /*aumentamos el haber de la factura asociada*/
+	{
+		/* manejo de decimales segun la operadora local */
+		dImporte = fnCnvDouble( dImporte, 0 );
+
+		EXEC SQL
+		UPDATE	CO_CARTERA
+		SET		IMPORTE_HABER = IMPORTE_HABER + :dImporte
+		WHERE	NUM_SECUENCI = :lhNumSecuenci 
+		AND		COD_TIPDOCUM = :ihCodTipDocum 
+		AND		COD_VENDEDOR_AGENTE = :lhCodAgente 
+		AND		LETRA = :szhLetra 
+		AND		COD_CENTREMI = :ihCodCentrEmi 
+		AND     SEC_CUOTA    = :ihSecCuota	
+		AND		COD_CONCEPTO = :ihCodConcepto 
+		AND		COLUMNA 	 = :ihColumna;
+	}
+
+	if (sqlca.sqlcode)
+	{
+		fprintf( fArchLogIn, "Error UPDATE CO_CARTERA NC => [%s].\n", szfnORAerror() );
+		return FALSE;
+	}
+
+	if (!iDebHab) /*aumentamos el debe de la NCredito*/
+	{
+		EXEC SQL
+		SELECT	IMPORTE_DEBE, IMPORTE_HABER
+		INTO	:dhImpD, :dhImpH
+		FROM	CO_CARTERA
+		WHERE	NUM_SECUENCI 	= :lhNumSecuenci AND
+				COD_TIPDOCUM 		= :ihCodTipDocum AND
+				COD_VENDEDOR_AGENTE = :lhCodAgente AND
+				LETRA        		= :szhLetra AND
+				COD_CENTREMI 		= :ihCodCentrEmi AND
+			    SEC_CUOTA    		= :ihSecCuota AND
+				COD_CONCEPTO 		= :ihCodConcepto AND
+				COLUMNA      		= :ihColumna;
+
+		if (sqlca.sqlcode)
+		{
+			fprintf( fArchLogIn, "Error SELECT CO_CARTERA NC => [%s].\n", szfnORAerror() );
+			return FALSE;
+		}
+
+		if (dhImpD == dhImpH)
+		{
+			bResul = bfnDBInsCancNC(stGen, 1);
+			if (!bResul)
+			{
+				return ERR_INSCANCE;
+			}
+
+			bResul = bfnDBDelCartNC(stGen);
+			if (!bResul)
+			{
+				return ERR_DELCARTERA;
+			}
+		}
+	}
+
+	return TRUE;
+}/*fin bfnDBUpdCartNC*/
+/******************************************************************************/
+/*int ifnCancelacionCreditosNC( long lCodCliente, DATCON *stConCar, int iCodCredito, char *szFec, int iCarrier )*/
+int ifnLlamaCancelacionCred( long lCodCliente, char *szFec_pago)
+/**
+Descripcion: Funcion encargada de cancelar los creditos para un cliente.
+Entrada    : lCodCliente, codigo de cliente.
+             iCodCredito, es el codigo del credito.
+Salida     : TRUE, si todo ha ido bien.
+             ERR_xxx, si falla algo.
+**/
+{
+int      iResul = 0;
+EXEC SQL BEGIN DECLARE SECTION;
+	long lhNum_Transaccion     ;
+	long lhCodCliente          ;
+	char szhFec_Pago       [20];
+	int  ihRetorno             ;
+	char szhGlosa         [500];
+	int  ihCarrier  = 0        ;
+EXEC SQL END DECLARE SECTION;
+	
+   fprintf( fArchLogIn, "En Funcion ifnLlamaCancelacionCred(). <<intCobFac.pc>>\n" );
+
+	/* Si el cliente tiene los pagos restringidos no permitimos alterar
+	la cartera */
+	/* -------------------------------------------------------------------
+	if (stCli.iIndPagos == 0)
+	return ERR_PAGRES;
+	---  Lo comento por si facturacion  ----
+	---------------------------------------------------------------------*/
+	
+	/* Cancelar Creditos 
+	iResul = ifnDBCancelacionNC(lCodCliente,stConCar,iCodCredito,szFec,iCarrier);
+	if (iResul)
+		return iResul;*/
+		
+	fprintf( fArchLogIn, "En funcion ifnLlamaCancelacionCred().\n" );
+	/*---------------------------------------------------------------------*/
+	fprintf( fArchLogIn,"CO_CANCELACION_PG.CO_CANCELACREDITOS_PR\n");
+	
+	memset(szhGlosa,'\0',sizeof(szhGlosa));
+	memset(szhFec_Pago,'\0',sizeof(szhFec_Pago));
+	ihRetorno=99;
+
+	EXEC SQL
+	SELECT GA_SEQ_TRANSACABO.NEXTVAL
+	INTO   :lhNum_Transaccion
+	FROM   DUAL;
+	if (sqlca.sqlcode != SQLOK) {
+	    fprintf( fArchLogIn,"En SELECT GA_SEQ_TRANSACABO.NEXTVAL.", szfnORAerror() );
+	    return -1;
+	}
+	
+	lhCodCliente=lCodCliente;
+	strncpy(szhFec_Pago,szFec_pago,8);
+	szhFec_Pago[8] = '\0';
+
+	fprintf( fArchLogIn,"\n\t\t******************************"
+							"\n\t\t=> lhCodCliente      [%ld]"
+							"\n\t\t=> szFecPago         [%s] "
+							"\n\t\t=> lhNum_Transaccion [%ld]\n\n",lhCodCliente ,szhFec_Pago, lhNum_Transaccion );
+
+	EXEC SQL EXECUTE
+		BEGIN
+				CO_CANCELACION_PG.CO_CANCELACREDITOS_PR(:lhCodCliente, TO_DATE(:szhFec_Pago,'YYYYMMDD'), :lhNum_Transaccion , :ihCarrier , NULL , NULL , NULL, :ihRetorno , :szhGlosa );
+		END;
+	END-EXEC;
+	
+	if (sqlca.sqlcode != SQLOK ) {
+  	 	if (sqlca.sqlcode != -1405 ) {  /* Soporte RyC 34635 - Colombia 16.11.2006 */
+        	fprintf( fArchLogIn,"En CO_CANCELACREDITOS_PR.\n", szfnORAerror() );
+        	return -1;
+     	}
+	}
+
+
+
+   if (ihRetorno == 99) {
+   	fprintf( fArchLogIn,"Valor de Retorno es 99. Posible error en la PL\n", szfnORAerror() );
+   
+   }
+   else if (ihRetorno != 0)   {
+   	fprintf( fArchLogIn,"Valor ihRetorno [%d]\n",ihRetorno);
+   	fprintf( fArchLogIn,"En CO_CANCELACREDITOS_PR. [%s]\n ",szhGlosa);
+   
+   }
+
+  	fprintf( fArchLogIn,"Fin a Cancelacion de Creditos. <== %d ==>\n\n",ihRetorno);
+	return ihRetorno;
+		
+}/* Fin ifnLlamaCancelacionCred() */
+
+
+
+/******************************************************************************/
+BOOL bfnDBObtFechaFA(char *szDia)
+/**
+**/
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		char szhDia[5];       EXEC SQL VAR szhDia IS STRING(5);
+		char szhFecActual[9]; EXEC SQL VAR szhFecActual IS STRING(9);
+	EXEC SQL END DECLARE SECTION;
+
+   fprintf( fArchLogIn, "En Funcion bfnDBObtFechaFA(). <<intCobFac.pc>>\n" );
+
+	EXEC SQL 
+	SELECT 	TO_CHAR(SYSDATE,'YDDD'),
+			TO_CHAR(SYSDATE,'YYYYMMDD')
+	INTO 	:szhDia,
+			:szhFecActual
+	FROM DUAL;
+
+	if( sqlca.sqlcode )
+	{
+		fprintf( fArchLogIn, "Error bfnDBObtFechaFA SELECT => [%s].\n", szfnORAerror() );
+		return FALSE;
+	}
+	
+	strcpy( szDia, szhDia );
+	strcpy( TiG.szFecActual, szhFecActual );
+
+	return TRUE;
+}/*fin bfnObtFechaFA*/
+/******************************************************************************/
+
+int ifnDBInsDatosPago(long lCodCliente, DATCON *stDatNota, double dImpPago)
+/**
+Inserta registro en co_pagos  con los datos de la estructura.
+En caso de error devuelve FALSE.
+**/
+{
+	int iResul;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int    ihCodTipDocum     ;
+		int    ihCodCentrEmi     ;
+		long   lhNumSecuenci     ;
+		long   lhCodAgente       ;
+		char   szhLetra[2]       ; EXEC SQL VAR szhLetra IS STRING(2);
+		long   lhCodCliente      ;
+		double dhImpPago         ;
+		char   szhCodCaja[5]     ; EXEC SQL VAR szhCodCaja IS STRING(5);
+		short shIndCaja          ;
+		char  szhFecValor[9]     ; EXEC SQL VAR szhFecValor IS STRING(9);
+		short  shIndContado      ;
+		int    ihCodSisPago      ;
+		int    ihCodOriPago      ;
+		int    ihCodCauPago      ;
+		char   szhCodBanco[4]    ; EXEC SQL VAR szhCodBanco IS STRING(4);
+		short  shIndCodBan       ;
+		char  szhCodSucursal[5]  ; EXEC SQL VAR szhCodSucursal IS STRING(5);
+		short  shIndCodSuc       ;
+		char  szhCtaCorriente[16]; EXEC SQL VAR szhCtaCorriente IS STRING(16);
+		short  shIndCtaCor       ;
+		char  szhCodTipTarjeta[4]; EXEC SQL VAR szhCodTipTarjeta IS STRING(4);
+		short  shIndCodTipTar    ;
+		char  szhNumTarjeta[21]  ; EXEC SQL VAR szhNumTarjeta IS STRING(21);
+		short  shIndNumTar       ;
+		char  szhDesPago[41]     ; EXEC SQL VAR szhDesPago IS STRING(41);
+		char  szhNomUsuarioOraMain[31]; EXEC SQL VAR szhNomUsuarioOraMain IS STRING(31); /* GAC 08-08-2003 (Homolog.) */
+	EXEC SQL END DECLARE SECTION;
+
+   fprintf( fArchLogIn, "En Funcion ifnDBInsDatosPago(). <<intCobFac.pc>>\n" );
+
+	/* Preparar valores para insercion en co_pagos */
+	lhNumSecuenci = stDatNota->lNumSecuenci;
+	ihCodTipDocum = stDatNota->iCodTipDocum;
+	lhCodAgente   = stDatNota->lCodAgente;
+	ihCodCentrEmi = stDatNota->iCodCentremi;
+	strcpy( szhLetra, stDatNota->szLetra );
+
+	/*ihCodTipDocum  = 8;
+	lhCodAgente    = 100001;
+	strcpy(szhLetra, "X");
+	ihCodCentrEmi  = 1;
+	iResul = iDBTomarSecuencia( ihCodTipDocum, ihCodCentrEmi, szhLetra, &lhNumSecuenci );
+	if (iResul != OK)
+		return iResul;*/
+
+   lhCodCliente   = lCodCliente;
+   dhImpPago      = dImpPago;
+
+   shIndContado   = 0; /* Siempre Consumo */
+   ihCodSisPago   = 1;
+   ihCodOriPago   = 1;
+   ihCodCauPago   = 14;
+   
+   strcpy( szhDesPago, "PAGO POR NC FACTURACION" );
+
+	strcpy(szhCodCaja, "\0");
+	if (strlen(szhCodCaja) == 0)
+		shIndCaja = ORA_NULL;
+	else
+		shIndCaja = ORA_NOTNULL;
+	
+	strcpy(szhCodBanco, "\0" );
+	if (strlen(szhCodBanco) == 0)
+		shIndCodBan = ORA_NULL;
+	else
+		shIndCodBan = ORA_NOTNULL;
+	
+	strcpy(szhCodSucursal, "\0" );
+	if (strlen(szhCodSucursal) == 0)
+		shIndCodSuc = ORA_NULL   ;
+	else
+		shIndCodSuc = ORA_NOTNULL;
+	
+	strcpy(szhCtaCorriente, "\0");
+	if (strlen(szhCtaCorriente) == 0)
+		shIndCtaCor = ORA_NULL;
+	else
+		shIndCtaCor = ORA_NOTNULL;
+	
+	strcpy(szhCodTipTarjeta, "\0");
+	if (strlen(szhCodTipTarjeta) == 0)
+		shIndCodTipTar = ORA_NULL;
+	else
+		shIndCodTipTar = ORA_NOTNULL;
+	
+	strcpy(szhNumTarjeta, "\0");
+	if (strlen(szhNumTarjeta) == 0)
+		shIndNumTar = ORA_NULL;
+	else
+		shIndNumTar = ORA_NOTNULL;
+
+	/* manejo de decimales segun la operadora local */
+	dhImpPago = fnCnvDouble( dhImpPago, 0 );
+	
+	strcpy(szhNomUsuarioOraMain,szNomUsuarioOraMain);  /* GAC 08-08-2003 (Homolog.) */
+       /* asigna valores por Default definidas en .h  GAC 08-08-2003 (Homolog.) */
+       strcpy( szPrefPlazaDefault, szPREF_PLAZA_DEFAULT );
+	
+	EXEC SQL
+	INSERT INTO CO_PAGOS
+		(
+			COD_TIPDOCUM       ,
+			COD_CENTREMI       ,
+			NUM_SECUENCI       ,
+			COD_VENDEDOR_AGENTE,
+			LETRA              ,
+			COD_CLIENTE        ,
+			IMP_PAGO           ,
+			FEC_EFECTIVIDAD    ,
+			COD_CAJA           ,
+			FEC_VALOR          ,
+			NOM_USUARORA       ,
+			COD_FORPAGO        ,
+			COD_SISPAGO        ,
+			COD_ORIPAGO        ,
+			COD_CAUPAGO        ,
+			COD_BANCO          ,
+			COD_TIPTARJETA     ,
+			COD_SUCURSAL       ,
+			CTA_CORRIENTE      ,
+			NUM_TARJETA        ,
+			DES_PAGO           , 
+                        PREF_PLAZA              /* GAC 08-08-2003 (Homolog.) */
+		)
+		VALUES
+		(
+			:ihCodTipDocum      ,
+			:ihCodCentrEmi      ,
+			:lhNumSecuenci      ,
+			:lhCodAgente        ,
+			:szhLetra           ,
+			:lhCodCliente       ,
+			:dhImpPago,
+			SYSDATE            ,
+			:szhCodCaja:shIndCaja,
+			SYSDATE             , 
+			/* USER                ,   GAC 08-08-2003 (Homolog.) */
+			:szhNomUsuarioOraMain,
+			0                   ,
+			:ihCodSisPago       ,
+			:ihCodOriPago       ,
+			:ihCodCauPago       ,
+			:szhCodBanco:shIndCodBan        ,
+			:szhCodTipTarjeta:shIndCodTipTar,
+			:szhCodSucursal:shIndCodSuc     ,
+			:szhCtaCorriente:shIndCtaCor    ,
+			:szhNumTarjeta:shIndNumTar      ,
+			:szhDesPago                     ,
+            :szPrefPlazaDefault              /* GAC 08-08-2003 (Homolog.) */
+		);
+
+	if( sqlca.sqlcode )
+	{
+		fprintf( fArchLogIn, "Error INSERT CO_PAGOS => [%s].\n", szfnORAerror() );
+		return ERR_INSPAG;
+	}
+	return OK;
+} /* Fin bfnDBInsDatosPago(...) */
+/*******************************************************************/
+
+BOOL bfnDBUpdCastigoNC(long lCodCliente,long lNumFolio,double dMtoPago)
+/**
+Descripcion: Modifica el importe Debe del Castigo
+Salida     : True, si todo va ok
+             False, si se genera algun error
+**/
+{
+	DATCON	stCon;
+	EXEC SQL BEGIN DECLARE SECTION;
+		char   szhLetra[2]     ; EXEC SQL VAR szhLetra IS STRING(2);
+		int    ihCodCentrEmi   ;
+		long   lhNumSecuenci   ;
+		long   lhNumAbonado    ;
+		long   lhCodVendedorAgente   ;
+		int    ihColumna       ;
+		int    ihCodProducto   ;
+		int    ihCodCentremi   ;
+		int    ihFlgCancelados ;
+		double dhMtoSaldo      ;
+		double dhMtoDebe       ;
+		char   szhFecHist[9]   ; EXEC SQL VAR szhFecHist IS STRING(9);
+	EXEC SQL END DECLARE SECTION;
+
+	int		iError = 0;
+
+   fprintf( fArchLogIn, "En Funcion bfnDBUpdCastigoNC(). <<intCobFac.pc>>\n" );
+
+	EXEC SQL DECLARE CASTIGOS_ASOC CURSOR FOR
+	SELECT	NUM_SECUENCI,
+			COD_VENDEDOR_AGENTE,
+			LETRA,
+			COD_CENTREMI,
+			COLUMNA,
+			IMPORTE_HABER - IMPORTE_DEBE,
+			TO_CHAR(SYSDATE,'YYYYMMDD'),
+			NUM_ABONADO,
+			COD_PRODUCTO
+	FROM	CO_CARTERA
+	WHERE	COD_CLIENTE = :lCodCliente
+	AND		NUM_FOLIO   = :lNumFolio
+	AND		COD_TIPDOCUM = 39;
+
+	EXEC SQL OPEN CASTIGOS_ASOC;
+
+	if (sqlca.sqlcode != SQLOK)
+	{
+		fprintf( fArchLogIn, "Error OPEN CASTIGOS_ASOC => [%s].\n", szfnORAerror() );
+		return FALSE;
+	}
+
+	while(1)
+	{
+		EXEC SQL FETCH CASTIGOS_ASOC
+		INTO	:lhNumSecuenci,
+				:lhCodVendedorAgente,
+				:szhLetra,
+				:ihCodCentremi,
+				:ihColumna,
+				:dhMtoSaldo,
+				:szhFecHist,
+				:lhNumAbonado,
+				:ihCodProducto;
+
+		if( sqlca.sqlcode != OK && sqlca.sqlcode != NOT_FOUND )
+		{
+			fprintf( fArchLogIn, "Error FETCH CASTIGOS_ASOC => [%s].\n", szfnORAerror() );
+			iError = ERR_FETCH;
+			break;
+		}
+
+		if( sqlca.sqlcode == NOT_FOUND )
+			break;
+
+		if (dMtoPago >= dhMtoSaldo)
+		{
+			dhMtoDebe = dhMtoSaldo;
+			dMtoPago = dMtoPago - dhMtoSaldo;
+			ihFlgCancelados = 1;
+		}
+		else
+		{
+			dhMtoDebe = dMtoPago;
+			dMtoPago = 0;
+			ihFlgCancelados = 0;
+		}
+
+		/* manejo de decimales segun la operadora local */
+		dhMtoDebe = fnCnvDouble( dhMtoDebe, 0 );
+
+		EXEC SQL
+		UPDATE	CO_CARTERA
+		SET		IMPORTE_DEBE = IMPORTE_DEBE + :dhMtoDebe,
+				FEC_PAGO = TO_DATE(:szhFecHist,'YYYYMMDD')
+		WHERE	COD_CLIENTE = :lCodCliente
+		AND		NUM_SECUENCI = :lhNumSecuenci
+		AND		COD_TIPDOCUM = 39
+		AND		COD_VENDEDOR_AGENTE = :lhCodVendedorAgente
+		AND		LETRA = :szhLetra
+		AND		COD_CENTREMI = :ihCodCentremi
+		AND		COD_CONCEPTO = 6
+		AND		COLUMNA = :ihColumna;
+
+		if (sqlca.sqlcode != SQLOK)
+		{
+			fprintf( fArchLogIn, "Error UPDATE CO_CARTERA CC => [%s].\n", szfnORAerror() );
+			iError = 1;
+			break;
+		}
+
+		if (ihFlgCancelados) /* si cancelo el registro, lo pasa a Cancelados */
+		{
+			stCon.lNumSecuenci = lhNumSecuenci;
+			stCon.iCodTipDocum = 39;
+			stCon.lCodAgente   = lhCodVendedorAgente;
+			strcpy(stCon.szLetra,szhLetra);
+			stCon.iCodCentremi = ihCodCentremi;
+			stCon.iCodConcepto = 6;
+			stCon.iColumna     = ihColumna;
+			stCon.iCodProducto = ihCodProducto;
+			stCon.lNumAbonado  = lhNumAbonado ;
+			
+			if (!bfnDBLlevarACanCtos(&stCon,lCodCliente,szhFecHist))
+			{
+				fprintf(fArchLogIn,"ERROR en llamada a procedimiento bfnDBLlevarACanCtos\n");
+				iError = 1;
+				break;
+			}
+		}
+		
+		if (dMtoPago < 1) /* si no queda mas dinero */
+			break;
+	} /* end while */
+
+	EXEC SQL CLOSE CASTIGOS_ASOC;
+	if (sqlca.sqlcode != 0)
+	{
+		fprintf( fArchLogIn, "Error CLOSE CASTIGOS_ASOC => [%s].\n", szfnORAerror() );
+		return FALSE;
+	}
+
+	if( iError != OK )
+		return FALSE;
+
+	return TRUE;
+}
+
+
+/*===========================================================================
+Funcion    : ifnCancelaConceptosNC()
+Se crea funcion por Incidencia XO-200509130656, 27-09-2005 rvc Soporte RyC
+Descripcion: Funcion encargada de cancelar los conceptos de un documento.
+Entrada    : 
+
+Salida     : TRUE, si todo ha ido bien.
+			 ERR_xxx, si falla algo.
+===========================================================================*/
+int ifnCancelaConceptosNC(long lCodCliente , int  iCodTipDocum, int  iCodCentremi, 
+						long lNumSecuenci, long lCodAgente  , char * szLetra   , 
+ 						DATCON stCon    , char *szFecPago )
+{
+EXEC SQL BEGIN DECLARE SECTION;
+	long   lhCodCliente         ;
+	long   lhNumSecuenciaPago   ;
+	long   lhCodAgentePago      ;
+	long   lhNumAbonado         ;
+	char   szhLetraPago      [2];
+	char   szhFecPago       [20];
+	int    ihCodTipDocumPago    ;
+	int    ihCodCentremiPago    ;
+	int    ihCodProducto        ;
+	int    ihColumnaC;
+EXEC SQL END DECLARE SECTION;
+int ihRetorno;
+
+   fprintf( fArchLogIn, "En Funcion ifnCancelaConceptosNC(). <<intCobFac.pc>>\n" );
+
+    fprintf(fArchLogIn,"lCodCliente          [%ld]\n",lCodCliente );  
+    fprintf(fArchLogIn,"iCodTipDocum         [%d]\n",iCodTipDocum );      
+    fprintf(fArchLogIn,"iCodCentremi         [%d]\n",iCodCentremi ); 
+    fprintf(fArchLogIn,"lNumSecuenci         [%ld]\n",lNumSecuenci );      
+    fprintf(fArchLogIn,"lCodAgente           [%ld]\n",lCodAgente );      
+    fprintf(fArchLogIn,"szLetra              [%s]\n",szLetra );      
+    fprintf(fArchLogIn,"stCon.iCodProducto   [%d]\n",stCon.iCodProducto );
+    fprintf(fArchLogIn,"stCon.lNumAbonado    [%ld]\n",stCon.lNumAbonado );      
+    fprintf(fArchLogIn,"szFecPago            [%s]\n",szFecPago );      
+    fprintf(fArchLogIn,"stCon.iColumna       [%d]\n",stCon.iColumna );
+
+	lhCodCliente       = lCodCliente;
+	ihCodTipDocumPago  = iCodTipDocum;
+    ihCodCentremiPago  = iCodCentremi;
+	lhNumSecuenciaPago = lNumSecuenci;
+	lhCodAgentePago    = lCodAgente;
+	strcpy(szhLetraPago, szLetra);
+	lhNumAbonado       = stCon.lNumAbonado;
+	ihCodProducto      = stCon.iCodProducto;
+	strcpy(szhFecPago, szFecPago);
+	ihColumnaC         = stCon.iColumna;
+
+	EXEC SQL
+    INSERT INTO co_cancelados
+            (cod_cliente   , cod_tipdocum       , cod_centremi   , 
+             num_secuenci  , cod_vendedor_agente, letra          ,
+             cod_concepto  , columna            , cod_producto   ,
+             importe_debe  , importe_haber      , ind_contado    , 
+             ind_facturado , fec_efectividad    , fec_cancelacion,
+             ind_portador  , fec_vencimie       , fec_caducida   , 
+             fec_antiguedad, fec_pago           , num_abonado    , 
+             num_folio     , num_folioctc       , num_cuota      , 
+             sec_cuota     , num_transaccion    , num_venta      ,
+             pref_plaza    , cod_operadora_scl  , cod_plaza )
+         SELECT car.cod_cliente      , car.cod_tipdocum        , car.cod_centremi  ,
+                car.num_secuenci     , car.cod_vendedor_agente , car.letra         ,
+                car.cod_concepto     , car.columna             , car.cod_producto  ,
+                car.importe_haber    , car.importe_haber       , car.ind_contado   ,
+                car.ind_facturado    , car.fec_efectividad     , to_date(:szhFecPago, 'ddmmyyyy'),
+                0                    , car.fec_vencimie        , car.fec_caducida  , 
+                car.fec_antiguedad   , SYSDATE                 , car.num_abonado   , 
+                car.num_folio        , car.num_folioctc        , car.num_cuota     , 
+                car.sec_cuota        , car.num_transaccion     , car.num_venta     , 
+                car.pref_plaza       , car.cod_operadora_scl, car.cod_plaza
+           FROM co_cartera car
+          WHERE car.cod_cliente  = :lhCodCliente
+            AND car.cod_tipdocum = :ihCodTipDocumPago
+            AND car.cod_centremi = :ihCodCentremiPago
+            AND car.num_secuenci = :lhNumSecuenciaPago
+            AND car.cod_vendedor_agente = :lhCodAgentePago
+            AND car.letra        = :szhLetraPago
+            AND car.cod_producto = :ihCodProducto
+            AND car.num_abonado  = :lhNumAbonado
+            AND car.columna      = :ihColumnaC;
+	
+	if (sqlca.sqlcode != SQLOK) {
+		fprintf(fArchLogIn,"Error en el insertar en co_cancelados %s\n",szfnORAerror());
+		return FALSE;
+	} /* end if (sqlca.sqlcode != SQLOK) {*/
+
+	EXEC SQL
+    DELETE  co_cartera
+    WHERE cod_cliente = :lhCodCliente
+    AND cod_tipdocum  = :ihCodTipDocumPago
+    AND cod_centremi  = :ihCodCentremiPago
+    AND num_secuenci  = :lhNumSecuenciaPago
+    AND cod_vendedor_agente = :lhCodAgentePago
+    AND letra         = :szhLetraPago
+    AND cod_producto  = :ihCodProducto
+    AND num_abonado   = :lhNumAbonado
+    AND columna       = :ihColumnaC;
+
+	if (sqlca.sqlcode != SQLOK) {
+		fprintf(fArchLogIn,"Error al borrar en co_cartera %s\n",szfnORAerror());
+		return FALSE;
+	} /* end if (sqlca.sqlcode != SQLOK) {*/
+
+    ihRetorno  = 0;
+
+} /* end ifnCancelaConceptosNC */
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

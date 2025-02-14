@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module  backgroundImage="../recursosInterfaz/imagenes/otros/fondoLogin.jpg" xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="980" height="476" initialize="init();" verticalAlign="top"  backgroundColor="#FCFCFC" x="196" y="17" xmlns:ns1="user.libreria.componentes.*">
+<mx:Script>
+	<![CDATA[
+		import mx.events.CollectionEvent;
+		import mx.collections.ArrayCollection;
+		import mx.messaging.messages.HTTPRequestMessage;
+	 	import mx.controls.Alert;
+	 	import mx.events.ModuleEvent;
+	    import mx.modules.ModuleManager;
+		import mx.modules.IModuleInfo;
+		import mx.rpc.events.FaultEvent;
+		import mx.events.ValidationResultEvent;
+		import mx.controls.AdvancedDataGrid;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		
+		import generated.webservices.orquestador.*;
+	   	import user.libreria.componentes.DatosEncabezadoOOSS;
+	   	import user.libreria.clases.StringUtil;
+	   	 
+		public var info:IModuleInfo;
+	 	public var grillaGlobal:AdvancedDataGrid = new AdvancedDataGrid();
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject; 					
+	 	public var searchingPopUpView:Class = BarraDeProgreso2;
+	
+		
+	 	public var wsORQ:WSSEGPortal= new WSSEGPortal();
+	 	public var datoDTO : EjecucionCambioPlanPostPagoIndividualDTO= new EjecucionCambioPlanPostPagoIndividualDTO;
+	 	public var numTransaccion :String;
+	 	
+	 	public var ComdataGen:ArrayCollection	 = new  ArrayCollection();
+		public var oItemGen : Object;
+		
+		public var ComdataNumFreFijo:ArrayCollection	 = new  ArrayCollection();		
+		public var ComdataNumFreMovil:ArrayCollection	 = new  ArrayCollection();
+		
+
+		[Embed(source="../../recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class;  		
+	 	
+		
+		/* --------------------------------------------------------------------------------		
+			METODOS
+		-------------------------------------------------------------------------------- */
+		include "../../user/includes/datosEncabezadoOOSS.as";
+		include "../../user/includes/registroConsulOoss.as";
+		
+		private function getError(event:FaultEvent):void    {
+			        
+			var mensaje:String = new String();
+			PopUpManager.removePopUp(popUpWindow);
+			
+			Application.application.sesionFlagButon = false;
+			
+			if(flash.external.ExternalInterface.call('controlSession')) {	
+				/*
+				mensaje = "Ha ocurrido un error en la petición a los servicios.";
+		     	Alert.show(mensaje, "Error en la aplicación");
+		     	*/
+		     	
+		     	var url:String = new String();
+				url = StringUtil.getValor("urlApplicationLogout","VALOR");
+				var urlLogout:URLRequest = new URLRequest(url);
+				navigateToURL(urlLogout, "_top");
+		     	
+	  		}
+	  		
+	     	cerrar();
+	     	
+		} // getError
+		
+		// --------------------------------------------------------------------------------
+		
+		private function getDataCarga(event: CargarCambioPlanPostPagoIndividualResultEvent):void	{
+			var Comdata:ArrayCollection	 = new  ArrayCollection();
+			
+			var numcant :int;
+			var oItem : Object;
+			
+			var mensaje:String = new String();
+			if (event.result.codError == null)	{	
+				numTransaccion=event.result.numTransaccion;
+				
+				numcant= event.result.arrayPlanTarifarioVO.length;
+				for (var i:int = 0; i < numcant; i++)
+			        {
+			        oItem = new Object();			        
+			        
+			        oItem.label= event.result.arrayPlanTarifarioVO[i].desPlanTarif.toString();
+			        oItem.data =event.result.arrayPlanTarifarioVO[i].codPlanTarif.toString();
+			        Comdata.addItem(oItem);
+			        
+			        oItemGen = new Object();
+			        oItemGen.codCargoBasico =event.result.arrayPlanTarifarioVO[i].codCargoBasico.toString();			        
+			        oItemGen.codPlanTarif =event.result.arrayPlanTarifarioVO[i].codPlanTarif.toString();
+			        oItemGen.desCargoBasico =event.result.arrayPlanTarifarioVO[i].desCargoBasico.toString();
+			        oItemGen.desPlanTarif =event.result.arrayPlanTarifarioVO[i].desPlanTarif.toString();	
+			        oItemGen.valorCargoBasico =event.result.arrayPlanTarifarioVO[i].valorCargoBasico.toString();
+			        ComdataGen.addItem(oItemGen);
+			        }
+			        //llenado de combo-box
+				
+				codPlanTarifario.dataProvider=Comdata;
+				codPlanTarifario.selectedIndex=-1;
+				
+				codPlanActual.text=event.result.desPlanTarif;
+				
+				
+				PopUpManager.removePopUp(popUpWindow);		 
+			} // if
+			else
+			{
+				PopUpManager.removePopUp(popUpWindow);	
+				mensaje = event.result.desError ;
+	     		Alert.show(mensaje, "No se puede ejecutar la OOSS");
+	     		cerrar();
+			} // else		
+					
+		} // getDataCarga  
+		
+		// --------------------------------------------------------------------------------
+		private function getDataEjecuta(event: EjecutarCambioPlanPostPagoIndividualResultEvent):void	{
+	
+			var mensaje:String = new String();
+			PopUpManager.removePopUp(popUpWindow);
+			if (event.result.codError == null)	{				
+				mensaje = "Numero de la OOSS.: " + event.result.nroOOSS.toString();				
+		     	Alert.show(mensaje  , "OOSS Cambio Plan");
+		     	
+		     	//Se levanta la pantalla de registro
+		     	//levantaRegistroIngOoss('Abonado'); //Se comenta funcionalidad(No certificada) AF resposable : Ruben Araya
+		     	
+			} // if
+			else	{
+				mensaje = event.result.desError ;
+	     		Alert.show(mensaje, "No se puede ejecutar la OOSS");
+			} // else
+			cerrar();
+		} // getDataEjecuta  
+					
+		// --------------------------------------------------------------------------------
+		
+		private function executeWSCarga():void	{
+			
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+	
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addcargarCambioPlanPostPagoIndividualEventListener(getDataCarga);
+	
+			var codEvento:String = parentApplication.codEvento;
+			
+			
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			wsORQ.cargarCambioPlanPostPagoIndividual(parentApplication.aboSelect,parentApplication.usuario.username, codEvento);
+			
+		} // executeWS		
+		
+		
+		private function executeWSEjecuta():void	{
+			var numcant : int;			
+			
+			popUpParent = parentApplication.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,searchingPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			
+			wsORQ.addWSSEGPortalFaultEventListener(getError);
+			wsORQ.addejecutarCambioPlanPostPagoIndividualEventListener(getDataEjecuta);
+	
+			
+			wsORQ.setearEndpoint(StringUtil.getValor("AppServerRootURL","VALOR")+StringUtil.getValor("endpointORQ","VALOR"));
+			
+			datoDTO.numTransaccion = numTransaccion; // numerod e la transacción 
+			datoDTO.comentario = txtComentario.text;  //observacion que va a la CI_ORSERV 
+			datoDTO.nomUsuarioSCL = parentApplication.usuario.username;			//user de coneccion WS
+			datoDTO.codError = "1";					//
+			datoDTO.desError ="N";				//
+			datoDTO.codPlanTarifNuevo = codPlanTarifario.selectedItem.data.toString();		//codigo de causa seleccionada.
+			
+			numcant= ComdataNumFreFijo.length;
+			var dato:NumeroFrecuenteFijoVO =new NumeroFrecuenteFijoVO;
+			var lista:ArrayCollection = new ArrayCollection;
+			 
+			for (var i:int = 0; i < numcant; i++)
+			{
+				dato.numFrecFijos =ComdataNumFreFijo[i].label.toString();				
+				//datoDTO.arrayNumeroFrecuenteFijoVO = new NumeroFrecuenteFijoVO;
+				//datoDTO.arrayNumeroFrecuenteFijoVO =dato; 				 
+			}
+			
+			
+			
+			numcant= ComdataNumFreMovil.length;
+			for (var j:int = 0; j < numcant; j++)
+			{
+//				datoDTO.arrayNumeroFrecuenteMovilVO.additem( ComdataNumFreMovil[j].label);
+			}
+	
+			datoDTO.nroOOSS = 1;
+			
+			wsORQ.ejecutarCambioPlanPostPagoIndividual(datoDTO);
+			
+		} // executeWS
+		
+		private function EjecutaAnulaSiniestro():void	{
+			if (validaRequeridos())
+				executeWSEjecuta();			
+		}
+		
+		// --------------------------------------------------------------------------------
+		// Create by HGG 10/07/2009
+		private function validaRequeridos():Boolean	{
+			if ((codPlanTarifario.selectedIndex >= 0) && (txtComentario.length>0)) return true;
+			else
+				Alert.show( StringUtil.getValor("mensajeDefaultErrorDatosRequeridosOOSS","VALOR"), 
+							"Advertencia", 
+							mx.controls.Alert.OK,
+							this,
+							null,
+							iconWarning,
+							mx.controls.Alert.OK );	    	
+			return false;
+		} // validar
+	
+		// --------------------------------------------------------------------------------
+		
+			private function init():void	{
+				// Traigo los datos para el encabezado
+				datosCuenta(parentApplication.ctaSelect);
+				datosCliente(parentApplication.cliSelect);
+
+				executeWSCarga();
+			} // init
+		
+		// --------------------------------------------------------------------------------
+		
+			private function cerrar():void {
+				this.visible=false;
+				parentDocument.vbOOSS.enabled = false;
+				parentDocument.vb1.enabled=true;
+				parentDocument.tab1.selectedIndex= 0;	
+				return;
+			} // cerrar
+			
+		// --------------------------------------------------------------------------------
+		
+			private function fnMuestra():void{
+
+				var i:int;
+		     	i= codPlanTarifario.selectedIndex;
+		     	desCargoBasico.text =codPlanTarifario.selectedLabel.toString();
+		     	mtoCargoBasico.text =codPlanTarifario.selectedItem.data.toString();
+		     	desCargoBasico.text=ComdataGen[i].desCargoBasico;
+		     	mtoCargoBasico.text=ComdataGen[i].valorCargoBasico;
+		     	codCargoBasico.text= "cód.:" + ComdataGen[i].codCargoBasico;
+			}	
+			
+			// --------------------------------------------------------------------------------
+			private function validaNumFijo():Boolean{
+				var numcant:int;
+				var dato:Boolean;
+				numcant=ComdataNumFreFijo.length
+				dato= true;
+				for (var i:int = 0; i < numcant; i++)
+				{
+					if (ComdataNumFreFijo[i].label ==  numFrecuenteFi.text){
+						dato=  false;
+					}
+				}
+				return dato;
+			}
+			// --------------------------------------------------------------------------------
+			private function validaNumMovil():Boolean{
+				var numcant:int;
+				var dato:Boolean;
+				numcant=ComdataNumFreMovil.length
+				dato= true;
+				for (var i:int = 0; i < numcant; i++)
+				{
+					if (ComdataNumFreMovil[i].label ==  numFrecuenteMo.text){
+						dato=  false;
+					}
+				}
+				return dato;
+			}
+			// --------------------------------------------------------------------------------
+			private function agregarNF():void{	
+				var oItemNFijo : Object;	
+				var vbContinua:Boolean;				
+				
+				if ( numFrecuenteFi.length != 0) {
+					vbContinua=validaNumFijo();
+					if (vbContinua) {
+						oItemNFijo = new Object();
+					//	oItemNFijo.numFrecFijos = numFrecuenteFi.text;					 
+						oItemNFijo.label = numFrecuenteFi.text;
+						numFrecuenteFi.text="";
+						ComdataNumFreFijo.addItem(oItemNFijo);
+						canNumFrecuenteFi.dataProvider=ComdataNumFreFijo;
+						sacaNF.enabled=false;						
+					}
+					
+				}
+				
+			}
+			// --------------------------------------------------------------------------------
+		
+			private function agregarNM():void{
+				var oItemNMovil : Object;
+				var vbContinua:Boolean;		
+				if (numFrecuenteMo.length != 0) {
+					vbContinua=validaNumMovil();
+					if (vbContinua) {
+						oItemNMovil = new Object();				
+						oItemNMovil.numFrecMovil = numFrecuenteMo.text;
+						oItemNMovil.label = numFrecuenteMo.text;
+						numFrecuenteMo.text="";
+						ComdataNumFreMovil.addItem(oItemNMovil);
+						canNumFrecuenteMo.dataProvider=ComdataNumFreMovil;
+						sacaNM.enabled=false;
+					}
+				} 
+				
+			}
+		// --------------------------------------------------------------------------------
+		private function deleteItemFjo():void {
+                var toRemove:Array = [];
+                for (var i:int = 0; i < ComdataNumFreFijo.length; i++)
+                	if (canNumFrecuenteFi.selectedLabel == ComdataNumFreFijo[i].label) { 
+                    	toRemove.push(ComdataNumFreFijo[i]);
+                 	}
+                for (i = 0; i < toRemove.length; i++)
+                    ComdataNumFreFijo.removeItemAt(ComdataNumFreFijo.getItemIndex(toRemove[i]));                    
+               canNumFrecuenteFi.dataProvider=ComdataNumFreFijo;
+               sacaNF.enabled=false;
+            }	
+		// --------------------------------------------------------------------------------
+		private function deleteItemMovil():void {
+                var toRemove:Array = [];
+                for (var i:int = 0; i < ComdataNumFreMovil.length; i++)
+                	if (canNumFrecuenteMo.selectedLabel == ComdataNumFreMovil[i].label) { 
+                    	toRemove.push(ComdataNumFreMovil[i]);
+                 	}
+                for (i = 0; i < toRemove.length; i++)
+                    ComdataNumFreMovil.removeItemAt(ComdataNumFreMovil.getItemIndex(toRemove[i]));
+                canNumFrecuenteMo.dataProvider=ComdataNumFreMovil;
+                sacaNM.enabled=false;
+            }	
+		// --------------------------------------------------------------------------------
+		private function pasaNF():void {
+			
+			numFrecuenteFi.text= canNumFrecuenteFi.selectedLabel.toString();
+			if (numFrecuenteFi.text != "") 
+				sacaNF.enabled=true;			
+			
+		} // 
+		private function pasaNM():void{
+			numFrecuenteMo.text= canNumFrecuenteMo.selectedLabel.toString();
+			if (numFrecuenteMo.text != "" )
+				sacaNM.enabled=true;
+		}
+	]]>	
+	  
+	</mx:Script>
+	<mx:StringValidator id="valObservacion" requiredFieldError="Ingrese el comentario de la OOSS" source="{txtComentario}" property="text" />
+		
+	<mx:Panel width="961" height="462" layout="absolute" title="&gt;&gt; Cambio de Plan Individual" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="-4">
+	<mx:backgroundImage>@Embed(source='../../recursosInterfaz/imagenes/otros/fondo.jpg')</mx:backgroundImage>
+		
+		<mx:Button label="Ejecutar" click="EjecutaAnulaSiniestro()" x="379.5" y="370" themeColor="#CBDEEB" color="#000000" fontSize="10"/>
+		<mx:Button label="Cerrar" width="84" click="cerrar()" x="477.5" y="370" themeColor="#CBDEEB" color="#000000" fontSize="10"/>
+		<ns1:DatosEncabezadoOOSS x="13.85" y="1.4210855E-14" id="DatosEncabezadoOOSS"  fontSize="10"/>
+		<mx:Label text="Plan actual" styleName="TituloCampo" width="69.65" x="77.25" y="150" height="18" fontSize="10" color="#000000"/>
+		<mx:TextInput styleName="TextoCampo" width="488.73334" id="codPlanActual" fontSize="10" x="268.25" y="150" editable="false" height="22" color="#000000"/>
+		<mx:Label text="Nuevo Plan " styleName="TituloCampo" width="88.65" x="77.25" y="180" height="18" fontSize="10" color="#000000"/>
+		<mx:ComboBox width="488.75" id="codPlanTarifario"  change="fnMuestra()" color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" x="268.25" y="180"></mx:ComboBox>
+		<mx:Label text="Cargo Básico" styleName="TituloCampo" width="102" x="77.25" y="210" height="18" fontSize="10" color="#000000"/>
+		<mx:TextInput styleName="TextoCampo" width="279" id="desCargoBasico" x="268.25" y="210" editable="false" fontSize="10" color="#000000"/>
+		<mx:Label styleName="TextoCampo" width="187.4" id="codCargoBasico" text="Cód.:" x="569.6" y="210" height="18" fontSize="10" color="#000000"/>
+		<mx:Label text="Valor Cargo Básico" styleName="TituloCampo" width="114" x="77.25" y="240" height="18" fontSize="10" color="#000000"/>
+		<mx:TextInput styleName="TextoCampo" width="363" id="mtoCargoBasico" fontSize="10" x="268.25" y="240" editable="false" color="#000000"/>
+		<mx:Label text="Numero Frecuente Fijo" styleName="TituloCampo" width="134" x="77.25" y="270" height="18" fontSize="10" color="#000000"/>
+		<mx:TextInput width="160" id="numFrecuenteFi" editable="true" enabled="true" maxChars="20" displayAsPassword="false" x="268.25" y="270" fontSize="10" color="#000000"/>
+		<mx:Button label="Agregar"  click="agregarNF()" width="92" height="23" fontSize="10" x="447.25" y="270" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableAddOn.gif')</mx:icon>
+				</mx:Button>
+		<mx:Button click="deleteItemFjo()" label="Sacar" width="92" height="23" fontSize="10" enabled="false" id="sacaNF" x="547.25" y="270" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableDeleteOn.gif')</mx:icon>
+				</mx:Button>
+		<mx:ComboBox width="177" id="canNumFrecuenteFi"   close="pasaNF()" color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" x="659.25" y="270"></mx:ComboBox>
+		<mx:Label text="Numero Frecuente Móvil" styleName="TituloCampo" width="142" x="77.25" y="300" fontSize="10" color="#000000"/>
+		<mx:TextInput width="160" id="numFrecuenteMo" editable="true" enabled="true" maxChars="20" displayAsPassword="false" x="268.25" y="300" fontSize="10" color="#000000"/>
+		<mx:Button label="Agregar"  click="agregarNM()" width="92" height="23" fontSize="10" x="447.25" y="300" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableAddOn.gif')</mx:icon>
+				</mx:Button>
+		<mx:Button click="deleteItemMovil()" label="Sacar" width="92" height="23" fontSize="10" enabled="false" id="sacaNM" x="547.25" y="300" color="#000000">
+					<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkTableDeleteOn.gif')</mx:icon>
+				</mx:Button>
+		<mx:ComboBox width="179" id="canNumFrecuenteMo"   close="pasaNM()" color="#000000" fontSize="10" fontWeight="bold" themeColor="#CBDEEB" x="659.25" y="300"></mx:ComboBox>
+		<mx:Label text="Comentario" styleName="TituloCampo" width="76" x="77.25" y="330" height="18" fontSize="10" color="#000000"/>
+		<mx:TextInput width="570" id="txtComentario" editable="true" enabled="true" maxChars="256" displayAsPassword="false" fontSize="10" x="268.25" y="330" color="#000000"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="148.25" y="330" width="31" color="#FF0000"/>
+		<mx:Label text="(*)" styleName="TituloCampo" x="148.25" y="180" width="31" color="#FF0000"/>
+		
+	</mx:Panel>
+	
+</mx:Module>

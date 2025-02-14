@@ -1,0 +1,41 @@
+package com.tmmas.cl.scl.pv.customerorder.commonapp.exception;
+import com.tmmas.cl.framework.exception.GeneralException;
+
+public class BillingProductChargeException extends GeneralException {
+	private static final long serialVersionUID = 1L;
+
+	public BillingProductChargeException() {
+		super();
+		// TODO Auto-generated constructor stub
+	}
+
+	public BillingProductChargeException(String codigo, long codigoEvento, String descripcionEvento) {
+		super(codigo, codigoEvento, descripcionEvento);
+		// TODO Auto-generated constructor stub
+	}
+
+	public BillingProductChargeException(String message, String codigo, long codigoEvento, String descripcionEvento) {
+		super(message, codigo, codigoEvento, descripcionEvento);
+		// TODO Auto-generated constructor stub
+	}
+
+	public BillingProductChargeException(String message, Throwable cause, String codigo, long codigoEvento, String descripcionEvento) {
+		super(message, cause, codigo, codigoEvento, descripcionEvento);
+		// TODO Auto-generated constructor stub
+	}
+
+	public BillingProductChargeException(String message, Throwable cause) {
+		super(message, cause);
+		// TODO Auto-generated constructor stub
+	}
+
+	public BillingProductChargeException(String message) {
+		super(message);
+		// TODO Auto-generated constructor stub
+	}
+
+	public BillingProductChargeException(Throwable cause) {
+		super(cause);
+		// TODO Auto-generated constructor stub
+	}
+}

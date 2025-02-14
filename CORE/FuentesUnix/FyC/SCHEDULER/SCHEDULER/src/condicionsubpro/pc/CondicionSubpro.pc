@@ -1,0 +1,320 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <sqlcpr.h>
+#include <string.h>
+#include "scheduler.h"
+
+#define MSGSZ         500
+#define LOOP          1
+#define SqlNotFound   1403
+#define blanco        32
+#define KEYCOLASCH    000002
+#define SqlOk         0
+#define SqlNull       1405
+#define  LOOP		  1
+
+exec sql include sqlca;
+exec oracle option (MAXOPENCURSORS=60);  
+ 
+/*===============================================================*/
+/* Variables de la base de datos                                 */
+/*===============================================================*/
+char szMsg[30];
+EXEC SQL BEGIN DECLARE SECTION; 
+char cod_proc_start[11];			 exec sql var cod_proc_start   is string(11); 
+char cod_subpro_start[11];			 exec sql var cod_subpro_start is string(11); 
+char cod_estado_start[11];			 exec sql var cod_estado_start is string(11); 
+char nom_proc_start[30];             exec sql var nom_proc_start is string(30); 
+char cod_proc_act[10];				 exec sql var cod_proc_act is string(10); 
+char cod_subpro_act[10];			 exec sql var cod_subpro_act is string(10); 
+char cod_central_act[5];             exec sql var cod_central_act is string(5); 
+char tip_ejecucion_act[10];          exec sql var tip_ejecucion_act is string(10); 
+char flg_batch_act[02];			     exec sql var flg_batch_act is string(2); 
+long int num_job_start;	
+long int num_job_act;
+long int nro_pid;
+long int pcuenta;
+char uid[20];						 exec sql var uid is string(20);  
+char pwd[20];						 exec sql var pwd is string(20);  
+
+EXEC SQL END DECLARE SECTION;  
+
+
+/************************************************************/
+/* Funcion   : fnMsgError                                   */
+/* Objetivo  : manejador de errores sql                     */
+/************************************************************/ 
+void fnMsgError(char *szMsg, int iErrNum, int bRollCom)
+{
+	if (iErrNum != SqlNull) 
+	{
+		if ((iErrNum != SqlOk) && (iErrNum != SqlNotFound))
+		{
+			printf("ERROR SQL : %d EN %s \n", iErrNum, szMsg);
+			if (bRollCom) exec sql rollback work;
+			exit(1);
+		}
+	}
+}
+
+
+void trim(char *szpalabra,int iini,int ilargo,char *szvuelta)
+{
+    int ii,icr;
+    szpalabra += iini - 1;
+    for (ii=iini;ii<=(iini + ilargo -1);ii++)
+    {
+        if (*szpalabra != blanco)
+           {
+           *szvuelta = *szpalabra;
+           szvuelta++;
+           }
+        szpalabra++;
+    }
+   *szvuelta = 0;
+}
+
+
+void main(int argc,char **argv)
+{
+	char estado[6];
+	if (argc<5) 
+	{
+		printf("PROGRAMA      :  CondicionSubpro \n");
+		printf("VERSION       :  1.1\n");
+		printf("FECHA VERSION :  21-05-2004\n");
+		printf("Uso: \n");
+		printf("    Proceso, subproceso, N.job, usuario bd, password bd \n");
+		exit(-1);
+    }
+    
+	strcpy(cod_proc_start   ,argv[1]);
+	strcpy(cod_subpro_start ,argv[2]);
+	num_job_start  =    atoi(argv[3]);
+	strcpy(uid              ,argv[4]);
+    strcpy(pwd              ,argv[5]);
+
+    EXEC SQL CONNECT :uid IDENTIFIED BY :pwd;  
+	fnMsgError("Connect", sqlca.sqlcode, 0);
+
+	sprintf(nom_proc_start, "Proceso (%s - %s) ",cod_proc_start, cod_subpro_start);
+
+	sqlca.sqlcode = 0;
+
+	/*Inicializamos Variables */
+	while (LOOP)
+	{		 
+	/* Revisin si el proceso esta en pasua */
+		 sqlca.sqlcode = 0;
+		EXEC SQL 
+		 SELECT cod_estado
+		 INTO :cod_estado_start
+		 FROM sch_profile		
+		 WHERE  cod_proc   = :cod_proc_start   
+		 AND	cod_subpro = :cod_subpro_start 
+		 AND	num_jobs   = :num_job_start	   
+		 AND	SUBSTR(cod_estado,1,4) = 'PAUS';  
+		fnMsgError("Consulta todos los pause", sqlca.sqlcode, 0);
+
+		if (sqlca.sqlcode != SqlNotFound)
+		{
+			if (strcmp(cod_estado_start,"PAUSP") == 0)
+			{
+				sqlca.sqlcode = 0;
+				EXEC SQL
+				UPDATE sch_profile
+				SET    cod_estado = 'PAUSX'
+				WHERE  cod_proc   = :cod_proc_start		AND
+				       num_jobs   = :num_job_start		AND 
+				       cod_estado = 'PAUSP';  
+				
+				fnMsgError("UPDATE PAUSX por PAUSP", sqlca.sqlcode, 0);
+				EXEC sql commit;
+     			 	fnMsgError("COMMIT UPDATE PAUSX por PAUSP", sqlca.sqlcode, 0);/*ETS*/
+			}
+			/*printf("Estoy en PAUSE \n");*/
+			sleep(1);			
+			continue;	
+		}
+
+		/* Revisin si el proceso esta en STOP                                     */
+		 pcuenta = 0;
+		 sqlca.sqlcode = 0;
+		 EXEC SQL 
+			 SELECT count(cod_proc)
+			 INTO :pcuenta
+			 FROM sch_profile		
+			 where  cod_proc   = :cod_proc_start	
+			 AND	cod_subpro = :cod_subpro_start	
+			 AND	num_jobs   = :num_job_start		
+			 AND	cod_estado = 'STOP';
+		 fnMsgError("Consulta stop", sqlca.sqlcode, 0);
+		 if (pcuenta) exit(1);	
+
+		/* Revisin si no tiene procesos con mßs prioridad corriendo.			   */
+		 pcuenta = 0;
+		 sqlca.sqlcode = 0;
+		 EXEC SQL 
+			 SELECT count(e.cod_proc)
+			 INTO :pcuenta
+			 FROM   sch_condicion   d, sch_profile	e
+			 WHERE  d.cod_proc	    = :cod_proc_start	
+			 AND	d.cod_subpro	= :cod_subpro_start	
+			 AND	e.cod_proc		= d.cod_procrest	
+			 AND	e.cod_subpro	= d.cod_sprocres	
+			 AND	d.flg_restric   = 'R'               
+			 AND	d.flg_condact   = 'A'               
+			 AND    d.fec_term      > SYSDATE           
+			 AND	(e.cod_estado	= 'PLAY' OR e.cod_estado	= 'ENCOL'); 
+		 fnMsgError("Consulta prioridad", sqlca.sqlcode, 0);
+		 if (pcuenta) {
+/*		 	printf("Este proceso me detiene [%s] [%s] \n",cod_proc_start, cod_subpro_start);*/
+		 	continue;
+		 }
+		 break;
+	}
+	 /*Recuperar y Detener los subprogramas con restriccin.			    */
+	 sqlca.sqlcode = 0;
+	 EXEC SQL declare CurProcStop cursor for
+	 SELECT e.cod_proc, e.cod_subpro, e.num_jobs, e.cod_central, e.tip_ejecucion, e.flg_batch  
+	 FROM   sch_condicion   d, sch_profile	e
+	 WHERE  d.cod_proc    = :cod_proc_start	
+	 AND	d.cod_subpro  = :cod_subpro_start	
+	 AND	e.cod_proc    = d.cod_procrest	
+	 AND	e.cod_subpro  = d.cod_sprocres	
+	 AND	d.flg_restric = 'I'               
+	 AND    d.fec_term    > SYSDATE           
+	 AND	(e.cod_estado   = 'PLAY' or e.cod_estado = 'ENCOL') 
+	 AND	d.flg_condact	= 'A'; 
+
+	 fnMsgError("Consulta restriccion", sqlca.sqlcode, 0);
+	 exec sql open CurProcStop;  
+	 exec sql fetch CurProcStop into :cod_proc_act, :cod_subpro_act, :num_job_act, :cod_central_act, :tip_ejecucion_act, :flg_batch_act;  
+	 fnMsgError("Fetch restriccion", sqlca.sqlcode, 0);
+	 /*Para cada SubProceso a ejecutar...										   */
+
+	 while (sqlca.sqlcode != SqlNotFound)
+	 {
+		 trim(cod_proc_act,1,strlen(cod_proc_act),cod_proc_act);
+		 trim(cod_subpro_act,1,strlen(cod_subpro_act),cod_subpro_act);
+		 trim(cod_central_act,1,strlen(cod_central_act),cod_central_act);
+		 trim(flg_batch_act,1,strlen(flg_batch_act),flg_batch_act);
+
+		 if (strcmp(flg_batch_act,"B") == 0 )
+			{
+				strcpy(estado,"PAUSP");
+			/*--------------------------------------------------------------------------------*/
+			/*                           Envia la se±al a la tarea                            */
+			/*--------------------------------------------------------------------------------*/
+				EXEC SQL SELECT b.nro_pid
+					INTO :nro_pid
+					FROM sch_detalle_proc a, sch_jobs b
+					WHERE a.cod_proc      = :cod_proc_act   AND
+						a.cod_subpro  = :cod_subpro_act AND
+						a.ind_colas   <> 'N'            AND	
+						b.fec_iniexec IN (SELECT MAX(fec_iniexec) 
+					FROM  sch_jobs
+					WHERE   cod_proc    = :cod_proc_act   AND
+						cod_subpro  = :cod_subpro_act AND
+						num_jobs    = :num_job_act);
+				fnMsgError(szMsg, sqlca.sqlcode, 0);
+				if (nro_pid > 0 && sqlca.sqlcode != SqlNotFound)
+				{
+					sigsend (P_PID,nro_pid,SIGUSR1);
+					/*printf("Envi senal a PID batch [%ld] \n", nro_pid);*/
+				}
+			}
+			/*--------------------------------------------------------------------------------*/
+		 else
+			{
+				sigsend (P_PID,num_job_act,SIGUSR1);
+				/*printf("Envi senal a PID batch [%ld] \n", num_job_act);*/
+				strcpy(estado,"PAUSX");
+			}
+
+
+
+		 EXEC SQL
+		 UPDATE sch_profile
+		 SET    cod_estado  = :estado,
+			motivo      = 'Condiciones de ejecucion',
+			responsable = :nom_proc_start
+		 WHERE  cod_proc    = :cod_proc_act   
+		 and	cod_subpro  = :cod_subpro_act 
+		 and	cod_central = :cod_central_act;
+		 
+		 fnMsgError("UPDATE RETSRICTIVOS", sqlca.sqlcode, 0);
+ /*--------------------------------------------------------------------------------*/
+ /* Actualizar el HPROFILE del Proceso restrictivo con la pausa dada               */
+ /*--------------------------------------------------------------------------------*/
+		 EXEC SQL
+		 INSERT INTO sch_hprofile 
+			 (COD_PROC, COD_SUBPRO, COD_CENTRAL, NUM_JOBS, FECHA, 
+			  COD_ESTADO, RESPONSABLE, MOTIVO, TIP_EJECUCION) 
+			 VALUES 
+			 (:cod_proc_act, :cod_subpro_act, :cod_central_act, :num_job_act, to_char(sysdate, 'YYYYMMDDHH24MISS'), 
+			  :estado, :nom_proc_start, 'Condiciones de ejecucion', :tip_ejecucion_act); 
+
+		 fnMsgError("INSERT HPROFILE", sqlca.sqlcode, 0);
+		 EXEC SQL commit;
+		 fnMsgError("COMMIT INSERT HPROFILE", sqlca.sqlcode, 0);/*ETS*/
+
+         /*Buscamos el siguiente registro */
+		 EXEC SQL fetch CurProcStop into :cod_proc_act, :cod_subpro_act, :num_job_act, :cod_central_act, :tip_ejecucion_act;
+		 fnMsgError("Fetch restriccion", sqlca.sqlcode, 0);
+	 } /* fin del While del cursor CurProcStop */
+	 EXEC SQL close CurProcStop; 
+	 fnMsgError("Close CurProcStop", sqlca.sqlcode, 0); /*ETS*/
+
+/* Revisa si todos los procesos detenidos relamente lo estan */
+	while (LOOP)
+	{
+		 pcuenta = 0;
+		 sqlca.sqlcode = 0;
+		 EXEC SQL
+		 select count(e.cod_proc)
+		 INTO :pcuenta
+		 from   sch_condicion   d,
+				sch_profile		e
+		 where  d.cod_proc       = :cod_proc_start	 and
+				d.cod_subpro	 = :cod_subpro_start and
+				e.cod_proc		 = d.cod_procrest    and
+				e.cod_subpro	 = d.cod_sprocres    and
+		        d.fec_term       > SYSDATE           and
+				d.flg_restric    = 'I'               and
+				e.cod_estado     = 'PAUSP'           and
+				d.flg_condact	 = 'A';
+		 fnMsgError("ESTAN EN PAUSP", sqlca.sqlcode, 0);
+		 if (pcuenta) {
+		 	/*printf("No esta detenido el proceso [%s] [%s] \n",cod_proc_start, cod_subpro_start);*/
+			sleep(1);
+		 	continue;
+		 }
+		 break;
+	}
+	exit(0);
+}
+
+/******************************************************************************************/
+/** Informacin de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisin                                            : */
+/**  %PR% */
+/** Autor de la Revisin                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisin ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creacin de la Revisin                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/

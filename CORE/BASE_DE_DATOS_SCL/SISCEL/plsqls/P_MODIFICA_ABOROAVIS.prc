@@ -1,0 +1,69 @@
+CREATE OR REPLACE PROCEDURE        P_MODIFICA_ABOROAVIS
+(
+  VP_ESTADIA IN NUMBER ,
+  VP_IMPLIMCONS IN NUMBER ,
+  VP_FECALTA IN DATE ,
+  VP_FECBAJA IN DATE ,
+  VP_CELUORIG IN NUMBER ,
+  VP_SERIE IN VARCHAR2 ,
+  VP_CELDA IN VARCHAR2 ,
+  VP_MOVALTA IN NUMBER ,
+  VP_MOVBAJA IN NUMBER ,
+  VP_PROC IN OUT VARCHAR2 ,
+  VP_TABLA IN OUT VARCHAR2 ,
+  VP_ACT IN OUT VARCHAR2 ,
+  VP_SQLCODE IN OUT VARCHAR2 ,
+  VP_SQLERRM IN OUT VARCHAR2 ,
+  VP_ERROR IN OUT VARCHAR2 )
+IS
+--
+-- Procedimiento que actualiza las tablas de interfase con tarificacion
+-- de abonados roaming de la compania con nuevos valores
+--
+--            Los posibles retornos del procedimiento son :
+--                - '0' Actualizaciones realizadas correctamente
+--                - '4' Error en el proceso
+--
+   V_ALM GA_INTAROAVIS.COD_ALM%TYPE;
+   V_FECBAJA VARCHAR2(20);
+BEGIN
+   VP_PROC := 'P_MODIFICA_ABOROAVIS';
+   P_RECUPERA_ALM(VP_CELDA,V_ALM,VP_PROC,VP_TABLA,VP_ACT,VP_SQLCODE,VP_SQLERRM,VP_ERROR);
+   IF VP_ERROR = '0' THEN
+      VP_PROC := 'P_MODIFICA_ABOROAVIS';
+      VP_TABLA := 'GA_INTAROAVIS';
+      VP_ACT := 'U';
+      UPDATE GA_INTAROAVIS
+         SET FEC_DESDE = VP_FECALTA,
+             FEC_HASTA = VP_FECBAJA,
+             IMP_LIMCONSUMO = VP_IMPLIMCONS,
+             NUM_CELULARORIG = VP_CELUORIG,
+             NUM_SERIE = VP_SERIE,
+             COD_CELDA = VP_CELDA,
+             COD_ALM = V_ALM
+         WHERE NUM_ESTADIA = VP_ESTADIA;
+      VP_TABLA := 'GA_INTAROAVIS';
+      VP_ACT := 'U';
+      UPDATE GA_INFACROAVIS
+         SET FEC_ALTA = VP_FECALTA,
+             FEC_BAJA = VP_FECBAJA,
+             NUM_CELULARORIG = VP_CELUORIG
+        WHERE NUM_ESTADIA = VP_ESTADIA;
+      VP_TABLA := 'ICC_MOVIMIENTO';
+      VP_ACT := 'U';
+      V_FECBAJA := TO_CHAR(VP_FECBAJA,'DD-MON-YYYY')||' 23:59:59';
+      UPDATE ICC_MOVIMIENTO
+         SET FEC_INGRESO = VP_FECALTA
+       WHERE NUM_MOVIMIENTO = VP_MOVALTA;
+      UPDATE ICC_MOVIMIENTO
+         SET FEC_INGRESO = TO_DATE(V_FECBAJA, 'DD-MON-YYYY HH24:MI:SS')
+       WHERE NUM_MOVIMIENTO = VP_MOVBAJA;
+   END IF;
+EXCEPTION
+   WHEN OTHERS THEN
+      VP_SQLCODE := SQLCODE;
+      VP_SQLERRM := SQLERRM;
+      VP_ERROR := '4';
+END;
+/
+SHOW ERRORS

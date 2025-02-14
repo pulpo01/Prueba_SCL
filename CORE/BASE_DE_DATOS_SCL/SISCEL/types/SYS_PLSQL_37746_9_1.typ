@@ -1,0 +1,3 @@
+CREATE OR REPLACE type          SYS_PLSQL_37746_9_1 as table of VARCHAR2(10);
+/
+SHOW ERRORS

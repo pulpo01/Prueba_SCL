@@ -1,0 +1,31 @@
+CREATE OR REPLACE TRIGGER PV_AFUP_PVMOV_TG
+AFTER UPDATE OF COD_ESTADO ON PV_MOVIMIENTOS
+REFERENCING NEW AS NEW
+FOR EACH ROW
+/*
+<NOMBRE>	: PV_AFUP_ORSERV_TG </NOMBRE>
+<FECHACREA>	: 05/04/2004 <FECHACREA/>
+<AUTOR >    : Patricio Gallegos C. </AUTOR >
+<DESCRIPCION> : Para modificar estado del abonado  </DESCRIPCION>
+*/
+
+DECLARE
+
+	   TN_CodEstEjec		ICC_INTERFAZ_CONSULTAS_TO.cod_estado%TYPE;
+	   TN_abonado	  GA_ABOCEL.num_abonado%type;
+	   SN_rent		  number(1):=0;
+BEGIN
+
+	 TN_CodEstEjec := to_number(GE_FN_DEVVALPARAM('GA',1,'COD_EST_TRX_EJEC'));
+
+	 SELECT num_abonado into TN_abonado FROM PV_CAMCOM WHERE num_os=:NEW.num_os;
+
+	 IF PV_SEQTRXPLATAF_FN(NULL,TN_abonado) AND :NEW.cod_estado=TN_CodEstEjec THEN
+	 	P_MODIFICA_ESTADOABO(1,TN_abonado,NULL,SN_rent,SYSDATE,0);
+	 END IF;
+EXCEPTION
+   WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR (-20251,SQLERRM);
+END;
+/
+SHOW ERRORS

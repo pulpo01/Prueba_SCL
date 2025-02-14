@@ -1,0 +1,720 @@
+/*******************************************************************************
+ Fichero    :  errores.c
+ Descripcion:  Funcion de control de errores.
+
+ Fecha      :  15-02-97
+ Autor      :  Javier Garcia Paredes
+*******************************************************************************/
+
+#define _ERRORES_PC_
+
+#include <errores.h>
+
+EXEC SQL INCLUDE sqlca;
+
+/* -------------------------------------------------------------------------- */
+/*   bInsertaAnomProceso (ANOMPROCESO*)                                       */
+/*      Valores Retorno: FALSE - Error                                        */
+/*                       TRUE  - Ningun Error                                 */
+/* -------------------------------------------------------------------------- */
+BOOL bInsertaAnomProceso (ANOMPROCESO* pAnomProc)
+{
+   EXEC SQL BEGIN DECLARE SECTION;
+   static int   ihCodConcepto      ;
+   static short shCodProducto      ;
+   static long  lhNumAbonado       ;
+   static long  lhNumProceso       ;
+   static long  lhCodCliente       ;
+   static long  lhCodCiclFact      ;
+   static int   ihCodAnomalia      ;
+   static char  szhDesProceso  [41]; EXEC SQL VAR szhDesProceso  IS STRING (41);
+   static char  szhObsAnomalia [101]; EXEC SQL VAR szhObsAnomalia IS STRING (101);
+   static int   ihFlgError;
+   static char  szhDesError    [251]; EXEC SQL VAR szhDesError IS STRING (251);
+   EXEC SQL END DECLARE SECTION;
+
+   ihCodConcepto  = pAnomProc->iCodConcepto;
+   lhNumProceso   = pAnomProc->lNumProceso ;
+   lhCodCliente   = pAnomProc->lCodCliente ;
+   lhCodCiclFact  = pAnomProc->lCodCiclFact;
+   lhNumAbonado   = pAnomProc->lNumAbonado ;
+   shCodProducto  = pAnomProc->iCodProducto;
+   ihCodAnomalia  = pAnomProc->iCodAnomalia;
+
+   strncpy (szhDesProceso,pAnomProc->szDesProceso,sizeof (szhDesProceso)-1);
+   szhDesProceso [strlen (szhDesProceso)] = '\0';
+
+   strncpy (szhObsAnomalia,pAnomProc->szObsAnomalia,sizeof(szhObsAnomalia)-1);
+   szhObsAnomalia [strlen (szhObsAnomalia)] = '\0';
+
+   lhNumProceso   = stStatus.IdPro;
+   lhCodCliente   = stStatus.lCodCliActual;
+
+   vDTrazasLog ("bInsertaAnomProceso","\n\t*** Registro insertado en FA_ANOPROCESO ***"
+               "\n\tNumero de Proceso.............. [%ld]"
+               "\n\tCodigo de Cliente.............. [%d] "
+               "\n\tCodigo de Concepto............. [%d] "
+               "\n\tCodigo de Producto............. [%d] "
+               "\n\tCodigo de Ciclo Facturacion.... [%ld]"
+               "\n\tDescripcion del Proceso........ [%s] "
+               "\n\tObservaciones Anomalia......... [%s] "
+               "\n\tNumero de Abonado.............. [%ld]"
+               "\n\tCodigo de Anomalia............. [%d] "
+               ,LOG04,lhNumProceso
+               ,lhCodCliente        ,ihCodConcepto
+               ,shCodProducto       ,lhCodCiclFact
+               ,szhDesProceso       ,szhObsAnomalia
+               ,lhNumAbonado        ,ihCodAnomalia);
+
+    EXEC SQL EXECUTE
+        DECLARE
+            LS_regAnoProceso    fa_anoproceso%ROWTYPE;
+        BEGIN
+            LS_regAnoProceso.num_proceso  := :lhNumProceso;
+            LS_regAnoProceso.cod_cliente  := NVL(:lhCodCliente,-1);
+            LS_regAnoProceso.cod_concepto := :ihCodConcepto;
+            LS_regAnoProceso.cod_producto := :shCodProducto;
+            LS_regAnoProceso.cod_ciclfact := :lhCodCiclFact;
+            LS_regAnoProceso.num_abonado  := :lhNumAbonado;
+            LS_regAnoProceso.des_proceso  := NVL(:szhDesProceso, 'MAIN');
+            LS_regAnoProceso.cod_anomalia := :ihCodAnomalia;
+            LS_regAnoProceso.obs_anomalia := :szhObsAnomalia;
+            FA_GESTION_ERRORES_PG.Fa_InsertaAnomalia_Pr(LS_regAnoProceso);
+        EXCEPTION
+            WHEN OTHERS THEN
+                :ihFlgError  := 1;
+                :szhDesError := SUBSTR(SQLERRM, 1, 100);
+        END;
+    END-EXEC;
+
+    if (ihFlgError == 1)
+    {
+        szhDesError [strlen (szhDesError)] = '\0';
+        vDTrazasError ("bInsertaAnomProceso",szhDesError,LOG01);
+        vDTrazasLog   ("bInsertaAnomProceso",szhDesError,LOG01);
+    }
+    return (ihFlgError != 0)?FALSE:TRUE;
+}/************************** Final bInsertaAnoProceso ************************/
+
+/* ----------------------------------------------------------------------------------- */
+/* iDError (int,...)                                                                   */
+/* Parametros: pszExeName      Nombre del programa que llama a vDTrazasLog             */
+/*             iCode          Codigo de Error                                          */
+/*             fnInsertAnom   Puntero a funcion de Insertar anomalias                  */
+/*             ...            Parametros variables                                     */
+/* Si la tabla de anomalias (FA_ANOMALIAS) no estuviera en memoria se                  */
+/* accede directamente a la tabla.                                                     */
+/* Modificación :                                                                      */
+/*                 Proyecto    : Optimización del Facturador                           */
+/*                 Fecha       : 22-12-2005                                            */
+/*                 Autor       : Fabián Aedo R.                                        */
+/*                 Descripción :                                                       */
+/*                               Se incorpora lógica a la IdError que permitirá :      */
+/*                                   - Manejar propagación de error                    */
+/*                                   - Una tasa mínima de Errores                      */
+/*                                   - Una cantidad mínima de errores consecutivos     */
+/* ----------------------------------------------------------------------------------- */
+int iDError(char* pszExeName,int iCode,void(*fnInsertAnom)(void),...)
+{
+ int        iSqlCode = SQLCODE    ;
+ char       szMsgError[BUFSIZ*3]= "";
+ ANOMALIAS  stAnomalia       ;
+ va_list    ap;
+
+    memset (&stAnomalia,0,sizeof(ANOMALIAS));
+
+    if (!bFindAnomalias (iCode,&stAnomalia) )
+         return FALSE;
+
+    SQLCODE = iSqlCode       ;
+
+    va_start(ap,fnInsertAnom);
+    vsnprintf(szMsgError,BUFSIZ*3,stAnomalia.szDesAnomalia,ap);
+    va_end  (ap);
+
+    stAnomProceso.lCodCliente = stStatus.lCodCliActual;
+    stAnomProceso.iCodAnomalia = iCode                                      ;
+
+    strncpy (stAnomProceso.szObsAnomalia,szMsgError, sizeof(stAnomProceso.szObsAnomalia)-1)                         ;
+    stAnomProceso.szObsAnomalia [strlen(stAnomProceso.szObsAnomalia)] = '\0';
+    /* Graba en la traza el error recibido */
+
+	vDTrazasLog(pszExeName,"\n\t*** Error Facturacion Cliente [%ld]***\n\t***[%s]***\n",LOG03, stAnomProceso.lCodCliente,stAnomProceso.szObsAnomalia);
+	
+    bInsertaAnomProceso(&stAnomProceso);
+    if ( stStatus.lCodCliErr != stStatus.lCodCliActual )
+    {
+        /* Se cuenta errores concecutivos */
+        stStatus.lConCliCons++;
+        stStatus.lCodCliErr = stStatus.lCodCliActual;
+        stStatus.lNumRegErr++;
+
+        switch (stAnomalia.iIndGravedad)
+        {
+          case GRV0: /* Error Grave (Oracle): Finalizar */
+                stStatus.ExitCode = -1  ;
+                stStatus.ExitApp  = TRUE;  /* TRUE!=0 */
+                vDTrazasError (pszExeName,szMsgError,LOG00);
+                vDTrazasLog   (pszExeName,szMsgError,LOG00);
+                break;
+          case GRV1:/* Error Leve, Incidencia y continuar con siguiente registro.*/
+                stStatus.SkipCode = iCode;
+                stStatus.SkipRec  = TRUE ; /* TRUE!=0 */
+                vDTrazasError (pszExeName,szMsgError,LOG01);
+                vDTrazasLog   (pszExeName,szMsgError,LOG01);
+                break;
+          default:
+                vDTrazasError (pszExeName,"Error, Indicador de Gravedad Desconocido.",LOG01);
+                vDTrazasLog   (pszExeName,"Error, Indicador de Gravedad Desconocido.",LOG01);
+                return TRUE;
+        }
+
+        /*Se evalua Mínimo de clientes para poder realizar evaluación*/
+        if (stStatus.lNumReg >= stStatus.lCantCliMinEval && stStatus.lNumReg > 0)
+        {
+            /*Se re-calcula Tasa de Exito Observada*/
+            stStatus.hTasaObservada =  (short )( ((stStatus.lNumReg - stStatus.lNumRegErr)*100) / stStatus.lNumReg );
+            if ( stStatus.hTasaObservada <= stStatus.hTasaExitoMinReq )
+            {
+                /*error tasa no complida*/
+                stStatus.ExitCode = -1  ;
+                stStatus.ExitApp  = TRUE;  /* TRUE!=0 */
+                vDTrazasError (pszExeName,"\n\t*** Error Grave ****"
+                                          "\n\tEl proceso no cumple con la tasa de EXITO mínima requerida."
+                                          "\n\tRegistros Processados     : [%ld]"
+                                          "\n\tRegistros con Error       : [%ld]"
+                                          "\n\tTasa de Exito Observada   : [%d] "
+                                          "\n\tTasa de Exito Requerida   : [%d] ",
+                                          stStatus.lNumReg,
+                                          stStatus.lNumRegErr,
+                                          stStatus.hTasaObservada,
+                                          stStatus.hTasaExitoMinReq,
+                                          LOG00);
+
+                vDTrazasLog  (pszExeName,"\n\t*** Error Grave ****"
+                                          "\n\tEl proceso no cumple con la tasa de EXITO mínima requerida."
+                                          "\n\tRegistros Processados     : [%ld]"
+                                          "\n\tRegistros con Error       : [%ld]"
+                                          "\n\tTasa de Exito Observada   : [%d] "
+                                          "\n\tTasa de Exito Requerida   : [%d] ",
+                                          stStatus.lNumReg,
+                                          stStatus.lNumRegErr,
+                                          stStatus.hTasaObservada,
+                                          stStatus.hTasaExitoMinReq,
+                                          LOG00);
+                strcpy(stAnomProceso.szObsAnomalia,"Error Grave. El proceso no cumple con la tasa de EXITO mínima requerida.");
+                stAnomProceso.szObsAnomalia [strlen(stAnomProceso.szObsAnomalia)] = '\0';
+                /* Graba en la traza el error modificado */
+                bInsertaAnomProceso(&stAnomProceso);
+            }
+        }
+        /* se evalua la cantidad de errores consecutivos... */
+        if (stStatus.lConCliCons >= stStatus.lMaxCliConsError)
+        {
+            /*error tasa no complida*/
+            stStatus.ExitCode = -1  ;
+            stStatus.ExitApp  = TRUE;  /* TRUE!=0 */
+
+            vDTrazasLog  (pszExeName,"\n\t*** Error Grave ****"
+                                      "\n\tSe ha detectado una cantidad demasiado grande de errores consecutivos."
+                                      "\n\tRegistros Processados               : [%ld]"
+                                      "\n\tRegistros con Error Consecutivos    : [%ld]"
+                                      "\n\tMáximo de Errores Consecutivos      : [%d] ",
+                                      LOG00,
+                                      stStatus.lNumReg,
+                                      stStatus.lConCliCons,
+                                      stStatus.lMaxCliConsError);
+
+            vDTrazasError (pszExeName,"\n\t*** Error Grave ****"
+                                      "\n\tSe ha detectado una cantidad demasiado grande de errores consecutivos."
+                                      "\n\tRegistros Processados               : [%ld]"
+                                      "\n\tRegistros con Error Consecutivos    : [%ld]"
+                                      "\n\tMáximo de Errores Consecutivos      : [%d] ",
+                                      LOG00,
+                                      stStatus.lNumReg,
+                                      stStatus.lConCliCons,
+                                      stStatus.lMaxCliConsError);
+            strcpy(stAnomProceso.szObsAnomalia,"Error Grave. Se ha detectado una cantidad demasiado grande de errores consecutivos.");
+            stAnomProceso.szObsAnomalia [strlen(stAnomProceso.szObsAnomalia)] = '\0';
+            /* Graba en la traza el error modificado */
+            bInsertaAnomProceso(&stAnomProceso);
+        }
+    }
+    return FALSE;
+}/********************** Final iDError ***************************************/
+
+/* ------------------------------------------------------------------------ */
+/* vDTrazasLog (char*,char*,int,...)                                        */
+/* Parametros: pszExeName      Nombre del programa que llama a vDTrazasLog   */
+/*             szTxt          Texto a incluir el el fichero de log          */
+/*             iNivel         Nivel de log                                  */
+/* ------------------------------------------------------------------------ */
+void vDTrazasLog (char* pszExeName,  char* szTxt, int iNivel,...)
+{
+ char szMsg[BUFSIZ*3]="";
+ va_list ap;
+ int iTrLog = 0;
+
+ 	iTrLog = (stStatus.LogFile == (FILE *)NULL)?0:1;
+
+ 	va_start (ap,szTxt);
+ 	vsnprintf(szMsg,BUFSIZ*3,szTxt,ap);
+ 	va_end(ap);
+
+ if (iNivel <= stStatus.LogNivel)
+ {
+      switch (iNivel)
+      {
+        case LOG00:
+         if (iTrLog)
+                fprintf (stStatus.LogFile,"\n\tError Oracle (%s): %s\n",pszExeName,szMsg);
+             else
+                fprintf (stderr,"Error Oracle (%s): %s\n",pszExeName,szMsg);
+         break;
+    case LOG01:
+         if (iTrLog)
+            fprintf (stStatus.LogFile, "\n\tError (%s): %s\n",pszExeName,szMsg);
+             else
+                fprintf (stderr,"\n\tError (%s): %s\n",pszExeName,szMsg);
+         break;
+    case LOG02:
+         if (iTrLog)
+        fprintf (stStatus.LogFile,"\n\tAviso (%s): %s\n",pszExeName,szMsg);
+             else
+                fprintf (stderr,"Aviso (%s): %s\n",pszExeName,szMsg);
+         break;
+    case LOG03:
+         if (iTrLog)
+                fprintf (stStatus.LogFile,"\n%s",szMsg);
+             else
+                fprintf (stderr,"\n\t%s\n",szMsg);
+         break;
+        default:
+         if (iTrLog)
+        fprintf (stStatus.LogFile,"\n%s",szMsg);
+             else
+                fprintf (stderr,"\n\t%s\n",szMsg);
+         break;
+      }
+    }
+    
+
+/* rao
+ 	if (iNivel <= stStatus.LogNivel)
+ 	{
+      	switch (iNivel)
+      	{
+        	case LOG00:
+                sprintf (szMsg,"\n\tError Oracle (%s): %s\n",pszExeName,szMsg);
+         		break;
+    		case LOG01:
+           		sprintf (szMsg, "\n\tError (%s): %s\n",pszExeName,szMsg);
+         		break;
+    		case LOG02:
+       			sprintf (szMsg, "\n\tAviso (%s): %s\n",pszExeName,szMsg);
+         		break;
+        	default:
+       			sprintf (szMsg,"\n%s",szMsg);
+         		break;
+      	}
+ 		if (iTrLog)
+			fprintf (stStatus.LogFile,"\n%s",szMsg);
+     	else
+        	fprintf (stderr,"\n\t%s\n",szMsg);
+	}
+*/
+
+
+}/************************** Final vDTrazasLog ******************************/
+/* ------------------------------------------------------------------------ */
+/* vDTrazasLog (char*,char*,int,...)                                        */
+/* Parametros: pszExeName      Nombre del programa que llama a vDTrazasLog   */
+/*             szTxt          Texto a incluir el el fichero de log          */
+/*             iNivel         Nivel de log                                  */
+/* ------------------------------------------------------------------------ */
+void vDTrazasLog_old (char* pszExeName,  char* szTxt, int iNivel,...)
+{
+    char szMsg[BUFSIZ*3]="";
+    char buffer_local[BUFSIZ*3]="";
+    va_list ap;
+
+    szMsg[0]='\0';
+    va_start (ap,szTxt);
+    vsnprintf(szMsg,BUFSIZ*3,szTxt,ap);
+    va_end(ap);
+
+    if (iNivel <= stStatus.LogNivel)
+    {
+        switch (iNivel)
+        {
+            case LOG00:
+                sprintf (buffer_local,"\n\tError Oracle (%s): %s",pszExeName,szMsg);
+                break;
+            case LOG01:
+                sprintf (buffer_local, "\n\tError (%s): %s",pszExeName,szMsg);
+                break;
+            case LOG02:
+                sprintf (buffer_local, "\n\tAviso (%s): %s",pszExeName,szMsg);
+                break;
+            default:
+                sprintf (buffer_local,"\n%s",szMsg);
+            break;
+        }
+    }
+    if (!bfnEscribeArchivoLog(stStatus.LogFile, buffer_local ))
+    {
+        iDError(pszExeName, ERR000, vInsertarIncidencia, "\nError en Generación de Registro de Log\n");
+    }
+}/************************** Final vDTrazasLog ******************************/
+
+/****************************************************************************/
+/*                          funcion vDTrazasErr                             */
+/* -Funcion que escribe los mensajes de Error en stStatus.ErrFile           */
+/****************************************************************************/
+void vDTrazasError (char *pszExeName,char *szTxt,int iNivel,...)
+{
+  char szMsg [BUFSIZ*3]="";
+  va_list ap;
+
+  iTrErr = ( stStatus.ErrFile == (FILE *)NULL )?0:1;
+
+  va_start (ap,szTxt);
+  vsnprintf (szMsg,BUFSIZ*3,szTxt,ap);
+  va_end (ap);
+
+  if (iNivel <= stStatus.LogNivel)
+  {
+      switch (iNivel)
+      {
+        case LOG00:
+             if (iTrErr)
+                fprintf (stStatus.ErrFile,"\n\tError Oracle (%s): %s\n",
+                         pszExeName,szMsg);
+             else 
+                fprintf (stderr,"\n\tError Oracle (%s): %s\n",
+                         pszExeName,szMsg);
+             break;
+        case LOG01:
+             if (iTrErr)
+                fprintf (stStatus.ErrFile,
+                         "\n\tError (%s): %s\n",pszExeName,szMsg);
+             else
+                fprintf (stderr,"\n\tError (%s): %s\n",pszExeName,szMsg);
+             break;
+        case LOG02:
+             if (iTrErr)
+                fprintf (stStatus.ErrFile,
+                         "\n\tAviso (%s): %s\n",pszExeName,szMsg);
+             else
+                fprintf (stderr,"\n\tAviso (%s): %s\n",pszExeName,szMsg);
+
+             break;
+        case LOG03:
+             if (iTrErr)
+                fprintf (stStatus.ErrFile,"\n%s",szMsg);
+             else
+                fprintf (stderr,"\n\t%s",szMsg);
+             break;
+        default:
+             if (iTrErr)
+                fprintf (stStatus.ErrFile,"%s\n",szMsg);
+             else
+                fprintf (stderr,"\n\t%s",szMsg);
+             break;
+      }
+  }
+}/************************ Final vDTrazasError ******************************/
+
+
+/* ------------------------------------------------------------------------- */
+/*   bOpenLog (char*)                                                        */
+/*      Abre el fichero de Log                                               */
+/*      Valores de Retorno: FALSE - Error                                    */
+/*                          TRUE  - Ningun error                             */
+/* ------------------------------------------------------------------------- */
+BOOL bOpenLog (char *szFileName)
+{
+     char szComando [1024] = "";
+     char szAux     [1024] = "";
+
+     int  i = strlen (szFileName);
+
+     while (i >= 0)
+     {
+        if (szFileName [i] == '/')
+            break;
+        else
+            i--  ;
+     }
+     strcpy (szAux, szFileName);
+
+     szAux [i+1] = 0;
+
+     sprintf (szComando, "/usr/bin/mkdir -p %s", szAux);
+
+     if (system (szComando))
+     {
+         iDError ("bOpenLog", ERR054, vInsertarIncidencia, szFileName);
+         return  FALSE;
+     }
+     if((stStatus.LogFile=fopen(szFileName,"a"))==(FILE*)NULL)
+         return FALSE;
+     else
+         return TRUE ;
+}/*********************** Final bOpenLog *************************************/
+
+/*****************************************************************************/
+/*                         funcion : bOpenError                              */
+/* -Funcion que abre el fichero de errores                                   */
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+BOOL bOpenError (char *szFileName)
+{
+     char szComando [1024] = "";
+     char szAux     [1024] = "";
+
+     int  i = strlen (szFileName);
+
+     while (i >= 0)
+     {
+            if (szFileName [i] == '/')
+                break;
+            else
+                i--  ;
+     }
+     strcpy (szAux, szFileName);
+
+     szAux [i+1] = 0;
+
+     sprintf (szComando, "/usr/bin/mkdir -p %s", szAux);
+
+     if (system (szComando))
+     {
+         iDError ("bOpenError", ERR054, vInsertarIncidencia, szFileName);
+         return  FALSE;
+     }
+     if ((stStatus.ErrFile = (FILE *)fopen (szFileName,"a") )==(FILE *)NULL)
+          return FALSE;
+     else
+          return TRUE;
+}/********************** Final bOpenError ************************************/
+
+/* ------------------------------------------------------------------------- */
+/*   bCloseLog (void)                                                        */
+/*      Cierra el fichero de Log. Si no ha habido errores lo borra.          */
+/*      Valores de Retorno: FALSE - Error                                    */
+/*                          TRUE  - Ningun error                             */
+/* ------------------------------------------------------------------------- */
+BOOL bCloseLog (void)
+{
+    struct stat stStatLog;
+
+    /* VACIA LO QUE QUEDE DE LOG... */
+    if (!bfnEscribeArchivoLog(stStatus.LogFile, FLUSH))
+    {
+        fprintf(stderr, "\n\tError en FLUSH de Archivo de Log\n");
+        return FALSE;
+    }
+    if(fclose(stStatus.LogFile))
+        return FALSE;
+
+    stat(stStatus.LogName,&stStatLog);
+
+    if(stStatLog.st_size == 0)
+        unlink (stStatus.LogName);
+ return TRUE;
+}/*********************** Final bCloseLog ************************************/
+
+
+/*****************************************************************************/
+/*                          funcion : bCloseError                            */
+/* -Funcion que Cierra el fichero de Errores.Si no ha habido errores lo borra*/
+/* -Valores Retorno :Error->FALSE,!Error->TRUE                               */
+/*****************************************************************************/
+BOOL bCloseError (void)
+{
+  struct stat stStatErr;
+
+  if (fclose(stStatus.ErrFile))
+      return FALSE;
+  stat (stStatus.ErrName,&stStatErr);
+
+  if (stStatErr.st_size == 0)
+      unlink(stStatus.ErrName);
+  return TRUE;
+}/************************ Final bCloseError *********************************/
+/*****************************************************************************/
+/*                       funcion : bFindAnomalias                            */
+/* -Funcion de busqueda de un reg. en pstAnomalias (Fa_Anomalias),con el pa- */
+/*  rametro de entrada iCodAnomalia                                          */
+/* -Valores Retorno : Error->FALSE,!Error->TRUE                              */
+/*****************************************************************************/
+BOOL bFindAnomalias (int iCodAnomalia, ANOMALIAS *pAnomalias)
+{
+  /* ANOMALIAS stkey;
+  ANOMALIAS *pAnom = (ANOMALIAS *)NULL;
+  */
+  BOOL bRes = TRUE;
+
+  EXEC SQL BEGIN DECLARE SECTION;
+  static char szhDesAnomalia [61];EXEC SQL VAR szhDesAnomalia IS STRING(61);
+  static int  ihCodAnomalia     ;
+  static int  ihIndGravedad     ;
+  EXEC SQL END DECLARE SECTION  ;
+/*
+  memset (&stkey,0,sizeof(ANOMALIAS));
+
+  stkey.iCodAnomalia = iCodAnomalia;
+
+  if (NUM_ANOMALIAS > 0)
+  {
+      if ( (pAnom = (ANOMALIAS *)bsearch (&stkey,pstAnomalias,NUM_ANOMALIAS,
+                     sizeof(ANOMALIAS),iCmpAnomalias) )==(ANOMALIAS *)NULL)
+      {
+            iDError (pszExeName,ERR021,vInsertarIncidencia,
+                     "pstAnomalias (Fa_Anomalias)");
+            bRes = FALSE;
+      }
+      else
+      {
+          pAnomalias->iCodAnomalia = pAnom->iCodAnomalia          ;
+          strcpy (pAnomalias->szDesAnomalia, pAnom->szDesAnomalia);
+          pAnomalias->iIndGravedad = pAnom->iIndGravedad          ;
+      }
+  }
+  else
+  {
+*/
+      ihCodAnomalia = iCodAnomalia;
+
+      EXEC SQL SELECT DES_ANOMALIA,
+                      IND_GRAVEDAD
+               INTO   :szhDesAnomalia,
+                      :ihIndGravedad
+               FROM   FA_ANOMALIAS
+               WHERE  COD_ANOMALIA = :ihCodAnomalia;
+      if (SQLCODE)
+      {
+          vDTrazasLog ("bFindAnomalias","Error Oracle :Select=>Fa_Anomalias %s",
+                        LOG01,szfnORAerror ());
+          bRes = FALSE;
+      }
+      else
+      {
+          pAnomalias->iIndGravedad= ihIndGravedad;
+          pAnomalias->iCodAnomalia = iCodAnomalia           ;
+          strcpy (pAnomalias->szDesAnomalia, szhDesAnomalia);
+      }
+
+  return bRes;
+}/*********************** Final bFindAnomalias *******************************/
+
+/*****************************************************************************/
+/*                        funcion : iCmpAnomalias                            */
+/*****************************************************************************/
+int iCmpAnomalias (const void *cad1, const void *cad2)
+{
+  int rc = 0;
+
+  return
+   ( (rc = ((ANOMALIAS *)cad1)->iCodAnomalia-
+           ((ANOMALIAS *)cad2)->iCodAnomalia ) != 0)?rc:0;
+}/*********************** Final iCmpAnomalias ********************************/
+
+/*****************************************************************************/
+/*                       funcion : vPrintAnomalias                           */
+/*****************************************************************************/
+void vPrintAnomalias (ANOMALIAS *pAnom, int iNumAnom)
+{
+  int iInd = 0;
+
+  vDTrazasLog ("vPrintAnomalias","\n\t*** Tabla FA_ANOMALIAS ***\n",LOG06);
+
+  for (iInd=0;iInd<60;iInd++)
+  {
+       vDTrazasLog ("vPrintAnomalias", "\n\t[%d]-CodAnomalia........[%d]"
+						       		   "\n\t[%d]-Des.Anomalia.......[%s]"
+						       		   "\n\t[%d]-Ind.Gravedad.......[%d]"
+       						   		   , LOG06,iInd,pAnom->iCodAnomalia
+       						   		   , iInd,pAnom->szDesAnomalia
+       						   		   , iInd,pAnom->iIndGravedad );
+       pAnom++;
+  }
+}/*********************** Final vPrintAnomalias ******************************/
+
+void vInsertarIncidencia (void)
+{
+}
+/*****************************************************************************/
+/*                       funcion : bfnEscribeArchivoLog                      */
+/*****************************************************************************/
+BOOL bfnEscribeArchivoLog(FILE *Fd_ArchImp, char * buffer_local)
+{
+    int rc = 0;
+    if(strncmp(buffer_local,FLUSH,strlen(FLUSH))==0)
+    {
+        if(strlen(stStatus.szBuffLog)>0)
+        {
+            rc = fprintf(Fd_ArchImp,"%s",stStatus.szBuffLog);
+            if(rc<=0)
+            {
+                fprintf(stderr,"\n*******************FLUSH LOG***************************\n");
+                fprintf(stderr,"\nError en funcion:[bfnEscribeArchivoLog]. RETORNO ERROR.\n");
+                fprintf(stderr,"\n*******************************************************\n");
+                return(FALSE);
+            }
+            memset(stStatus.szBuffLog,0,sizeof(stStatus.szBuffLog));
+            stStatus.szBuffLog[0]='\0';
+        }
+    }
+    else
+    {
+        buffer_local[strlen(buffer_local)]='\0';
+        if((strlen(buffer_local) + strlen(stStatus.szBuffLog)) < MAX_BYTES_BUFFER)
+        {
+            strcat(stStatus.szBuffLog,buffer_local);
+            stStatus.szBuffLog[strlen(stStatus.szBuffLog)]='\0';
+        }
+        else
+        {
+            rc = fprintf(Fd_ArchImp,"%s",stStatus.szBuffLog);
+            if(rc<=0){
+                fprintf(stderr,"\n*******************IMPRIME BUFFER DE LOG***************\n");
+                fprintf(stderr,"\nError en funcion:[bfnEscribeArchivoLog]. RETORNO ERROR.\n");
+                fprintf(stderr,"\n*******************************************************\n");
+                return(FALSE);
+            }
+            memset(stStatus.szBuffLog,0,sizeof(stStatus.szBuffLog));
+            stStatus.szBuffLog[0]='\0';
+            strncpy(stStatus.szBuffLog,buffer_local, strlen(buffer_local));
+            stStatus.szBuffLog[strlen(buffer_local)]=0;
+
+        }
+    }
+    return (TRUE);
+}/****************** Final bfnEscribeArchivoLog *******************/
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

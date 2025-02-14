@@ -1,0 +1,1441 @@
+/*=============================================================================
+   Nombre     : Aplica_pago.pc
+   Programa   : Aplicador de Pagos en Linea
+   Autor      : G.A.C
+   Modificado : 12 - Diciembre - 2002 (TMM)
+  ============================================================================= */
+#include <pasoc.h>
+#include <unistd.h>
+#include "Aplica_pago.h"
+
+EXEC SQL INCLUDE sqlca;
+
+/*****************************************************************************/
+/*                    -- Declaracion de Variables Globales --                */
+/*****************************************************************************/
+EXEC SQL BEGIN DECLARE SECTION;
+
+    char  szhCod_Proceso   [6];
+    long  lhPid_Proceso       ;
+    char  szhGlosaError  [150];
+    int   ihRetorno           ;
+    int   ihTipo_Docto        ;
+    int   ihCod_Vendedor      ;
+    char  szhLetra_Pago   [2] ; EXEC SQL VAR szhLetra_Pago IS STRING(2);
+    int   ihCentro_Emisor     ;
+    int   ihMotivo            ;
+    int   ihTipo_Valor        ;
+    char  szhCod_Moneda   [4] ; EXEC SQL VAR szhCod_Moneda IS STRING(4);
+
+    char  szahEmp_recaudadora [MAX_REG][16]; EXEC SQL VAR szahEmp_recaudadora IS STRING(16);
+    int   iahCod_caja_recauda [MAX_REG]    ;
+    char  szahSer_solicitado  [MAX_REG][4] ; EXEC SQL VAR szahSer_solicitado IS STRING(4);
+    char  szahFec_efectividad [MAX_REG][21]; EXEC SQL VAR szahFec_efectividad IS STRING(21);
+    int   iahNum_transaccion  [MAX_REG]    ;
+    int   iahNum_transaccionEmp  [MAX_REG]    ;
+    char  szahNom_usuarora    [MAX_REG][11];
+    char  szahTip_transaccion [MAX_REG][2] ; EXEC SQL VAR szahTip_transaccion IS STRING(2);
+    char  szahSub_tip_transac [MAX_REG][2] ; EXEC SQL VAR szahSub_tip_transac IS STRING(2);
+    int   iahCod_servicio     [MAX_REG]    ;
+    char  szahNum_ejercicio   [MAX_REG][13] ; EXEC SQL VAR szahNum_ejercicio IS STRING(13);
+    long  lahCod_cliente      [MAX_REG]    ;
+    long  lahNum_celular      [MAX_REG];
+    double dahImp_pago        [MAX_REG]    ;
+    char  szahNum_folioctc    [MAX_REG][12];
+    char  szahNum_ident       [MAX_REG][21]; EXEC SQL VAR szahNum_ident IS STRING(21);
+    int   iahTip_valor        [MAX_REG]    ;
+    long  lahNum_documento    [MAX_REG]    ;
+    char  szahCod_banco       [MAX_REG][16]; EXEC SQL VAR szahCod_banco IS STRING(16);
+    char  szahCta_corriente   [MAX_REG][19]; EXEC SQL VAR szahCta_corriente IS STRING(19);
+    char  szahCod_autoriza    [MAX_REG][11]; EXEC SQL VAR szahCod_autoriza IS STRING(11);
+    char  szahCod_tiptarjeta  [MAX_REG][4]; EXEC SQL VAR szahCod_tiptarjeta IS STRING(4);
+    char  szahNum_tarjeta     [MAX_REG][20]; EXEC SQL VAR szahNum_tarjeta IS STRING(20);
+    long  lahCod_periodo      [MAX_REG]    ;
+    int   iahCan_debe         [MAX_REG]    ;
+    double dahMto_debe        [MAX_REG]    ;
+    int   iahCan_haber        [MAX_REG]    ;
+    double dahMto_haber       [MAX_REG]    ;
+    char szahCod_Operacion    [MAX_REG][2]; EXEC SQL VAR szahCod_Operacion IS STRING(2); /* Requerimiento de Soporte - #34406 capc 28-09-2006 */
+
+    char  szhEmp_recaudadora [16]; EXEC SQL VAR szhEmp_recaudadora IS STRING(16);
+    int   ihCod_caja_recauda     ;
+    char  szhSer_solicitado  [4] ; EXEC SQL VAR szhSer_solicitado IS STRING(4);
+    char  szhFec_efectividad [21]; EXEC SQL VAR szhFec_efectividad IS STRING(21);
+    int   ihNum_transaccion      ;
+    int   ihNum_transaccionEmp   ;
+    char  szhNom_usuarora    [11];
+    char  szhTip_transaccion [2] ; EXEC SQL VAR szhTip_transaccion IS STRING(2);
+    char  szhSub_tip_transac [2] ; EXEC SQL VAR szhSub_tip_transac IS STRING(2);
+    int   ihCod_servicio         ;
+    char  szhNum_ejercicio   [13]; EXEC SQL VAR szhNum_ejercicio IS STRING(13);
+    long  lhCod_cliente          ;
+    long  lhNum_celular;
+    /*unsigned long long  lhNum_celular;*/
+    double dhImp_pago            ;
+    char  szhNum_folioctc    [12];
+    char  szhNum_ident       [21]; EXEC SQL VAR szhNum_ident IS STRING(21);
+    int   ihTip_valor            ;
+    long  lhNum_documento        ;
+    char  szhCod_banco       [16]; EXEC SQL VAR szhCod_banco IS STRING(16);
+    char  szhCta_corriente   [19]; EXEC SQL VAR szhCta_corriente IS STRING(19);
+    char  szhNum_Tarjeta     [20]; EXEC SQL VAR szhNum_Tarjeta IS STRING(20);
+    char  szhCod_tiptarjeta  [4]; EXEC SQL VAR szhCod_tiptarjeta IS STRING(4);
+    char  szhCod_autoriza  [11]; EXEC SQL VAR szhCod_autoriza IS STRING(11);
+    char  szhCod_autoriza    [11];
+    long  lhCod_periodo          ;
+    int   ihCan_debe             ;
+    double dhMto_debe            ;
+    int   ihCan_haber            ;
+    double dhMto_haber           ;
+    long  lhNum_Compago          ;
+    char  szhPref_Plaza      [26]; EXEC SQL VAR szhPref_Plaza IS STRING(26);
+    char lhCOD_OPERADORA_SCL     [6]; EXEC SQL VAR lhCOD_OPERADORA_SCL IS STRING(6); /*TM-200405180677 18-06-2004 PRM*/
+    long vp_Secu_compago;
+    char vp_Pref_Plaza       [26];
+    char szhCod_Operacion    [2]; EXEC SQL VAR szhCod_Operacion IS STRING(2); /* Requerimiento de Soporte - #34406 capc 28-09-2006 */
+EXEC SQL END DECLARE SECTION;
+
+static char szExeAplica_Pago [1024];
+
+FILE    *fpDat;
+static char szFileName [25];
+static APLICAPAGO stAplicaPago;
+
+long   lTotalRows=0;
+long   lTotalEjercicios=0;
+char   szPath     [128]   ="" ;
+int    iCan_Reg = 0;
+int    iValorPL=0;
+int    iCan_Reg_Error = 0;
+int ihNumTransaccionError = 0;
+static char szUsage [] =
+   "\nUso => Aplica_pago "
+   "\n\n\t -u [Usuario]/[Password]\n"
+   "\n\t -l [NivelLog]\n";
+
+/*****************************************************************************/
+/*     main                                                                  */
+/*****************************************************************************/
+int main (int argc, char* argv[])
+{
+extern int   opterr;
+extern int   optopt;
+extern char *optarg;
+
+char opt[]  = "u:l:n:";
+int  iOpt   = 0    ;
+
+char szUsuario[61] = "" ;
+char *pszTmp       = "" ;
+
+    memset (&stAplicaPago,0,sizeof (APLICAPAGO));
+    memset (&stStatus,0,sizeof (STATUS));
+
+    while ( (iOpt = getopt (argc,argv,opt)) != EOF) {
+        switch (iOpt) {
+            case 'u':
+                if ( strlen (optarg) ) {
+                    strcpy (szUsuario,optarg)  ;
+                    stAplicaPago.bOptUsuario = TRUE;
+                }
+                break;
+            case 'l':
+                if ( strlen (optarg) ) {
+                    stAplicaPago.bOptNivelLog = TRUE         ;
+                    stAplicaPago.iNivelLog    = atoi (optarg);
+                }
+                break;
+            case 'n':
+                if ( strlen (optarg) ) {
+                    sprintf(szhCod_Proceso,"%s",optarg);
+                }
+                break;
+        }/* fin switch */
+    }/* fin While de Opciones */
+
+    if (!stAplicaPago.bOptUsuario) {
+
+         fprintf (stderr,"\n\t=>Version => [%s]\n",szVERSION);
+         fprintf (stderr,"\n\t=>Error Faltan Parametros de Entrada: \n%s\n\n",szUsage);
+         return  (1)      ;
+
+    } else {
+
+       if ( (pszTmp = (char *)strstr (szUsuario,"/"))==(char *)NULL) {
+             fprintf (stderr,"\n\t=>Formato Usuario Oracle Incorrecto:\n%s\n\n",szUsage);
+             return (1)       ;
+
+       } else {
+             strncpy (stAplicaPago.szUsuario ,szUsuario,pszTmp-szUsuario);
+             strcpy  (stAplicaPago.szPassWord, pszTmp+1);
+       }
+    }
+
+    if (!stAplicaPago.bOptNivelLog)
+         stAplicaPago.iNivelLog = iNIVEL_DEF;
+
+
+    if (!bfnInicio(&stAplicaPago,&stStatus))
+         return (2);
+
+    /* 08-06-2004 TM-0677 capc
+    if (!bfnSeleccionaOperadora()!=0)
+    {
+         ifnMailAlert("APLICAPAGO","TODOS","FALLO Funcion bfnSeleccionaOperadora.");
+         vDTrazasLog (szExeAplica_Pago,"\t Funcion bfnSeleccionaOperadora con Error ***\n",LOG03);
+         return FALSE;
+    }
+    */
+
+    if (ifnSelecTipo_Pagos()!=0) {
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO Funcion IfnSelecTipo_Pagos.");
+        fclose(stStatus.LogFile);
+        fclose(stStatus.ErrFile);
+        if (!bfnUpdateColasProc("W")) {
+             vDTrazasLog (szExeAplica_Pago,"\t Funcion bfnUpdateColasProc(W) con Error ***\n",LOG03);
+             ifnMailAlert("APLICAPAGO","TODOS","FALLO Funcion bfnUpdateColasProc(W).");
+             return FALSE;
+        }
+        return (4);
+    }
+
+    if (!bfnUpdateColasProc("W")) {
+         vDTrazasLog (szExeAplica_Pago,"\t Funcion bfnUpdateColasProc(W) con Error ***\n",LOG03);
+         ifnMailAlert("APLICAPAGO","TODOS","FALLO Funcion Update ColasProc(W).");
+         return FALSE;
+    }
+
+    vDTrazasLog (szExeAplica_Pago,"\n\t *** Proceso Termino OK *****",LOG03);
+    if (!bfnExitAplicapago()) return FALSE;
+    fclose(stStatus.LogFile);
+    fclose(stStatus.ErrFile);
+
+    return (0);
+}/***************************** Final main ***********************************/
+
+/*****************************************************************************/
+/* Funcion : bfnInicio                                                       */
+/*****************************************************************************/
+
+static BOOL bfnInicio ( APLICAPAGO *stAplicaPago, STATUS *pstStatus )
+{
+    char szHora [9], szAux[3];
+    char szFecha[11];
+    char szComando[260];
+    int  iRes=0;
+    if (!bfnConnectORA (stAplicaPago->szUsuario,stAplicaPago->szPassWord))  {
+            fprintf (stderr,"\n\t=>Error en la Conexion Oracle\n");
+            return   FALSE ;
+    }
+
+    /* Datos Iniciales de Tiempo */
+    cpu_ini = clock();
+    time (&real_ini) ;
+    pstStatus->OraConnected = 1;
+
+    if (!bGetDatosGener (&stDatosGener,szSysDate)) return  FALSE;
+
+    iRes = ifnAbreArchivosLog();
+    if (iRes != 0) return FALSE;
+
+    szAux[0]='\0';
+    strncpy(szAux,&szSysDate[8],2); sprintf(szHora,"%2.2s\0",szAux);
+    strncpy(szAux,&szSysDate[10],2);sprintf(szHora,"%s:%2.2s\0",szHora,szAux);
+    strncpy(szAux,&szSysDate[12],2);sprintf(szHora,"%s:%2.2s\0",szHora,szAux);
+
+    strcpy (szExeAplica_Pago,"Aplicacion de Pagos");
+    pstStatus->LogNivel = stAplicaPago->iNivelLog;
+
+    vDTrazasLog  (szExeAplica_Pago,
+    "\n     *******************************************************************"
+    "\n     *         APLICA PAGOS  HORA : %s  VERSION : %s                   *"
+    "\n     *******************************************************************\n", LOG03,szHora,szVERSION);
+
+    vDTrazasError(szExeAplica_Pago,
+    "\n     *******************************************************************"
+    "\n     *   ERRORES EN APLICA PAGOS  HORA : %s  VERSION : %s          *"
+    "\n     *******************************************************************\n", LOG03,szHora,szVERSION);
+
+    lhPid_Proceso=getpid();
+    if (strlen(szhCod_Proceso)<1)  strcpy(szhCod_Proceso,"APPAG");
+
+    if (!bfnUpdateColasProc("R")) {
+            vDTrazasLog (szExeAplica_Pago,"\t Funcion bfnUpdateColasProc(W) con Error ***\n",LOG03);
+            ifnMailAlert("APLICAPAGO","TODOS","FALLO Funcion bfnUpdate  ColasProc(W).");
+            return FALSE;
+    }
+
+    return TRUE;
+}/************************** Final bfnInicio *************************/
+
+/*****************************************************************************/
+/* Funcion : bfnExitAplicapago                                               */
+/*****************************************************************************/
+static BOOL bfnExitAplicapago (void)
+{
+    /* Desconexion Oracle */
+    if (!bfnDisconnectORA(0)) {
+        iDError(szExeAplica_Pago,ERR000,vInsertarIncidencia,"Desconexion",SQLERRM);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO Desconexion Oracle.");
+        return FALSE;
+    }
+    stStatus.OraConnected = FALSE;
+    vDTrazasLog (szExeAplica_Pago,"\t *** Desconexion a Oracle ***",LOG03);
+
+    /* Datos Fin de Tiempo */
+    times (&tms)     ;
+    cpu_fin = clock();
+    time (&real_fin) ;
+
+    real = (real_fin-real_ini)                ;
+    cpu  =(float)cpu_fin/(float)CLOCKS_PER_SEC;
+
+    vDTrazasLog (szExeAplica_Pago,"\n\t => Tiempo de CPU : [%g]"
+                                "\n\t => Tiempo Real   : [%g]"
+                                "\n\t => Reg.Procesados: [%d]\n\n\n",LOG03, cpu, real,iCan_Reg);
+
+return TRUE;
+
+}/*************************** Final bfnExitAplicapago ************************/
+
+/*****************************************************************************/
+/* Funcion : ifnDBFetchInterfaz                                              */
+/*****************************************************************************/
+static int ifnSelecTipo_Pagos()
+{
+int iRegs=0;
+int x=0;
+int ihNumTransaccionAnt=0;
+int ihTransaccionCommit = 1; /*0 = Realizar Rollback, 1 = Realizar Commit*/
+int ihTransaccionPendiente = 0; /*0 = Sin transaccion pendiente, 1 = con transaccion pendiente*/
+
+EXEC SQL BEGIN DECLARE SECTION;
+     long lahCliente       [MAX_REG] ;
+     long lahEjercicio     [MAX_REG] ;
+     char szahTip_Transac  [MAX_REG] [2];
+     char szahFec_Efectiva [MAX_REG] [20];
+
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeAplica_Pago,"\t\t* Funcion ifnSelecTipo_Pagos *",LOG03);
+
+    EXEC SQL DECLARE Cur_Transac CURSOR FOR
+    SELECT A.EMP_RECAUDADORA     , A.COD_CAJA_RECAUDA     , A.SER_SOLICITADO        , TO_CHAR(A.FEC_EFECTIVIDAD,'DD-MM-YYYY HH24:MI:SS') ,
+           A.NUM_TRANSACCION     , NVL(A.NOM_USUARORA,' '), A.TIP_TRANSACCION       , A.SUB_TIP_TRANSAC     ,
+           A.COD_SERVICIO        , A.NUM_EJERCICIO        , NVL(A.COD_CLIENTE,0)    , NVL(A.NUM_CELULAR,0)  ,
+           NVL(A.IMP_PAGO,0)     , NVL(A.NUM_FOLIOCTC,' '), NVL(A.NUM_IDENT,' ')    , NVL(A.TIP_VALOR,0)    ,
+           NVL(A.NUM_DOCUMENTO,0), NVL(A.COD_BANCO,'N')   , NVL(A.CTA_CORRIENTE,'N'), NVL(A.COD_AUTORIZA,' '),
+           NVL(A.CAN_DEBE,0)     , NVL(A.MTO_DEBE,0)      , NVL(A.CAN_HABER,0)      , NVL(A.MTO_HABER,0)    ,
+           NVL(A.NUM_TARJETA,'N'), SUBSTR(A.NUM_EJERCICIO,7,2)||SUBSTR(A.NUM_EJERCICIO,5,2)||SUBSTR(A.NUM_EJERCICIO,3,2),
+           NVL(A.COD_OPERACION,'1'), NVL(NUM_TRANSACCION_EMP, NUM_TRANSACCION), NVL(A.COD_TIPTARJETA,'N')
+    FROM   CET_PERIODOSERV B, CO_INTERFAZ_PAGOS A
+    WHERE  A.SER_SOLICITADO  = 'REX'
+    AND    A.TIP_TRANSACCION IN ('R','K')
+    AND    A.COD_SERVICIO    IN (2,3)
+    AND    A.TIP_VALOR       IN (1,4,3,12)
+    AND    A.COD_ESTADO      IS NULL
+    AND    A.EMP_RECAUDADORA = B.COD_EMPRESA (+)
+    AND    SUBSTR(A.NUM_EJERCICIO,7,2)||SUBSTR(A.NUM_EJERCICIO,5,2)||SUBSTR(A.NUM_EJERCICIO,3,2) = B.COD_PERIODO (+)
+    AND    B.COD_SERVICIO (+)   = 'REX02'
+    ORDER BY A.FEC_EFECTIVIDAD, A.NUM_EJERCICIO, A.NUM_TRANSACCION_EMP;
+
+    if (SQLCODE!=SQLOK) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"DECLARE ifnSelecTipo_Pagos",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\n\t Error en DECLARE Cur_Transac \n",LOG03);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO DECLARE CURSOR TIPO TRANSACCION.");
+        return FALSE;
+    }
+
+    EXEC SQL OPEN Cur_Transac;
+    if (SQLCODE!=SQLOK) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Open ifnSelecTipo_Pagos",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\n\t Error en OPEN Cur_Transac \n",LOG03);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO OPEN CURSOR TIPO TRANSACCION.");
+        return FALSE;
+    }
+
+    EXEC SQL FETCH Cur_Transac
+             INTO  :szahEmp_recaudadora, :iahCod_caja_recauda, :szahSer_solicitado , :szahFec_efectividad,
+                   :iahNum_transaccion , :szahNom_usuarora   , :szahTip_transaccion, :szahSub_tip_transac,
+                   :iahCod_servicio    , :szahNum_ejercicio  , :lahCod_cliente     , :lahNum_celular     ,
+                   :dahImp_pago        , :szahNum_folioctc   , :szahNum_ident      , :iahTip_valor       ,
+                   :lahNum_documento   , :szahCod_banco      , :szahCta_corriente  , :szahCod_autoriza   ,
+                   :iahCan_debe        , :dahMto_debe        , :iahCan_haber       , :dahMto_haber       ,
+                   :szahNum_tarjeta    , :lahCod_periodo     , :szahCod_Operacion  , :iahNum_transaccionEmp, :szahCod_tiptarjeta;
+
+    iRegs = SQLROWS;
+    if ((SQLCODE!=SQLOK) && (SQLCODE != SQLNOTFOUND)){
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"FETCH ifnSelecTipo_Pagos",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\n\t Error en FETCH Cur_Transac \n",LOG03);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO FETCH CURSOR TIPO TRANSACCION.");
+        return FALSE;
+    }
+    vDTrazasLog (szExeAplica_Pago,"\t\t ==> iRegs [%d]",LOG03,iRegs);
+
+    EXEC SQL CLOSE Cur_Transac;
+    if (SQLCODE!=SQLOK) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"CLOSE ifnSelecTipo_Pagos",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\n\t Error en CLOSE Cur_Transac \n",LOG03);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO CLOSE CURSOR TIPO TRANSACCION.");
+        return FALSE;
+    }
+
+
+    for (x=0;x<iRegs;x++) {
+        if (x==0) ihNumTransaccionAnt = iahNum_transaccionEmp[x]; /*Para la primera transaccion se asume que es igual a la anterior*/
+        
+        vDTrazasLog (szExeAplica_Pago,"\n\t ***************************** CLIENTE *********************************\n", LOG03);
+        vDTrazasLog (szExeAplica_Pago,"\n\t lahCod_cliente      [%ld]",LOG03,lahCod_cliente[x]);
+        vDTrazasLog (szExeAplica_Pago,"\t szahNum_ejercicio   [%s]",LOG03,szahNum_ejercicio[x]);
+        vDTrazasLog (szExeAplica_Pago,"\t szahTip_transaccion [%s]",LOG03,szahTip_transaccion[x]);
+        vDTrazasLog (szExeAplica_Pago,"\t szahFec_efectividad [%s]",LOG03,szahFec_efectividad[x]);
+        vDTrazasLog (szExeAplica_Pago,"\t iahNum_transaccion [%ld]",LOG03,iahNum_transaccion[x]);
+        vDTrazasLog (szExeAplica_Pago,"\t iahNum_transaccionEmp [%ld]",LOG03,iahNum_transaccionEmp[x]);
+        iCan_Reg ++; /*Va tomando como Ok todos los registros*/
+        if (ihNumTransaccionAnt != iahNum_transaccionEmp[x]){
+            /*Si está terminando la transaccion para el mismo registro, se hace commit o rollback*/
+            if (ihTransaccionCommit == 1) {
+                vDTrazasLog (szExeAplica_Pago,"\t ******************************Aplica**********************************\n",LOG03);
+                /*vDTrazasLog (szExeAplica_Pago,"\t ****************************************************************\n",LOG03);*/
+
+                EXEC SQL COMMIT WORK;
+                if (SQLCODE != SQLOK ) {
+                    iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Error en COMMIT WORK ifnSelecTipo_Pagos. [%s]",SQLERRM);
+                    vDTrazasLog (szExeAplica_Pago,"\t Error en COMMIT WORK (ifnSelecTipo_Pagos)\n",LOG03);
+                    return FALSE;
+                }
+        }
+        else {
+            vDTrazasLog (szExeAplica_Pago,"\t ****************************Rollback*********************************\n",LOG03);
+            EXEC SQL ROLLBACK WORK;
+        }
+        ihTransaccionPendiente = 0;
+        }
+
+        ihNumTransaccionAnt = iahNum_transaccionEmp[x];
+
+        if ( ihNumTransaccionAnt != ihNumTransaccionError) { /*Intenta Realizar el pago/Reversa solo si la transacción no tiene error*/
+            ihNumTransaccionError = 0;
+            if (strcmp(szahTip_transaccion[x],"K")==0) {
+                if (strcmp(szahCod_Operacion[x],"1")==0) /* P-MIX-09003 */
+                {
+                    if (!bfnAplica_Pagos(x)) 
+                    {
+						vDTrazasLog (szExeAplica_Pago,"\t .......Continua con el sigte. Registro \n",LOG03);
+						ihTransaccionCommit = 0;
+						ihNumTransaccionError = iahNum_transaccionEmp[x];
+						/*EXEC SQL ROLLBACK WORK;*/
+                    }
+                    else 
+                    {
+						ihTransaccionCommit = 1;
+                    }
+                }
+/*                
+                else if (strcmp(szahCod_Operacion[x],"3")==0)
+                {
+                    if (!bfnAplica_Pagos_LimiteConsumo(x)) {
+                        vDTrazasLog (szExeAplica_Pago,"\t .......Continua con el sigte. Registro \n",LOG03);
+                        ihTransaccionCommit = 0;
+                        ihNumTransaccionError = iahNum_transaccionEmp[x];
+                        vDTrazasLog (szExeAplica_Pago,"\t ihNumTransaccionError Asignada [%ld]",LOG03,ihNumTransaccionError);
+                        vDTrazasLog (szExeAplica_Pago,"\t iahNum_transaccionEmp [%ld]",LOG03,iahNum_transaccionEmp[x]);
+                        /EXEC SQL ROLLBACK WORK;/
+                    }
+                    else {
+                        ihTransaccionCommit = 1;
+                    }
+                }
+                else if (strcmp(szahCod_Operacion[x],"5")==0)
+                {
+                    if (!bfnAplica_Pagos_LimiteConsumo(x)) {
+                        vDTrazasLog (szExeAplica_Pago,"\t .......Continua con el sigte. Registro \n",LOG03);
+                        ihTransaccionCommit = 0;
+                        ihNumTransaccionError = iahNum_transaccionEmp[x];
+                        /EXEC SQL ROLLBACK WORK;/
+                    }
+                    else {
+                        ihTransaccionCommit = 1;
+                    }
+                }
+                / Fin P-MIX-09003 /
+*/
+            }
+            
+            if (strcmp(szahTip_transaccion[x],"R")==0) {
+                if (!bfnDesaplica_Pagos(x))  {
+                    vDTrazasLog (szExeAplica_Pago,"\t .......Continua con el sigte. Registro \n",LOG03);
+                    ihTransaccionCommit = 0;
+                    ihNumTransaccionError = iahNum_transaccionEmp[x];
+                    /*EXEC SQL ROLLBACK WORK;*/
+                }
+                    else {
+                        ihTransaccionCommit = 1;
+                    }
+            }
+    }
+    else
+    {
+        vDTrazasLog (szExeAplica_Pago,"\t Pago no se aplicará, porque parte del Pago se encuentra con Error!",LOG03,ihNumTransaccionAnt);
+        }
+
+    ihTransaccionPendiente = 1;
+
+    }
+
+    /*Ultima Transacción */
+    if (ihTransaccionPendiente ==1) {
+        if (ihTransaccionCommit == 1) {
+                /*vDTrazasLog (szExeAplica_Pago,"\t ****************************************************************\n",LOG03);*/
+            vDTrazasLog (szExeAplica_Pago,"\t ******************************Aplica**********************************\n",LOG03);
+                EXEC SQL COMMIT WORK;
+                if (SQLCODE != SQLOK ) {
+                    iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Error en COMMIT WORK ifnSelecTipo_Pagos. [%s]",SQLERRM);
+                    vDTrazasLog (szExeAplica_Pago,"\t Error en COMMIT WORK (ifnSelecTipo_Pagos)\n",LOG03);
+                    return FALSE;
+                }
+        }
+        else {
+            vDTrazasLog (szExeAplica_Pago,"\t ****************************Rollback*********************************\n",LOG03);
+            EXEC SQL ROLLBACK WORK;
+        }
+    }
+
+    return 0;
+}
+
+/**************************************************************************************************/
+static int ifnVerificaPeriodo ()
+{
+int i=0;
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhCod_Periodo[7];
+     char szhServicio[4];
+     int  ihCod_Caja;
+     int  ihContCaja;
+     int  ihCount_Cet;
+     int  ihCount_Cot;
+     char szCod_Estado[3];
+EXEC SQL END DECLARE SECTION;
+
+    vDTrazasLog (szExeAplica_Pago,"\t\t* Funcion ifnVerificaPeriodo *",LOG03);
+
+    sprintf(szhServicio,"REX");
+    vDTrazasLog (szExeAplica_Pago,"\t Verifica que estado tiene el Periodo consultado con:",LOG03);
+    vDTrazasLog (szExeAplica_Pago,"\t\t lhCod_periodo      [%ld]",LOG03,lhCod_periodo);
+    vDTrazasLog (szExeAplica_Pago,"\t\t szhNum_ejercicio   [%s]",LOG03,szhNum_ejercicio);
+    vDTrazasLog (szExeAplica_Pago,"\t\t szhEmp_recaudadora [%s]\n",LOG03,szhEmp_recaudadora);
+
+    EXEC SQL
+    SELECT  UNIQUE NVL(B.COD_CAJA,0)
+    INTO    :ihCod_Caja
+    FROM    CET_PERIODOSERV A, COT_CAJAS_NT B
+    WHERE   A.COD_SERVICIO  = 'REX02'
+    AND     A.COD_PERIODO   = :lhCod_periodo
+    AND     B.NUM_EJERCICIO = :szhNum_ejercicio
+    AND     A.COD_ESTADO    = 'AB'
+    AND     A.COD_EMPRESA   = :szhEmp_recaudadora
+    AND     A.COD_EMPRESA   = B.DES_CAJA
+    AND     B.IND_ABIERTA   = 1
+    AND     SUBSTR(B.NUM_EJERCICIO,7,2)||SUBSTR(B.NUM_EJERCICIO,5,2)||SUBSTR(B.NUM_EJERCICIO,3,2) = A.COD_PERIODO ;
+
+    if (( SQLCODE != SQLOK) && (SQLCODE != SQLNOTFOUND)) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Select Cod_Estado en Cet_Periodoserv",SQLERRM);
+        return -1;
+    }
+
+    if (SQLCODE == SQLNOTFOUND) {
+
+        EXEC SQL
+        SELECT  A.COD_ESTADO
+        INTO    :szCod_Estado
+        FROM    CET_PERIODOSERV A, COT_CAJAS_NT B
+        WHERE   A.COD_SERVICIO  = 'REX02'
+        AND     A.COD_PERIODO   = :lhCod_periodo
+        AND     B.NUM_EJERCICIO = :szhNum_ejercicio
+        AND     A.COD_EMPRESA   = :szhEmp_recaudadora
+        AND     A.COD_EMPRESA   = B.DES_CAJA
+        AND     SUBSTR(B.NUM_EJERCICIO,7,2)||SUBSTR(B.NUM_EJERCICIO,5,2)||SUBSTR(B.NUM_EJERCICIO,3,2) = A.COD_PERIODO ;
+
+        if (( SQLCODE != SQLOK) && (SQLCODE != SQLNOTFOUND)) {
+            iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"SELECT COD_ESTADO FROM CET_PERIODOSERV",SQLERRM);
+            return -1;
+        }
+        if (SQLCODE == SQLOK) {
+            if (strcmp(szCod_Estado,"CT")==0) {
+                vDTrazasLog (szExeAplica_Pago,"\n\t\t Imposible Aplicar Pago.!\n\t\t Periodo ya esta Cerrado.",LOG02);
+                return -1;
+            }
+        }
+
+
+
+        /* Valida Cantidad de Periodos en Cet_Periodoserv*/
+        EXEC SQL
+        SELECT COUNT(*)
+        INTO   :ihCount_Cet
+        FROM   CET_PERIODOSERV
+        WHERE  COD_SERVICIO= 'REX02'
+        AND    COD_EMPRESA = :szhEmp_recaudadora
+        AND    COD_ESTADO  = 'AB';
+
+        if (( SQLCODE != SQLOK) && (SQLCODE != SQLNOTFOUND)) {
+            iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"SELECT COUNT(*) COT_CAJAS_NT",SQLERRM);
+            return -1;
+        }
+
+        /* Valida Cantidad de Periodos en Cot_Cajas_NT*/
+        EXEC SQL
+        SELECT COUNT(*)
+        INTO   :ihCount_Cot
+        FROM   COT_CAJAS_NT
+        WHERE  COD_OFICINA  IN (SELECT COD_OFICINA FROM CO_EMPRESAS_REX WHERE EMP_RECAUDADORA = :szhEmp_recaudadora)
+        AND    DES_CAJA     = :szhEmp_recaudadora
+        AND    IND_ABIERTA  = 1;
+
+        if (( SQLCODE != SQLOK) && (SQLCODE != SQLNOTFOUND)) {
+            iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"SELECT COUNT(*) COT_CAJAS_NT",SQLERRM);
+            return -1;
+        }
+
+        if ((ihCount_Cet > 1) && (ihCount_Cot > 1)) {
+            vDTrazasLog (szExeAplica_Pago," Ya Existen 2 Periodos Abiertos para %s",LOG01,szhEmp_recaudadora);
+            return -1;
+        }
+
+        if (ihCount_Cet > 1) {
+            vDTrazasLog (szExeAplica_Pago," Ya Existen 2 Periodos Abiertos para %s en CET_PERIODOSERV",LOG01,szhEmp_recaudadora);
+            return -1;
+        }
+
+        if (ihCount_Cot > 1) {
+            vDTrazasLog (szExeAplica_Pago," Ya Existen 2 Periodos Abiertos para %s en COT_CAJAS_NT",LOG01,szhEmp_recaudadora);
+            return -1;
+        }
+
+        if ( ihCount_Cet != ihCount_Cot ) {
+            vDTrazasLog (szExeAplica_Pago," Existen diferencias en periodos de caja para %s entre Cet_PeriodoServ y Cot_Cajas_nt",LOG01,szhEmp_recaudadora);
+            return -1;
+        }
+
+
+        sprintf(szhCod_Periodo,"%ld",lhCod_periodo);
+        if (strlen(szhCod_Periodo)==5) sprintf(szhCod_Periodo,"0%ld",lhCod_periodo);
+
+        /*strcpy(szhGlosaError,"Error\0");
+        ihRetorno=1;*/
+        vDTrazasLog (szExeAplica_Pago,"\n\t *** Ejecutando PL Co_Abrir_Cajas ********************",LOG03);
+        vDTrazasLog (szExeAplica_Pago,"\t\t szhNum_ejercicio    [%s]",LOG03,szhNum_ejercicio);
+        vDTrazasLog (szExeAplica_Pago,"\t\t szhCod_Periodo      [%s]",LOG03,szhCod_Periodo);
+        vDTrazasLog (szExeAplica_Pago,"\t\t szhServicio         [%s]",LOG03,szhServicio);
+        vDTrazasLog (szExeAplica_Pago,"\t\t szhEmp_recaudadora  [%s]\n",LOG03,szhEmp_recaudadora);
+
+        EXEC SQL EXECUTE
+        BEGIN
+            CO_ABRIR_CAJAS( :szhNum_ejercicio, :szhCod_Periodo, :szhServicio, :szhEmp_recaudadora, :szhGlosaError, :ihRetorno);
+        END;
+        END-EXEC;
+        vDTrazasLog (szExeAplica_Pago,"\t szhGlosaError      [%s]",LOG03,szhGlosaError);
+        vDTrazasLog (szExeAplica_Pago,"\t ihRetorno          [%d]\n",LOG03,ihRetorno);
+        if (ihRetorno > 0) {
+            vDTrazasLog (szExeAplica_Pago,"\t Error en PL CO_ABRIR_CAJAS ",LOG03);
+            vDTrazasLog (szExeAplica_Pago,"\t ** [%s] **\n",LOG03,szhGlosaError);
+            return -1;
+
+        } else {
+            iCan_Reg++;
+            vDTrazasLog (szExeAplica_Pago,"\t***** PL Co_Abrir_Caja Ejecutada con Exito *****\n",LOG03);
+        }
+
+    } else {
+         vDTrazasLog (szExeAplica_Pago,"\t Periodo Esta Abierto\n",LOG03);
+
+    }
+
+    return 0;
+}
+
+/*****************************************************************************/
+/* Funcion : bfnAplica_Pagos                                              */
+/*****************************************************************************/
+static BOOL bfnAplica_Pagos (int i)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+		double	dhSaldoVencido = 0;
+		double	dhRestantePago = 0;
+		int		ihIndFacturado;
+	EXEC SQL END DECLARE SECTION;
+	
+    int  iRes = 0;
+
+    vDTrazasLog (szExeAplica_Pago,"\n\t\t* Funcion Aplica Pagos *\n",LOG03);
+    vfnMemsetVariables();
+    sprintf(szhEmp_recaudadora ,"%s", szahEmp_recaudadora[i]);
+    sprintf(szhSer_solicitado  ,"%s", szahSer_solicitado [i]);
+    sprintf(szhFec_efectividad ,"%s", szahFec_efectividad[i]);
+    sprintf(szhNom_usuarora    ,"%s", szahNom_usuarora   [i]);
+    sprintf(szhTip_transaccion ,"%s", szahTip_transaccion[i]);
+    sprintf(szhSub_tip_transac ,"%s", szahSub_tip_transac[i]);
+    sprintf(szhNum_ejercicio   ,"%s", szahNum_ejercicio  [i]);
+    sprintf(szhNum_folioctc    ,"%s", szahNum_folioctc   [i]);
+    sprintf(szhNum_ident       ,"%s", szahNum_ident      [i]);
+    sprintf(szhCod_banco       ,"%s", szahCod_banco      [i]);
+    sprintf(szhCta_corriente   ,"%s", szahCta_corriente  [i]);
+    sprintf(szhCod_autoriza    ,"%s", szahCod_autoriza   [i]);
+    sprintf(szhNum_Tarjeta     ,"%s", szahNum_tarjeta   [i]);
+    sprintf(szhCod_tiptarjeta  ,"%s", szahCod_tiptarjeta [i]);
+    ihCod_caja_recauda = iahCod_caja_recauda[i] ;
+    ihNum_transaccion  = iahNum_transaccion [i] ;
+    ihNum_transaccionEmp =  iahNum_transaccionEmp [i] ;
+    ihCod_servicio     = iahCod_servicio    [i] ;
+    lhCod_cliente      = lahCod_cliente     [i] ;
+    lhNum_celular      = lahNum_celular     [i] ;
+    dhImp_pago         = dahImp_pago        [i] ;
+    ihTip_valor        = iahTip_valor       [i] ;
+    lhNum_documento    = lahNum_documento   [i] ;
+    ihCan_debe         = iahCan_debe        [i] ;
+    dhMto_debe         = dahMto_debe        [i] ;
+    ihCan_haber        = iahCan_haber       [i] ;
+    dhMto_haber        = dahMto_haber       [i] ;
+    lhCod_periodo      = lahCod_periodo     [i] ;
+
+    /* Valida Numero de cheque si tip_valor distinto de uno .(Validacion para TMC)*/
+    if (ihTip_valor==4)
+    {
+        if (lhNum_documento < 1)
+        {
+        vDTrazasLog (szExeAplica_Pago,"\t Tipo de Pago es con Cheque. Numero de Documento(cheque) debe ser mayor que 0.",LOG01);
+        return FALSE;
+        }
+    }
+    
+    ihIndFacturado = 1;
+
+    /* Recuperamos el monto del saldo vencido del cliente */
+	EXEC SQL
+	select nvl(sum(importe_debe - importe_haber),0)
+	  into :dhSaldoVencido
+	  from co_cartera
+	 where cod_cliente   = :lhCod_cliente
+	   and ind_facturado = :ihIndFacturado
+	   and fec_vencimie < trunc(sysdate)
+	   and cod_concepto not in (2,6)
+	   and cod_tipdocum not in (  select to_number(cod_valor)
+	                                from co_codigos
+	                               where nom_tabla = 'CO_CARTERA'
+	                                 and nom_columna = 'COD_TIPDOCUM'    
+	                           );
+
+	dhRestantePago = dhImp_pago - dhSaldoVencido;
+
+	vDTrazasLog (szExeAplica_Pago,"\t Importe Pago => [%f] Importe Saldo Vencido => [%f] Restante para LC => [%f].",LOG03, dhImp_pago, dhSaldoVencido, dhRestantePago);
+
+    iValorPL=0;
+    ihRetorno=-999;
+    memset(&szhGlosaError,'\0',sizeof(szhGlosaError));
+
+    if (strcmp(szhCod_banco,"N")==0) strcpy(szhCod_banco,"\0");
+    if (strcmp(szhCta_corriente,"N")==0) strcpy(szhCta_corriente,"\0");
+    if (strcmp(szhNum_Tarjeta,"N")==0) strcpy(szhNum_Tarjeta,"\0");
+    if (strcmp(szhCod_tiptarjeta,"N")==0) strcpy(szhCod_tiptarjeta,"\0");
+    if (strcmp(szhCod_autoriza,"N")==0) strcpy(szhCod_autoriza,"\0");
+
+    /******************************************/
+    if (ifnVerificaPeriodo()!=0) return FALSE;
+    /******************************************/
+
+    vDTrazasLog (szExeAplica_Pago,"\t *** Ejecutando PL Co_Aplica_Pago con los sigtes. Parametros :",LOG03);
+    vDTrazasLog (szExeAplica_Pago,"\t ihCod_servicio     [%d]",LOG03,ihCod_servicio);
+    vDTrazasLog (szExeAplica_Pago,"\t lhCod_cliente      [%ld]",LOG03,lhCod_cliente);
+    vDTrazasLog (szExeAplica_Pago,"\t lhNum_celular      [%ld]",LOG03,lhNum_celular);
+    vDTrazasLog (szExeAplica_Pago,"\t szhNum_folioctc    [%s]",LOG03,szhNum_folioctc);
+    vDTrazasLog (szExeAplica_Pago,"\t dhImp_pago         [%f]",LOG03,dhImp_pago);
+    vDTrazasLog (szExeAplica_Pago,"\t szhFec_efectividad [%s]",LOG03,szhFec_efectividad);
+    vDTrazasLog (szExeAplica_Pago,"\t szhEmp_recaudadora [%s]",LOG03,szhEmp_recaudadora);
+    vDTrazasLog (szExeAplica_Pago,"\t szhNum_ejercicio   [%s]",LOG03,szhNum_ejercicio);
+    vDTrazasLog (szExeAplica_Pago,"\t ihTip_valor        [%d]",LOG03,ihTip_valor);
+    vDTrazasLog (szExeAplica_Pago,"\t lhNum_documento    [%ld]",LOG03,lhNum_documento);
+    vDTrazasLog (szExeAplica_Pago,"\t szhCod_banco       [%s]",LOG03,szhCod_banco);
+    vDTrazasLog (szExeAplica_Pago,"\t szhCta_corriente   [%s]",LOG03,szhCta_corriente);
+    vDTrazasLog (szExeAplica_Pago,"\t ihCod_caja_recauda [%d]",LOG03,ihCod_caja_recauda);
+    vDTrazasLog (szExeAplica_Pago,"\t szhNum_Tarjeta     [%s]",LOG03,szhNum_Tarjeta);
+    vDTrazasLog (szExeAplica_Pago,"\t szhCod_tiptarjeta  [%s]",LOG03,szhCod_tiptarjeta);
+    vDTrazasLog (szExeAplica_Pago,"\t szhCod_autoriza    [%s]",LOG03,szhCod_autoriza);
+    vDTrazasLog (szExeAplica_Pago,"\t ihNum_transaccion  [%d]",LOG03,ihNum_transaccion);
+    vDTrazasLog (szExeAplica_Pago,"\t ihNum_transaccionEmp  [%d]",LOG03,ihNum_transaccionEmp);
+    vDTrazasLog (szExeAplica_Pago,"\t lhCod_periodo      [%d]",LOG03,lhCod_periodo);
+    vDTrazasLog (szExeAplica_Pago,"\t vp_Pref_Plaza      [%s]\n",LOG03,vp_Pref_Plaza);
+
+    /*************************************************************************
+    INI MODIFICACION THALES-IS UC AGOSTO 2004
+    *************************************************************************/
+    EXEC SQL EXECUTE
+        BEGIN
+            CO_APLICAPAGO_UNIVERSAL
+            (
+                'PNT',              :lhCod_cliente,     :dhImp_pago,            :szhFec_efectividad,    :szhCod_banco,
+                NULL,               NULL,               :szhEmp_recaudadora,    NULL,                   :ihCod_servicio,
+                :lhNum_celular,     :szhCta_corriente,  NULL,                   NULL,                   :szhNum_folioctc,
+                :szhNum_ejercicio,  :ihTip_valor,       :lhNum_documento,       :ihCod_caja_recauda,    :ihNum_transaccion,
+                :szhNum_Tarjeta,    NULL,               0,                      NULL,                   0,
+                NULL,               NULL,               NULL,                   NULL,                   NULL,
+                NULL,               NULL,               :vp_Secu_compago,       :vp_Pref_Plaza,         :szhGlosaError,
+                :ihRetorno,         :szhCod_tiptarjeta, :szhCod_autoriza
+            );
+        END;
+    END-EXEC;
+
+	rtrim(szhGlosaError);
+    vDTrazasLog (szExeAplica_Pago,"\t CO_APLICAPAGO_UNIVERSAL szhGlosaError      [%s]", LOG03, szhGlosaError);
+    vDTrazasLog (szExeAplica_Pago,"\t CO_APLICAPAGO_UNIVERSAL ihRetorno          [%d]\n", LOG03, ihRetorno);
+
+    iValorPL = ihRetorno;
+
+    /*if (iValorPL != 0)  * CH-1814 22-04-2004  capc    **/
+    if (iValorPL < 0)
+    {
+        ihNumTransaccionError = ihNum_transaccionEmp;
+        vDTrazasLog (szExeAplica_Pago,"\t Error en PL C0_APLICAPAGO_UNIVERSAL",LOG03);
+        vDTrazasLog (szExeAplica_Pago,"\t ** [%s] **\n",LOG03,szhGlosaError);
+        if (!bfnGrabaArchivoPlano())
+        {
+            return FALSE;
+        }
+    }
+    else if (iValorPL == 1)   /** CH-1814 22-04-2004  capc    **/
+    {
+        vDTrazasLog (szExeAplica_Pago, "\t PL CO_APLICAPAGO_UNIVERSAL Ejecutada con Exito *****\n", LOG03);
+
+		if (dhRestantePago > 0)
+		{
+	        strcpy(szhCod_Operacion,"3");
+	        memset(&szhGlosaError,'\0',sizeof(szhGlosaError));
+			iValorPL = 0;
+			ihRetorno = -999;
+	
+	        /* Mantencion Guatemala */
+	        vDTrazasLog (szExeAplica_Pago,"\t *** Ejecutando PL CO_SIMULAPAGO_LIMITECONSUMO_PR. Parametros :",LOG03);
+	        vDTrazasLog (szExeAplica_Pago,"\t lhCod_cliente      [%ld]",LOG03,lhCod_cliente);
+	        vDTrazasLog (szExeAplica_Pago,"\t dhImp_pago         [%f]",LOG03,dhRestantePago);
+	        vDTrazasLog (szExeAplica_Pago,"\t szhFec_efectividad [%s]",LOG03,szhFec_efectividad);
+	        vDTrazasLog (szExeAplica_Pago,"\t szhEmp_recaudadora [%s]",LOG03,szhEmp_recaudadora);
+	        vDTrazasLog (szExeAplica_Pago,"\t ihCod_servicio     [%d]",LOG03,ihCod_servicio);
+	        vDTrazasLog (szExeAplica_Pago,"\t lhNum_celular      [%ld]",LOG03,lhNum_celular);
+	        vDTrazasLog (szExeAplica_Pago,"\t vp_Pref_Plaza      [%s]",LOG03,vp_Pref_Plaza);
+	        vDTrazasLog (szExeAplica_Pago,"\t szhCod_Operacion   [%s]",LOG03,szhCod_Operacion);
+	
+	        EXEC SQL EXECUTE
+	            BEGIN
+	                CO_SIMULAPAGO_LIMITECONSUMO_PR
+	                (
+	                    :lhCod_cliente,     :dhRestantePago,    :szhFec_efectividad,    :szhEmp_recaudadora,
+	                    :ihCod_servicio,    :lhNum_celular,     :vp_Pref_Plaza,         :szhCod_Operacion,
+	                    :szhGlosaError,     :ihRetorno,         NULL
+	                );
+	            END;
+	        END-EXEC;
+	
+	        rtrim(szhGlosaError);
+	        vDTrazasLog (szExeAplica_Pago,"\t CO_SIMULAPAGO_LIMITECONSUMO_PR szhGlosaError      [%s]",LOG03,szhGlosaError);
+	        vDTrazasLog (szExeAplica_Pago,"\t CO_SIMULAPAGO_LIMITECONSUMO_PR ihRetorno          [%d]\n",LOG03,ihRetorno);
+	
+	        iValorPL = ihRetorno;
+	
+	        /*if (iValorPL != 0)  * CH-1814 22-04-2004  capc    **/
+	        if (iValorPL < 0)
+	        {
+	            ihNumTransaccionError = ihNum_transaccionEmp;
+	            vDTrazasLog (szExeAplica_Pago,"\t Error en PL CO_SIMULAPAGO_LIMITECONSUMO_PR",LOG03);
+	            vDTrazasLog (szExeAplica_Pago,"\t ** [%s] **\n",LOG03,szhGlosaError);
+	            if (!bfnGrabaArchivoPlano())
+	            {
+	                return FALSE;
+	            }
+	        }
+	        else if (iValorPL == 1)
+	        {
+	            vDTrazasLog (szExeAplica_Pago, "\t PL CO_SIMULAPAGO_LIMITECONSUMO_PR Ejecutada con Exito *****\n", LOG03);
+	        }
+	    } /* if dhRestantePago > 0 then */
+    }
+    else  /* iValorPL == 0    * CH-1814 22-04-2004  capc **/
+    {
+        /*iCan_Reg++;                */
+        vDTrazasLog (szExeAplica_Pago,"\t no se aplica pago, cliente bloqueado por cajero (ver CO_TRANSAC_ERROR) \n",LOG03);
+    }
+
+    /*************************************************************************
+    FIN MODIFICACION THALES-IS UC AGOSTO 2004
+    *************************************************************************/
+    return TRUE;
+
+}/**************************** Final bfnAplica_Pagos ***************************/
+
+/* Funcion : bfnAplica_Pagos_LimiteConsumo                                        */
+/*****************************************************************************/
+static BOOL bfnAplica_Pagos_LimiteConsumo (int i)
+{
+int  iRes = 0;
+   vDTrazasLog (szExeAplica_Pago,"\n\t\t* Funcion Aplica Pagos de Limite de Consumo*\n",LOG03);
+   vfnMemsetVariables();
+   sprintf(szhEmp_recaudadora ,"%s", szahEmp_recaudadora[i]);
+   sprintf(szhSer_solicitado  ,"%s", szahSer_solicitado [i]);
+   sprintf(szhFec_efectividad ,"%s", szahFec_efectividad[i]);
+   sprintf(szhNom_usuarora    ,"%s", szahNom_usuarora   [i]);
+   sprintf(szhTip_transaccion ,"%s", szahTip_transaccion[i]);
+   sprintf(szhSub_tip_transac ,"%s", szahSub_tip_transac[i]);
+   sprintf(szhNum_ejercicio   ,"%s", szahNum_ejercicio  [i]);
+   sprintf(szhNum_folioctc    ,"%s", szahNum_folioctc   [i]);
+   sprintf(szhNum_ident       ,"%s", szahNum_ident      [i]);
+   sprintf(szhCod_banco       ,"%s", szahCod_banco      [i]);
+   sprintf(szhCta_corriente   ,"%s", szahCta_corriente  [i]);
+   sprintf(szhCod_autoriza    ,"%s", szahCod_autoriza   [i]);
+   sprintf(szhNum_Tarjeta     ,"%s", szahNum_tarjeta    [i]);
+   sprintf(szhCod_tiptarjeta  ,"%s", szahCod_tiptarjeta [i]);
+   sprintf(szhCod_Operacion   ,"%s", szahCod_Operacion  [i]);
+  /* sprintf(szhCod_PlanServ    ,"%s", szahCod_PlanServ   [i]);*/
+   ihCod_caja_recauda = iahCod_caja_recauda[i] ;
+   ihNum_transaccion  = iahNum_transaccion [i] ;
+   ihNum_transaccionEmp = iahNum_transaccionEmp [i] ;
+   ihCod_servicio     = iahCod_servicio    [i] ;
+   lhCod_cliente      = lahCod_cliente     [i] ;
+   lhNum_celular      = lahNum_celular     [i] ;
+   dhImp_pago         = dahImp_pago        [i] ;
+   ihTip_valor        = iahTip_valor       [i] ;
+   lhNum_documento    = lahNum_documento   [i] ;
+   ihCan_debe         = iahCan_debe        [i] ;
+   dhMto_debe         = dahMto_debe        [i] ;
+   ihCan_haber        = iahCan_haber       [i] ;
+   dhMto_haber        = dahMto_haber       [i] ;
+   lhCod_periodo      = lahCod_periodo     [i] ;
+
+   /* Valida Numero de cheque si tip_valor distinto de uno .(Validacion para TMC)*/
+   /* Valida Numero de cheque si tip_valor es igual a 4*/
+   /*if (ihTip_valor!=1) {*/
+   if (ihTip_valor==4) {
+           if (lhNum_documento < 1) {
+                  vDTrazasLog (szExeAplica_Pago,"\t Tipo de Pago es con Cheque. Numero de Documento(cheque) debe ser mayor que 0.",LOG01);
+                  return FALSE;
+           }
+   }
+   iValorPL=0;
+   ihRetorno=-999;
+   memset(&szhGlosaError,'\0',sizeof(szhGlosaError));
+
+        /******************************************/
+        if (ifnVerificaPeriodo()!=0) return FALSE;
+        /******************************************/
+        vDTrazasLog (szExeAplica_Pago,"\t *** Ejecutando PL CO_APLICAPAGO_LIMITECONSUMO_PR con los sigtes. Parametros :",LOG03);
+        vDTrazasLog (szExeAplica_Pago,"\t ihCod_servicio     [%d]",LOG03,ihCod_servicio);
+        vDTrazasLog (szExeAplica_Pago,"\t lhCod_cliente      [%ld]",LOG03,lhCod_cliente);
+        vDTrazasLog (szExeAplica_Pago,"\t lhNum_celular      [%ld]",LOG03,lhNum_celular);
+        vDTrazasLog (szExeAplica_Pago,"\t szhNum_folioctc    [%s]",LOG03,szhNum_folioctc);
+        vDTrazasLog (szExeAplica_Pago,"\t dhImp_pago         [%f]",LOG03,dhImp_pago);
+        vDTrazasLog (szExeAplica_Pago,"\t szhFec_efectividad [%s]",LOG03,szhFec_efectividad);
+        vDTrazasLog (szExeAplica_Pago,"\t szhEmp_recaudadora [%s]",LOG03,szhEmp_recaudadora);
+        vDTrazasLog (szExeAplica_Pago,"\t szhNum_ejercicio   [%s]",LOG03,szhNum_ejercicio);
+        vDTrazasLog (szExeAplica_Pago,"\t ihTip_valor        [%d]",LOG03,ihTip_valor);
+        vDTrazasLog (szExeAplica_Pago,"\t lhNum_documento    [%ld]",LOG03,lhNum_documento);
+        vDTrazasLog (szExeAplica_Pago,"\t szhCod_banco       [%s]",LOG03,szhCod_banco);
+        vDTrazasLog (szExeAplica_Pago,"\t szhCta_corriente   [%s]",LOG03,szhCta_corriente);
+        vDTrazasLog (szExeAplica_Pago,"\t ihCod_caja_recauda [%d]",LOG03,ihCod_caja_recauda);
+        vDTrazasLog (szExeAplica_Pago,"\t szhNum_Tarjeta     [%s]",LOG03,szhNum_Tarjeta);
+        vDTrazasLog (szExeAplica_Pago,"\t szhCod_tiptarjeta  [%s]",LOG03,szhCod_tiptarjeta);
+        vDTrazasLog (szExeAplica_Pago,"\t szhCod_autoriza    [%s]",LOG03,szhCod_autoriza);
+        vDTrazasLog (szExeAplica_Pago,"\t ihNum_transaccion  [%d]",LOG03,ihNum_transaccion);
+        vDTrazasLog (szExeAplica_Pago,"\t ihNum_transaccionEmp  [%d]",LOG03,ihNum_transaccionEmp);
+        vDTrazasLog (szExeAplica_Pago,"\t lhCod_periodo      [%d]",LOG03,lhCod_periodo);
+        vDTrazasLog (szExeAplica_Pago,"\t szhCod_Operacion   [%s]",LOG03,szhCod_Operacion);
+        vDTrazasLog (szExeAplica_Pago,"\t vp_Pref_Plaza      [%s]\n",LOG03,vp_Pref_Plaza);
+       /* vDTrazasLog (szExeAplica_Pago,"\t szhCod_PlanServ   [%s]\n",LOG03,szhCod_PlanServ);*/
+
+        EXEC SQL EXECUTE
+        BEGIN
+        CO_APLICAPAGO_LIMITECONSUMO_PR(:lhCod_cliente, :dhImp_pago, :szhFec_efectividad, :szhCod_banco,
+                             NULL, NULL, :szhEmp_recaudadora, NULL, :ihCod_servicio, :lhNum_celular,
+                             :szhCta_corriente, NULL, NULL, :szhNum_folioctc, :szhNum_ejercicio,
+                             :ihTip_valor, :lhNum_documento, :ihCod_caja_recauda, :ihNum_transaccion,
+                             :szhNum_Tarjeta, NULL, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL,
+                             NULL, :vp_Secu_compago, :vp_Pref_Plaza, :szhCod_Operacion, :szhGlosaError, :ihRetorno, NULL, :szhCod_tiptarjeta, :szhCod_autoriza);
+        END;
+        END-EXEC;
+        vDTrazasLog (szExeAplica_Pago,"\t szhGlosaError      [%s]",LOG03,szhGlosaError);
+        vDTrazasLog (szExeAplica_Pago,"\t ihRetorno          [%d]\n",LOG03,ihRetorno);
+
+        iValorPL = ihRetorno;
+
+        if (iValorPL < 0)
+        {
+			ihNumTransaccionError = ihNum_transaccionEmp;
+			vDTrazasLog (szExeAplica_Pago,"\t Error en PL CO_APLICAPAGO_LIMITECONSUMO_PR",LOG03);
+			vDTrazasLog (szExeAplica_Pago,"\t ** [%s] **\n",LOG03,szhGlosaError);
+
+			if (!bfnGrabaArchivoPlano())
+			{
+				return FALSE;
+			}
+        }
+        else if (iValorPL == 1)
+        {
+            /*iCan_Reg++;*/
+            vDTrazasLog (szExeAplica_Pago,"\t PL Ejecutada con Exito *****\n",LOG03);
+        }
+        else
+        {
+            /*iCan_Reg++;                */
+            vDTrazasLog (szExeAplica_Pago,"\t no se aplica pago, cliente bloqueado por cajero (ver CO_TRANSAC_ERROR) \n",LOG03);
+        }
+
+    return TRUE;
+
+}/**************************** Final bfnAplica_Pagos_LimiteConsumo ***************************/
+static BOOL bfnGrabaArchivoPlano()
+{
+    if (ifnAbreArchivosDat()!=0) return -1;
+
+    fprintf(fpDat,"%-15.15s|%4d|%-3.3s|%19.19s|%6d|%10.10s|%1.1s|%1.1s|%2d|%12.12s|%8ld|%8ld|%.4f|%11.11s|%20.20s|%2d|"
+           "%9ld|%3.3s|%18.18s|%10.10s|%5d|%9ld|%5d|%9ld\n",
+            szhEmp_recaudadora, ihCod_caja_recauda, szhSer_solicitado , szhFec_efectividad,
+            ihNum_transaccion , szhNom_usuarora   , szhTip_transaccion, szhSub_tip_transac,
+            ihCod_servicio    , szhNum_ejercicio  , lhCod_cliente     , lhNum_celular     ,
+            dhImp_pago        , szhNum_folioctc   , szhNum_ident      , ihTip_valor       ,
+            lhNum_documento   , szhCod_banco      , szhCta_corriente  , szhCod_autoriza   ,
+            ihCan_debe        , dhMto_debe        , ihCan_haber       , dhMto_haber );
+
+
+    fclose(fpDat);
+    fflush(fpDat);
+
+    vDTrazasLog (szExeAplica_Pago,"\t Actualizando CO_INTERFAZ_PAGOS con estado = 'PENDIENTE'*****\n",LOG03);
+    vDTrazasLog (szExeAplica_Pago,"\t\t Emp_recaudadora  ==> [%s]",LOG03,szhEmp_recaudadora);
+    vDTrazasLog (szExeAplica_Pago,"\t\t Num_transaccion  ==> [%d]\n",LOG03,ihNum_transaccion);
+    vDTrazasLog (szExeAplica_Pago,"\t\t Num_transaccionEmp  ==> [%d]\n",LOG03,ihNum_transaccionEmp);
+    EXEC SQL
+    UPDATE CO_INTERFAZ_PAGOS SET
+           COD_ESTADO  = 'PEN'
+    WHERE  EMP_RECAUDADORA = :szhEmp_recaudadora
+    AND    NUM_TRANSACCION_EMP = :ihNum_transaccionEmp;
+
+    iCan_Reg_Error = 0;
+    iCan_Reg_Error = SQLROWS;
+    iCan_Reg = iCan_Reg - iCan_Reg_Error;
+    if (SQLCODE != SQLOK ) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Error en UPDATE CO_INTERFAZ_PAGOS.",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\t Error en UPDATE CO_INTERFAZ_PAGOS\n",LOG03);
+        return FALSE;
+    }
+
+    return TRUE;
+}/**************************** Final bfnGrabaArchivoPlano ***************************/
+
+
+
+/*****************************************************************************/
+/* Funcion : bfnDesaplica_Pagos                                              */
+/*****************************************************************************/
+static BOOL bfnDesaplica_Pagos (int i)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        int  ihTipo_Valor;
+    EXEC SQL END DECLARE SECTION;
+int  iRes = 0, iSql=0;
+
+    ihTipo_Docto   = DOCTO;
+    ihCod_Vendedor = AGENTE;
+    ihCentro_Emisor= CENTRO;
+    ihMotivo       = MOTIVO;
+    /* ihTipo_Valor   = VALOR; */
+    sprintf(szhLetra_Pago,"%s\0",LETRA);
+    sprintf(szhCod_Moneda,"%s\0",MONEDA);
+
+    vDTrazasLog (szExeAplica_Pago,"\n\t\t* Funcion Desaplica Pagos *\n",LOG03);
+
+    ihRetorno      = 1;
+    sprintf(szhGlosaError,"Error\0");
+
+    sprintf(szhEmp_recaudadora ,"%s", szahEmp_recaudadora[i]);
+    sprintf(szhSer_solicitado  ,"%s", szahSer_solicitado [i]);
+    sprintf(szhFec_efectividad ,"%s", szahFec_efectividad[i]);
+    sprintf(szhNom_usuarora    ,"%s", szahNom_usuarora   [i]);
+    sprintf(szhTip_transaccion ,"%s", szahTip_transaccion[i]);
+    sprintf(szhSub_tip_transac ,"%s", szahSub_tip_transac[i]);
+    sprintf(szhNum_ejercicio   ,"%s", szahNum_ejercicio  [i]);
+    sprintf(szhNum_folioctc    ,"%s", szahNum_folioctc   [i]);
+    sprintf(szhNum_ident       ,"%s", szahNum_ident      [i]);
+    sprintf(szhCod_banco       ,"%s", szahCod_banco      [i]);
+    sprintf(szhCta_corriente   ,"%s", szahCta_corriente  [i]);
+    sprintf(szhCod_autoriza    ,"%s", szahCod_autoriza   [i]);
+    ihCod_caja_recauda = iahCod_caja_recauda[i] ;
+    ihNum_transaccion  = iahNum_transaccion [i] ;
+    ihNum_transaccionEmp  = iahNum_transaccionEmp [i] ;
+    ihCod_servicio     = iahCod_servicio    [i] ;
+    lhCod_cliente      = lahCod_cliente     [i] ;
+    lhNum_celular      = lahNum_celular     [i] ;
+    dhImp_pago         = dahImp_pago        [i] ;
+    ihTip_valor        = iahTip_valor       [i] ;
+    lhNum_documento    = lahNum_documento   [i] ;
+    ihCan_debe         = iahCan_debe        [i] ;
+    dhMto_debe         = dahMto_debe        [i] ;
+    ihCan_haber        = iahCan_haber       [i] ;
+    dhMto_haber        = dahMto_haber       [i] ;
+
+    ihTipo_Valor=ihTip_valor;
+
+    /* Ejecuta PL Co_Desapago */
+    iSql = bfnSelectNum_Compago();
+
+    if (iSql == SQLOK) {
+
+        vDTrazasLog (szExeAplica_Pago,"\t *** Ejecutando PL Co_DesaPago con los sigtes. Parametros :",LOG03);
+        vDTrazasLog (szExeAplica_Pago,"\t lhNum_Compago       [%ld]",LOG03,lhNum_Compago);
+        vDTrazasLog (szExeAplica_Pago,"\t szhPref_Plaza       [%s]",LOG03,szhPref_Plaza);
+        vDTrazasLog (szExeAplica_Pago,"\t ihTipo_Docto        [%d]",LOG03,ihTipo_Docto);
+        vDTrazasLog (szExeAplica_Pago,"\t ihCod_Vendedor      [%d]",LOG03,ihCod_Vendedor);
+        vDTrazasLog (szExeAplica_Pago,"\t szhLetra_Pago       [%s]",LOG03,szhLetra_Pago);
+        vDTrazasLog (szExeAplica_Pago,"\t ihCentro_Emisor     [%d]",LOG03,ihCentro_Emisor);
+        vDTrazasLog (szExeAplica_Pago,"\t ihMotivo            [%d]",LOG03,ihMotivo);
+        vDTrazasLog (szExeAplica_Pago,"\t ihTipo_Valor        [%d]",LOG03,ihTipo_Valor);
+        vDTrazasLog (szExeAplica_Pago,"\t szhEmp_recaudadora  [%s]",LOG03,szhEmp_recaudadora);
+        vDTrazasLog (szExeAplica_Pago,"\t ihCod_caja_recauda  [%d]",LOG03,ihCod_caja_recauda);
+        vDTrazasLog (szExeAplica_Pago,"\t szhCod_Moneda       [%s]",LOG03,szhCod_Moneda);
+        vDTrazasLog (szExeAplica_Pago,"\t szhNum_ejercicio    [%s]",LOG03,szhNum_ejercicio);
+        vDTrazasLog (szExeAplica_Pago,"\t ihNum_transaccion   [%d]",LOG03,ihNum_transaccion);
+        vDTrazasLog (szExeAplica_Pago,"\t ihNum_transaccionEmp   [%d]",LOG03,ihNum_transaccionEmp);
+        vDTrazasLog (szExeAplica_Pago,"\t szhFec_efectividad  [%s]\n",LOG03,szhFec_efectividad);
+
+        iValorPL=0;
+        ihRetorno=-999;
+        memset(&szhGlosaError,'\0',sizeof(szhGlosaError));
+        EXEC SQL EXECUTE
+        BEGIN
+            CO_DESAPLICA_PAGO(:lhNum_Compago      ,:szhPref_Plaza     ,:ihTipo_Docto  ,:ihCod_Vendedor   ,
+                              :szhLetra_Pago      ,:ihCentro_Emisor   ,:ihMotivo      ,:ihTipo_Valor     ,
+                              :szhEmp_recaudadora ,:ihCod_caja_recauda,:szhCod_Moneda ,:szhNum_ejercicio ,
+                              /* SOPORTE 02-12-2003 SE AGREGA FEC_EFECTIVIDAD por Homologacion HB-0216 de Incidencia MA-171120030293*/
+                              /* :ihNum_transaccion  ,:szhGlosaError     ,:ihRetorno); */
+                              :ihNum_transaccion  ,:szhFec_efectividad ,:szhGlosaError     ,:ihRetorno);
+        END;
+        END-EXEC;
+
+        vDTrazasLog (szExeAplica_Pago,"\t szhGlosaError [%s]",LOG03,szhGlosaError);
+        vDTrazasLog (szExeAplica_Pago,"\t ihRetorno     [%d]\n",LOG03,ihRetorno);
+
+        iValorPL = ihRetorno;
+    if (iValorPL != 0)
+    {
+            vDTrazasLog (szExeAplica_Pago," Error en PL C0_DESAPLICAPAGO\n",LOG03);
+            vDTrazasLog (szExeAplica_Pago,"\t ** [%s] **\n",LOG03,szhGlosaError);
+            if (!bfnGrabaArchivoPlano())
+            {
+                return FALSE;
+            }
+    }
+        else
+    {
+        iCan_Reg++;
+        vDTrazasLog (szExeAplica_Pago,"\t PL Ejecutada con Exito \n",LOG03);
+    }
+    }
+
+    return TRUE;
+}/**************************** Final bfnDesaplica_Pagos ***************************/
+
+static int bfnSelectNum_Compago()
+{
+    vDTrazasLog (szExeAplica_Pago,"\t ** Seleccionando Num. Comprobante Pago",LOG03);
+
+    EXEC SQL
+        SELECT trim(COD_OPERADORA_SCL)
+        INTO   :lhCOD_OPERADORA_SCL
+        FROM GE_OPERADORA_SCL_LOCAL ;
+
+     vDTrazasLog (szExeAplica_Pago,"\t\t Cod_Operadora_SCL   ===> [%s]\n",LOG03,lhCOD_OPERADORA_SCL);
+
+     if (strcmp(lhCOD_OPERADORA_SCL,"TMM")==0)
+     {
+          EXEC SQL
+          /*SELECT NVL(NUM_COMPAGO,0) , NVL(PREF_PLAZA,'TMC') 08-06-2004 TM-0677 capc */
+            SELECT MAX(NVL(NUM_COMPAGO,0)) , NVL(PREF_PLAZA,'MEX')
+                INTO   :lhNum_Compago     , :szhPref_Plaza
+            FROM   CO_INTERFAZ_PAGOS
+            WHERE  EMP_RECAUDADORA  = :szhEmp_recaudadora
+                AND    COD_CAJA_RECAUDA = :ihCod_caja_recauda
+                AND    NUM_TRANSACCION  = :ihNum_transaccion
+                AND    IMP_PAGO         = :dhImp_pago /*08-06-2004 TM-0677 capc */
+                /*AND    FEC_EFECTIVIDAD  = TO_DATE(:szhFec_efectividad,'DD-MM-YYYY HH24:MI:SS') 08-06-2004 TM-0677 capc */
+                AND    TIP_TRANSACCION  = 'K'
+                AND    COD_ESTADO       = 'PRO'
+                GROUP BY NUM_COMPAGO, PREF_PLAZA;
+     }
+     else
+     {
+         EXEC SQL
+            SELECT NVL(NUM_COMPAGO,0) , NVL(PREF_PLAZA,'TMC')
+                INTO   :lhNum_Compago     , :szhPref_Plaza
+            FROM   CO_INTERFAZ_PAGOS
+            WHERE  EMP_RECAUDADORA  = :szhEmp_recaudadora
+                AND    COD_CAJA_RECAUDA = :ihCod_caja_recauda
+                AND    NUM_TRANSACCION  = :ihNum_transaccion
+                AND    FEC_EFECTIVIDAD  = TO_DATE(:szhFec_efectividad,'DD-MM-YYYY HH24:MI:SS')
+                AND    TIP_TRANSACCION  = 'K'
+                AND    COD_ESTADO       = 'PRO';
+    }
+
+
+
+
+    if (SQLCODE == SQLNOTFOUND) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"bfnSelectNum_Compago.",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\t Emp_recaudadora  [%s]",LOG03,szhEmp_recaudadora);
+        vDTrazasLog (szExeAplica_Pago,"\t Cod_caja_recauda [%d]",LOG03,ihCod_caja_recauda);
+        vDTrazasLog (szExeAplica_Pago,"\t Num_transaccion  [%d]",LOG03,ihNum_transaccion);
+        vDTrazasLog (szExeAplica_Pago,"\t Fec_Efectividad  [%s]",LOG03,szhFec_efectividad);
+        vDTrazasLog (szExeAplica_Pago,"\t .......Continua con el sigte. registro Alegremente\n",LOG03);
+    }
+    if ((SQLCODE != SQLOK ) && (SQLCODE != SQLNOTFOUND)) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"bfnSelectNum_Compago." ,SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\t Emp_recaudadora  [%s]",LOG03,szhEmp_recaudadora);
+        vDTrazasLog (szExeAplica_Pago,"\t Cod_caja_recauda [%d]",LOG03,ihCod_caja_recauda);
+        vDTrazasLog (szExeAplica_Pago,"\t Num_transaccion  [%d]",LOG03,ihNum_transaccion);
+        vDTrazasLog (szExeAplica_Pago,"\t Fec_Efectividad  [%s]",LOG03,szhFec_efectividad);
+        return -1;
+    }
+
+    vDTrazasLog (szExeAplica_Pago,"\t\t Num_Compago   ===> [%ld]\n",LOG03,lhNum_Compago);
+    vDTrazasLog (szExeAplica_Pago,"\t\t szhPref_Plaza ===> [%s]\n",LOG03,szhPref_Plaza);
+    return SQLCODE;
+}/**************************** Final bfnSelectNum_Compago ***************************/
+
+
+/**************************** Inicio bfnSeleccionaOperadora ***************************/
+static int bfnSeleccionaOperadora()
+{
+   vDTrazasLog (szExeAplica_Pago,"\t ** Seleccionando OPERADORA",LOG03);
+
+    EXEC SQL
+    SELECT trim(COD_OPERADORA_SCL)
+    INTO   :lhCOD_OPERADORA_SCL
+    FROM GE_OPERADORA_SCL_LOCAL ;
+
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"bfnSeleccionaOperadora",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\n\t Error en bfnSeleccionaOperadora \n",LOG03);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO bfnSeleccionaOperadora.");
+        return FALSE;
+    }
+    if ((SQLCODE != SQLOK ) && (SQLCODE != SQLNOTFOUND))
+    {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"bfnSeleccionaOperadora",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\n\t Error en bfnSeleccionaOperadora \n",LOG03);
+        ifnMailAlert("APLICAPAGO","TODOS","FALLO bfnSeleccionaOperadora.");
+        return FALSE;
+    }
+    vDTrazasLog (szExeAplica_Pago,"\t\t Cod_Operadora_SCL   ===> [%s]\n",LOG03,lhCOD_OPERADORA_SCL);
+    return SQLCODE;
+}/**************************** Fin bfnSeleccionaOperadora ***************************/
+
+
+static BOOL bfnUpdateColasProc (char *szEstado)
+{
+EXEC SQL BEGIN DECLARE SECTION;
+     char szhEstado  [2];
+EXEC SQL END DECLARE SECTION;
+
+    sprintf(szhEstado,"%s",szEstado);
+
+    vDTrazasLog (szExeAplica_Pago,"\t Actualizando CO_COLASPROC con Estado [%s]*****",LOG03,szEstado);
+    EXEC SQL
+    UPDATE CO_COLASPROC SET
+           COD_ESTADO  = :szhEstado,
+           FEC_ESTADO  = SYSDATE,
+           PID_PROCESO = :lhPid_Proceso
+    WHERE  COD_PROCESO = :szhCod_Proceso;
+
+    if (SQLCODE != SQLOK ) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Error en UPDATE CO_COLASPROC. [%s]",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\t Error en bfnUpdateColasProc\n",LOG03);
+        return FALSE;
+    }
+    EXEC SQL COMMIT WORK;
+    if (SQLCODE != SQLOK ) {
+        iDError (szExeAplica_Pago,ERR000,vInsertarIncidencia,"Error en COMMIT WORK CO_COLASPROC. [%s]",SQLERRM);
+        vDTrazasLog (szExeAplica_Pago,"\t Error en COMMIT WORK (bfnUpdateColasProc)\n",LOG03);
+        return FALSE;
+    }
+
+    return TRUE;
+}/**************************** Final bfnUpdateColasProc ***************************/
+
+
+static void vfnMemsetVariables()
+{
+ memset(&szhEmp_recaudadora,'\0',sizeof(szhEmp_recaudadora));
+ memset(&szhSer_solicitado ,'\0',sizeof(szhSer_solicitado ));
+ memset(&szhFec_efectividad,'\0',sizeof(szhFec_efectividad));
+ memset(&szhNom_usuarora   ,'\0',sizeof(szhNom_usuarora));
+ memset(&szhTip_transaccion,'\0',sizeof(szhTip_transaccion));
+ memset(&szhSub_tip_transac,'\0',sizeof(szhSub_tip_transac));
+ memset(&szhNum_ejercicio  ,'\0',sizeof(szhNum_ejercicio));
+ memset(&szhNum_folioctc   ,'\0',sizeof(szhNum_folioctc));
+ memset(&szhNum_ident      ,'\0',sizeof(szhNum_ident));
+ memset(&szhCod_banco      ,'\0',sizeof(szhCod_banco));
+ memset(&szhCta_corriente  ,'\0',sizeof(szhCta_corriente));
+ memset(&szhCod_autoriza   ,'\0',sizeof(szhCod_autoriza ));
+
+ memset(&ihCod_caja_recauda,0,sizeof(ihCod_caja_recauda));
+ memset(&ihNum_transaccion ,0,sizeof(ihNum_transaccion));
+ memset(&ihNum_transaccionEmp ,0,sizeof(ihNum_transaccionEmp));
+ memset(&ihCod_servicio    ,0,sizeof(ihCod_servicio));
+ memset(&lhCod_cliente     ,0,sizeof(lhCod_cliente));
+ memset(&lhNum_celular     ,0,sizeof(lhNum_celular));
+ memset(&dhImp_pago        ,0,sizeof(dhImp_pago));
+ memset(&ihTip_valor       ,0,sizeof(ihTip_valor ));
+ memset(&lhNum_documento   ,0,sizeof(lhNum_documento));
+ memset(&ihCan_debe        ,0,sizeof(ihCan_debe));
+ memset(&dhMto_debe        ,0,sizeof(dhMto_debe));
+ memset(&ihCan_haber       ,0,sizeof(ihCan_haber));
+ memset(&dhMto_haber       ,0,sizeof(dhMto_haber));
+
+}
+
+
+int ifnAbreArchivosLog()
+{
+    char modulo[]="ifnAbreArchivosLog";
+    char *pathDir               ;
+    char szArchivo  [32]    ="" ;
+    char szComando  [128]   ="" ;
+    char szFecha    [9]     ="" ;
+
+    memset(szArchivo,'\0',sizeof(szArchivo));
+    sprintf(szArchivo,"APPAG");
+
+        strncpy(szFecha,&szSysDate[0],8);
+    pathDir =(char *)malloc(128);
+    pathDir =szGetEnv("XPC_LOG");
+    sprintf(szPath  ,"%s/CO_SCHEDULER/%s",pathDir,szFecha);
+
+    free(pathDir);
+
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    sprintf(stStatus.ErrName,"%s/%s.err",szPath,szArchivo);
+    if((stStatus.ErrFile = fopen(stStatus.ErrName,"a")) == (FILE*)NULL ){
+        fprintf( stderr, "\n<< No pudo crearse el archivo de errores %s >> \n", stStatus.ErrName);
+        return -1;
+    }
+
+    sprintf(stStatus.LogName,"%s/%s.log",szPath,szArchivo);
+    if((stStatus.LogFile = fopen(stStatus.LogName,"a")) == (FILE*)NULL ) {
+        fprintf(stderr, "\n<< No pudo crearse el archivo de log %s >>\n", stStatus.LogName);
+        return -1;
+    }
+
+    return 0;
+}
+/******************************************************/
+
+int ifnAbreArchivosDat()
+{
+char *pathDir               ;
+char szComando  [128]   ="" ;
+char szFecha    [9]     ="" ;
+
+
+    strncpy(szFecha,&szSysDate[0],8);
+    pathDir =(char *)malloc(128);
+    pathDir =szGetEnv("HOME");
+    sprintf(szPath  ,"%s/DAT/Aplica_Pagos/%s",pathDir,szFecha);
+
+    free(pathDir);
+
+    sprintf(szComando,"mkdir -p %s", szPath);
+    system (szComando);
+
+    sprintf(szFileName,"%s/Anomalias_APPAG.dat",szPath);
+    if((fpDat = fopen(szFileName, "a")) == (FILE *)NULL)  {
+        vDTrazasLog (szExeAplica_Pago,"Archivo [%s] no pudo ser abierto.\n",LOG03,szFileName);
+        return FALSE;
+    }
+
+    return 0;
+}
+
+
+
+/* ============================================================================= */
+/* En startel2 escribe en el log ; En startel 1 ademßs envia un mensaje de alerta*/
+/* via E-mail al equipo de desarrollo y al encargado en produccion del sistema   */
+/* ============================================================================= */
+int ifnMailAlert (char* szFrom, char* szMailTo, char* szTxt, ...)
+{
+char szMsg[BUFSIZ]="";
+char szComando[512]="";
+va_list ap;
+int iAux = 0;
+FILE *fh;    /* file handler generico */
+
+    fh = stderr;
+    va_start (ap,szTxt);
+    vsprintf (szMsg,szTxt,ap);  /* pasa el texto con los formatos ... a un string normal */
+    va_end   (ap);
+
+    iAux = fprintf (fh,"\n -------------------------------------- "
+                       "\n DE         : %s "
+                       "\n ENVIADO EL : %s "
+                       "\n PARA       : %s"
+                       "\n ASUNTO     : ALERTA - ALERTA - ALERTA  "
+                       "\n -------------------------------------- "
+                       "\n %s "
+                       "\n -------------------------------------- "
+                       "\n"
+                      ,szFrom ,szSysDate, szMailTo, szMsg);
+
+    if (iAux < 0) return -1;
+    if ( fflush(fh) != 0 )  return -2;
+
+    /*sprintf(szComando,"%s/MailAlert.sh %s \" Mensaje desde %s\" \"Error en la Cola %s de la Aplicacion de Recaudacion => %s\" "
+                     ,getenv("REX_KSH"), szMailTo, szFrom, szFrom, szMsg);
+    system(szComando);*/
+
+    return 0;
+}
+
+/*==================================================================================================*/
+/* Funcion que Quita los espacios en blanco a la derecha de una cadena										 */
+/*==================================================================================================*/
+void rtrim( char *szCadena )
+{
+	char modulo[] = "rtrim";
+	 int i, iLen, iCnt;
+
+    iLen = strlen( szCadena ) - 1;
+    for( iCnt = iLen; iCnt >= 0; iCnt-- ) if( szCadena[iCnt] != ' ' && szCadena[iCnt] != '\0' ) break;
+    szCadena[ iCnt + 1 ] = '\0'; 	/* reemplaza primer ' ' por '\0' produciendo un rtrim */
+    return;
+} /* void rtrim( char *szCadena ) */
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

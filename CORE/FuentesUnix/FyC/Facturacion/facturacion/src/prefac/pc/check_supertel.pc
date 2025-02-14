@@ -1,0 +1,834 @@
+/*************************************************************************/
+/* Programa para controlar consistencia de los clientes de tipo STB      */
+/* (super-telefono) a nivel de tablas de interfaz y de abonados.         */
+/*                                                                       */
+/* Por William Sepúlveda V.                                              */
+/*-----------------------------------------------------------------------*/
+/* Version 1 - Revision 00 															 */
+/* Miercoles 23 de Junio de 1999.                                        */
+/*************************************************************************/
+/* SAAM-20030725 Se cambia logica de manejo de arreglos por TDA          */
+/*************************************************************************/
+
+
+#include "prefac.h"
+
+#define PROG_VERSION  "1.00"
+/* #define MAX_CARGOS    50000 */
+#define NOENCONTRA		  0 
+#define FAILURE			 -1
+#define CICLO_10		 10
+#define STB			  1
+
+EXEC SQL INCLUDE sqlca;
+
+/* Definicion de tipos */
+/*--------------------------------------------------*/
+
+
+/*--------------------------------------------------*/
+
+
+/* Variables globales definidas en base a campos de las tablas de la base de datos */
+
+rg_ga_infaccel	*pstga_infaccel_primero;
+rg_ga_infaccel	*pstga_infaccel_ultimo;
+rg_ga_infaccel	*pstga_infaccel_posicion_aux=NULL;
+
+rg_ga_abocel	*pstga_abocel_primero;
+rg_ga_abocel	*pstga_abocel_ultimo;
+rg_ga_abocel	*pstga_abocel_posicion_aux=NULL;
+
+rg_ge_cargos	*pstge_cargos_primero;
+rg_ge_cargos	*pstge_cargos_ultimo;
+rg_ge_cargos	*pstge_cargos_posicion_aux=NULL;
+
+rg_fa_ciclocli	*pstfa_ciclocli_primero;
+rg_fa_ciclocli	*pstfa_ciclocli_ultimo;
+rg_fa_ciclocli  *pstfa_ciclocli_posicion_aux=NULL;
+
+EXEC SQL BEGIN DECLARE SECTION;
+rg_fa_ciclfact	*fa_ciclfact;
+EXEC SQL END DECLARE SECTION;
+
+
+/* -------------------------- */
+/* Variables globales         */
+/* -------------------------- */
+char	file_anom_stb[PATH];
+int		MemInd_Infac=0, MemInd_Abocel=0, MemInd_Cargos=0;		
+int		anom24=0, anom25=0, anom77=0;
+
+void 	vSqlError ()
+{
+		EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+		vFechaHora();
+		fprintf(stderr,"Error en ORACLE: \n%s\n"
+					   "Proceso finalizado con error.\n", sqlca.sqlerrm.sqlerrmc);
+
+		EXEC SQL ROLLBACK WORK RELEASE;
+		exit(1);
+}
+
+void 	Config_Ambiente ()
+{
+		char *path_dir="";
+		char dat_dir[1000];
+
+		if((path_dir=getenv("DAT")) == NULL)
+		{
+			fprintf(stderr, "\nVariable de ambiente [DAT] no esta definida. Se cancela.\n");
+			exit(2);
+		}
+
+		sprintf(dat_dir, "%s/%d", path_dir, cod_ciclfact);
+		sprintf(file_anom_stb, "%s/anom_stb_%d.dat", dat_dir, cod_ciclfact);
+
+		if(mkdir(dat_dir, S_IRWXU|S_IRWXG|S_IRWXO) == FAILURE) 
+		{
+			if(errno != EEXIST)
+			{
+				fprintf(stderr, "Fallo la creacion del directorio [%s].\n", dat_dir);
+   			fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+   			fprintf(stderr, "Proceso finalizado con error.\n");
+   			exit(2);
+			}
+		}
+}
+
+
+FILE 	*Abre_Arch (char *ptr, char *modo)
+{
+		FILE *fp;
+
+		if((fp=fopen(ptr, modo)) == NULL)
+		{
+   		fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", ptr);
+   		fprintf(stderr, "Revise su existencia.\n");
+   		fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));
+   		fprintf(stderr, "Proceso finalizado con error.\n");
+   		exit(2);
+		}
+
+		return(fp);
+}
+
+
+void	Busca_FaCiclFact ()
+{
+		fa_ciclfact = (rg_fa_ciclfact *)malloc(sizeof(rg_fa_ciclfact));
+
+		EXEC SQL SELECT COD_CICLO, FEC_DESDELLAM, FEC_HASTALLAM
+		INTO :fa_ciclfact
+		FROM FA_CICLFACT
+		WHERE COD_CICLFACT = :cod_ciclfact;
+
+		if(sqlca.sqlcode < SQLOK)
+		{
+  			vSqlError();
+		}
+		if(sqlca.sqlcode == SQLNOTFOUND)
+		{
+  			fprintf(stderr, "No se ha encontrado informacion para el periodo [%d], en tabla FA_CICLFACT.\n");
+  			fprintf(stderr, "Proceso se cancela.\n");
+  			exit(3);
+		}
+}
+
+
+int	Busca_FaCicloCli ()
+{
+        rg_fa_ciclocli *pstfa_ciclocli_nuevo;
+
+        int                     i;
+        long                    lLastRows    = 0;
+        long                    lFetchedRows = 10000;
+        long                    lRetrievRows = 10000;
+        long                    lCantidad       = 0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		char szRowid[MAXFETCH][19];
+                long lhCodCliente[MAXFETCH];
+                long lhNumAbonado[MAXFETCH];
+                int  iCodProducto[MAXFETCH];
+                long lhNUmProceso[MAXFETCH];
+                int  iIndGravedad[MAXFETCH];
+                int  iPosEmpresa[MAXFETCH];
+                int  ival_cero;
+		int  iprod_celular;
+        EXEC SQL END DECLARE SECTION;
+
+	iprod_celular = PROD_CELULAR;
+        ival_cero=0;
+
+        fprintf(stderr,"\n\t Busca_FaCicloCli \n");
+        vFechaHora();
+
+	EXEC SQL DECLARE cursor_cli CURSOR FOR
+	SELECT ROWID, COD_CLIENTE, NUM_ABONADO,1, NUM_PROCESO, 0, 0 
+	FROM FA_CICLOCLI   
+	WHERE COD_CICLO  = :fa_ciclfact->cod_ciclo
+	AND NUM_PROCESO  = :ival_cero
+	AND COD_PRODUCTO = :iprod_celular
+	AND FEC_ALTA    <= :fa_ciclfact->fec_hasta  
+	ORDER BY COD_CLIENTE, NUM_ABONADO;
+
+	EXEC SQL OPEN cursor_cli;
+
+
+        while(lFetchedRows == lRetrievRows){
+                EXEC SQL FETCH cursor_cli INTO
+			:szRowid     ,
+                        :lhCodCliente,
+                        :lhNumAbonado,
+                        :iCodProducto,
+                        :lhNUmProceso,
+                        :iIndGravedad,
+                        :iPosEmpresa ;
+
+                lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+                lLastRows = sqlca.sqlerrd[2];
+
+                for (i=0; i < lRetrievRows; i++) {
+                        pstfa_ciclocli_nuevo = (rg_fa_ciclocli *) malloc (sizeof(rg_fa_ciclocli));
+
+			if (pstfa_ciclocli_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_FA_CICLOCLI\n");
+				exit(1); 
+			}
+
+                        strcpy(pstfa_ciclocli_nuevo->rowid , szRowid[i]);
+                        pstfa_ciclocli_nuevo->cod_cliente  = lhCodCliente[i];
+                        pstfa_ciclocli_nuevo->num_abonado  = lhNumAbonado[i];
+                        pstfa_ciclocli_nuevo->cod_producto = iCodProducto[i];
+                        pstfa_ciclocli_nuevo->num_proceso  = lhNUmProceso[i];
+                        pstfa_ciclocli_nuevo->ind_gravedad = iIndGravedad[i];
+                        pstfa_ciclocli_nuevo->pos_empresa  = iPosEmpresa[i];
+                        pstfa_ciclocli_nuevo->sigte = NULL;
+
+			if (pstfa_ciclocli_primero==NULL){
+				pstfa_ciclocli_primero = pstfa_ciclocli_nuevo;
+				pstfa_ciclocli_ultimo = pstfa_ciclocli_nuevo; 
+			}
+			else {
+                        	pstfa_ciclocli_ultimo->sigte = pstfa_ciclocli_nuevo;
+				pstfa_ciclocli_ultimo = pstfa_ciclocli_nuevo;
+			}
+                        lCantidad++;
+                }
+        }
+        EXEC SQL CLOSE cursor_cli;
+        return(lCantidad-1);
+}
+
+int	Carga_GaInfaccel ()
+{
+        rg_ga_infaccel *pstga_infaccel_nuevo;
+
+        int                     i;
+        long                    lLastRows    = 0;
+        long                    lFetchedRows = 10000;
+        long                    lRetrievRows = 10000;
+        long                    lCantidad       = 0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                long lhCodCliente[MAXFETCH];
+                long lhNumAbonado[MAXFETCH];
+                char szhNumTelefija[MAXFETCH][16];
+                int  ihCodSupertel[MAXFETCH];
+                long lhCodCicloFact;
+                int  ival_uno;
+        EXEC SQL END DECLARE SECTION;
+
+        lhCodCicloFact = cod_ciclfact;
+        ival_uno=1;
+
+        fprintf(stderr,"\n\t Carga_GaInfaccel \n");
+        vFechaHora();
+
+	EXEC SQL DECLARE infac_cursor CURSOR FOR
+	SELECT COD_CLIENTE, NUM_ABONADO, NVL(NUM_TELEFIJA, 'X'), NVL(COD_SUPERTEL, -1)
+	FROM GA_INFACCEL
+	WHERE COD_CICLFACT = :lhCodCicloFact
+	AND   IND_SUPERTEL = :ival_uno
+	ORDER BY COD_CLIENTE, NUM_ABONADO;
+
+	EXEC SQL OPEN infac_cursor;
+
+
+        while(lFetchedRows == lRetrievRows){
+		EXEC SQL FETCH infac_cursor INTO
+                        :lhCodCliente   ,
+                        :lhNumAbonado   ,
+                        :szhNumTelefija ,
+                        :ihCodSupertel ;
+
+                lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+                lLastRows = sqlca.sqlerrd[2];
+
+                for (i=0; i < lRetrievRows; i++) {
+			pstga_infaccel_nuevo = (rg_ga_infaccel *) malloc (sizeof(rg_ga_infaccel));
+			
+			if (pstga_infaccel_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_GA_INFACCEL\n");
+				exit(1); 
+			}
+
+                        pstga_infaccel_nuevo->cod_cliente = lhCodCliente[i];
+                        pstga_infaccel_nuevo->num_abonado = lhNumAbonado[i];
+                        strcpy(pstga_infaccel_nuevo->num_telefija , szhNumTelefija[i]);
+                        pstga_infaccel_nuevo->cod_supertel = ihCodSupertel[i];
+                        pstga_infaccel_nuevo->sigte = NULL;
+
+			if (pstga_infaccel_primero==NULL){
+				pstga_infaccel_primero = pstga_infaccel_nuevo;
+				pstga_infaccel_ultimo = pstga_infaccel_nuevo; 
+			}
+			else {
+                        	pstga_infaccel_ultimo->sigte = pstga_infaccel_nuevo;
+				pstga_infaccel_ultimo = pstga_infaccel_nuevo;
+			}
+                        lCantidad++;
+		}
+	}
+	EXEC SQL CLOSE infac_cursor;
+        return(lCantidad-1);
+}
+
+int	Carga_GaAbocel ()
+{
+	rg_ga_abocel *pstga_abocel_nuevo;
+
+        int                     i;
+        long                    lLastRows    = 0;
+        long                    lFetchedRows = 10000;
+        long                    lRetrievRows = 10000;
+        long                    lCantidad       = 0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                long lhCodCliente[MAXFETCH];
+                long lhNumAbonado[MAXFETCH];
+                int  iCodCiclo[MAXFETCH];
+                char szhNumTelefija[MAXFETCH][16];
+                int  lCodOperdfija[MAXFETCH];
+                int  ival_cero;
+		int  isupertel;
+		int  iprod_celular;
+        EXEC SQL END DECLARE SECTION;
+
+        ival_cero = 0;
+	isupertel = 1;
+	iprod_celular = PROD_CELULAR;
+
+        fprintf(stderr,"\n\t Carga_GaAbocel \n");
+        vFechaHora();
+
+	EXEC SQL DECLARE abocel_cursor CURSOR FOR
+	SELECT B.COD_CLIENTE, A.NUM_ABONADO, A.COD_CICLO, NVL(A.NUM_TELEFIJA, 'X'), NVL(A.COD_OPREDFIJA, -1)
+	FROM GA_ABOCEL A, FA_CICLOCLI B
+	WHERE B.COD_CICLO  = :fa_ciclfact->cod_ciclo
+	AND B.NUM_PROCESO  = :ival_cero
+	AND B.COD_PRODUCTO = :iprod_celular 
+	AND B.FEC_ALTA    <= :fa_ciclfact->fec_hasta
+	AND A.NUM_ABONADO  = B.NUM_ABONADO
+	AND A.IND_SUPERTEL = :isupertel
+	ORDER BY B.COD_CLIENTE, A.NUM_ABONADO;
+
+	EXEC SQL OPEN abocel_cursor;
+
+        while(lFetchedRows == lRetrievRows){
+		EXEC SQL FETCH abocel_cursor INTO
+                        :lhCodCliente   ,
+                        :lhNumAbonado   ,
+			:iCodCiclo      ,
+                        :szhNumTelefija ,
+                        :lCodOperdfija ;
+
+                lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+                lLastRows = sqlca.sqlerrd[2];
+
+                for (i=0; i < lRetrievRows; i++) {
+                        pstga_abocel_nuevo = (rg_ga_abocel *) malloc (sizeof(rg_ga_abocel));
+
+			if (pstga_abocel_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_GA_ABOCEL\n");
+				exit(1); 
+			}
+
+                        pstga_abocel_nuevo->cod_cliente = lhCodCliente[i];
+                        pstga_abocel_nuevo->num_abonado = lhNumAbonado[i];
+                        pstga_abocel_nuevo->cod_ciclo = iCodCiclo[i];
+                        strcpy(pstga_abocel_nuevo->num_telefija , szhNumTelefija[i]);
+                        pstga_abocel_nuevo->cod_opredfija = lCodOperdfija[i];
+                        pstga_abocel_nuevo->sigte = NULL;
+
+			if (pstga_abocel_primero==NULL){
+				pstga_abocel_primero = pstga_abocel_nuevo;
+				pstga_abocel_ultimo = pstga_abocel_nuevo; 
+			}
+			else {
+                        	pstga_abocel_ultimo->sigte = pstga_abocel_nuevo;
+				pstga_abocel_ultimo = pstga_abocel_nuevo;
+			}
+                        lCantidad++;
+		}
+	}
+	EXEC SQL CLOSE abocel_cursor;
+	return(lCantidad-1);
+}
+
+
+int	Carga_GeCargos ()
+{
+	rg_ge_cargos *pstge_cargos_nuevo;
+        
+	int                     i;
+        long                    lLastRows    = 0;
+        long                    lFetchedRows = 10000;
+        long                    lRetrievRows = 10000;
+        long                    lCantidad       = 0;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                long lhCodCliente[MAXFETCH];
+                long lhNumAbonado[MAXFETCH];
+                int  ival_cero;
+		int  isupertel;
+        EXEC SQL END DECLARE SECTION;
+	
+	ival_cero = 0;
+	isupertel = 1;
+
+        fprintf(stderr,"\n\t Carga_GeCargos \n");
+        vFechaHora();
+
+	EXEC SQL DECLARE cargos_cursor CURSOR FOR
+	SELECT A.COD_CLIENTE, A.NUM_ABONADO
+	FROM GE_CARGOS A, FA_CICLFACT B
+	WHERE   A.IND_SUPERTEL = :isupertel
+	AND     A.NUM_FACTURA  = :ival_cero
+	AND A.NUM_TRANSACCION  = :ival_cero
+	AND     B.COD_CICLFACT = A.COD_CICLFACT
+	AND B.IND_FACTURACION != :ival_cero
+	ORDER BY A.COD_CLIENTE, A.NUM_ABONADO;
+
+	EXEC SQL OPEN cargos_cursor;
+
+        while(lFetchedRows == lRetrievRows){
+		EXEC SQL FETCH cargos_cursor INTO
+                        :lhCodCliente   ,
+                        :lhNumAbonado   ;
+
+                lRetrievRows = sqlca.sqlerrd[2] - lLastRows;
+                lLastRows = sqlca.sqlerrd[2];
+
+                for (i=0; i < lRetrievRows; i++) {
+                        pstge_cargos_nuevo = (rg_ge_cargos *) malloc (sizeof(rg_ge_cargos));
+
+			if (pstge_cargos_nuevo == NULL) {
+				fprintf(stderr,"\tFalla en la asignacion de memoria en RG_GE_CARGOS\n");
+				exit(1); 
+			}
+
+                        pstge_cargos_nuevo->cod_cliente = lhCodCliente[i];
+                        pstge_cargos_nuevo->num_abonado = lhNumAbonado[i];
+			pstge_cargos_nuevo->sigte = NULL;
+
+			if (pstge_cargos_primero==NULL){
+				pstge_cargos_primero = pstge_cargos_nuevo;
+				pstge_cargos_ultimo = pstge_cargos_nuevo; 
+			}
+			else {
+                        	pstge_cargos_ultimo->sigte = pstge_cargos_nuevo;
+				pstge_cargos_ultimo = pstge_cargos_nuevo;
+			}
+                        lCantidad++;
+		}
+        }
+        EXEC SQL CLOSE cargos_cursor;
+        return(lCantidad-1);
+}
+
+void	Update_FaCicloCli (int e_numproc, char *e_rowid)
+{
+		EXEC SQL BEGIN DECLARE SECTION;
+		int  num_proc;
+		char rowid[19];
+		EXEC SQL END DECLARE SECTION;
+
+		num_proc = e_numproc;
+		strcpy(rowid,e_rowid);
+
+		EXEC SQL UPDATE FA_CICLOCLI
+		SET NUM_PROCESO   = :num_proc
+		WHERE ROWID       = :rowid;
+	
+		if(sqlca.sqlcode < 0)
+		{
+  		 	vSqlError();
+		}
+}
+
+
+void	Update_Resto (rg_fa_ciclocli *f)
+{
+        rg_fa_ciclocli *rfc;
+        int Flag = 0;
+
+        if (pstfa_ciclocli_posicion_aux == NULL)
+                rfc = pstfa_ciclocli_primero;
+        else
+                rfc = pstfa_ciclocli_posicion_aux;
+
+        for( ;rfc != NULL && Flag == 0;rfc = rfc->sigte){
+                if (f->cod_cliente == rfc->cod_cliente){
+                        while((f->cod_cliente == rfc->cod_cliente)&&(rfc != NULL)){
+                                if(rfc->num_proceso == 0){
+                                        rfc->num_proceso = RESTO;
+                                        Update_FaCicloCli(rfc->num_proceso,rfc->rowid);
+                                        anom77++;
+                                }
+				if (rfc->sigte != NULL)
+					rfc = rfc->sigte;
+                        }
+			pstfa_ciclocli_posicion_aux = rfc;
+                        Flag = 1;
+                }
+        }
+	free(rfc);
+}
+
+
+int 	main (int argc,char *argv[])
+{
+
+		rg_fa_ciclfact  *rfct;
+		rg_ga_infaccel  *rgil;
+		rg_ga_abocel    *rgal;
+		rg_ge_cargos    *rgcs;
+		rg_fa_ciclocli  *rfci;
+
+		extern char *optarg;
+ 		extern int optind, optopt, opterr;
+  		int c, j=0;
+		int u_flag=FALSE, c_flag=FALSE;
+		int Cont_CicloCli=0, Cont_GaInfaccel=0, Cont_GaAbocel=0, Cont_GeCargos=0, Cont_Emp=0;
+		int anom21=0, anom22=0, anom23=0;
+		char *szUserid_Aux;
+
+
+		char opstring[] = ":u:c:";
+		char userid[70];
+
+		FILE *fp_anom_stb;
+
+		/* Versionamiento */
+		fprintf (stderr, "Version [%s] con fecha [%s]\n",szVersionActual_supertel, szUltimaModificacion_supertel);
+
+ 		while ((c=getopt(argc, argv, opstring)) != EOF)
+  		{
+			switch(c)
+  	  	 	{
+	   		case 'u':
+	   			if(u_flag==FALSE)
+	   			{
+						if(optarg[0]=='-')
+						{
+							fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n"
+											"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+							exit(4);
+						}
+        	   	   strcpy(userid, optarg);
+						if((szUserid_Aux=(char *)strstr(userid,"/")) == (char *)NULL)
+	 					{
+							fprintf(stderr, "\nUsuario Oracle no es valido\n"
+											"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", argv[0]);
+							exit(4);
+	  					}
+					 	else
+					  	{
+							strncpy(username,userid,szUserid_Aux-userid);
+						 	strcpy (passwd,szUserid_Aux+1);
+						}
+	   			}
+	   			else
+	   			{
+        	   	   fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+        	   	   exit(4);
+	   			}
+	   			u_flag=TRUE;
+					break;
+
+	   		case 'c':
+	   			if(c_flag==FALSE)
+	     		 	{
+						if(optarg[0]=='-')
+						{
+							fprintf(stderr, "\nOpcion -%c tiene argumento invalido. Se cancela.\n"
+											"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+							exit(4);
+						}
+		  		  	   cod_ciclfact=atoi(optarg);
+	     		  	}
+		  			else
+	     			{
+		  		 	   fprintf(stderr, "\nOpcion -%c duplicada. Se cancela.\n", optopt);
+		  		 	   exit(4);
+	    			}
+	     		  	c_flag=TRUE;
+					break;
+	
+		   	case ':':
+		      		fprintf(stderr, "\nOpcion -%c requiere argumento\n"
+									"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+		 			exit(4);
+	
+		   	case '?':
+		    		fprintf(stderr, "\nOpcion -%c no reconocida\n"
+									"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", optopt, argv[0]);
+		       	exit(4);
+		   }
+		}
+	
+		if(c_flag == FALSE)
+		{
+			fprintf(stderr, "\nSe requiere argumento -c<cod_ciclfact>\n"
+							"USO ES: %s -c<cod_ciclfact> -u<username/password>\n\n", argv[0]);
+			exit(4);
+		}
+	
+		vFechaHora();
+		fprintf(stderr, "PROGRAMA DE CONTROL DE CONSISTENCIA DE CLIENTES SUPER-TELEFONO\n"
+						"VERSION %s\n\n"
+						"\nNumero de proceso   : %d\n", PROG_VERSION, getpid());
+
+	  	vFechaHora();
+	 	fprintf(stderr, "Configurando ambiente ...\n");
+		Config_Ambiente();
+
+		if(fnOraConnect(username, passwd) == FALSE)
+		{
+			fprintf(stderr, "Usuario/Password Oracle no son validos. Se cancela.\n");
+			exit(5);
+		}
+		else
+		{
+			vFechaHora();
+			fprintf(stderr, "Conexion con la base de datos ha sido exitosa.\n"
+							"Username: %s\nPassword: ********\n", username);
+		}
+
+		EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT = 'yyyymmddhh24miss';
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion en tabla FA_CICLFACT ...\n");
+		Busca_FaCiclFact();
+		fprintf(stderr, "Ciclo      : %d\n"
+						"Periodo    : %d\n"
+						"Fecha Desde: %s\n"
+						"Fecha Hasta: %s\n"
+						, fa_ciclfact->cod_ciclo, cod_ciclfact, fa_ciclfact->fec_desde, fa_ciclfact->fec_hasta);
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion de abonados supertelefono en GA_INFACCEL...\n");
+		Cont_GaInfaccel=Carga_GaInfaccel()+1;
+		fprintf(stderr, "Registros leidos: %d\n", Cont_GaInfaccel);
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion de abonados supertelefono en GA_ABOCEL...\n");
+		Cont_GaAbocel=Carga_GaAbocel()+1;
+		fprintf(stderr, "Registros leidos: %d\n", Cont_GaAbocel);
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion de clientes con cargos de tipo supertelefono (GE_CARGOS) ...\n");
+		Cont_GeCargos=Carga_GeCargos()+1;
+		fprintf(stderr, "Registros leidos: %d\n", Cont_GeCargos);
+
+		vFechaHora();
+		fprintf(stderr, "Buscando informacion de clientes/abonados a facturar (FA_CICLOCLI) ...\n");
+		Cont_CicloCli=Busca_FaCicloCli()+1;
+		fprintf(stderr, "Registros leidos: %d\n", Cont_CicloCli);
+
+		vFechaHora();
+		fprintf(stderr, "Detectando inconsistencias de abonados supertelefono ...\n");
+		if(fa_ciclfact->cod_ciclo != CICLO_10){
+
+			fprintf(stderr, "Con Ciclo distinto de 10\n");
+
+			fprintf(stderr, "Analizando Ga_Infaccel ...\n");
+/* SAAM-20030718 Para cada tupla de GA_INFACCEL busca en FA_CICLOCLI */
+			rgil = NULL;
+			pstfa_ciclocli_posicion_aux = NULL;
+			for(rgil = pstga_infaccel_primero;rgil != NULL;rgil = rgil->sigte){
+				if (pstfa_ciclocli_posicion_aux == NULL)
+					rfci = pstfa_ciclocli_primero;
+				else
+					rfci = pstfa_ciclocli_posicion_aux;
+				for( ;rfci != NULL && rgil->cod_cliente >= rfci->cod_cliente;rfci = rfci->sigte){
+					if ((rgil->cod_cliente == rfci->cod_cliente) && (rgil->num_abonado == rfci->num_abonado)){
+						pstfa_ciclocli_posicion_aux = rfci;
+                        			if(rfci->num_proceso == 0) {
+                                			rfci->num_proceso = ANOM21;
+							anom21++;
+						}
+						else
+							break;
+					}
+				}
+			} 
+
+			fprintf(stderr, "Analizando Ga_Abocel ...\n");
+/* SAAM-20030721 Para cada tupla de GA_ABOCEL busca en FA_CICLOCLI */
+			rgal = NULL;
+			pstfa_ciclocli_posicion_aux = NULL;
+			for(rgal = pstga_abocel_primero;rgal !=NULL;rgal = rgal->sigte){
+				if (pstfa_ciclocli_posicion_aux == NULL)
+					rfci = pstfa_ciclocli_primero;
+				else
+					rfci = pstfa_ciclocli_posicion_aux;
+				for( ;rfci != NULL && rgal->cod_cliente >= rfci->cod_cliente;rfci = rfci->sigte){
+					if ((rgal->cod_cliente == rfci->cod_cliente) && (rgal->num_abonado == rfci->num_abonado)){
+						pstfa_ciclocli_posicion_aux = rfci;
+                        			if(rfci->num_proceso == 0) {
+                                			rfci->num_proceso = ANOM22;
+							anom22++;
+						}
+						else {
+							break;
+						}
+					}
+				}
+			}
+
+			fprintf(stderr, "Analizando Ge_Cargos ...\n");
+/* SAAM-20030721 Para cada tupla de GA_CARGOS busca en FA_CICLOCLI */
+			rgcs=NULL;
+			pstfa_ciclocli_posicion_aux = NULL;
+			for(rgcs = pstge_cargos_primero;rgcs != NULL;rgcs = rgcs->sigte){
+				if (pstfa_ciclocli_posicion_aux == NULL)
+					rfci = pstfa_ciclocli_primero;
+				else
+					rfci = pstfa_ciclocli_posicion_aux;
+				for( ;rfci !=NULL && rgcs->cod_cliente >= rfci->cod_cliente;rfci = rfci->sigte){
+					if ((rgcs->cod_cliente == rfci->cod_cliente) && (rgcs->num_abonado == rfci->num_abonado)){
+						pstfa_ciclocli_posicion_aux = rfci;
+                        			if(rfci->num_proceso == 0) {
+                                			rfci->num_proceso = ANOM23;
+							anom23++;
+						}
+						else
+							break;
+					}
+				}
+			}
+		}
+		else {
+			
+			fprintf(stderr, "Con Ciclo igual de 10\n");
+
+			fprintf(stderr, "Analizando Ga_Infaccel y Ga_Abocel ...\n");
+/* SAAM-20030721 Para cada tupla de FA_CICLOCLI busca en GA_INFACCEL */
+			pstga_infaccel_posicion_aux = NULL;
+			pstga_abocel_posicion_aux = NULL;
+			for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+				rgil = NULL;
+				if (pstga_infaccel_posicion_aux == NULL)
+					rgil = pstga_infaccel_primero;
+				else
+					rgil = pstga_infaccel_posicion_aux;
+				for( ;rgil != NULL && rfci->cod_cliente >= rgil->cod_cliente;rgil = rgil->sigte){
+					if ((rgil->cod_cliente == rfci->cod_cliente) && (rgil->num_abonado == rfci->num_abonado)){
+						pstga_infaccel_posicion_aux = rgil;
+                        			if ((rgil->num_telefija[0] == 'X') || (rgil->cod_supertel == -1)) {
+                                			rfci->num_proceso = ANOM24;
+							anom24++;
+						}
+						else
+							break;
+					}
+				}
+				rgal = NULL;
+				if (pstga_abocel_posicion_aux == NULL)
+					rgal = pstga_abocel_primero;
+				else
+					rgal = pstga_abocel_posicion_aux;
+				for( ;rgal != NULL && rfci->cod_cliente >= rgal->cod_cliente;rgal = rgal->sigte){
+					if ((rgal->cod_cliente == rfci->cod_cliente) && (rgal->num_abonado == rfci->num_abonado)){
+						pstga_abocel_posicion_aux = rgal;
+                        			if ((rgal->num_telefija[0] == 'X') || (rgal->cod_opredfija == -1)) {
+                                			rfci->num_proceso = ANOM25;
+							anom25++;
+						}
+						else
+							break;
+					}
+				}
+			}
+		}
+
+		vFechaHora();
+		fprintf(stderr, "Generando archivo de anomalias de STB ...\n");
+		fp_anom_stb=Abre_Arch(file_anom_stb, "w");
+
+		rfci=NULL;
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){
+			if (rfci->num_proceso != NOENCONTRA)
+				fprintf(fp_anom_stb, "%.6d %.6d %.2d\n", rfci->cod_cliente, rfci->num_abonado, rfci->num_proceso);
+		}
+		fclose(fp_anom_stb);
+
+		vFechaHora();
+ 		fprintf(stderr, "Marcando anomalias en tabla FA_CICLOCLI ...\n");
+
+		j=0;
+		rfci=NULL;
+		for(rfci = pstfa_ciclocli_primero;rfci != NULL;rfci = rfci->sigte){ 
+			if(rfci->num_proceso != NOENCONTRA) {
+		 		Update_FaCicloCli(rfci->num_proceso,rfci->rowid);
+		  		Update_Resto(rfci);
+			}
+			j++;
+		}
+		
+		fprintf(stderr, "\nEstadistica del proceso:\n" "========================\n");
+		fprintf(stderr, "Cantidad de abonados con anomalia 21   	: %.6d\n", anom21);
+		fprintf(stderr, "Cantidad de abonados con anomalia 22   	: %.6d\n", anom22);
+		fprintf(stderr, "Cantidad de abonados con anomalia 23   	: %.6d\n", anom23);
+		fprintf(stderr, "Cantidad de abonados con anomalia 24   	: %.6d\n", anom24);
+		fprintf(stderr, "Cantidad de abonados con anomalia 25   	: %.6d\n", anom25);
+		fprintf(stderr, "Cantidad de clientes con anomalia 77   	: %.6d\n", anom77);
+
+		vFechaHora();
+		fprintf(stderr, "Proceso finalizado OK.\n");
+
+		free(fa_ciclfact);
+
+		EXEC SQL COMMIT WORK RELEASE;
+		return (0);
+	
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

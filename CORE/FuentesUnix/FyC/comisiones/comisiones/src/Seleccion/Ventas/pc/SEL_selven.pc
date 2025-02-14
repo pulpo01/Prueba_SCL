@@ -1,0 +1,1208 @@
+/************************************************************************/
+/* Programa encargado de seleccionar las ventas para comisiones         */
+/*----------------------------------------------------------------------*/
+/* Version 1 - Revision 00.                                             */
+/* Inicio: Martes 21 de Agosto del 2001.                                */
+/* Fin   : Miercoles 22 de Agosto del 2001.                             */
+/* Por Richard Troncoso C.                                              */
+/* Inicio: Miercoles 13 de Noviembre del 2002                           */
+/* Fin:                                                                 */
+/* Autor:  Christian Descouvieres Vargas                                */
+/* Modificacion: Se modifico el Num_serie de largo 12 a 26              */
+/* -------------------------------------------------------------------- */
+/* Modificacion por PGonzaleg                                           */
+/* Inicio: Lunes 2 de diciembre de 2002.                                */
+/* Fin:    Lunes 2 de diciembre de 2002.                                */
+/* Autor : Patricio Gonzalez Gomez                                      */
+/* Modificacion de condiciones en los WHERE referentes a la tabla       */
+/* CMD_PARAMETROS. Cambio en los campos COD_TIPCODIGO, COD_CODIGO y     */
+/* COD_PARAMETRO.                                                       */
+/* -------------------------------------------------------------------- */
+/* Modificacion Jaime Vargas Morales.                                   */
+/* Inicio : miercoles 2 de Enero 2003                                   */
+/* Fin    : miercoles 2 de Enero 2003                                   */
+/* Descripcion :     se incorpora a los registros de abono el atributo  */ 
+/*                   COD_TECNOLOGIA,                                    */
+/*                   se incorpora a la tabla CMT_HABIL_CELULAR          */ 
+/*                   el atributo COD_TECNOLOGIA                         */
+/* Jaime Varas Morales.                                                 */
+/* Inicio : Viernes 3 de Enero 2003                                     */
+/* Fin    : Viernes 3 de Enero 2003                                     */
+/* Descripcion : marcar aquellos registros con Cod_vend_nvo es null     */ 
+/*               tabla GA_ANULRECH_TH  funcion vNoConsidera()           */
+/* -------------------------------------------------------------------- */
+/* Modificacion Jaime Vargas Morales.                                   */
+/* Inicio : Lunes 13 de Enero 2003                                      */
+/* Descripcion  : Poblar el  atributo IND_CONVENIO de la TABLA          */
+/*                CMT_HABIL_CELULAR                                     */
+/************************************************************************/
+/* 20030729 Fabián Aedo R. Versionado Cuzco.                            */
+/* Se normalizan nombres de funciones y de variables                    */
+/* Se incorporan: Planes de Comisiones y Tipos de Ciclos                */
+/* Se incorpra manejo de lista general de tipos de comisionistas.       */
+/* Se restructura proceso en función de estructura de tipos de          */
+/* comisionistas.                                                       */
+/*                                                                      */
+/************************************************************************/
+
+#include "selven.h"
+#include "GEN_biblioteca.h"
+
+/*---------------------------------------------------------------------------*/
+/* Inclusion de biblioteca para manejo de interaccion con Oracle.            */
+/*---------------------------------------------------------------------------*/
+EXEC SQL INCLUDE sqlca;
+EXEC SQL WHENEVER SQLERROR DO vSqlError();
+/*---------------------------------------------------------------------------*/
+/* Definicion de variables globales para ser usadas con Oracle.              */
+/*---------------------------------------------------------------------------*/
+	EXEC SQL BEGIN DECLARE SECTION;
+		char    szhUser[30]="";
+		char    szhPass[30]="";
+		char    szhSysDate [17]="";
+		char  szFechaYYYYMMDD[9]="";
+	EXEC SQL END DECLARE SECTION;
+/*---------------------------------------------------------------------------*/
+/* Lista de Tipos de Comisionistas para ejecucion de ciclo                   */
+/*---------------------------------------------------------------------------*/
+	stTiposComis * lstTiposComis = NULL;
+/*---------------------------------------------------------------------------*/
+/* Carga la estructura de tipos de comisionistas que serán procesados.       */
+/* en funcion del tipo de ciclo en proceso, se ejecuta librería de carga de  */
+/* tipos de comisionista a procesar.                                         */
+/*---------------------------------------------------------------------------*/
+void vCargaTiposComis()
+{
+    stTiposComis * paux;
+    
+    lstUniverso = NULL;
+    switch(szTipoPeriodo)
+    {
+    	case PERIODICO:
+    			fprintf(stderr,"\n(vCargaTiposComis) EJECUCION EN MODO PERIODICO.\n");
+    			fprintf(pfLog ,"\n(vCargaTiposComis) EJECUCION EN MODO PERIODICO.\n");
+    			lstTiposComis = stGetTipComisSelecPer(UNIVERSO, stCiclo);
+				break;
+    	case ESPORADICO:
+    			fprintf(stderr,"\n(vCargaTiposComis) EJECUCION EN MODO ESPORADICO.\n");
+    			fprintf(pfLog ,"\n(vCargaTiposComis) EJECUCION EN MODO ESPORADICO.\n");
+    			lstTiposComis = stGetTipComisSelecProm(UNIVERSO, stCiclo);
+    			break;
+    }
+	if (lstTiposComis==NULL)
+		fprintf(pfLog, "\n[vCargaTiposComis] No existen Tipos de Comisionistas para procesar.");
+	else
+	{
+		for (paux=lstTiposComis;paux != NULL; paux=paux->sgte)
+        {
+			fprintf(pfLog ,"\n(vCargaTiposComis) Carga las Ventas para TipComis:[%s] [%s] TR[%d] TipVend:[%s].\n",paux->szCodTipComis,paux->szDesTipComis, paux->iCodTipoRed, paux->szCodTipVendedor);
+			fprintf(stderr,"\n(vCargaTiposComis) Carga las Ventas para TipComis:[%s] [%s] TR[%d] TipVend:[%s].\n",paux->szCodTipComis,paux->szDesTipComis, paux->iCodTipoRed, paux->szCodTipVendedor);
+            vSeleccionarUniverso(paux->iCodTipoRed, paux->szCodTipComis, paux->szCodTipVendedor);
+		}
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Evalua Rescate de Rechazos de Venta\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Evalua Rescate de Rechazos de Venta\n");
+		vNoConsidera();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Recupera los abonados de la venta.\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Recupera los abonados de la venta.\n");
+		vGetAbonados();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Recupera los datos del Cliente de la venta.\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Recupera los datos del Cliente de la venta.\n");
+		vGetClientes();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Recupera los datos de los equipos de la Venta.\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Recupera los datos de los equipos de la Venta.\n");
+		vGetEquipos();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Valida ventas con convenio PAC (Duplicados).\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Valida ventas con convenio PAC (Duplicados).\n");
+		vValidaDupConvenio();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Inserta Datos en Tabla de Seleccion.\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Inserta Datos en Tabla de Seleccion.\n");
+		vInsertaSeleccion();
+/*---------------------------------------------------------------------------*/
+		vFechaHora();
+		fprintf(pfLog, "[%s]\n", (char *)pszGetDateLog());
+		fprintf(pfLog ,"\n(vCargaTiposComis) Libera la memori utilizada.\n");
+		fprintf(stderr,"\n(vCargaTiposComis) Libera la memori utilizada.\n");
+		vLiberaUniverso();
+		vLiberaTiposComis(lstTiposComis);
+	}
+}
+/* --------------------------------------------------------------- */
+/* Determina si cliente posee convenio PAC en la venta.            */
+/* --------------------------------------------------------------- */
+int iFntIndConvenio(long pCodCliente , long plVenta)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+	    long    lhCodCliente ;
+	    char    szhFecAlta[30];
+	    char    szhFecVenta[30];
+	    char    szhCodBanco[30];
+	    char    szhNumTajeta[30];
+	    long    lhNumVenta;
+    EXEC SQL END DECLARE SECTION; 
+    
+    lhCodCliente = pCodCliente;
+    lhNumVenta = plVenta;
+
+    fprintf(pfLog,"\n[iFntIndConvenio] lhCodCliente:[%ld] lhNumVenta:[%ld].",lhCodCliente,lhNumVenta);
+
+    EXEC SQL SELECT 
+            TO_CHAR(CLI.FEC_ALTA,'DD-MM-YYYY'),
+            TO_CHAR(VTA.FEC_VENTA, 'DD-MM-YYYY'),
+            NVL(CLI.COD_BANCO,'NN'),
+            NVL(CLI.NUM_TARJETA,'NN')
+            INTO  :szhFecAlta,:szhFecVenta,:szhCodBanco,:szhNumTajeta
+            FROM GE_CLIENTES  CLI , 
+                 GA_VENTAS    VTA 
+        WHERE   CLI.COD_CLIENTE 	= :lhCodCliente
+         AND  	CLI.COD_CLIENTE   	= VTA.COD_CLIENTE
+         AND  	VTA.NUM_VENTA 		= :lhNumVenta;
+
+    if ((strcmp(szfnTrim(szhCodBanco),"NN")==0)||(strcmp(szfnTrim(szhNumTajeta),"NN")==0))
+    {
+        fprintf(pfLog," No Tiene convenio...\n");
+        return(0);
+    }
+    else
+    {
+        if (strcmp(szfnTrim(szhFecVenta),szfnTrim(szhFecAlta))==0)
+        {
+            fprintf(pfLog," Si Tiene convenio...Banco:[%s] tarjeta/cuenta:[%s]\n", szhCodBanco,szhNumTajeta );
+            return (1);
+        }
+		else
+        {
+            fprintf(pfLog,"El Cliente es anterior a la Venta. No se Cossidera...\n");
+            return(0);
+        }
+            
+    }
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Se extrae el universo DIRECTO inicial de registros a considerar para Comisiones.       */
+/* -------------------------------------------------------------------------------------- */
+void vSeleccionarUniverso(int piCodTipoRed, char * pszCodTipComis, char * pszCodTipVendedor)
+{
+    stUniverso 	* paux;
+    char        szObsIncumpFil[151];
+    long    	iCantidad = 0;
+
+	int                     i;
+	long            iLastRows    = 0;
+	int             iFetchedRows = MAXFETCH;
+	int             iRetrievRows = MAXFETCH;
+
+    EXEC SQL begin declare section;
+		char  	szhFecDesdeAceptacion[11];
+		char  	szhFecHastaAceptacion[11];
+		char  	szhFecDesdeRecepcion [11];
+		char  	szhFecHastaRecepcion [11];
+		long	lhCodCiclComis;
+		
+		int		ihCodTipoRed;
+		char    szhCodTipComis[3];
+		char	szhCodTipVendedor[3];
+
+		char	szhIndEstVenta[3];
+	    char    chIndVenta;
+	    long    lMaxFetch;
+
+		long    lhNumVenta[MAXFETCH];
+		long    lhCodVendedor[MAXFETCH];
+		long	lhCodVendDealer[MAXFETCH];
+	    char    szhFecVenta[MAXFETCH][20];
+	    char    szhFecRecepcion[MAXFETCH][20];
+	    char    szhFecAceptacion[MAXFETCH][20];
+	    char    szhFechaInicio[MAXFETCH][11];
+	    char    szhFechaTermino[MAXFETCH][11];
+		int		ihCodModVenta[MAXFETCH];
+		int		ihIndDocComp[MAXFETCH];
+        char    szhObsIncump[MAXFETCH][151];
+	    char    szhCodOficina[MAXFETCH][3];
+        long    lhCodCliente[MAXFETCH];
+        char	szhNumContrato[MAXFETCH][20];
+                
+    EXEC SQL end declare section;
+    
+    ihCodTipoRed					= piCodTipoRed;
+    strcpy(szhCodTipComis			, pszCodTipComis);
+    strcpy(szhCodTipVendedor		, pszCodTipVendedor);
+    
+    strcpy(szhFecDesdeAceptacion 	, stCiclo.szFecDesdeAceptacion);
+    strcpy(szhFecHastaAceptacion	, stCiclo.szFecHastaAceptacion);
+    strcpy(szhFecDesdeRecepcion 	, stCiclo.szFecDesdeRecepcion );
+    strcpy(szhFecHastaRecepcion 	, stCiclo.szFecHastaRecepcion );
+    lhCodCiclComis 					= stCiclo.lCodCiclComis;
+    chIndVenta 						= 'V';	/* Solo son consideradas las ventas contrato.*/
+    strcpy(szhIndEstVenta			, "AC");
+    paux = NULL;
+   
+    lMaxFetch = MAXFETCH;
+	
+	EXEC SQL declare cur_universo cursor for 
+		SELECT  DISTINCT 
+            VTAS.NUM_VENTA,
+            VTAS.COD_VENDEDOR,
+	    	NVL(VTAS.COD_VENDEALER,0),
+            TO_CHAR(VTAS.FEC_VENTA, 'DD/MM/YYYY HH24:MI:SS'),
+            TO_CHAR(NVL(VTAS.FEC_RECDOCUM, VTAS.FEC_VENTA),'DD/MM/YYYY HH24:MI:SS'),
+            TO_CHAR(NVL(VTAS.FEC_ACEPREC, NVL(VTAS.FEC_RECDOCUM, VTAS.FEC_VENTA)), 'DD/MM/YYYY HH24:MI:SS'),
+            TO_CHAR(VTAS.FEC_VENTA, 'DD/MM/YYYY'),
+            TO_CHAR(NVL(VTAS.FEC_RECDOCUM, VTAS.FEC_VENTA), 'DD/MM/YYYY'),
+            NVL(VTAS.COD_MODVENTA, -1),
+            NVL(VTAS.IND_DOCCOMP, 1),
+            NVL(VTAS.OBS_INCUMP,'SIN OBSERVACIONES'),
+            VTAS.COD_OFICINA,
+            VTAS.COD_CLIENTE,
+            NVL(VTAS.NUM_CONTRATO,'S/N')
+        FROM	GE_OFICINAS       OFIC,
+            	GA_VENTAS         VTAS,
+            	VE_VENDEDORES     VEN1, 
+				VE_REDVENTAS_TD   RVEN
+        WHERE	VTAS.COD_TIPCOMIS 	= :szhCodTipVendedor
+        AND VTAS.IND_ESTVENTA 		= :szhIndEstVenta
+        AND upper(VTAS.IND_VENTA)	= :chIndVenta
+        AND VTAS.COD_VENDEDOR 		= VEN1.COD_VENDEDOR
+        AND
+             ((
+                    VTAS.FEC_ACEPREC > TO_DATE(:szhFecDesdeAceptacion,'DD-MM-YYYY')
+        AND
+                    VTAS.FEC_ACEPREC<=TO_DATE(:szhFecHastaAceptacion,'DD-MM-YYYY')
+        AND
+                    VTAS.FEC_RECDOCUM<=TO_DATE(:szhFecHastaRecepcion,'DD-MM-YYYY')
+             ) OR (
+                    VTAS.FEC_ACEPREC > TO_DATE(:szhFecDesdeRecepcion,'DD-MM-YYYY')
+        AND
+                    VTAS.FEC_ACEPREC<=TO_DATE(:szhFecDesdeAceptacion,'DD-MM-YYYY')
+        AND
+                    VTAS.FEC_RECDOCUM> TO_DATE(:szhFecDesdeRecepcion,'DD-MM-YYYY')
+        AND
+                    VTAS.FEC_RECDOCUM<=TO_DATE(:szhFecDesdeAceptacion,'DD-MM-YYYY')
+             ))
+         AND VTAS.COD_OFICINA       =  OFIC.COD_OFICINA		     
+         AND VEN1.COD_VENDEDOR 		=  RVEN.COD_VENDEDOR
+		 AND RVEN.COD_TIPORED       =  :ihCodTipoRed;
+   
+        EXEC SQL open cur_universo;
+        
+        while(iFetchedRows == iRetrievRows)
+        {
+			EXEC SQL for :lMaxFetch
+                         FETCH cur_universo INTO
+                            :lhNumVenta,
+                            :lhCodVendedor,
+                            :lhCodVendDealer,
+                            :szhFecVenta,
+                            :szhFecRecepcion,
+                            :szhFecAceptacion,
+                            :szhFechaInicio,
+                            :szhFechaTermino,
+                            :ihCodModVenta,
+                            :ihIndDocComp,
+                            :szhObsIncump,
+                            :szhCodOficina,
+                            :lhCodCliente,
+                            :szhNumContrato;
+
+			iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+            iLastRows = sqlca.sqlerrd[2];
+                
+            for (i=0; i < iRetrievRows; i++)
+            {                
+                paux = (stUniverso *) malloc(sizeof(stUniverso));
+                 
+                paux->iCodTipoRed     			= ihCodTipoRed;
+				strcpy(paux->szCodTipComis      , szhCodTipComis);
+				paux->lCodVendedor     			= lhCodVendedor[i];
+				paux->lCodComisonista			= lObtieneVendedorPadre(paux->lCodVendedor, ihCodTipoRed, szhCodTipComis);
+				strcpy(paux->szCodTipVendedor   , szhCodTipVendedor);
+
+				paux->lNumVenta        			= lhNumVenta[i];
+				paux->lCodVendDealer   			= lhCodVendDealer[i];
+				strcpy(paux->szFecVenta       	, szfnTrim(szhFecVenta[i]));
+				strcpy(paux->szFecRecepcion   	, szfnTrim(szhFecRecepcion[i]));
+				strcpy(paux->szFecAceptacion  	, szfnTrim(szhFecAceptacion[i]));
+				paux->iCodModVenta     			= ihCodModVenta[i];
+				paux->iIndDocComp      			= ihIndDocComp [i];
+				strcpy(paux->szCodOficina     	, szfnTrim(szhCodOficina[i]));
+				paux->lCodCliente      			= lhCodCliente[i];
+				strcpy(paux->szNumContrato      , szfnTrim(szhNumContrato[i]));
+
+                paux->iDiasReales = iGetNumDias(szfnTrim(szhFechaInicio[i]), szfnTrim(szhFechaTermino[i]));
+            	paux->iDiasHabiles = iCalculaDiasHabiles(szfnTrim(szhFechaInicio[i]), szfnTrim(szhFechaTermino[i]));
+                vFiltraGlosa(szfnTrim(szhObsIncump[i]) , paux->szObsIncump);
+
+                paux->cIndConsidera				= 'S';
+                paux->abonado_sgte 				= NULL;
+                paux->sgte 						= lstUniverso;
+                lstUniverso 					= paux;
+                iCantidad++;
+        	}
+        }
+        EXEC SQL close cur_universo;
+        fprintf(pfLog, "\n(vSeleccionarUniverso)Tipo Comisionista:[%s] Cantidad de Ventas Extraídas:[%ld].\n", szhCodTipComis, iCantidad);
+}
+/*---------------------------------------------------------------------------*/
+/* PROCEDIMIENTO QUE MARCA AQUELLOS REGISTROS ,  COD_VEND_NVO ES NULO        */
+/*---------------------------------------------------------------------------*/
+void vNoConsidera()
+{
+    stUniverso  * paux;  
+    
+    long	lCantVentasRech = 0;
+    long	lCantVentasOk 	= 0;
+	long	lCantVentas 	= 0;
+
+    EXEC SQL BEGIN DECLARE SECTION ;
+       long  lhNumVenta;
+       long  lhVenta;
+       long  lhCodVendNvo;
+    EXEC SQL END  DECLARE SECTION;          
+    
+    for(paux = lstUniverso; paux != NULL; paux = paux->sgte)  
+    {  
+	    lCantVentas++;
+	    lhNumVenta	= paux->lNumVenta;
+	    lhVenta     = -1;
+		EXEC SQL SELECT 
+            B.NUM_VENTA ,
+            NVL(A.COD_VEND_NVO,-1)
+            INTO :lhVenta,:lhCodVendNvo
+            FROM GA_ANULRECH_TH A, GA_VENTAS B
+            WHERE 
+            B.NUM_VENTA = :lhNumVenta  
+            AND B.NUM_VENTA = A.NUM_VENTA (+);
+            
+		if ( lhCodVendNvo > 0 )  
+		{
+			fprintf(pfLog, "(vNoConsidera) Venta [%ld] no sera considerada (RESCATE RECHAZO).\n",lhNumVenta); 
+		    paux->cIndConsidera = 'N';
+		    lCantVentasRech++;
+		}
+		else
+		{
+            paux->cIndConsidera = 'S';
+            lCantVentasOk++;
+		}
+	}
+    fprintf(pfLog, "(vNoConsidera) Fin de Evaluacion de Ventas con Rescate de Rechazo.\n");
+    fprintf(pfLog, "(vNoConsidera) Total Ventas Examinadas          [%ld].\n",lCantVentas);
+    fprintf(pfLog, "(vNoConsidera) Total Ventas Rescate Rechazo     [%ld].\n",lCantVentasRech);
+    fprintf(pfLog, "(vNoConsidera) Total Ventas Comisionables       [%ld].\n",lCantVentasOk);
+
+    fprintf(stderr, "(vNoConsidera) Fin de Evaluacion de Ventas con Rescate de Rechazo.\n");
+    fprintf(stderr, "(vNoConsidera) Total Ventas Examinadas          [%ld].\n",lCantVentas);
+    fprintf(stderr, "(vNoConsidera) Total Ventas Rescate Rechazo     [%ld].\n",lCantVentasRech);
+    fprintf(stderr, "(vNoConsidera) Total Ventas Comisionables       [%ld].\n",lCantVentasOk);
+}    
+
+/* ***************************************************************************** */
+/* Del universo seleccionado, ahora se rescatan los abonados.                    */
+/* ***************************************************************************** */
+void vGetAbonados()
+{
+    stUniverso * paux;
+    stAbonado  * aaux;
+    int             i;      
+    short           iLastRows    = 0;       
+    int             iFetchedRows = MAXFETCH;
+    int             iRetrievRows = MAXFETCH;
+    int				iCantAbonados = 0;
+    int				iCantVentas   = 0;
+    int				iCantVentasInv= 0;
+    EXEC SQL begin declare section;
+		long    lMaxFetch;   	
+
+	    long    lhNumVenta;
+	    long    lhNumCelular[MAXFETCH];
+	    char    szhCodPlanTarif[MAXFETCH][4];
+	    char    szhNumSerie[MAXFETCH][26];
+	    long    lhNumAbonado[MAXFETCH];
+	    int   	ihCodAfinidad[MAXFETCH];
+	    char    szhCodTecnologia[MAXFETCH][8]; 
+	    
+    EXEC SQL end declare section;
+	
+	for(paux = lstUniverso; paux != NULL; paux = paux->sgte)
+	{
+		paux->abonado_sgte = NULL;
+		if (paux->cIndConsidera == 'S')
+		{
+			iLastRows    = 0;       
+			iFetchedRows = MAXFETCH;
+			iRetrievRows = MAXFETCH;
+			lMaxFetch 	 = MAXFETCH;
+			
+			lhNumVenta = paux->lNumVenta;
+			iCantVentas++;
+
+            EXEC SQL DECLARE CUR_ABONADOS CURSOR FOR SELECT 
+                CEL.NUM_CELULAR,
+                CEL.COD_PLANTARIF,
+                CEL.NUM_SERIE,
+                CEL.NUM_ABONADO,
+                NVL(CEL.COD_AFINIDAD,'0'),
+                NVL(CEL.COD_TECNOLOGIA,'TDMA') 
+            FROM    GA_ABOCEL CEL
+            WHERE   CEL.NUM_VENTA = :lhNumVenta
+            AND   NOT EXISTS (SELECT 1
+				FROM   GA_TRASPABO ABO
+                WHERE  ABO.NUM_ABONADO = CEL.NUM_ABONADO
+                AND  ABO.NUM_ABONADO != ABO.NUM_ABONADOANT);
+
+			EXEC SQL open cur_abonados;
+			
+			while(iFetchedRows == iRetrievRows)
+        	{
+				EXEC SQL for :lMaxFetch FETCH cur_abonados
+                	INTO    :lhNumCelular,
+                            :szhCodPlanTarif,
+                            :szhNumSerie,
+                            :lhNumAbonado,
+                            :ihCodAfinidad,
+                            :szhCodTecnologia ; 
+
+                iRetrievRows = sqlca.sqlerrd[2] - iLastRows;
+                iLastRows = sqlca.sqlerrd[2];
+               
+                for (i=0; i < iRetrievRows; i++)
+                {
+                    aaux = (stAbonado *) malloc (sizeof(stAbonado));
+
+                    aaux->lNumCelular         	= lhNumCelular[i];
+                    aaux->lNumAbonado         	= lhNumAbonado[i];
+                    aaux->iCodAfinidad        	= ihCodAfinidad[i];
+                    aaux->cIndConsidera    		= 'S';
+                    strcpy(aaux->szCodPlanTarif	, szfnTrim(szhCodPlanTarif[i]));
+                    strcpy(aaux->szNumSerie    	, szfnTrim(szhNumSerie[i]));
+                    strcpy(aaux->szCodTecnologia, szfnTrim(szhCodTecnologia[i])); 
+                    aaux->sgte 					= paux->abonado_sgte;
+                    paux->abonado_sgte 			= aaux;
+
+                    iCantAbonados++;
+				}
+			}
+            EXEC SQL close cur_abonados;
+            if (iCantAbonados==0)
+            {
+            	paux->cIndConsidera = 'N';
+            	iCantVentasInv++;
+            }
+		}
+	} 
+	fprintf(stderr, "\n[vGetAbonados] Ventas Validas:[%d] Abonados Recuperados:[%d] Ventas Invalidas:[%d]\n",iCantVentas, iCantAbonados, iCantVentasInv);
+	fprintf(pfLog , "\n[vGetAbonados] Ventas Validas:[%d] Abonados Recuperados:[%d] Ventas Invalidas:[%d]\n",iCantVentas, iCantAbonados, iCantVentasInv);
+        
+}
+
+/* **************************************************************************** */
+/* Del universo seleccionado, ahora se revisan los clientes.                    */
+/* **************************************************************************** */
+void vGetClientes()
+{
+    stUniverso       * paux;
+    short			seguir;
+	long			lCantVentas = 0;
+    EXEC SQL begin declare section;
+        long    lhCodCliente;
+		char	szhFecHastaAceptacion[11];
+		char	szhFecHastaRecepcion[11];
+		
+        char    szhNumIdent[20]; 
+        char    chCodCaTribut;
+    EXEC SQL end declare section;
+
+    strcpy(szhFecHastaAceptacion, stCiclo.szFecHastaAceptacion);
+    strcpy(szhFecHastaRecepcion , stCiclo.szFecHastaRecepcion );        
+
+    for (paux = lstUniverso; paux != NULL; paux = paux->sgte)
+    {
+		if (paux->cIndConsidera == 'S')
+		{
+            lhCodCliente = paux->lCodCliente;
+            EXEC SQL SELECT 
+	            	CLIE.NUM_IDENT,
+	                CATRI.COD_CATRIBUT
+	                INTO
+	                :szhNumIdent,
+	                :chCodCaTribut
+            FROM	GE_CLIENTES CLIE,
+                	GA_CATRIBUTCLIE CATRI
+			WHERE CLIE.COD_CLIENTE 	= :lhCodCliente
+            AND CLIE.COD_CLIENTE 	= CATRI.COD_CLIENTE
+            AND CATRI.FEC_DESDE  	=(	SELECT MAX(E.FEC_DESDE)
+				                        FROM    GA_CATRIBUTCLIE E
+				                        WHERE  	CATRI.COD_CLIENTE = E.COD_CLIENTE
+							            AND  	E.FEC_DESDE <= TO_DATE(:szhFecHastaAceptacion,'DD-MM-YYYY')
+							            AND 	E.FEC_DESDE <= TO_DATE(:szhFecHastaRecepcion,'DD-MM-YYYY')
+							         );
+			if (sqlca.sqlcode)
+			{
+            	paux->cIndConsidera = 'N';
+            	fprintf(stderr,"\n(vGetClientes) Cliente:[%ld] Sin datos. Venta [%ld] no será considerada.\n", lhCodCliente, paux->lNumVenta);
+            	fprintf(pfLog ,"\n(vGetClientes) Cliente:[%ld] Sin datos. Venta [%ld] no será considerada.\n", lhCodCliente, paux->lNumVenta);
+            }
+            else
+            {
+				lCantVentas++;
+				strcpy(paux->szNumIdent 	, szfnTrim(szhNumIdent));
+				strcpy(paux->szCodCategoria  ,(char *) szfnGetCategCliente(chCodCaTribut,paux->szNumIdent));
+
+				paux->iIndConvenio 			= 0;
+				paux->iIndConvenio 			= iFntIndConvenio(lhCodCliente , paux->lNumVenta);
+			}
+		} 
+	}
+	fprintf(stderr,"\n(vGetClientes) Cantidad de ventas examinadas (solo validas):[%ld].\n", lCantVentas);
+}
+
+/* **************************************************************************** */
+/* Del universo seleccionado, ahora se revisan los equipos.                     */
+/* **************************************************************************** */
+void vGetEquipos()
+{
+    stUniverso	* paux;
+    stAbonado    * aaux;
+	long		lCantVentas 	= 0;
+	long		lCantAbonados 	= 0;
+	long		lCantAbonadosX	= 0;
+	
+    EXEC SQL begin declare section;
+	    long    lhNumAbonado;
+	    long    lhCodArticulo;
+	    char    szhNumSerie[26];
+	    char    chIndProcequi;
+    EXEC SQL end declare section;
+
+    for (paux = lstUniverso; paux != NULL; paux = paux->sgte)
+    {
+        if (paux->cIndConsidera == 'S')
+        {
+            lCantVentas++;
+            for (aaux=paux->abonado_sgte; aaux != NULL; aaux = aaux->sgte)
+            {
+                if (aaux->cIndConsidera == 'S')
+                {
+                    lhNumAbonado      	= aaux->lNumAbonado;
+                    strcpy(szhNumSerie 	, aaux->szNumSerie);
+					lCantAbonados++;
+                    EXEC SQL SELECT 
+                         EQUI.COD_ARTICULO,
+                         EQUI.IND_PROCEQUI
+                    	INTO     :lhCodArticulo,
+                                 :chIndProcequi
+                        FROM     AL_FABRICANTES FABR,
+                                 AL_ARTICULOS   ARTI,
+                                 GA_EQUIPABOSER EQUI
+			            WHERE   EQUI.NUM_ABONADO 	= :lhNumAbonado
+			              AND   EQUI.NUM_SERIE   	= :szhNumSerie
+			              AND   EQUI.COD_ARTICULO	= ARTI.COD_ARTICULO
+			              AND   ARTI.COD_FABRICANTE	= FABR.COD_FABRICANTE
+			              AND  	EQUI.FEC_ALTA 		= (	SELECT MAX(R.FEC_ALTA)
+                                                    FROM    GA_EQUIPABOSER R
+                                                    WHERE   R.NUM_ABONADO = EQUI.NUM_ABONADO
+                                                    AND     R.NUM_SERIE   = EQUI.NUM_SERIE);
+
+                    if (sqlca.sqlcode) /* quiere decir que no encontro registro */
+                    {
+                    	fprintf(stderr,"\n(vGetEquipos) Abonado:[%ld] Serie:[%s] No fue posible recueprar datos del equipo.", lhNumAbonado, szhNumSerie);
+                    	fprintf(pfLog ,"\n(vGetEquipos) Abonado:[%ld] Serie:[%s] No fue posible recueprar datos del equipo.", lhNumAbonado, szhNumSerie);
+                    	aaux->cIndConsidera = 'N';
+                    	lCantAbonadosX++;
+					}
+					else
+                    {
+                       	aaux->lCodArticulo 	= lhCodArticulo;
+                        aaux->cIndProcequi 	= chIndProcequi;
+                        aaux->cIndConsidera = 'S';
+                    }
+                }
+	        } 
+        } 
+    }
+    fprintf(stderr,"\n(vGetEquipos) Fin de Función que recupera datos de Equipos.");
+    fprintf(stderr,"\n(vGetEquipos) Ventas Examinadas (solo validas):       [%ld].", lCantVentas);
+    fprintf(stderr,"\n(vGetEquipos) Abonados con datos de Equipo Correcto:  [%ld].", lCantAbonados);
+    fprintf(stderr,"\n(vGetEquipos) Abonados Sin datos de Equipo:           [%ld].", lCantAbonadosX);
+
+    fprintf(pfLog,"\n(vGetEquipos) Fin de Función que recupera datos de Equipos.");
+    fprintf(pfLog,"\n(vGetEquipos) Ventas Examinadas (solo validas):       [%ld].", lCantVentas);
+    fprintf(pfLog,"\n(vGetEquipos) Abonados con datos de Equipo Correcto:  [%ld].", lCantAbonados);
+    fprintf(pfLog,"\n(vGetEquipos) Abonados Sin datos de Equipo:           [%ld].", lCantAbonadosX);
+
+}
+/*****************************************************************************/
+/* Deszmarca las ventas con indicador de conveniom con num_venta mayor al    */
+/* Parámetro, para el mismo cliente del parámetro, sobre la lista de ventas  */
+/* qaux...                                                                   */
+/*****************************************************************************/
+void vDesmarcarVentas(long plNumVenta, long plCodCliente, stUniverso * qaux)
+{
+        stUniverso * paux;
+        for (paux = qaux; paux != NULL; paux = paux->sgte)
+        {
+                if ((paux->lCodCliente == plCodCliente)&&(paux->lNumVenta > plNumVenta)&&(paux->iIndConvenio == 1))
+                        paux->iIndConvenio = 0;
+        }
+}       
+/*****************************************************************************/
+/* Elimina la ocurrencia de dos ventas, para un mismo cliente, con indicador */
+/* de convenio PAC. Solo debe quedar una con indicador de convenio x cliente.*/
+/*****************************************************************************/
+void vValidaDupConvenio()
+{
+        stUniverso * paux;
+        stUniverso * qaux;
+        
+        for (paux = lstUniverso; paux != NULL; paux = paux->sgte)
+        {
+                if ((paux->cIndConsidera == 'S')&&(paux->iIndConvenio==1))
+                {
+                        qaux = lstUniverso;
+                        vDesmarcarVentas(paux->lNumVenta, paux->lCodCliente, qaux);
+                }
+        }
+        
+}       
+/*****************************************************************************/
+/* Insercion de valores en tabla de salida                                   */
+/*****************************************************************************/
+void vInsertaSeleccion()
+{
+    stUniverso	* paux;
+    stAbonado    * aaux;
+    char        rut_clientetmp[20];
+	long		lCantAbonados = 0;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		ihCodTipoRed;
+		char	szhCodTipComis[3];
+		long	lhCodComisonista;
+		char	szhCodTipVendedor[3];
+		long	lhCodVendedor;
+		
+		long	lhCodVendDealer;
+		long	lhNumSecuencia;
+		char  	szhNumContrato[20];      
+		int		ihCodModVenta;
+		long  	lhNumVenta;
+		int   	ihIndDocComp;
+		int   	ihIndConvenio; 
+		char 	szhObsIncump[151];
+		char  	szhCodOficina[3];
+		char  	szhFecVenta[20];
+		char  	szhFecRecepcion[20];
+		char  	szhFecAceptacion[20];
+		long  	lhCodCliente;
+		char  	szhNumIdent[20];
+		char	szhCodCategoria[11];
+		int		ihDiasHabiles;
+		int  	ihDiasReales;
+
+		long  	lhNumCelular;
+		char  	szhCodPlanTarif[4];
+		char  	szhNumSerie[26];
+		long  	lhNumAbonado;
+		int	 	ihCodAfinidad;
+		char  	szhCodTecnologia[8]; 
+		char  	chIndProcequi;
+		long  	lhCodArticulo;	
+
+		long	lhCodCiclComis;	
+		char	szhIdCiclComis[11];
+	EXEC SQL END DECLARE SECTION;
+	
+	lhCodCiclComis 			= stCiclo.lCodCiclComis;
+    strcpy(szhIdCiclComis	, stCiclo.szIdCiclComis);
+
+    for (paux = lstUniverso; paux != NULL; paux = paux->sgte)
+    {
+    	if (paux->cIndConsidera == 'S')
+        {
+            for (aaux = paux->abonado_sgte; aaux != NULL; aaux = aaux->sgte)
+                if (aaux->cIndConsidera == 'S')
+                {
+                	ihCodTipoRed        		= paux->iCodTipoRed;  
+					strcpy(szhCodTipComis      	, paux->szCodTipComis);
+					lhCodComisonista    		= paux->lCodComisonista;   
+					strcpy(szhCodTipVendedor   	, paux->szCodTipVendedor);
+					lhCodVendedor       		= paux->lCodVendedor;   
+					lhCodVendDealer     		= paux->lCodVendDealer;   
+					strcpy(szhNumContrato      	, paux->szNumContrato);
+					ihCodModVenta       		= paux->iCodModVenta;   
+					lhNumVenta          		= paux->lNumVenta;
+					ihIndDocComp        		= paux->iIndDocComp;
+					ihIndConvenio       		= paux->iIndConvenio;   
+					strcpy(szhObsIncump       	, paux->szObsIncump);  
+					strcpy(szhCodOficina       	, paux->szCodOficina);
+					strcpy(szhFecVenta         	, paux->szFecVenta);
+					strcpy(szhFecRecepcion    	, paux->szFecRecepcion); 
+					strcpy(szhFecAceptacion  	, paux->szFecAceptacion); 
+					lhCodCliente        		= paux->lCodCliente;  	
+					strcpy(szhNumIdent       	, paux->szNumIdent); 
+					strcpy(szhCodCategoria 		, paux->szCodCategoria); 	
+					ihDiasHabiles       		= paux->iDiasHabiles;  	
+					ihDiasReales        		= paux->iDiasReales; 
+
+					lhNumCelular    			= aaux->lNumCelular;
+					strcpy(szhCodPlanTarif 		, aaux->szCodPlanTarif);
+					strcpy(szhNumSerie     		, aaux->szNumSerie);
+					lhNumAbonado    			= aaux->lNumAbonado;
+					ihCodAfinidad   			= aaux->iCodAfinidad;
+					strcpy(szhCodTecnologia		, aaux->szCodTecnologia);
+					chIndProcequi   			= aaux->cIndProcequi;
+					lhCodArticulo   			= aaux->lCodArticulo;
+                
+                    EXEC SQL SELECT CMS_REG_SELECCION.NEXTVAL INTO :lhNumSecuencia FROM DUAL;
+                    lCantAbonados++;
+					
+                    EXEC SQL INSERT INTO CMT_HABIL_CELULAR (
+                    	NUM_GENERAL     , NUM_VENTA       , FEC_VENTA       ,
+                        FEC_RECEPCION   , FEC_ACEPTACION  , NUM_CONTRATO    ,
+                        COD_MODVENTA    , IND_DOCUM       , COD_OFICINA     ,
+                        COD_TIPCOMIS    , COD_COMISIONISTA, COD_AGENCIA     ,
+                        COD_VEND_FINAL  , COD_CLIENTE     , NUM_ABONADO     ,
+                        COD_AFINIDAD    , NUM_CELULAR     , NUM_IDENT       , 
+                        COD_CATEGCLIENTE, COD_PLANTARIF   , NUM_SERIE       , 
+                        COD_ARTICULO    , IND_PROCEQUI    , NUM_DIAS_REALES , 
+                        NUM_DIAS_HABILES, COD_PERIODO     , ID_PERIODO      ,
+                        OBS_INCUMP      , COD_TECNOLOGIA  , IND_CONVENIO	,
+                        COD_TIPORED		, COD_TIPVENDEDOR) 
+					VALUES (
+						:lhNumSecuencia	,:lhNumVenta	,
+						TO_DATE(:szhFecVenta,'DD/MM/YYYY HH24:MI:SS'),
+						TO_DATE(:szhFecRecepcion,'DD/MM/YYYY HH24:MI:SS'),
+						TO_DATE(:szhFecAceptacion,'DD/MM/YYYY HH24:MI:SS'), 
+						:szhNumContrato,
+						:ihCodModVenta	, :ihIndDocComp		, :szhCodOficina	,
+						:szhCodTipComis	, :lhCodComisonista	, :lhCodVendedor	,
+						:lhCodVendDealer, :lhCodCliente		, :lhNumAbonado		, 
+						:ihCodAfinidad	, :lhNumCelular		, :szhNumIdent		,
+						:szhCodCategoria, :szhCodPlanTarif	, :szhNumSerie		,
+						:lhCodArticulo	, :chIndProcequi	, :ihDiasReales		,
+						:ihDiasHabiles	, :lhCodCiclComis	, :szhIdCiclComis	,
+						:szhObsIncump	, :szhCodTecnologia	, :ihIndConvenio	,
+						:ihCodTipoRed	, :szhCodTipVendedor );
+				}
+		}
+         
+	}
+    stStatusProc.lCantRegistros = lCantAbonados;
+    fprintf(stderr,"\n(vInsertaSeleccion)Cantidad de Abonados Insertados:[%ld].\n",lCantAbonados);
+    fprintf(pfLog ,"\n(vInsertaSeleccion)Cantidad de Abonados Insertados:[%ld].\n",lCantAbonados);
+}
+/*****************************************************************************/
+/* Rutina encargada de obtener el numero de dias corridos transcurridos      */
+/* entre dos fechas.                                                         */
+/*****************************************************************************/
+int     iGetNumDias(char *pszFecIni, char *pszFecTerm)
+{
+        EXEC SQL BEGIN DECLARE SECTION;
+                char    szhFecIni[11] ;
+                char    szhFecTerm[11];
+                int     ihNumDias     ;
+        EXEC SQL END DECLARE SECTION;
+        
+    strcpy(szhFecIni, pszFecIni);
+    strcpy(szhFecTerm, pszFecTerm);
+
+    EXEC SQL SELECT TO_DATE(:szhFecTerm, 'dd/mm/yyyy') - TO_DATE(:szhFecIni,'dd/mm/yyyy')
+        INTO   :ihNumDias
+        FROM   DUAL;
+	return(ihNumDias);
+}
+
+/*****************************************************************************/
+/* Rutina encargada de agregar 1 dia a la fecha que se le entrega por        */
+/* parametro. El valor es retornado como puntero a char.                     */
+/*****************************************************************************/
+char    GTMPFecha_pszSumaDia[15];
+
+char    *pszSumaDia (char *pszFecha)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+        char    szhFecha[11]   ;
+        char    szhFechaNext[11];
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhFecha, pszFecha);
+
+    EXEC SQL SELECT to_char(TO_DATE(:szhFecha, 'dd-mm-yyyy') + 1, 'dd-mm-yyyy')
+                 INTO   :szhFechaNext
+                 FROM   DUAL;
+
+    szfnTrim(szhFechaNext);
+    strcpy(GTMPFecha_pszSumaDia, szhFechaNext);
+    return((char *)GTMPFecha_pszSumaDia);    
+}
+
+/*****************************************************************************/
+/* Funcion encargada de acceder a la tabla CMD_DIASFEST, para verificar que   */
+/* el dia es o no feriado.                                                   */
+/*****************************************************************************/
+int     iGetDiaFeriado (char *pszFecha)
+{
+        EXEC SQL BEGIN DECLARE SECTION;
+        char    szhFecha[11] ;
+        int     ihNumReg = 0 ;
+        EXEC SQL END DECLARE SECTION;
+        strcpy(szhFecha, pszFecha);
+                ihNumReg = 0;
+
+        EXEC SQL SELECT COUNT(*)
+                INTO :ihNumReg
+                FROM CMD_DIASFEST
+                WHERE FEC_DIAFEST = TO_DATE(:szhFecha, 'dd-mm-yyyy');
+        return(ihNumReg);
+}
+
+/*****************************************************************************/
+/* Rutina encargada de obtener el tipo de dia (habil o inhabil) asociado a   */
+/* una fecha.                                                                */
+/*****************************************************************************/
+int iGetTipoDia (char *pszFecha)
+{
+    int iTipoDia;
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    char    szhFecha[11]   ;
+    int ihNumDia       ;
+    EXEC SQL END DECLARE SECTION;
+
+    strcpy(szhFecha, pszFecha);
+    if(iGetDiaFeriado(pszFecha) > 0)
+    {
+        iTipoDia = 0;
+        return(iTipoDia);
+    }
+     EXEC SQL SELECT    TO_CHAR(TO_DATE(:szhFecha, 'dd-mm-yyyy'), 'D')
+                  INTO          :ihNumDia
+              FROM              DUAL;
+
+    switch(ihNumDia)
+   {
+    case    2:
+        iTipoDia = HABIL;
+        break;    
+    case    3:
+        iTipoDia = HABIL;
+        break;    
+    case    4:
+        iTipoDia = HABIL;
+        break;    
+    case    5:
+        iTipoDia = HABIL;
+        break;
+    case    6:
+        iTipoDia = HABIL;
+        break;
+    default:
+        iTipoDia = 0;
+        break;
+   }
+    return(iTipoDia);
+}
+
+/*****************************************************************************/
+/* Rutina encargada de determinar el                                         */
+/* numero de dias habiles transcurridos entre dos fechas                     */
+/*****************************************************************************/
+
+int iCalculaDiasHabiles (char *pszFecIni, char *pszFecTerm)
+{
+    int iNumDiasHabil = 0 ;
+    char    szFecTerm[11]     ;
+    char    szFecMov[11]      ;
+
+    strcpy(szFecMov, (char *)pszSumaDia(pszFecIni));
+    strcpy(szFecTerm, pszFecTerm);
+    while(iGetNumDias(szFecMov, szFecTerm) >= 0)
+    {                  
+         switch(iGetTipoDia(szFecMov))
+         {
+           case HABIL:
+                      iNumDiasHabil++;
+                      break;
+         }
+         strcpy(szFecMov, (char *)pszSumaDia(szFecMov));
+    }
+    return(iNumDiasHabil);
+}
+
+/*****************************************************************************/
+/* Rutina encargada de filtar caracteres extraños de glosa                   */
+/*****************************************************************************/
+
+void vFiltraGlosa(char *szhObsIncump,char *szObsIncumpFil)
+{
+
+int i=0;
+int j=0;
+int  iCaracter;
+char cCaracter;
+
+
+    for( i=0; szhObsIncump[i] != '\0' ; i++)
+    {
+        iCaracter = szhObsIncump[i];
+        
+        if ( (iCaracter >= 65 && iCaracter <= 90) || /* Letra Mayuscula */
+             (iCaracter >= 97 && iCaracter <=122) || /* Letra Minuscula */
+             (iCaracter >= 48 && iCaracter <=57 ) || /* Numero */  
+             (iCaracter == 32 || iCaracter == 35 ||  /* SPACE # */
+              iCaracter == 40 || iCaracter == 41 ||  /* ( ) */
+              iCaracter == 44 || iCaracter == 45 ||  /* , - */
+              iCaracter == 46 || iCaracter == 63) )  /* . ? */
+              
+            cCaracter = szhObsIncump[i];
+        else
+            cCaracter = 32; /* SPACE */
+    
+        szObsIncumpFil[j] = cCaracter;
+        j++;
+    }
+    
+    szObsIncumpFil[j] = '\0';
+}
+/*****************************************************************************/
+/* Rutina que devuelve la memoria utilizada por las listas de abonados.      */
+/*****************************************************************************/
+void vLiberaAbonados(stAbonado * qaux)
+{
+	if (qaux!=NULL)
+	{
+		vLiberaAbonados(qaux->sgte);
+		free(qaux);
+	}
+}
+/*****************************************************************************/
+/* Rutina que devuelve la memoria utilizada por la lista de ventas.          */
+/* como pueden ser "n" ventas, se hará con while y no recursiva...           */
+/*****************************************************************************/
+void vLiberaUniverso()
+{
+	stUniverso * paux;
+	stUniverso * qaux;
+	if (lstUniverso != NULL)
+	{
+		qaux = lstUniverso;
+		paux = lstUniverso->sgte;
+		while (paux!=NULL)
+		{
+			vLiberaAbonados(qaux->abonado_sgte);
+			qaux->abonado_sgte = NULL;
+			free(qaux);
+			qaux = paux;
+			paux = qaux->sgte;
+		}
+		if (qaux!=NULL)
+		{
+			vLiberaAbonados(qaux->abonado_sgte);
+			qaux->abonado_sgte = NULL;
+			free(qaux);
+		}
+	}
+}
+
+/*****************************************************************************/
+/* Rutina principal.                                                         */
+/*****************************************************************************/
+int main (int argc, char *argv[])
+{
+/*---------------------------------------------------------------------------*/
+/* Variables Globales.                                                       */
+/*---------------------------------------------------------------------------*/
+	long  lSegIni, lSegFin;         
+	short ibiblio;                  
+/*---------------------------------------------------------------------------*/
+/* Recuperacion del tiempo de inicio del proceso, en segundos.               */
+/*---------------------------------------------------------------------------*/
+	lSegIni=lGetTimer();
+/*---------------------------------------------------------------------------*/
+/* Inicializacion de estructura de argumentos externos, de estadistica del   */
+/* proceso y de alguna otra estructura.                                      */
+/*---------------------------------------------------------------------------*/
+	memset(&stCiclo, 0, sizeof(reg_ciclo));         
+/*---------------------------------------------------------------------------*/
+/* Manejo de argumentos ingresados como parametros externos.                 */
+/*---------------------------------------------------------------------------*/
+    memset(&stArgs, 0, sizeof(rg_argumentos));
+    vManejaArgs(argc, argv);
+/*---------------------------------------------------------------------------*/
+/* Conexion a la base de datos Oracle.                                       */
+/*---------------------------------------------------------------------------*/
+	fprintf(stderr, "\nstArgs.szUser        [%s]\n", stArgs.szUser);
+	fprintf(stderr, "\nstArgs.szPass        [%s]\n", stArgs.szPass);
+	
+	strcpy(szhUser, stArgs.szUser);                                                      
+	strcpy(szhPass, stArgs.szPass);                                                    
+	if(fnOraConnect(szhUser, szhPass) == FALSE)                                          
+	{                                                                                  
+	        fprintf(stderr, "\nUsuario/Password Oracle no son validos. Se cancela.\n");
+	        exit(EXIT_205);                                                            
+	}                                                                                  
+	else                                                                               
+	{                                                                                  
+	        fprintf(stderr, "\nConexion con la base de datos ha sido exitosa.\n");     
+	        fprintf(stderr, "Username: %s\n\n", szhUser);                              
+	}
+/*---------------------------------------------------------------------------*/
+/* Inicialización estructura de Bloque(proceso).                             */
+/*---------------------------------------------------------------------------*/
+        vInicia_Estructura_Procesos(stArgs.szBloque, stArgs.szProceso,szhUser, stArgs.izSecuencia);
+        ibiblio = iAccesa_Traza_Procesos(ABRIR_TRAZA,0,"",0,0);                                    
+        if (ibiblio)                                                                               
+        {                                                                                          
+                fprintf(stderr, "Error al Abrir Traza");                                           
+                fprintf(stderr, "Error [%d] al escribir Traza de Proceso.\n", ibiblio);            
+                exit(ibiblio);                                                                     
+        }                                                                                          
+/*---------------------------------------------------------------------------*/
+/* Preparacion de ambiente para archivos de log y datos.                     */
+/*---------------------------------------------------------------------------*/
+	fprintf(stderr, "Preparando ambiente para archivos de log, de datos y de configuracion ...\n");                    
+	if((pszEnvLog = (char *)pszEnviron("XPCM_LOG", "")) == (char *)NULL)                                               
+	{                                                                                                                  
+	        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,EXIT_401,"VARIABLE DE AMBIENTE XPCM_LOG NO RECONOCIDA.",0,0));
+	}                                                                                                                  
+	fprintf(stderr, "Directorio de Logs         : [%s]\n", (char *)pszEnvLog);                                         
+/*---------------------------------------------------------------------------*/
+/* GENERACION DEL NOMBRE Y CREACION DEL ARCHIVO DE LOG.                      */
+/*---------------------------------------------------------------------------*/
+	strncpy(szFechaYYYYMMDD,szfnObtieneFecYYYYMMDD(),8);
+        strncpy(szhSysDate, pszGetDateLog(),16);                                                            
+	strcpy(stArgsLog.szProceso,LOGNAME);                                                                     
+	strncpy(stArgsLog.szSysDate,szhSysDate,16);                                                                  
+	sprintf(stArgsLog.szPath,"%s%s/%s",pszEnvLog,stArgsLog.szProceso,szFechaYYYYMMDD);                       
+	                                                                                                         
+	if((pfLog = fAbreArchivoLog()) == (FILE *)NULL)                                                          
+	{                                                                                                        
+	    fprintf(stderr, "\nArchivo [%s] no pudo ser abierto.\n", szLogName);                                 
+	    fprintf(stderr, "Revise su existencia.\n");                                                          
+	    fprintf(stderr, "Error Numero: %d     %s\n", errno, strerror(errno));                                
+	    fprintf(stderr, "Proceso finalizado con error.\n");                                                  
+	}                                                                                                               
+/*---------------------------------------------------------------------------*/
+/* HEADER.                                                                   */
+/*---------------------------------------------------------------------------*/ 
+    vFechaHora();                                                               
+    fprintf(stderr, "Procesando ...\n");                                        
+    fprintf(pfLog, "%s\n", szRaya);                    
+    fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog, "%s\n", GLOSA_PROG);                
+    fprintf(pfLog, "VERSION %s\n", PROG_VERSION);      
+    fprintf(pfLog, "Ultima Revision: [%s]\n", LAST_REVIEW);                
+    fprintf(pfLog, "%s\n\n", szRaya);                  
+
+    fprintf(pfLog, "\n Argumentos de Ejecucion\n");
+    
+    fprintf(pfLog, "Identificador de Ciclo 			<%s>\n", stArgs.szIdPeriodo);
+
+    fprintf(pfLog, "Identificador de Proceso		<%s>\n", stArgs.szProceso);
+    fprintf(pfLog, "Identificador de Bloque			<%s>\n", stArgs.szBloque);
+    fprintf(pfLog, "Secuencia de Ejecucion			<%d>\n", stArgs.izSecuencia);
+
+    /* fprintf(pfLog,"\nUsername unix : %s   (id = %d)\n", getlogin(), getuid()); */
+    /* fprintf(pfLog,"Base de datos : %s\n\n", (strcmp(getenv("ORACLE_SID"), "")!=0?getenv("ORACLE_SID"):getenv("TWO_TASK"))); */
+/*---------------------------------------------------------------------------*/
+/* MODIFICACION DE CONFIGURACION AMBIENTAL, PARA MANEJO DE FECHAS EN ORACLE. */
+/*---------------------------------------------------------------------------*/
+	EXEC SQL ALTER SESSION SET NLS_DATE_FORMAT='dd-mm-yyyy';
+/*---------------------------------------------------------------------------*/
+/* CARGA ESTRUCTURA CICLOS DE PROCESO                                        */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog,  "Carga estructura de ciclo de proceso...\n\n");       
+    fprintf(stderr, "Carga estructura de ciclo de proceso...\n\n");       
+    if (!vCargaCiclo(stArgs.szIdPeriodo,&stCiclo))    
+    {
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	fprintf(pfLog, "\n\n[Main] Ciclo que pretende Ejecutar no existe.\n");
+    	fprintf(pfLog, "[Main] Se cancela la ejecucion.\n");
+    	exit(EXIT_101);
+    }
+    szTipoPeriodo = stCiclo.cTipCiclComis;
+/*---------------------------------------------------------------------------*/
+/* CARGA TIPOS DE COMISIONISTAS                                              */
+/*---------------------------------------------------------------------------*/
+    vFechaHora();
+    fprintf(pfLog,  "\n\n%s\n", (char *)pszFechaHora());
+    fprintf(pfLog,  "Carga tipos de comisionistas a procesar...\n\n");       
+    fprintf(stderr, "Carga tipos de comisionistas a procesar...\n\n");       
+	vCargaTiposComis();
+/*---------------------------------------------------------------------------*/
+/* Recuperacion de los segundos reales ocupados por el proceso.              */
+/*---------------------------------------------------------------------------*/ 
+    lSegFin=lGetTimer();                         
+    stStatusProc.lSegProceso = lSegFin - lSegIni;
+/*---------------------------------------------------------------------------*/
+/* Despliegue de la informacion estadistica del proceso.                     */
+/*---------------------------------------------------------------------------*/
+	fprintf(pfLog, "Estadistica del proceso\n");
+	fprintf(pfLog, "------------------------\n");
+	fprintf(pfLog, "Registros Finales Procesados   : [%d]\n", stStatusProc.lCantRegistros);
+	fprintf(pfLog, "Segundos Reales Utilizados     : [%d]\n\n", stStatusProc.lSegProceso);
+
+	fprintf(stderr, "Estadistica del proceso\n");
+	fprintf(stderr, "------------------------\n");
+	fprintf(stderr, "Registros Finales Procesados   : [%d]\n", stStatusProc.lCantRegistros);
+	fprintf(stderr, "Segundos Reales Utilizados     : [%d]\n\n", stStatusProc.lSegProceso);
+
+/*---------------------------------------------------------------------------*/
+	ibiblio = iAccesa_Traza_Procesos(CERRAR_TRAZA_OK,EXIT_0,"",stStatusProc.lSegProceso,stStatusProc.lCantRegistros);
+	if (ibiblio)
+	        exit(iAccesa_Traza_Procesos(CERRAR_TRAZA_NOK,ibiblio,"ERROR CERRANDO TRAZA.",0,0));
+	EXEC SQL COMMIT WORK RELEASE;
+	
+	vFechaHora();
+	fprintf(stderr, "Programa [%s] finalizado ok.\n", basename(argv[0]));
+	fprintf(pfLog, "\n\n%s\n", (char *)pszFechaHora());
+	fprintf(pfLog, "Proceso [%s] finalizado ok.\n", basename(argv[0]));
+	fclose(pfLog);
+	return(EXIT_0);
+}
+
+
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  %ARCHIVE% */
+/** Identificador en PVCS                               : */
+/**  %PID% */
+/** Producto                                            : */
+/**  %PP% */
+/** Revisión                                            : */
+/**  %PR% */
+/** Autor de la Revisión                                : */
+/**  %AUTHOR% */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  %PS% */
+/** Fecha de Creación de la Revisión                    : */
+/**  %DATE% */
+/** Worksets ******************************************************************************/
+/** %PIRW% */
+/** Historia ******************************************************************************/
+/** %PL% */
+/******************************************************************************************/
+

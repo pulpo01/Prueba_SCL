@@ -1,0 +1,25 @@
+CREATE OR REPLACE TRIGGER TRG_CMD_PLANESTARIF
+AFTER INSERT ON TA_PLANTARIF
+FOR EACH ROW
+
+DECLARE
+        vClaPlanTarif   VARCHAR2(3);
+        vTipPlan        VARCHAR2(5);
+BEGIN
+        vClaPlanTarif := :NEW.CLA_PLANTARIF;
+        BEGIN
+                SELECT TIP_PLAN
+                INTO vTipPlan
+                FROM CMD_CATEGPLANES
+                WHERE SUBSTR(TIP_PLAN,1,3) = vClaPlanTarif
+                AND ROWNUM < 2;
+        EXCEPTION
+                WHEN OTHERS THEN
+                        vTipPlan := 'DEFAU';
+        END;
+        INSERT INTO CMD_PLANESTARIF
+        (COD_PLANTARIF,TIP_PLAN,FEC_CREACION,FEC_ULTMOD,NOM_USUARIO)
+        VALUES (:NEW.COD_PLANTARIF, vTipPlan, SYSDATE, SYSDATE,:NEW.NOM_USUARIO);
+END TRG_CMD_PLANESTARIF;
+/
+SHOW ERRORS

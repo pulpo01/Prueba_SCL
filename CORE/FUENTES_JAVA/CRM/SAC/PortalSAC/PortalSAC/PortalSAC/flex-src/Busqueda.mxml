@@ -1,0 +1,610 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="980" height="460" initialize="init();" verticalAlign="top"  backgroundColor="#FFFFFF">
+
+<mx:Script>
+	<![CDATA[
+		import user.libreria.componentes.scrollbars.BarraDeProgreso4;
+		import mx.formatters.SwitchSymbolFormatter;
+		import mx.controls.Text;
+		import mx.events.MenuEvent;
+		import mx.states.SetProperty;
+		import mx.controls.advancedDataGridClasses.AdvancedDataGridColumn;
+		import mx.core.Application;
+		import mx.containers.Grid;
+		import flash.utils.Dictionary;
+		import mx.controls.Alert;
+		import mx.rpc.events.FaultEvent;
+		import mx.collections.ArrayCollection;
+		import mx.utils.ArrayUtil;
+		import mx.managers.PopUpManager;
+		import user.libreria.clases.Impresion;
+		import user.libreria.clases.Utilidades;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import flash.display.DisplayObject;
+		import generated.webservices.orquestador.*;
+		import mx.events.ValidationResultEvent;
+		import user.libreria.clases.StringUtil;
+		
+		import mx.events.ModuleEvent;
+	    import mx.modules.ModuleManager;
+        import mx.modules.IModuleInfo;
+        import mx.events.ItemClickEvent;
+		import mx.collections.SortField;
+		import mx.collections.Sort;
+		import flash.utils.setTimeout;
+		
+		import mx.core.ScrollPolicy;
+		import user.libreria.componentes.scrollableMenu.controls.ScrollableArrowMenu;
+		import user.libreria.componentes.scrollableMenu.controls.ScrollableMenu;
+
+		import mx.rpc.http.HTTPService;
+		
+		import Consultas.Cuenta.*;
+		import Consultas.Cliente.*;
+		import Consultas.Abonado.*;
+		import Consultas.Genericos.*;
+		import OOSS.Cliente.ModificacionDirecciones;
+		
+		import Consultas.Abonado.DetalleLlamadasAbonado;
+		
+		public var cargaCompPopUpView:Class = BarraDeProgreso4;
+		
+		// --------------------------------------------------
+		import mx.messaging.ChannelSet;
+		import mx.rpc.events.FaultEvent;
+		import mx.rpc.events.ResultEvent;
+		// --------------------------------------------------
+					
+		include "user/includes/busqueda/declaraciones.as";
+		include "user/includes/busqueda/filtros.as";
+		include "user/includes/busqueda/webservices.as";
+		include "user/includes/busqueda/busquedas.as";
+		include "user/includes/busqueda/menues.as";
+	
+		public var campoOrdenamientoCta:String = 'fecAltaOrd';
+		public var tipoOrdenamientoCta:String = 'Asc';
+		public var campoOrdenamientoClie:String = 'fecAltaOrd';
+		public var tipoOrdenamientoClie:String = 'Asc';
+		public var campoOrdenamientoAbo:String = 'fecAltaOrd';
+		public var tipoOrdenamientoAbo:String = 'Asc';
+	
+		private function getDatos(event:ResultEvent):void	{
+			gridClientes.dataProvider = event.result;
+		}
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Fecha : 05/01/09
+		// Version : 1.0
+		// ------------------------------------------------------------------------------------------		
+
+		private function selectText(obj:TextInput):void	{
+			obj.setSelection(0, obj.text.length);
+		} // selectText
+		
+		// ------------------------------------------------------------------------------------------
+	
+	    private function modEventHandler(e:ModuleEvent):void {
+        	
+			parentDocument.vb2.enabled = true;
+			parentDocument.vb2.removeAllChildren();
+			parentDocument.vb2.addChild(Application.application.info.factory.create() as DisplayObject);
+			
+		} // modEventHandlerOOSS
+	
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Galetti
+		// Version : 1.4
+		// Fecha : 08/01/09
+		// ------------------------------------------------------------------------------------------
+	
+  		private function init():void {
+  			
+  			// Agregamos los manejadores a los iconos del toolbar del encabezado
+			parentDocument.toolbarCambioClave.addEventListener(MouseEvent.CLICK,toolbar);
+			parentDocument.toolbarClearForm.addEventListener(MouseEvent.CLICK,toolbar);
+			
+			gridClientes = new AdvancedDataGrid();
+			gridCuentas = new AdvancedDataGrid();
+			gridAbonados = new AdvancedDataGrid();
+
+			txtSearchCuenta = new TextInput();
+	 		txtSearchAbonado = new TextInput()
+ 			txtSearchCliente = new TextInput();
+ 			
+	 		txtFiltroAbonados = new TextInput();
+	 		txtFiltroClientes = new TextInput();
+	 		txtFiltroCuentas = new TextInput();
+		
+	 		cmboSearchAbonado = new ComboBox();
+	 		cmboSearchCliente = new ComboBox();
+ 			cmboSearchCuenta = new ComboBox();
+ 			
+	 		cboFiltroCuentas = new ComboBox();
+	 		cboFiltroAbonados = new ComboBox();
+	 		cboFiltroClientes = new ComboBox();
+
+			// Se debe llamar al ws para saber si debe cambiar la clave por defecto
+			//Accion Solicitada: Se comenta la llamada de este metodo a solicitud de Marcelo Miranda
+			//Fecha: 29/11/2010
+			//checkFirstLogin();
+			
+			// ---------- CODIGO NUEVO ------------------------
+			// Encuentra el grupo y luego busca las consultas asociadas a ese grupo
+			gruposXNomUsuario(Application.application.usuario.username);
+			// OOSS por usuario
+			cargaOOSSxNomUsuario(Application.application.usuario.username);
+			// ---------- CODIGO NUEVO ------------------------
+			
+		} // init
+  
+  		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L
+		// Version : 1.0
+		// Fecha : 16/08/2010
+		// ------------------------------------------------------------------------------------------
+		
+		private function ordenarValores(event:ItemClickEvent, tipoComp:String):void {
+			
+            if (event.currentTarget.selectedValue == 'fecAltaOrdCuenta') {
+            	campoOrdenamientoCta = 'fecAltaOrd';
+            }else if(event.currentTarget.selectedValue == 'fecAltaOrdCliente'){
+            	campoOrdenamientoClie = 'fecAltaOrd';
+            }else if(event.currentTarget.selectedValue == 'fecAltaOrdAbonado'){
+            	campoOrdenamientoAbo = 'fecAltaOrd';
+            }else if(event.currentTarget.selectedValue == 'fecBajaOrdAbonado'){
+            	campoOrdenamientoAbo = 'fecBajaOrd';
+            }
+
+
+			if(tipoComp == 'Cta'){
+				
+		        if (event.currentTarget.selectedValue == "Asc") {
+		        	tipoOrdenamientoCta='Asc';
+		        }else if(event.currentTarget.selectedValue == "Desc"){
+		        	tipoOrdenamientoCta='Desc';
+		        }
+	        }else if(tipoComp == 'Clie'){
+	        	
+	        	if (event.currentTarget.selectedValue == "Asc") {
+		        	tipoOrdenamientoClie='Asc';
+		        }else if(event.currentTarget.selectedValue == "Desc"){
+		        	tipoOrdenamientoClie='Desc';
+		        }
+	        }else if(tipoComp == 'Abo'){
+	        	
+	        	if (event.currentTarget.selectedValue == "Asc") {
+		        	tipoOrdenamientoAbo='Asc';
+		        }else if(event.currentTarget.selectedValue == "Desc"){
+		        	tipoOrdenamientoAbo='Desc';
+		        }
+	        }
+	              
+            var dataSortField:SortField = new SortField();
+            var numericDataSort:Sort = new Sort();
+		
+			if(tipoComp == 'Cta'){
+				
+				dataSortField.name = campoOrdenamientoCta;
+	            dataSortField.numeric = false;
+	     
+	            if (tipoOrdenamientoCta=="Desc"){
+		       		dataSortField.descending = true;
+		        }else{
+		        	dataSortField.descending = false;
+		        }
+	        
+				numericDataSort.fields = [dataSortField];
+				
+				acGridCuenta.sort = numericDataSort;
+            	acGridCuenta.refresh();
+            	
+			}else if(tipoComp == 'Clie'){
+				
+				dataSortField.name = campoOrdenamientoClie;
+	            dataSortField.numeric = false;
+	            
+	            if (tipoOrdenamientoClie=="Desc"){
+		       		dataSortField.descending = true;
+		        }else{
+		        	dataSortField.descending = false;
+		        }
+	        
+				numericDataSort.fields = [dataSortField];
+				
+				acGridCliente.sort = numericDataSort;
+           		acGridCliente.refresh();
+           		
+			}else if(tipoComp == 'Abo'){
+				
+				dataSortField.name = campoOrdenamientoAbo;
+	            dataSortField.numeric = false;
+	            
+	            if (tipoOrdenamientoAbo=="Desc"){
+		       		dataSortField.descending = true;
+		        }else{
+		        	dataSortField.descending = false;
+		        }
+	        
+				numericDataSort.fields = [dataSortField];
+				
+				acGridAbonado.sort = numericDataSort;
+            	acGridAbonado.refresh();
+			}
+	
+        }
+        
+        // ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L
+		// Version : 1.0
+		// Fecha : 02/10/2010
+		// ------------------------------------------------------------------------------------------
+		
+		private function barraProce():void {		
+			
+			// Barra de proceso
+		    popUpParent = Application.application.document;
+		    popUpWindow = PopUpManager.createPopUp(popUpParent,cargaCompPopUpView,true);
+			PopUpManager.centerPopUp(popUpWindow);
+			
+			//llamado cierre barra proceso
+		    setTimeout(desbarraProce,5000);
+		}
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L
+		// Version : 1.0
+		// Fecha : 02/10/2010
+		// ------------------------------------------------------------------------------------------
+		
+		private function desbarraProce():void {		
+			
+		    //Cierre barra de progreso
+			PopUpManager.removePopUp(popUpWindow);
+		}
+		
+  
+		]]>
+	</mx:Script>
+
+	<mx:Panel horizontalAlign="center" width="100%" height="100%" cornerRadius="0" borderColor="#7177FA" themeColor="#CBDEEB" backgroundColor="#BDDBF7" backgroundAlpha="0.0" borderThickness="0" alpha="1.0" id="panel" borderStyle="none" fontSize="12" color="#2154c9" fontStyle="normal" x="0" y="0"  headerHeight="10">
+	<mx:Accordion id="acc1" height="100%" width="100%" creationComplete="barraProce()" >
+	
+		<!-- ******************************************************  -->
+		<!-- **************** Búsqueda de Cuentas  ****************  -->
+		<!-- ******************************************************  -->
+	
+		<mx:Canvas label="Búsqueda de Cuentas" width="100%" height="100%">					
+		<mx:Grid verticalGap="0" horizontalGap="0" width="100%" height="100%" borderStyle="none" cornerRadius="0">
+			<mx:GridRow width="958" backgroundAlpha="0.0" height="35" verticalAlign="middle">
+				<mx:GridItem width="690" borderStyle="none" backgroundColor="#81B6DE" backgroundAlpha="0.0" height="41">
+						<mx:Grid width="100%" backgroundAlpha="0.0" height="35">
+						<mx:GridRow width="100%" fontSize="10" height="35">
+							<mx:GridItem width="954"  verticalAlign="middle" backgroundAlpha="0.0" height="35">
+							
+								<mx:Grid>
+									<mx:GridRow>
+										<mx:GridItem verticalAlign="middle">
+											<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="199" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="28">
+												<mx:Image width="27" height="25">
+													<mx:source>recursosInterfaz/imagenes/iconos/buscar.png</mx:source>
+												</mx:Image>
+												<mx:TextInput  keyDown="submit(event, 'cuenta')"  focusIn="selectText(this.txtSearchCuenta)" fontSize="10" maxChars="50" id="txtSearchCuenta" width="153" height="26" fontWeight="normal" fontStyle="normal"/>
+											</mx:HBox>
+											
+											<mx:ComboBox change="changeCmboSearchCuenta(event)" labelField="label" id="cmboSearchCuenta">
+											 <mx:ArrayCollection>
+									            <mx:Object label="Código de Cuenta" data="0"/>
+									            <mx:Object label="Nombre de Cuenta" data="1"/>
+									            <mx:Object label="Número de Identificador" data="2"/>
+									        </mx:ArrayCollection>
+											</mx:ComboBox>
+										</mx:GridItem>
+	
+										<mx:GridItem verticalAlign="middle">
+											<mx:Button label="Buscar" click="buscarPorCuenta('desdeCuentaButton')" id="btnBuscarCuenta" enabled="true"/>	
+		
+											<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="198" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="28">
+												<mx:Image>
+													<mx:source>recursosInterfaz/imagenes/iconos/filtro.gif</mx:source>
+												</mx:Image>
+												<mx:TextInput fontSize="10" maxChars="20" id="txtFiltroCuentas" width="149" change="filtrarCuentas()" height="26" fontWeight="normal" fontStyle="normal" styleName="TextInput"/>
+											</mx:HBox>
+				
+											<mx:ComboBox labelField="label" id="cboFiltroCuentas" width="165" change="changeCombo(cboFiltroCuentas, 'cuentas')" fontWeight="normal">
+											 <mx:ArrayCollection>
+									            <mx:Object icon="recursosInterfaz/imagenes/iconos/buscar.png" label="No aplicar filtro" data="0"/>
+									            <mx:Object label="Código Cuenta" data="1"/>
+									            <mx:Object label="Nombre de Cuenta" data="2"/>
+									        </mx:ArrayCollection>
+											</mx:ComboBox>
+										</mx:GridItem>
+	
+										<mx:GridItem horizontalAlign="center" width="102" verticalAlign="middle">
+											<mx:Image source="recursosInterfaz/imagenes/botones/FwkChooserOver.gif"  click="this.addMenuCtaCons(700,165)" autoLoad="true" toolTip="Consultas"/>
+											<mx:Image source="recursosInterfaz/imagenes/botones/FwkTableEditOn.gif"  click="this.addMenuCtaOOSS(720,165)" autoLoad="true" toolTip="OOSS"/>
+										</mx:GridItem>
+									</mx:GridRow>
+								</mx:Grid>
+							</mx:GridItem>
+						</mx:GridRow>
+					</mx:Grid>
+				</mx:GridItem>
+			</mx:GridRow>
+	
+			<mx:RadioButtonGroup id="grupo1" itemClick="ordenarValores(event, 'Cta');"/>
+			<mx:RadioButtonGroup id="grupo2" itemClick="ordenarValores(event, 'Cta');"/>
+	
+			<mx:GridRow width="100%" fontSize="10" height="25">
+				<mx:GridItem width="954"  verticalAlign="middle" backgroundAlpha="0.0" height="25">
+					<mx:HBox id="hRadioCta1" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" x="10" y="46" paddingRight="10" horizontalGap="10">
+						<mx:RadioButton  value="fecAltaOrdCuenta" x="28" y="51" label="Fecha Alta" width="115" height="18" selected="true" groupName="grupo1" id="rbtFecIngre" />
+						<mx:RadioButton  value ="Asc" x="179" y="51" label="Ascendente" width="115" height="18" selected="true" groupName="grupo2" id="rbtAsc" />
+					</mx:HBox>
+				</mx:GridItem>
+			</mx:GridRow>
+			<mx:GridRow width="100%" fontSize="10" height="25">
+				<mx:GridItem width="100%"  verticalAlign="middle" backgroundAlpha="0.0" height="25">
+					<mx:HBox id="hRadioCta2" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" paddingRight="10" horizontalGap="10" x="10" y="73">
+						<mx:RadioButton  value ="Desc" x="179" y="69" label="Descendente" width="123" height="18" groupName="grupo2" id="rbtDesc" />
+					</mx:HBox>
+				</mx:GridItem>
+			</mx:GridRow>
+	
+			<mx:GridRow width="100%" height="100%">
+				<mx:GridItem width="100%" height="325">
+					<mx:AdvancedDataGrid doubleClickEnabled="true" doubleClick="buscarPorCuenta('desdeCuentaClick')" dataProvider="{acGridCuenta}" allowMultipleSelection="true" selectionMode="multipleRows" sortExpertMode="true" id="gridCuentas" width="100%" fontSize="10" textAlign="left" height="100%"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" allowDragSelection="false" dragEnabled="false" resizableColumns="false">
+						<mx:columns>
+							<mx:AdvancedDataGridColumn headerText="Código de Cuenta" dataField="codCuenta" textAlign="right" paddingRight="5"/>
+							<mx:AdvancedDataGridColumn headerText="Nombre del Cuenta" dataField="desCuenta" paddingLeft="5" width="450"/>
+							<mx:AdvancedDataGridColumn headerText="Fecha Alta" dataField="fecAlta" textAlign="right" paddingRight="5"/>
+							<mx:AdvancedDataGridColumn headerText="Tipo Cuenta" dataField="tipCuenta" paddingLeft="5"/>
+							<mx:AdvancedDataGridColumn headerText="Fecha Alta" dataField="fecAltaOrd" textAlign="right" paddingRight="5" visible="false"/>
+						</mx:columns>
+					</mx:AdvancedDataGrid>
+				</mx:GridItem>
+			</mx:GridRow>
+			</mx:Grid>	
+			
+			</mx:Canvas>
+	
+	
+		<!-- ******************************************************  -->
+		<!-- **************** Búsqueda de Clientes ****************  -->
+		<!-- ******************************************************  -->
+		
+		<mx:Canvas label="Búsqueda de Clientes" width="100%" height="100%">
+			<mx:Grid verticalGap="0" horizontalGap="0" width="100%" height="100%" borderStyle="none" cornerRadius="0">
+			<mx:GridRow width="100%" backgroundAlpha="0.0" height="35" verticalAlign="middle">
+				<mx:GridItem width="690" borderStyle="none" backgroundColor="#81B6DE" backgroundAlpha="0.0" height="41">
+						<mx:Grid width="100%" backgroundAlpha="0.0" height="100%">
+							<mx:GridRow verticalAlign="middle" width="953" height="34.666668">
+								<mx:GridItem width="466" verticalAlign="middle">
+									<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="199" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="25">
+										<mx:Image>
+											<mx:source>recursosInterfaz/imagenes/iconos/buscar.png</mx:source>
+										</mx:Image>
+										<mx:TextInput keyDown="submit(event, 'cliente')"  focusIn="selectText(this.txtSearchCliente)" fontSize="10" maxChars="50" width="153" id="txtSearchCliente" height="23" fontWeight="normal" fontStyle="normal" styleName="TextInput"/>
+									</mx:HBox>
+		
+									<mx:ComboBox  change="changeCmboSearchCliente(event)" labelField="label" styleName="ComboBox" id="cmboSearchCliente" width="160" height="23" fontSize="10">
+									 <mx:ArrayCollection>
+							            <mx:Object label="Código de Cliente" data="0"/>
+						            	<mx:Object label="Nombre de Cliente" data="1"/>
+							        </mx:ArrayCollection>
+									</mx:ComboBox>
+			
+									<mx:Button label="Buscar" id="btnBuscarCliente" click="buscarPorCliente('desdeClienteButton')" width="65" height="23" fontSize="10" enabled="true"/>
+								</mx:GridItem>
+								
+								<mx:GridItem width="380" verticalAlign="middle">
+									<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="198" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="25">
+										<mx:Image>
+											<mx:source>recursosInterfaz/imagenes/iconos/filtro.gif</mx:source>
+										</mx:Image>
+										<mx:TextInput fontSize="10" maxChars="20" width="149" change="filtrarClientes()" height="23" fontWeight="normal" fontStyle="normal" styleName="TextInput" id="txtFiltroClientes"/>
+									</mx:HBox>
+		
+									<mx:ComboBox labelField="label" width="166" id="cboFiltroClientes" change="changeCombo(cboFiltroClientes, 'clientes')" height="23" fontSize="10" fontWeight="normal">
+									 <mx:ArrayCollection>
+							            <mx:Object icon="recursosInterfaz/imagenes/iconos/buscar.png" label="No aplicar filtro" data="0"/>
+						            	<mx:Object label="Código Cliente" data="1"/>
+						            	<mx:Object label="Nombre Cliente" data="2"/>
+										<mx:Object label="Tipo Persona" data="3"/>						            	
+							        </mx:ArrayCollection>
+									</mx:ComboBox>										
+								</mx:GridItem>
+								
+								<mx:GridItem horizontalAlign="center" width="87" verticalAlign="middle">
+									<mx:Image source="recursosInterfaz/imagenes/botones/FwkChooserOver.gif" click="this.addMenuCliCons(700,190)"  autoLoad="true" toolTip="Consultas"/>										
+									<mx:Image source="recursosInterfaz/imagenes/botones/FwkTableEditOn.gif"  click="this.addMenuCliOOSS(680,190)" autoLoad="true" toolTip="OOSS"/>
+								</mx:GridItem>
+								</mx:GridRow>
+					</mx:Grid>
+				</mx:GridItem>
+			</mx:GridRow>
+
+			<mx:RadioButtonGroup id="grupo3" itemClick="ordenarValores(event, 'Clie');"/>
+			<mx:RadioButtonGroup id="grupo4" itemClick="ordenarValores(event, 'Clie');"/>
+	
+			<mx:GridRow width="100%" fontSize="10" height="25">
+				<mx:GridItem width="100%"  verticalAlign="middle" backgroundAlpha="0.0" height="25">
+					<mx:HBox id="hRadioClie1" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" x="10" y="46" paddingRight="10" horizontalGap="10">
+						<mx:RadioButton  value="fecAltaOrdCliente" x="28" y="51" label="Fecha Alta" width="115" height="18" selected="true" groupName="grupo3" />
+						<mx:RadioButton  value ="Asc" x="179" y="51" label="Ascendente" width="115" height="18" selected="true" groupName="grupo4"  id="rbtAscCli"/>
+					</mx:HBox>
+				</mx:GridItem>
+			</mx:GridRow>
+			<mx:GridRow width="100%" fontSize="10" height="25">
+				<mx:GridItem width="100%"  verticalAlign="middle" backgroundAlpha="0.0" height="25">
+					<mx:HBox id="hRadioClie2" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" paddingRight="10" horizontalGap="10" x="10" y="73">
+						<mx:RadioButton  value ="Desc" x="179" y="69" label="Descendente" width="123" height="18" groupName="grupo4"  id="rbtDescCli"/>
+					</mx:HBox>
+				</mx:GridItem>
+			</mx:GridRow>
+
+			<mx:GridRow width="100%" height="100%">
+				<mx:GridItem width="100%" height="300">
+					<mx:AdvancedDataGrid doubleClickEnabled="true" doubleClick="buscarPorCliente('desdeClienteClick')" dataProvider="{acGridCliente}" allowMultipleSelection="true" selectionMode="multipleRows" sortExpertMode="true" id="gridClientes" width="100%" fontSize="10" textAlign="left" height="100%"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9"  allowDragSelection="false" dragEnabled="false" resizableColumns="false">
+						<mx:columns>
+							<mx:AdvancedDataGridColumn headerText="Código de Cliente" dataField="codCliente" textAlign="right" paddingRight="5"/>
+							<mx:AdvancedDataGridColumn headerText="Nombre del Cliente" dataField="nomCliente" paddingLeft="5" width="450"/>
+							<mx:AdvancedDataGridColumn headerText="Fecha Alta" dataField="fecAlta" textAlign="right" paddingRight="5"/>
+							<mx:AdvancedDataGridColumn headerText="Tipo Persona" dataField="tipPersona" paddingLeft="5" sortable="false"/>
+							<mx:AdvancedDataGridColumn headerText="" dataField="codCuenta" width="0"/>
+							<mx:AdvancedDataGridColumn headerText="Fecha Alta" dataField="fecAltaOrd" textAlign="right" paddingRight="5" visible="false"/>
+						</mx:columns>
+					</mx:AdvancedDataGrid>
+				</mx:GridItem>
+			</mx:GridRow>
+			
+			</mx:Grid>	
+			</mx:Canvas>
+	
+	
+	
+		<!-- ******************************************************  -->
+		<!-- **************** Búsqueda de Abonados ****************  -->
+		<!-- ******************************************************  -->
+		 
+		<mx:Canvas label="Búsqueda de Abonados" width="100%" height="100%" id="canvasAbonados">
+		<mx:Grid verticalGap="0" horizontalGap="0" width="100%" height="100%" borderStyle="none" cornerRadius="0">
+		<mx:GridRow width="958" backgroundAlpha="0.0" height="35.333332" verticalAlign="middle">
+			<mx:GridItem width="690" borderStyle="none" backgroundColor="#81B6DE" backgroundAlpha="0.0" verticalAlign="middle">
+				<mx:Grid width="951" backgroundAlpha="0.0">
+					<mx:GridRow width="100%" fontSize="10" verticalAlign="middle">
+						<mx:GridItem width="958"  verticalAlign="middle" backgroundAlpha="0.0">
+						
+							<mx:Grid width="100%" paddingLeft="10" >
+								<mx:GridRow verticalAlign="middle" width="937">
+									<mx:GridItem width="451" verticalAlign="middle">
+											<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="189" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="25">
+												<mx:Image>
+													<mx:source>recursosInterfaz/imagenes/iconos/buscar.png</mx:source>
+												</mx:Image>
+												<mx:TextInput keyDown="submit(event, 'abonado')"  focusIn="selectText(this.txtSearchAbonado)" fontSize="10" maxChars="50" width="147" id="txtSearchAbonado" height="23" fontWeight="normal" fontStyle="normal" styleName="TextInput"/>
+											</mx:HBox>
+				
+											<mx:ComboBox  change="changeCmboSearchAbonado(event)" labelField="label" styleName="ComboBox" id="cmboSearchAbonado" width="160" height="23">
+											 <mx:ArrayCollection>
+									            <mx:Object label="Número de Celular" data="0"/>
+									        </mx:ArrayCollection>
+											</mx:ComboBox>
+				
+											<mx:Button label="Buscar"   keyDown="submit(event, 'abonado')" click="buscarPorAbonado('desdeAbonadoButton')" width="65" height="23" id="btnBuscarAbonado" enabled="true"/>	
+									</mx:GridItem>
+									
+									<mx:GridItem width="376" verticalAlign="middle">
+										<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="190" horizontalAlign="right" verticalAlign="middle" backgroundColor="#FFFFFF" height="25">
+											<mx:Image>
+												<mx:source>recursosInterfaz/imagenes/iconos/filtro.gif</mx:source>
+											</mx:Image>
+											<mx:TextInput fontSize="10" maxChars="20" width="143" change="filtrarAbonados()" height="23" fontWeight="normal" fontStyle="normal" styleName="TextInput" id="txtFiltroAbonados"/>
+										</mx:HBox>
+			
+										<mx:ComboBox labelField="label" width="166" id="cboFiltroAbonados" change="changeCombo(cboFiltroAbonados, 'abonados')" height="23" fontWeight="normal">
+										 <mx:ArrayCollection>
+								            <mx:Object icon="recursosInterfaz/imagenes/iconos/buscar.png" label="No aplicar filtro" data="0"/>
+								            <mx:Object label="Número Celular" data="1"/>
+								            <mx:Object label="Código Abonado" data="2"/>
+								        </mx:ArrayCollection>
+										</mx:ComboBox>										
+									</mx:GridItem>
+									
+									<mx:GridItem horizontalAlign="center" width="94" verticalAlign="middle">
+										<mx:Image source="recursosInterfaz/imagenes/botones/FwkChooserOver.gif" click="this.addMenuAboCons(700,200)"  autoLoad="true" toolTip="Consultas"/>										
+										<mx:Image source="recursosInterfaz/imagenes/botones/FwkTableEditOn.gif"  click="this.addMenuAboOOSS(680,200)" autoLoad="true" toolTip="OOSS"/>
+										<!-- <mx:Image source="recursosInterfaz/imagenes/iconos/clearForm.png"  autoLoad="true" toolTip="Otras Operaciones" click="openUrlSTP()" disable="true"  id="btnSTP" />	-->																				
+									</mx:GridItem>
+								</mx:GridRow>
+							</mx:Grid>
+	
+						</mx:GridItem>
+					</mx:GridRow>
+				</mx:Grid>
+			</mx:GridItem>
+		</mx:GridRow>
+		
+		    <mx:RadioButtonGroup id="grupo5" itemClick="ordenarValores(event, 'Abo');"/>
+			<mx:RadioButtonGroup id="grupo6" itemClick="ordenarValores(event, 'Abo');"/>
+	
+			<mx:GridRow width="100%" fontSize="10" height="25">
+				<mx:GridItem width="100%"  verticalAlign="middle" backgroundAlpha="0.0" height="25">
+					<mx:HBox id="hRadioAbo1" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" x="10" y="46" paddingRight="10" horizontalGap="10">
+						<mx:RadioButton  value="fecAltaOrdAbonado" x="28" y="51" label="Fecha Alta" width="115" height="18" selected="true" groupName="grupo5" />
+						<mx:RadioButton  value ="Asc" x="179" y="51" label="Ascendente" width="115" height="18" selected="true" groupName="grupo6"  id="rbtAscAbo"/>
+					</mx:HBox>
+				</mx:GridItem>
+			</mx:GridRow>
+			<mx:GridRow width="100%" fontSize="10" height="25">
+				<mx:GridItem width="100%"  verticalAlign="middle" backgroundAlpha="0.0" height="25">
+					<mx:HBox id="hRadioAbo2" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" paddingRight="10" horizontalGap="10" x="10" y="73">
+						<mx:RadioButton  value ="fecBajaOrdAbonado" x="28" y="69" label="Fecha Baja" width="115" height="18" groupName="grupo5" />
+						<mx:RadioButton  value ="Desc" x="179" y="69" label="Descendente" width="115" height="18" groupName="grupo6"  id="rbtDescAbo"/>
+					</mx:HBox>
+				</mx:GridItem>
+			</mx:GridRow>
+
+		<mx:GridRow width="100%" height="100%">
+			<mx:GridItem width="100%" height="100%">
+			<mx:AdvancedDataGrid  doubleClickEnabled="true" doubleClick="buscarPorAbonado('desdeAbonadoClick')" dataProvider="{acGridAbonado}" allowMultipleSelection="true" selectionMode="multipleRows" sortExpertMode="true" id="gridAbonados" width="958" fontSize="10" textAlign="left" height="100%"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9"  allowDragSelection="false" dragEnabled="false" resizableColumns="false">
+				<mx:columns>
+						<mx:AdvancedDataGridColumn headerText="Abonado" dataField="numAbonado" textAlign="right" paddingRight="5"/>
+						<mx:AdvancedDataGridColumn headerText="Celular" dataField="numCelular" textAlign="right" paddingRight="5"/>
+						<mx:AdvancedDataGridColumn headerText="Situación" dataField="desSituacion" width="250" paddingLeft="5"/>				
+						<mx:AdvancedDataGridColumn headerText="Fecha Alta" dataField="fecAlta"  textAlign="right" paddingRight="5"/>
+						<mx:AdvancedDataGridColumn headerText="Fecha Baja" dataField="fecBaja" textAlign="right" paddingRight="5"/>						
+						<mx:AdvancedDataGridColumn headerText="Venta" dataField="numVenta" textAlign="right" paddingRight="5"/>
+						<mx:AdvancedDataGridColumn headerText="Uso" dataField="codUso"/>
+						<mx:AdvancedDataGridColumn headerText="" dataField="nomUsuario" width="0" />
+						<mx:AdvancedDataGridColumn headerText="" dataField="codCliente" width="0" />
+						<mx:AdvancedDataGridColumn headerText="" dataField="codCuenta" width="0" />
+						<mx:AdvancedDataGridColumn headerText="Fecha Alta" dataField="fecAltaOrd" width="0" visible="false"/>
+						<mx:AdvancedDataGridColumn headerText="Fecha Baja" dataField="fecBajaOrd" width="0" visible="false"/>
+				</mx:columns>
+			</mx:AdvancedDataGrid>
+			</mx:GridItem>
+		</mx:GridRow>
+		
+		</mx:Grid>	
+		</mx:Canvas>
+
+	</mx:Accordion>
+	</mx:Panel>
+
+	<mx:ArrayCollection id="acGridCliente" source="{ArrayUtil.toArray(dsGridCliente)}" />
+	<mx:ArrayCollection id="acGridCuenta" source="{ArrayUtil.toArray(dsGridCuenta)}" />
+	<mx:ArrayCollection id="acGridAbonado" source="{ArrayUtil.toArray(dsGridAbonado)}" />
+
+	<!-- ********************************************************************************************************************** -->
+	<!-- VALIDATORS -->
+	<!-- ********************************************************************************************************************** -->
+	<mx:RegExpValidator enabled="false" id="valTxtCuentaNumber" source="{txtSearchCuenta}" required="true" property="text" expression="^\d+$"       
+		noMatchError="Debe ingresar un número correcto de cuenta." 
+		requiredFieldError="Debe ingresar el código de cuenta a buscar."
+	/>
+
+	<mx:StringValidator enabled="false" id="valTxtCuentaString" source="{txtSearchCuenta}" property="text"  minLength="3"
+		requiredFieldError="Debe ingresar el nombre o identificador de la cuenta a buscar." 
+		tooShortError="Debe ingresar al menos 3 letras del nombre de la cuenta a buscar."
+	/>
+	<mx:StringValidator enabled="false"  id="valTxtClienteString" source="{txtSearchCliente}" property="text"  minLength="3"
+		requiredFieldError="Debe ingresar el nombre del cliente a buscar." 
+		tooShortError="Debe ingresar al menos 3 letras del nombre del cliente a buscar."
+	/>
+	
+	<mx:RegExpValidator enabled="false"  id="valTxtClienteNumber" source="{txtSearchCliente}" required="true" property="text" expression="^\d+$"       
+		noMatchError="Debe ingresar un código correcto de cliente." 
+		requiredFieldError="Debe ingresar el código de cliente a buscar."
+	/>
+	<mx:RegExpValidator  enabled="false" id="valTxtAbonadoNumber" source="{txtSearchAbonado}" required="true" property="text" expression="^\d+$"       
+		noMatchError="Debe ingresar el número de celular a buscar" 
+		requiredFieldError="Debe ingresar el número de celular a buscar."
+	/>
+		
+	<!-- ********************************************************************************************************************** -->
+	
+	<mx:RemoteObject id="srv" destination="cliente" />
+</mx:Module>

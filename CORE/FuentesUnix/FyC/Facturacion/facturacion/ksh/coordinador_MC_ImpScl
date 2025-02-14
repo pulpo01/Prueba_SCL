@@ -1,0 +1,1333 @@
+#!/bin/ksh
+
+function prBuscaRango
+{
+    echo "
+        set pages 0;
+        set serverout on;
+        set verify off;
+        set lines 20;
+        set head off;
+        set feedback off;
+        SELECT COD_CLIENTEINI,
+               COD_CLIENTEFIN
+        FROM FA_RANGOSHOST_TO
+        WHERE COD_CICLFACT = $1
+          AND HOST_ID      = '$2';
+        exit;
+    " > BuscaRango.sql
+    rango_clientes=$(sqlplus -s $szUserPasswd @BuscaRango.sql)
+    if [ `echo $rango_clientes|grep -c "ERROR"` -ge 1 ] ;then
+       echo "BuscaRango retorno error .. ($rango_clientes)"
+       rm -f BuscaRango.sql > /dev/null 2>&1
+       exit
+    fi
+    clientes_inicial_aux=$(echo $rango_clientes | awk '{print $1}')
+    clientes_final_aux=$(echo $rango_clientes | awk '{print $2}')
+    rm -f BuscaRango.sql > /dev/null 2>&1
+}
+
+function prCuentaTrazaHost
+{
+    echo "
+        set pages 0;
+        set serverout on;
+        set verify off;
+        set lines 20;
+        set head off;
+        set feedback off;
+        SELECT COUNT(1)
+        FROM FA_TRAZAPROC
+        WHERE COD_CICLFACT = $1
+          AND COD_PROCESO = 5000
+          AND ((HOST_ID = '$2') OR (1 <> $3));
+        exit;
+    " > CuentaTrazaHost.sql
+    cantidad_traza=$(sqlplus -s $szUserPasswd @CuentaTrazaHost.sql)
+    if [ `echo $cantidad_traza|grep -c "ERROR"` -ge 1 ] ;then
+       echo "CuentaTrazaHost retorno error .. ($cantidad_traza)"
+       rm -f CuentaTrazaHost.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f CuentaTrazaHost.sql > /dev/null 2>&1
+}
+
+function prVerificaTrazaHost
+{
+    echo "
+        set pages 0;
+        set serverout on;
+        set verify off;
+        set lines 20;
+        set head off;
+        set feedback off;
+        SELECT NVL(COD_ESTAPROC,0)
+        FROM FA_TRAZAPROC
+        WHERE COD_CICLFACT = $1
+          AND COD_PROCESO = 5000
+          AND ((HOST_ID = '$2') OR (1 <> $3));
+        exit;
+    " > VerificaTrazaHost.sql
+    estado_traza=$(sqlplus -s $szUserPasswd @VerificaTrazaHost.sql)
+    if [ `echo $estado_traza|grep -c "ERROR"` -ge 1 ] ;then
+       echo "VerificaTrazaHost retorno error .. ($estado_traza)"
+       rm -f VerificaTrazaHost.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f VerificaTrazaHost.sql > /dev/null 2>&1
+}
+
+function tanax
+{
+    usuario=`who am i | awk '{print $1}'`
+    echo Usuario $usuario
+
+    echo "Matando Proceso Carga Inicial"
+    ps -fea | grep carga_inicial_ImpScl | sed '/grep/d' | awk '{ print $2} ' | xargs -n1 kill -9
+
+    echo "Matando Proceso concatenador"
+    ps -fea | grep concatenador | sed '/grep/d' | awk '{ print $2} ' | xargs -n1 kill -9
+
+    echo "Matando Proceso ImpresionScl"
+    ps -fea | grep ImpresionScl | sed '/grep/d' | awk '{ print $2} ' | xargs -n1 kill -9
+
+    echo "Matando Memoria Compartida de la Cuenta"
+    ipcs -m | grep $usuario |awk '{print $2}'|xargs -n1 ipcrm -m
+
+    echo "Matando Semaforos de la Cuenta"
+    ipcs -s | grep $usuario |awk '{print $2}'|xargs -n1 ipcrm -s
+
+    ipcs -m | grep $usuario
+    ipcs -s | grep $usuario
+    ps -fea | grep carga_inicial_ImpScl | grep -v grep
+    ps -fea | grep ImpresionScl | grep -v grep
+}
+
+function prObtieneNumProcAnomalias
+{
+    echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off;
+      set feedback off;
+      SELECT ltrim(rtrim(FA_SEQ_NUMPRO.NEXTVAL)) FROM DUAL;
+      exit;
+      " > ObtieneNumProcAnomalias.sql
+    szNumProcAnomalias=$(sqlplus -s $szUserPasswd @ObtieneNumProcAnomalias.sql)
+    if [ `echo $szNumProcAnomalias |grep -c "ERROR"` -ge 1 ] ;then
+        echo "prObtieneNumProcAnomalias retorno error .."
+        rm -f ObtieneNumProcAnomalias.sql > /dev/null 2>&1
+        exit
+    fi
+    rm -f ObtieneNumProcAnomalias.sql > /dev/null 2>&1
+    echo $szNumProcAnomalias
+}
+
+
+function prObtieneSeq
+{
+    echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off;
+      set feedback off;
+      SELECT ltrim(rtrim(FA_SEQ_CTLINFORMES.NEXTVAL)) FROM DUAL;
+      exit;
+      " > ObtieneSeq.sql
+    szNumSecu=$(sqlplus -s $szUserPasswd @ObtieneSeq.sql)
+    if [ `echo $szNumSecu |grep -c "ERROR"` -ge 1 ] ;then
+        echo "prObtieneSeq retorno error .."
+        rm -f ObtieneSeq.sql > /dev/null 2>&1
+        exit
+    fi
+    rm -f ObtieneSeq.sql > /dev/null 2>&1
+    echo $szNumSecu
+}
+
+#RPL 21-04-2020 Se agrega funcion prCuentaClientesAProcesar para obtener la cantidad real de clientes a procesar
+function prCuentaClientesAProcesar
+{
+
+      TABLAUX1="FA_FACTDOCU_${1}"
+      TABLAUX2="FA_FACTCLIE_${1}"
+
+    echo "
+        set pages 0;
+        set serverout on;
+        set verify off;
+        set lines 20;
+        set head off;
+        set feedback off;
+        SELECT COUNT(1) FROM (SELECT A.IND_ORDENTOTAL,  A.COD_CLIENTE,  A.NUM_FOLIO,
+        NVL(A.NUM_CTC,0),  TO_CHAR(A.FEC_EMISION,'YYYYMMDD'),  TO_CHAR(NVL(A.FEC_VENCIMIE,SYSDATE),'YYYYMMDDHH24MISS'),
+        A.COD_TIPDOCUM,  A.NUM_PROCESO,  C.COD_GENARCH,  NVL(D.NOM_HEADER,' '),  C.COD_PRIORIDAD,  NVL(A.COD_DESPACHO,'DESNO'),
+        A.TOT_FACTURA, NVL(B.NUM_IDENTTRIB,''),  B.NOM_CLIENTE||' '||B.NOM_APECLIEN1||' '||B.NOM_APECLIEN2,  NVL(B.COD_IDIOMA,'1'),
+        A.PREF_PLAZA,  A.COD_OPERADORA,  A.COD_PLAZA,  A.TOT_CARGOSME,  NVL(A.IMP_SALDOANT,0),
+        A.TOT_PAGAR,  A.TOT_CUOTAS,  A.COD_OFICINA,  A.COD_VENDEDOR,  A.NOM_USUARORA,  E.COD_OPERPLAZA,
+        A.COD_MONEDAIMP,  A.IMP_CONVERSION,  NVL(A.NUM_SECUREL,0),  NVL(A.LETRAREL,''),  NVL(A.COD_TIPDOCUMREL,0),
+        NVL(A.COD_VENDEDOR_AGENTEREL,0),  NVL(A.COD_CENTRREL,0),  NVL(A.NUM_VENTA,0),  NVL(G.COD_SERVICIO, 1),  NVL(A.COD_SEGMENTACION,''),  A.NOM_EMAIL,
+        NVL(B.COD_TIPIDTRIB,'00'),  TO_CHAR(A.FEC_EMISION,'DD-MM-YYYY HH24:MI:SS'),  TO_CHAR(A.FEC_ULTMOD,'DD-MM-YYYY HH24:MI:SS'),
+        A.CONT_TECNICO
+        FROM ${TABLAUX1} A,
+        ${TABLAUX2} B,
+        FA_CODESPACHO C,
+        FA_PARGENARCH D,
+        GE_OPERPLAZA_TD E,
+        FAD_IMPSERVCLIE G,
+        (SELECT UNIQUE F.cod_tipdocum,F.cod_despacho
+        FROM FA_PROCIMPRESION_TD F WHERE cod_ciclfact = $1 AND COD_ESTAPROC = 4
+        AND (HOST_ID = '$2' OR 1 = 1)) AUX
+        WHERE A.TOT_FACTURA >= 0
+        AND A.COD_CLIENTE >= 0
+        AND A.NUM_FOLIO   >= 0
+        AND A.IND_SUPERTEL = 0
+        AND A.IND_ANULADA  = 0
+        AND A.IND_FACTUR   = 1
+        AND A.IND_IMPRESA  = 0
+        AND A.COD_TIPDOCUM = AUX.COD_TIPDOCUM
+        AND A.COD_DESPACHO = AUX.COD_DESPACHO
+        AND B.IND_ORDENTOTAL = A.IND_ORDENTOTAL
+        AND C.COD_DESPACHO   = NVL(A.COD_DESPACHO,'DESNO')
+        AND D.COD_GENARCH(+) = C.COD_GENARCH
+        AND A.COD_OPERADORA  = E.COD_OPERADORA_SCL
+        AND A.COD_PLAZA = E.COD_PLAZA  AND A.COD_CLIENTE = G.COD_CLIENTE (+)
+        AND A.FEC_EMISION >= G.FECHA_DESDE (+)
+        AND A.FEC_EMISION <= G.FECHA_HASTA (+)
+        AND ((A.COD_CLIENTE BETWEEN $szClienteInicial AND $szClienteFinal) OR (1 <> $3)));
+        exit;
+    " > CuentaClientesAProcesar.sql
+    cantidad_cliAProcesar=$(sqlplus -s $szUserPasswd @CuentaClientesAProcesar.sql)
+    if [ `echo $cantidad_cliAProcesar|grep -c "ERROR"` -ge 1 ] ;then
+       echo "CuentaClientesAProcesar retorno error .. ($cantidad_cliAProcesar)"
+       rm -f CuentaClientesAProcesar.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f CuentaClientesAProcesar.sql > /dev/null 2>&1
+}
+
+function prDeclaraIndices
+{
+
+
+#INDICES UNICOS
+CMB_FAD_IMPCONCEPTOS="SISCEL.CMB_FAD_IMPCONCEPTOS"
+CMB_FAD_IMPSERVCLIE="SISCEL.CMB_FAD_IMPSERVCLIE"
+CMB_FA_CODESPACHO="SISCEL.CMB_FA_CODESPACHO"
+CMB2_FA_CODESPACHO="SISCEL.CMB2_FA_CODESPACHO"
+CMB_FA_PARGENARCH="SISCEL.CMB_FA_PARGENARCH"
+CMB_GE_CLIENTES="SISCEL.CMB_GE_CLIENTES"
+CMB2_FA_FACTABON="SISCEL.CMB2_FA_FACTABON_${1}"
+CMB3_FA_FACTDOCU="SISCEL.CMB3_FA_FACTDOCU_${1}" 
+CMB7_FA_FACTDOCU="SISCEL.CMB7_FA_FACTDOCU_${1}" 
+CMB_FA_FACTABON="SISCEL.CMB_FA_FACTABON_${1}" 
+CMB_FA_FACTDOCU="SISCEL.CMB_FA_FACTDOCU_${1}"  
+ 
+#NO UNICOS
+CMB_FA_CICLOCLI_COUR="SISCEL.CMB_FA_CICLOCLI_COUR"
+CMB2_FA_FACTCONC="SISCEL.CMB2_FA_FACTCONC_${1}"
+CMB2_FA_FACTDOCU="SISCEL.CMB2_FA_FACTDOCU_${1}" 
+CMB5_FA_FACTDOCU="SISCEL.CMB5_FA_FACTDOCU_${1}" 
+CMB_FA_FACTCONC="SISCEL.CMB_FA_FACTCONC_${1}"
+
+echo $CMB_FAD_IMPCONCEPTOS
+echo $CMB_FAD_IMPSERVCLIE 
+echo $CMB_FA_CICLOCLI_COUR
+echo $CMB_FA_CODESPACHO   
+echo $CMB2_FA_CODESPACHO  
+echo $CMB_FA_PARGENARCH   
+echo $CMB_GE_CLIENTES            
+echo $CMB2_FA_FACTABON
+echo $CMB2_FA_FACTCONC
+echo $CMB2_FA_FACTDOCU
+echo $CMB3_FA_FACTDOCU
+echo $CMB5_FA_FACTDOCU
+echo $CMB7_FA_FACTDOCU
+echo $CMB_FA_FACTABON 
+echo $CMB_FA_FACTCONC 
+echo $CMB_FA_FACTDOCU 
+
+
+
+}
+
+
+#RPL 29-05-2020 Se agrega funcion prCreaIndicesUnique para crear nuevos indices únicos para el proceso de impresión
+function prCreaIndicesUnique
+{
+
+  case ${1} in
+      $CMB_FAD_IMPCONCEPTOS )
+            szCampos=" (COD_CONCEPTO, COD_SUBGRUPO, NUM_ORDEN, TIP_CONCEP) "
+            zsTablaAux="SISCEL.FAD_IMPCONCEPTOS"
+            ;;
+      $CMB_FA_CODESPACHO )
+            szCampos=" (COD_DESPACHO, COD_GENARCH) "
+            zsTablaAux="SISCEL.FA_CODESPACHO"
+            ;;
+      $CMB2_FA_CODESPACHO )
+            szCampos=" (COD_DESPACHO, COD_GENARCH, COD_PRIORIDAD) "
+            zsTablaAux="SISCEL.FA_CODESPACHO"
+            ;;
+      $CMB_FA_PARGENARCH )
+            szCampos=" (COD_GENARCH, NOM_HEADER) "
+            zsTablaAux="SISCEL.FA_PARGENARCH"
+            ;;
+      $CMB_GE_CLIENTES )
+            szCampos=" (COD_CLIENTE, NOM_APODERADO, COD_SISPAGO, NUM_IDENT2) "
+            zsTablaAux="SISCEL.GE_CLIENTES"
+            ;;
+      $CMB2_FA_FACTABON )
+            szCampos=" (IND_ORDENTOTAL, NUM_ABONADO, NUM_CELULAR, FEC_FINCONTRA) "
+            zsTablaAux="SISCEL.FA_FACTABON_${2}"
+            ;;
+      $CMB3_FA_FACTDOCU )
+            szCampos=" (COD_CLIENTE, NUM_FOLIO, TOT_FACTURA, IND_SUPERTEL, IND_ANULADA,IND_FACTUR, IND_ORDENTOTAL, COD_DESPACHO, COD_OPERADORA, COD_PLAZA) "
+            zsTablaAux="SISCEL.FA_FACTDOCU_${2}"
+            ;;
+      $CMB7_FA_FACTDOCU )
+            szCampos=" (TOT_FACTURA, COD_CLIENTE, NUM_FOLIO, IND_IMPRESA, FEC_EMISION) "
+            zsTablaAux="SISCEL.FA_FACTDOCU_${2}"
+            ;;
+      $CMB_FA_FACTABON )
+            szCampos=" (IND_ORDENTOTAL, NUM_ABONADO, NUM_CELULAR, COD_DETFACT, COD_PRODUCTO,NOM_USUARIO, NOM_APELLIDO1, NOM_APELLIDO2, IND_COBRODETLLAM) "
+            zsTablaAux="SISCEL.FA_FACTABON_${2}"
+            ;;
+      $CMB_FA_FACTDOCU )
+            szCampos=" (COD_CLIENTE, NUM_FOLIO, TOT_FACTURA, IND_IMPRESA) "
+            zsTablaAux="SISCEL.FA_FACTDOCU_${2}"
+            ;;
+      $CMB_FAD_IMPSERVCLIE )
+            szCampos=" (COD_CLIENTE, COD_SERVICIO, FECHA_DESDE, FECHA_HASTA) "
+            zsTablaAux="SISCEL.FAD_IMPSERVCLIE"
+            ;;
+  esac
+
+
+echo "--------------------------------------------------------------------------------"
+echo "Creando Indice Unico:" ${1} " Campos:" $szCampos
+
+
+    echo "
+        set pages 0;
+        set serverout on;
+        set verify off;
+        set lines 20;
+        set head off;
+        set feedback off;
+        CREATE UNIQUE INDEX ${1} ON $zsTablaAux
+        $szCampos
+        LOGGING
+        TABLESPACE ${3}
+        PCTFREE    ${4}
+        INITRANS   ${5}
+        MAXTRANS   ${6}
+        STORAGE    (
+            INITIAL          ${7}
+            NEXT             ${8}
+            MINEXTENTS       ${9}
+            MAXEXTENTS       ${10}
+            PCTINCREASE      ${11}
+            BUFFER_POOL      ${12}
+           );
+        exit;
+    " > CreaIndicesImpresor_${1}.sql
+    indices_a_crear=$(sqlplus -s $szUserPasswd @CreaIndicesImpresor_${1}.sql)
+    if [ `echo $indices_a_crear|grep -c "ERROR"` -ge 1 ] ;then
+       echo "CreaIndicesImpresor retorno error .. ($indices_a_crear)"
+       rm -f CreaIndicesImpresor_${1}.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f CreaIndicesImpresor_${1}.sql > /dev/null 2>&1
+}
+
+
+#RPL 29-05-2020 Se agrega funcion prCreaIndices para crear nuevos indices para el proceso de impresión
+function prCreaIndices
+{
+
+
+case ${1} in
+      $CMB_FA_CICLOCLI_COUR )
+            szCampos=" (COD_CLIENTE, COD_COURRIER, COD_ZONACOURRIER) "
+            zsTablaAux="SISCEL.FA_CICLOCLI"
+            ;;
+      $CMB2_FA_FACTCONC )
+            szCampos=" (IND_ORDENTOTAL, COD_CONCEPTO, NUM_ABONADO, FLAG_DTO) "
+            zsTablaAux="SISCEL.FA_FACTCONC_${2}"
+            ;;
+      $CMB2_FA_FACTDOCU )
+            szCampos=" (COD_VENDEDOR) "
+            zsTablaAux="SISCEL.FA_FACTDOCU_${2}"
+            ;;
+      $CMB5_FA_FACTDOCU )
+            szCampos=" (TOT_FACTURA, NUM_FOLIO, IND_SUPERTEL, IND_ANULADA, IND_FACTUR,IND_IMPRESA, COD_TIPDOCUM, COD_DESPACHO) "
+            zsTablaAux="SISCEL.FA_FACTDOCU_${2}"
+            ;;
+      $CMB_FA_FACTCONC )
+            szCampos=" (IND_ORDENTOTAL, COD_TIPCONCE,COD_CONCEREL ,COLUMNA,COD_CONCEPTO,COLUMNA_REL,COD_PRODUCTO,NUM_ABONADO) "
+            zsTablaAux="SISCEL.FA_FACTCONC_${2}"
+            ;;
+      esac
+      
+      echo "--------------------------------------------------------------------------------"
+      echo "Creando Indice:" ${1} " Campos:" $szCampos
+
+    echo "
+        set pages 0;
+        set serverout on;
+        set verify off;
+        set lines 20;
+        set head off;
+        set feedback off;
+        CREATE INDEX ${1} ON $zsTablaAux
+        $szCampos
+        LOGGING
+        TABLESPACE ${3}
+        PCTFREE    ${4}
+        INITRANS   ${5}
+        MAXTRANS   ${6}
+        STORAGE    (
+            INITIAL          ${7}
+            NEXT             ${8}
+            MINEXTENTS       ${9}
+            MAXEXTENTS       ${10}
+            PCTINCREASE      ${11}
+            BUFFER_POOL      ${12}
+           );
+        exit;
+    " > CreaIndicesImpresor_${1}.sql
+    indices_a_crear=$(sqlplus -s $szUserPasswd @CreaIndicesImpresor_${1}.sql)
+    if [ `echo $indices_a_crear|grep -c "ERROR"` -ge 1 ] ;then
+       echo "CreaIndicesImpresor retorno error .. ($indices_a_crear)"
+       rm -f CreaIndicesImpresor_${1}.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f CreaIndicesImpresor_${1}.sql > /dev/null 2>&1
+}
+
+#RPL 29-05-2020 Se agrega funcion prBorraIndices para eliminar los nuevos indices para el proceso de impresión
+#RPL 23-07-2020 Se modifica funcion para reintentar eliminacion de indices
+function prBorraIndices
+{
+
+echo " Eliminando Indice" ${1}                    
+
+    echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off;
+      set feedback off;
+      DROP INDEX ${1};
+      exit;" > Borra_Indices.sql
+       cantidad_indices_borrados=$(sqlplus -s $szUserPasswd @Borra_Indices.sql)
+       if [ `echo $cantidad_indices_borrados|grep -c "ERROR"` -ge 1 ] ;then
+           echo "Borra_Indices retorno error .. ($cantidad_indices_borrados)"
+           echo "esperamos 1 minuto y volvemos a borrar!"
+           echo "Indice con error: " ${1}
+           sleep 60
+              echo " Eliminando Indice Nuevamente: " ${1}                    
+              echo "
+              set pages 0;
+              set serverout on;
+              set verify off;
+              set lines 20;
+              set head off;
+              set feedback off;
+              DROP INDEX ${1};
+              exit;" > Borra_Indices_reintento.sql
+              cantidad_reintento_borrados=$(sqlplus -s $szUserPasswd @Borra_Indices_reintento.sql)  
+                if [ `echo $cantidad_reintento_borrados|grep -c "ERROR"` -ge 1 ] ;then
+                echo "Reintento de Borra_Indices retorno error .. ($cantidad_reintento_borrados)"       
+                #RPL SE RESTA 1 AL CONTADOR DE INCIDES BORRADOS PARA QUE AL FINAL FALLE  
+                IndBorrados=`expr $IndBorrados - 1 `
+                rm -f Borra_Indices_reintento.sql > /dev/null 2>&1
+                fi
+    fi
+ rm -f Borra_Indices.sql > /dev/null 2>&1
+IndBorrados=`expr $IndBorrados + 1 ` 
+}
+
+
+#RPL 29-05-2020 Se agrega funcion prBorraIndices para eliminar los nuevos indices para el proceso de impresión
+function prBorraIndicesInicio
+{
+
+echo ${1}
+
+    echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off;
+      set feedback off;
+      DROP INDEX ${1};
+      exit;" > Borra_Indices_Inicio.sql
+       sqlplus -s $szUserPasswd @Borra_Indices_Inicio.sql    
+ rm -f Borra_Indices_Inicio.sql > /dev/null 2>&1
+}
+#RPL 22-07-2020 Se agrega funcion prUpdateTrazaIndex Para dejar registro en la traza de que se eliminaron los nuevos indices creados
+function prUpdateTrazaIndex
+{
+  if [ $1 = "0" ];then
+  estGlosa="'DROP OK'"
+  else
+  estGlosa="'DROP NOK'"
+  fi
+   echo "ACTUALIZA GLOSA FA_TRAZAPROC " $estGlosa
+       echo "
+         set pages 0;
+         set serverout on;
+         set verify off;
+         set lines 20;
+         set head off;
+         set feedback off;
+         UPDATE FA_TRAZAPROC SET
+         GLS_PROCESO  = GLS_PROCESO || ' ' || $estGlosa
+         WHERE COD_PROCESO = 5000
+           AND COD_CICLFACT = ${szCicloFact}
+           AND ((HOST_ID = '${HostId}') OR (1 <> ${szRangoClientes}));
+         COMMIT;
+         exit;" > Actualiza_FA_TRA_IND.sql
+       sqlplus -s $szUserPasswd @Actualiza_FA_TRA_IND.sql
+       rm -f Actualiza_FA_TRA_IND.sql
+}
+
+
+function prVerificaTraza
+{
+    echo "
+    set pages 0;
+    set serverout on;
+    set verify off;
+    set lines 20;
+    set head off;
+    set feedback off;
+    SELECT NVL(COD_ESTAPROC,0)
+    FROM FA_TRAZAPROC
+    WHERE COD_CICLFACT = $1
+     AND COD_PROCESO = 5000;
+     exit;
+    
+    " > VerificaTraza.sql
+    estado_traza=$(sqlplus -s $szUserPasswd @VerificaTraza.sql)
+    if [ `echo $estado_traza|grep -c "ERROR"` -ge 1 ] ;then
+       echo "VerificaTraza retorno error .. ($estado_traza)"
+       rm -f VerificaTraza.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f VerificaTraza.sql > /dev/null 2>&1
+}
+
+function fnHelp
+{
+echo "NAME
+    $0 - Ejecuta y Coordina los subprocesos que cubren las Facturas de un ciclo dado.
+SYNOPSIS
+    $0  [-uclntdvsixaz] [ Argum ]
+DESCRIPTION
+     u user/pass  
+           Usuario user y password pass de la base oracle en donde se ubiquen los 
+           documentos a imprimir.
+     c ciclo
+           Indica el ciclo cicle de las facturas a imprimir. El formato de este campo es
+           cmmyy, que indica ciclo, mes  y año.
+     l 1..6
+           Indica el nivel de depuracion n opcional, con el que se ejecutaran los subproce-
+           sos de impresion de documentos. Por defecto es seteado en 3.
+     n     Valor nominal de cuantos procesos en paralelo se ejecutarán (opcional)
+     t     Tipo de Documento, si se quiere procesar un subproceso puntual (opcional)
+     d     Codigo de Despacho, si se quiere procesar un subproceso puntual (opcional)
+     v     Indentificador que le dice al proceso que es una ejecución desde VB
+     s     Secuencia de Informe
+     i     timeout (Si no se indica se considera 50)
+     x     Opcion que ELIMINA PROCESAMIENTO EN EJECUCION (opcional-recomendado)
+     a cliente inicial (opcional)
+           Cliente inicial del Procesamiento
+     z cliente final   (opcional)
+           Cliente final del Procesamiento
+
+SAMPLE
+     $0 -u / -c 150704 -n 109090 -l 3 -i 100
+     $0 -u / -c 150704 -n 109090 -l 3 -i 100 -t
+"
+
+exit
+
+}
+
+function regs
+{
+sqlplus -s $1 << EOS
+   SET PAGESIZE 0
+   SET ECHO OFF
+   SET FEEDBACK OFF
+   SET VERIFY OFF
+   SELECT UNIQUE VAL_NUMERICO
+     FROM FAD_PARAMETROS 
+     WHERE DES_PARAMETRO = 'IMP_NRO_CLIENTES_A_CARGAR_EN_MC';
+quit;
+EOS
+}
+
+function min
+{
+sqlplus -s $1 << EOS
+   SET PAGESIZE 0
+   SET ECHO OFF
+   SET FEEDBACK OFF
+   SET VERIFY OFF
+   SELECT UNIQUE VAL_NUMERICO
+     FROM FAD_PARAMETROS 
+     WHERE DES_PARAMETRO = 'IMP_NRO_MINIMO_CLIENTES_EN_MC';
+quit;
+EOS
+}
+
+
+function proc
+{
+sqlplus -s $1 << EOS
+   SET PAGESIZE 0
+   SET ECHO OFF
+   SET FEEDBACK OFF
+   SET VERIFY OFF
+   SELECT UNIQUE VAL_NUMERICO 
+     FROM FAD_PARAMETROS 
+    WHERE DES_PARAMETRO = 'IMP_NRO_PROCESOS_PARALELOS';
+quit;
+EOS
+}
+
+
+function Igual
+{
+    a=$(echo "$1"|perl -ne '~tr/A-Z/a-z/;print $_;')
+    b=$(echo "$2"|perl -ne '~tr/A-Z/a-z/;print $_;')
+
+    if [ "$a" = "$b" ] ;then #(
+        echo  "xx"
+    else
+        echo  ""
+    fi
+
+}
+
+function prObtieneTdocCdesp
+{
+    echo "
+    set pages 0;
+    set serverout on;
+    set verify off;
+    set lines 20;
+    set head off;
+    set feedback off;
+    select CAST(COLUMN_VALUE as VARCHAR2(9)) from table(FA_TRAZA_CICLO_PG.FA_OBTIENE_TDOCUM_CDESPACHO_FN($1, $2, $3, $4));
+     exit;
+    
+    " > ObtieneTdocCdesp.sql
+    parametros=$(sqlplus -s $szUserPasswd @ObtieneTdocCdesp.sql)
+    if [ `echo $parametros|grep -c "ERROR"` -ge 1 ] ;then
+       echo "prObtieneTdocCdesp retorno error .. ($parametros)"
+       rm -f ObtieneTdocCdesp.sql > /dev/null 2>&1
+       exit
+    fi
+    rm -f ObtieneTdocCdesp.sql > /dev/null 2>&1
+}
+
+function actualiza_FA_PROCIMPRESION
+{
+echo "ACTUALIZANDO FA_PROCIMPRESION......."
+
+icnt=0; for h in $parametros ;do
+       htip_docum=$(echo $h|awk -F"|" '{print $1}')
+       hcod_despacho=$(echo $h|awk -F"|" '{print $2}')
+       hcod_despacho="'$hcod_despacho'"
+       
+       if [ $3 = "-1" ]; then
+		 echo "UPDATE FA_PROCIMPRESION_TD SET COD_ESTAPROC = 4 WHERE  COD_CICLFACT = $2 AND   COD_TIPDOCUM = $htip_docum AND   COD_DESPACHO = $hcod_despacho AND HOST_ID IS NULL;" >> UPDATE_FA_PRO.sql
+	   else
+			hHostId="'"$3"'"
+		echo "UPDATE FA_PROCIMPRESION_TD SET COD_ESTAPROC = 4 WHERE  COD_CICLFACT = $2 AND   COD_TIPDOCUM = $htip_docum AND   COD_DESPACHO = $hcod_despacho AND HOST_ID = $IS NULL;" >> UPDATE_FA_PRO.sql
+	   fi
+icnt=`expr $icnt + 1 `;done
+
+echo "
+      COMMIT;
+      exit;" >> UPDATE_FA_PRO.sql
+      
+    sqlplus -s $szUserPasswd @UPDATE_FA_PRO.sql
+    rm -f UPDATE_FA_PRO.sql
+    
+
+}
+
+function actualiza_FA_PROCIMPRESION2
+{
+    echo "ACTUALIZANDO FA_PROCIMPRESION.EN.1......"
+
+icnt=0; for h in $parametros ;do
+       htip_docum=$(echo $h|awk -F"|" '{print $1}')
+       hcod_despacho=$(echo $h|awk -F"|" '{print $2}')
+       hcod_despacho="'$hcod_despacho'"
+       
+       if [ $3 = "-1" ]; then
+		 echo "UPDATE FA_PROCIMPRESION_TD SET COD_ESTAPROC = 1 WHERE  COD_CICLFACT = $2 AND COD_ESTAPROC = 4 AND   COD_TIPDOCUM = $htip_docum AND   COD_DESPACHO = $hcod_despacho AND HOST_ID IS NULL;" >> UPDATE_FA_PRO2.sql
+	   else
+			hHostId="'"$3"'"
+		echo "UPDATE FA_PROCIMPRESION_TD SET COD_ESTAPROC = 1 WHERE  COD_CICLFACT = $2 AND COD_ESTAPROC = 4 AND   COD_TIPDOCUM = $htip_docum AND   COD_DESPACHO = $hcod_despacho AND HOST_ID = $IS NULL;" >> UPDATE_FA_PRO2.sql
+	   fi
+icnt=`expr $icnt + 1 `;done
+
+echo "
+      COMMIT;
+      exit;" >> UPDATE_FA_PRO2.sql
+      
+    sqlplus -s $szUserPasswd @UPDATE_FA_PRO2.sql
+    rm -f UPDATE_FA_PRO2.sql
+
+}
+
+Fecha="TO_Date( '$(date "+%d/%m/%y %H:%M:%S")', 'MM/DD/YYYY HH24:MI:SS')"
+FechaTermino="NULL"
+
+# LECTURA DE PARAMETROS DE ENTRADA :
+icnt=0;for i in $@  ;do 
+   szPARAMETROS_ENTRADA[$icnt]="$i"
+   icnt=`expr $icnt + 1 ` 
+done
+
+if [ $icnt = 0 ] ;then
+    fnHelp
+fi
+
+user_name=`logname`
+bVisuaBasic=0
+szTANAX=0
+szRangoClientes=0
+
+icnt=0;while [ 1 ] ;do
+    case ${szPARAMETROS_ENTRADA[$icnt]} in
+        # CICLO
+        "-c" | "-C" )
+            icnt=`expr $icnt + 1 `
+            szCicloFact=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # USUARIO
+        "-u" | "-U" )
+            icnt=`expr $icnt + 1 `
+            szUserPasswd=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # NIVEL DE LOG
+        "-l" | "-L" )
+            icnt=`expr $icnt + 1 `
+            iNivelLog=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # NUN SEC INFO
+        "-s" | "-S" )
+            icnt=`expr $icnt + 1 `
+            szNumSecu=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # NUN DE PROCESOS
+        "-n" | "-N" )
+            icnt=`expr $icnt + 1 `
+            szNumProcI=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # TIPO DE DOCUMENTO
+        "-t" | "-T" )
+            icnt=`expr $icnt + 1 `
+            szTipoDocumento=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # CODIGO DE DESPACHO 
+        "-d" | "-D" )
+            icnt=`expr $icnt + 1 `
+            szCodDespa=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # INTENTOS 
+        "-i" | "-I" )
+            icnt=`expr $icnt + 1 `
+            szIntentos=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # Si lo ejecuta Visual
+        "-v" | "-V" )
+            icnt=`expr $icnt + 1 `
+            bVisuaBasic=1
+            flagdoc=1
+            ;;
+        # TANAX
+        "-x" | "-X" )
+            icnt=`expr $icnt + 1 `
+            szTANAX=1
+            ;;
+        # CLIENTE INICIAL
+        "-a" | "-A")
+            icnt=`expr $icnt + 1 `
+            szRangoClientes=1
+            szClienteInicial=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        # CLIENTE FINAL
+        "-z" | "-Z")
+            icnt=`expr $icnt + 1 `
+            szRangoClientes=1
+            szClienteFinal=${szPARAMETROS_ENTRADA[$icnt]}
+            ;;
+        "" )
+            break
+            ;;
+        * )
+            echo "Argumento Desconocido : NO es un archivo :(${szPARAMETROS_ENTRADA[$icnt]})"
+            fnHelp
+            ;;
+    esac
+icnt=`expr $icnt + 1 `;done
+
+if [ -z "$szCicloFact" ]; then
+    echo "Ciclo de Facturacion vacio ..."
+    exit
+fi
+
+
+HostId=$(head -1 ${XPF_CFG}/host_id.dat) > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "No existe el Archivo de Configuracion ${XPF_CFG}/host_id.dat"
+fi
+
+if [ -z "$HostId" ];then
+    szRangoClientes=0
+    HostId="-1"
+else
+    szRangoClientes=1
+    prBuscaRango ${szCicloFact} ${HostId}
+    szClienteInicial=${clientes_inicial_aux}
+    szClienteFinal=${clientes_final_aux}
+fi
+
+#RPL 05-08-2020 SE AGREGA VALIDACION QUE SI HAY UN COORDINADOR ARRIBA NO SE PUEDA VOLVER A EJECUTAR
+echo "----------------------------------------------------------------------------------------------------------"  
+echo "Validando que no exista otra instancia del proceso coordinador_MC_ImpScl en ejecucion"
+UserCoordina=`who am i | awk '{print $1}'`
+echo "Usuario:" $UserCoordina
+pathPsNew="/usr/ucb/"
+cantCoord=`${pathPsNew}ps auxww | grep 'coordinador_MC_ImpScl' | sed '/grep/d' | wc -l `
+echo "Cantidad de Procesos:" $cantCoord
+if [ $cantCoord -ne 1 ]; then
+echo "----------------------------------------------------------------------------------------------------------"  
+echo "Existe en ejecucion otra instancia del proceso coordinador_MC_ImpScl"
+echo "Se cancela ejecucion"
+echo "----------------------------------------------------------------------------------------------------------"  
+exit
+else
+echo "Se ejecuta proceso coordinador_MC_ImpScl"
+echo "----------------------------------------------------------------------------------------------------------"  
+fi
+       
+
+if [ $szTANAX -eq 0 ]; then
+    echo  "No Elimina Proceso en Ejecucion ..."
+    echo "----------------------------------------------------"
+    echo " "
+else
+    echo "Elimina Proceso Actuales Asociados ..."
+    echo "----------------------------------------------------"
+    tanax
+    echo " "
+fi
+
+if [ -n "$szTipoDocumento" ] && [ -z "$szCodDespa" ]; then
+    echo "Código de despacho vacio ..."
+    exit
+fi
+
+if [ -n "$szCodDespa" ] && [ -z "$szTipoDocumento" ]; then
+    echo "Tipo de documento vacio ..."
+    exit
+fi
+
+echo "RANGO DE CLIENTES [${szClienteInicial},${szClienteFinal}]"
+
+if [ $szRangoClientes -eq 1 ]; then
+    if [ -n "$szClienteInicial" ] && [ -z "$szClienteFinal" ]; then
+        echo "Cliente Final vacio ..."
+        exit
+    fi
+    if [ -z "$szClienteInicial" ] && [ -n "$szClienteFinal" ]; then
+        echo "Cliente Inicial vacio ..."
+        exit
+    fi
+    if [ -z "$szClienteInicial" ] && [ -z "$szClienteFinal" ]; then
+        echo "Cliente Inicial y Cliente Final vacio ..."
+        exit
+    fi
+fi
+
+#proceso=""
+#proceso=`ps -fea | grep carga_inicial_ImpScl | grep -v grep`
+#echo $proceso
+
+if [ $bVisuaBasic -ne 1 ];then
+        
+    if [ -z "$szCodDespa" ]; then
+    	szhCodDespa="NULL"
+    else
+    	szhCodDespa="'"$szCodDespa"'"
+    fi
+
+	if [ -z "$szTipoDocumento" ]; then
+	    szhTipoDocumento="NULL"
+	else
+		szhTipoDocumento=$szTipoDocumento
+	fi
+	
+	if [ $HostId = "-1" ]; then
+	    hHostId="NULL"
+	else
+		hHostId="'"$HostId"'"
+	fi
+ 
+#RPL 29-05-2020 SE AGREGA CREACION DE INDICES PARA PROCESO DE IMPRESION
+echo "Declarando nuevos indices para impresor:"
+#Primero declaramos los nuevos indices
+prDeclaraIndices ${szCicloFact}
+echo " "
+#Despues dropeamos los indices        
+echo `date "+%d/%m/%y %T"` "DROP INDICES INICIO"
+prBorraIndicesInicio $CMB_FAD_IMPCONCEPTOS
+prBorraIndicesInicio $CMB_FAD_IMPSERVCLIE 
+prBorraIndicesInicio $CMB_FA_CODESPACHO   
+prBorraIndicesInicio $CMB2_FA_CODESPACHO  
+prBorraIndicesInicio $CMB_FA_PARGENARCH   
+prBorraIndicesInicio $CMB_GE_CLIENTES     
+prBorraIndicesInicio $CMB2_FA_FACTABON    
+prBorraIndicesInicio $CMB3_FA_FACTDOCU    
+prBorraIndicesInicio $CMB7_FA_FACTDOCU    
+prBorraIndicesInicio $CMB_FA_FACTABON     
+prBorraIndicesInicio $CMB_FA_FACTDOCU     
+prBorraIndicesInicio $CMB_FA_CICLOCLI_COUR
+prBorraIndicesInicio $CMB2_FA_FACTCONC    
+prBorraIndicesInicio $CMB2_FA_FACTDOCU    
+prBorraIndicesInicio $CMB5_FA_FACTDOCU    
+prBorraIndicesInicio $CMB_FA_FACTCONC   
+echo `date "+%d/%m/%y %T"` "DROP INDICES FIN"  
+echo " "
+#Luego creamos los indices
+echo `date "+%d/%m/%y %T"` "Comenzando creacion de Indices"
+prCreaIndicesUnique $CMB_FAD_IMPCONCEPTOS ${szCicloFact} TS_FACTURACION_SIDX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB_FAD_IMPSERVCLIE  ${szCicloFact} TS_FACTURACION_SIDX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB_FA_CODESPACHO    ${szCicloFact} TS_FACTURACION_SIDX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB2_FA_CODESPACHO   ${szCicloFact} TS_FACTURACION_SIDX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB_FA_PARGENARCH    ${szCicloFact} TS_FACTURACION_SIDX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB_GE_CLIENTES      ${szCicloFact} TS_FACTURACION_SIDX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB2_FA_FACTABON     ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 10M 2M 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB3_FA_FACTDOCU     ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB7_FA_FACTDOCU     ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB_FA_FACTABON      ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 10M 2M 1 UNLIMITED 0 DEFAULT
+prCreaIndicesUnique $CMB_FA_FACTDOCU      ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT   
+prCreaIndices $CMB_FA_CICLOCLI_COUR ${szCicloFact} INSTALL_INDEX 10 2 255 512K 512K 1 UNLIMITED 0 DEFAULT
+prCreaIndices $CMB2_FA_FACTCONC     ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT
+prCreaIndices $CMB2_FA_FACTDOCU     ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT
+prCreaIndices $CMB5_FA_FACTDOCU     ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT
+prCreaIndices $CMB_FA_FACTCONC      ${szCicloFact} FACTURACION_CICLOS_TIND 5 8 225 20M 5M 1 UNLIMITED 0 DEFAULT
+
+echo `date "+%d/%m/%y %T"` "Fin creacion de Indices"
+echo " "
+
+
+        
+        echo "Asume correlativo por defecto para..."
+    	prObtieneSeq
+        
+        
+        echo "Asume procesamiento por defecto para ..."
+        echo "----------------------------------------------------"    
+        
+        prObtieneTdocCdesp $szCicloFact $szhTipoDocumento $szhCodDespa $hHostId
+        echo "[$parametros]"
+        
+        echo "
+set pages 0;
+set serverout on;
+set verify off;
+set lines 20;
+set head off;
+set feedback off;
+
+DECLARE
+LN_COD_ERROR NUMBER;
+
+PROCEDURE Ejecuta_PL(SN_COD_ERROR OUT NUMBER ) is 
+BEGIN
+	FA_TRAZA_CICLO_PG.FA_TRATA_TRAZA_IMPCICLO_FN ( $szCicloFact, $szhTipoDocumento, $szhCodDespa, $hHostId, 'coordinador_MC_ImpScl -u $USERPASS -c $szCicloFact -n $szNumSecu -l $iNivelLog', SN_COD_ERROR);
+	END; 
+
+BEGIN
+
+ 	Ejecuta_PL(LN_COD_ERROR);
+ 	
+ 	
+ 	if LN_COD_ERROR = 1 then
+ 		DBMS_OUTPUT.PUT_LINE ( 'ERROR');
+ 		rollback;
+ 	else
+ 		DBMS_OUTPUT.PUT_LINE ( 'OK');
+ 		commit;
+ 	end if;
+ 	
+End;
+/
+exit;
+	    " > FaTrataTrazaImpCiclo.sql
+	    Resp_PL=$(sqlplus -s $szUserPasswd @FaTrataTrazaImpCiclo.sql)
+	    rm -f FaTrataTrazaImpCiclo.sql
+	    
+	    if [ `echo $Resp_PL|grep -c "ERROR"` -ge 1 ] ;then
+	    	  echo "No se pudo Insertar traza en la tabla FA_PROCIMPRESION_TD  ..."
+        	  echo "--------------------------------------------------------------"    
+        	  exit
+	    else
+	    	  echo "Trazas Insertardas correctamente en FA_PROCIMPRESION_TD  ..."
+        	  echo "------------------------------------------------------------"    
+	    fi
+	    
+	    
+	    
+	   
+else 
+    if [ ! $(Igual $szTipoDocumento "" ) ] ||  [ ! $(Igual $szCodDespa "" ) ]; then 
+       echo "FLAG VISUAL BASIC ACTIVADO NO SE PUEDE PROCESAR DEBE SACAR EL FLAG"
+       exit
+    fi
+fi
+
+prCuentaTrazaHost ${szCicloFact} ${HostId} ${szRangoClientes}
+if [ $cantidad_traza -eq 0 ]; then
+    echo "INSERTA REGISTRO EN FA_TRAZAPROC..."
+    echo "
+      set pages 0;
+      set serverout on;
+      set verify off;
+      set lines 20;
+      set head off;
+      set feedback off;
+      INSERT INTO FA_TRAZAPROC(COD_CICLFACT, COD_PROCESO, COD_ESTAPROC, FEC_INICIO, GLS_PROCESO, COD_CLIENTE, NUM_ABONADO, NUM_REGISTROS, HOST_ID) 
+      VALUES (${szCicloFact}, 5000, 1, SYSDATE, 'Proceso de Impresion Iniciado', 0, 0, 0, '${HostId}');
+      COMMIT;
+      exit;" > Inserta_FA_TRA.sql
+    sqlplus -s $szUserPasswd @Inserta_FA_TRA.sql
+    rm -f Inserta_FA_TRA.sql
+else
+    prVerificaTrazaHost ${szCicloFact} ${HostId} ${szRangoClientes}
+    if [ $estado_traza -ne 1 ]; then
+       echo "ACTUALIZA REGISTRO EN FA_TRAZAPROC..."
+       echo "
+         set pages 0;
+         set serverout on;
+         set verify off;
+         set lines 20;
+         set head off;
+         set feedback off;
+         UPDATE FA_TRAZAPROC
+         SET COD_ESTAPROC = 1,
+             GLS_PROCESO  = 'Proceso de Impresion Iniciado',
+             FEC_INICIO   = SYSDATE,
+             FEC_TERMINO  = NULL
+         WHERE COD_PROCESO = 5000
+           AND COD_CICLFACT = ${szCicloFact}
+           AND ((HOST_ID = '${HostId}') OR (1 <> ${szRangoClientes}));
+         COMMIT;
+         exit;" > Actualiza_FA_TRA.sql
+       sqlplus -s $szUserPasswd @Actualiza_FA_TRA.sql
+       rm -f Actualiza_FA_TRA.sql
+    else
+       echo "Ciclo ${szCicloFact} aun en Ejecución"
+       exit
+    fi
+fi
+
+a=`regs $szUserPasswd`
+b=`min  $szUserPasswd`
+total=`expr $a + $b`
+echo "Frecuencia : " $a
+echo "Minimo     : " $b
+echo "Total de Registros : " $total
+nro_proc=`proc $szUserPasswd`
+nro_proc=$szNumProcI
+echo "Numero de Procesos:" $nro_proc
+echo "Numeros de Procedimientos ImpresionScl para Levantar : " $nro_proc
+
+if [ $(Igual $iNivelLog "") ];then 
+    echo "Debe Ingresar Nivel de Log"
+    fnHelp
+fi
+
+echo "Asume Numero de Proceso para Anomlias por defecto para..."
+prObtieneNumProcAnomalias
+
+ls ${XPF_DAT}/ImpresionScl > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_DAT}/ImpresionScl > /dev/null 2>&1
+fi
+
+ls ${XPF_DAT}/ImpresionScl/ciclo > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_DAT}/ImpresionScl/ciclo > /dev/null 2>&1
+fi
+
+ls ${XPF_DAT}/ImpresionScl/ciclo/${szCicloFact} > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_DAT}/ImpresionScl/ciclo/${szCicloFact} > /dev/null 2>&1
+fi
+
+ls ${XPF_LOG}/ImpresionScl > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_LOG}/ImpresionScl > /dev/null 2>&1
+fi
+
+ls ${XPF_LOG}/ImpresionScl/ciclo > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_LOG}/ImpresionScl/ciclo > /dev/null 2>&1
+fi
+
+ls ${XPF_LOG}/ImpresionScl/ciclo/${szCicloFact} > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_LOG}/ImpresionScl/ciclo/${szCicloFact} > /dev/null 2>&1
+fi
+
+ls ${XPF_LOG}/carga_inicial_ImpScl > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_LOG}/carga_inicial_ImpScl > /dev/null 2>&1
+fi
+
+ls ${XPF_LOG}/carga_inicial_ImpScl/${szCicloFact} > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    mkdir ${XPF_LOG}/carga_inicial_ImpScl/${szCicloFact} > /dev/null 2>&1
+fi
+
+LOGcarga_inicial_ImpScl=${XPF_LOG}/carga_inicial_ImpScl/${szCicloFact}/carga_inicial_ImpScl_${szCicloFact}_$(date +%Y%m%d).log
+#rm ${LOGcarga_inicial_ImpScl} > /dev/null 2>&1
+
+if [ $(Igual $flagdoc "") ];then 
+    actualiza_FA_PROCIMPRESION $szUserPasswd $szCicloFact $HostId
+fi 
+
+#RPL 21-04-2020 Se agrega nuevo valor de total gracias a PGG por acordarse
+prCuentaClientesAProcesar ${szCicloFact} ${HostId} ${szRangoClientes}
+total=`expr $cantidad_cliAProcesar`
+
+echo " "
+echo "NUEVO Total de Registros: " $total
+
+date +%H%M%S%d%m%Y > $XPF_TMP/tiempos_ImpScl.txt
+echo " "
+
+
+if [ $(Igual $szIntentos "") ];then 
+    echo "Asume numeros de Intentos por defecto igual a 10"
+    szIntentos=10
+fi 
+
+if [ $(Igual $szTipoDocumento "" ) ]; then
+    echo "Ejecutando carga_inicial_ImpScl (A)"
+    echo "----------------------------------------------------"
+    EN_EJECUCION=`ps -fea | grep -i $XPF_EXE/carga_inicial_ImpScl | grep -v "grep" | grep -v $user_name | awk '{ print $2 }'`
+    LARGO=`echo $EN_EJECUCION | awk '{ print length($0) }'`
+    if [ $LARGO -ne 0 ]; then
+        echo "$XPF_EXE/carga_inicial_ImpScl aun se esta ejecutando"
+        echo "----------------------------------------------------"
+        ps -fea | grep -i $XPF_EXE/carga_inicial_ImpScl | grep -v "grep" | grep -v $user_name 
+        echo "----------------------------------------------------"
+        ipcs -i
+        echo "----------------------------------------------------"
+        echo ""
+        echo ""
+        exit
+    fi
+    if [ $szRangoClientes -eq 0 ]; then
+        echo "Sin rangos"
+        echo "$XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -l $iNivelLog -i $szIntentos -a -1 -z -1"
+        nohup $XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -l $iNivelLog -i $szIntentos -a -1 -z -1> ${LOGcarga_inicial_ImpScl} &
+    else
+        echo "Con rangos"
+        echo "$XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -l $iNivelLog -i $szIntentos -a $szClienteInicial -z $szClienteFinal"
+        nohup $XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -l $iNivelLog -i $szIntentos -a $szClienteInicial -z $szClienteFinal > ${LOGcarga_inicial_ImpScl} &
+    fi
+fi 
+echo " "
+if [ ! $(Igual $szTipoDocumento "" ) ] &&  [ ! $(Igual $szCodDespa "" ) ]; then 
+    echo "Ejecutando carga_inicial_ImpScl (B)"
+    echo "----------------------------------------------------"
+    EN_EJECUCION=`ps -fea | grep -i $XPF_EXE/carga_inicial_ImpScl | grep -v "grep" | awk '{ print $2 }'`
+    LARGO=`echo $EN_EJECUCION | awk '{ print length($0) }'`
+    if [ $LARGO -ne 0 ]; then
+        echo "$XPF_EXE/carga_inicial_ImpScl aun se esta ejecutando"
+        echo "----------------------------------------------------"
+        ps -fea | grep -i $XPF_EXE/carga_inicial_ImpScl | grep -v "grep"
+        echo "----------------------------------------------------"
+        ipcs -i
+        echo "----------------------------------------------------"
+        echo ""
+        echo ""
+        exit
+    fi
+    if [ $szRangoClientes -eq 0 ]; then
+        echo "Sin rangos"
+        echo "$XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -t $szTipoDocumento -d $szCodDespa -l $iNivelLog -i $szIntentos -a -1 -z -1"
+        nohup $XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -t $szTipoDocumento -d $szCodDespa -l $iNivelLog -i $szIntentos -a -1 -z -1 > ${LOGcarga_inicial_ImpScl} &
+    else
+        echo "Con rangos"
+        echo "$XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -t $szTipoDocumento -d $szCodDespa -l $iNivelLog -i $szIntentos -a $szClienteInicial -z $szClienteFinal"
+        nohup $XPF_EXE/carga_inicial_ImpScl -u $szUserPasswd -c $szCicloFact -f $a -r $total -n $szNumSecu -t $szTipoDocumento -d $szCodDespa -l $iNivelLog -i $szIntentos -a $szClienteInicial -z $szClienteFinal > ${LOGcarga_inicial_ImpScl} &
+    fi
+fi 
+
+echo "Esperando Creacion de Memoria Compartida......." 
+echo "Actualizando FA_PROCIMPRESION........"
+actualiza_FA_PROCIMPRESION2 $szUserPasswd $szCicloFact $HostId
+
+integer j=0
+integer h=1
+integer max_intentos=40
+while [ $j -eq 0 ] && [ $h -le $max_intentos ]; do
+   echo "Esperando Creacion de Memoria Compartida.......Intento numero: $h" 
+   ret=`grep TRIGGERON ${LOGcarga_inicial_ImpScl} | wc -c`
+  #echo $ret
+   j=`expr ret`
+  #echo $j
+   sleep 60 
+   h=`expr h+1`
+done 
+
+h=`expr h-1`
+
+if [ $h -eq $max_intentos ]; then
+    echo "Intentó ${max_intentos} veces y no pudo lecantar carga_inicial_ImpScl"
+    exit 3
+fi
+
+echo "MEMORIA CREADA"
+integer i=1
+
+if [ $(Igual $szNumProcI "") ];then 
+   szNumProcI=0
+fi 
+
+nro=`expr $szNumProcI`
+echo "NUMERO POR PARAMETROS :" $nro
+
+if [ $nro -lt $nro_proc ] && [ $nro -ne 0 ]; then 
+   nro_proc=$nro
+else 
+  if [ $nro -eq $nro_proc ] && [ $nro -ne 0 ]; then 
+   echo "PASA POR ACA"
+   echo $nro
+   nro_proc=$nro
+  fi
+fi 
+
+
+echo "NUMERO DE PROCESOS" $nro_proc
+echo "NUMERO DE I " $i
+echo " "
+while ((i <= $nro_proc)); do
+   LOGImpresionScl=${XPF_LOG}/ImpresionScl/ciclo/${szCicloFact}/ImpresionScl_$(date +%Y%m%d)_${i}.log
+   echo "Ejecutando ImpresionScl Nro : " $i
+   echo "----------------------------------------------------"
+   #echo "COMANDO: nohup $XPF_EXE/ImpresionScl -u $szUserPasswd -c $szCicloFact -l $iNivelLog -t$szTipoDocumento -d $szCodDespa -s $szNumSecu -g $total -m &"
+#   nohup $XPF_EXE/ImpresionScl -u $szUserPasswd -c $szCicloFact -l $iNivelLog -t$szTipoDocumento -d $szCodDespa -s $szNumSecu -g $total -m &
+   if [ ! $(Igual $szTipoDocumento "" ) ] &&  [ ! $(Igual $szCodDespa "" ) ]; then 
+      echo "1"
+      echo "nohup $XPF_EXE/ImpresionScl -u $szUserPasswd -c $szCicloFact -l $iNivelLog -t$szTipoDocumento -d $szCodDespa -s $szNumSecu -g $total -p $szNumProcAnomalias -m > ${LOGImpresionScl} &"
+      nohup $XPF_EXE/ImpresionScl -u $szUserPasswd -c $szCicloFact -l $iNivelLog -t$szTipoDocumento -d $szCodDespa -s $szNumSecu -g $total -p $szNumProcAnomalias -m > ${LOGImpresionScl} &
+   fi
+   if [ $(Igual $szTipoDocumento "" ) ] &&  [ $(Igual $szCodDespa "" ) ]; then 
+      echo "2"
+      echo "nohup $XPF_EXE/ImpresionScl -u $szUserPasswd -c $szCicloFact -l $iNivelLog  -s $szNumSecu -g $total -p $szNumProcAnomalias -m > ${LOGImpresionScl} &"
+      nohup $XPF_EXE/ImpresionScl -u $szUserPasswd -c $szCicloFact -l $iNivelLog  -s $szNumSecu -g $total -p $szNumProcAnomalias -m > ${LOGImpresionScl} &
+   fi
+   (( i = i + 1))
+done
+
+echo "Procesos de Impresion Ejecutados"
+echo " "
+echo "Ejecutando Concatenador"
+echo "----------------------------------------------------"
+echo "nohup $XPF_EXE/concatenador -u $szUserPasswd -c $szCicloFact -l $iNivelLog > $XPF_LOG/ImpresionScl/ciclo/${szCicloFact}/concatenador_$(date +%Y%m%d).log  &"
+nohup $XPF_EXE/concatenador -u $szUserPasswd -c $szCicloFact -l $iNivelLog > $XPF_LOG/ImpresionScl/ciclo/${szCicloFact}/concatenador_$(date +%Y%m%d).log  &
+#echo "nohup $XPF_EXE/concatenador > $XPF_LOG/ImpresionScl/ciclo/${szCicloFact}/concatenador_$(date +%Y%m%d).log  &"
+#nohup $XPF_EXE/concatenador > $XPF_LOG/ImpresionScl/ciclo/${szCicloFact}/concatenador_$(date +%Y%m%d).log  &
+echo "Procesos de Concatenador Ejecutado"
+echo " "
+#rm -f nohup.out > /dev/null 2>&1
+
+
+
+#RPL 29-05-2020 SE AGREGA ELIMINACION DE INDICES NUEVO CREADOS
+ImpUsuario=`who am i | awk '{print $1}'`
+echo Usuario $ImpUsuario
+
+CantImpresores=`${pathPsNew}ps auxww | grep 'ImpresionScl -u' | grep $ImpUsuario | grep ${szCicloFact} | sed '/grep/d' | wc -l `
+echo `date "+%d/%m/%y %T"` "Cantidad de Impresores arriba:" $CantImpresores
+
+while ((0 < $CantImpresores)); do
+sleep 30
+CantImpresores=`${pathPsNew}ps auxww | grep 'ImpresionScl -u' | grep $ImpUsuario | grep ${szCicloFact} |sed '/grep/d' | wc -l `
+echo `date "+%d/%m/%y %T"` "Cantidad de Impresores arriba:" $CantImpresores
+done
+echo "Ultimo Impresor Termino:" `date "+%T"`
+
+CantConcatenador=`${pathPsNew}ps auxww | grep 'concatenador -u' | grep $ImpUsuario | grep ${szCicloFact} |sed '/grep/d' | wc -l `
+echo `date "+%d/%m/%y %T"` "Concatenador en ejecucion:" $CantConcatenador
+
+while ((0 < $CantConcatenador)); do
+sleep 30
+CantConcatenador=`${pathPsNew}ps auxww | grep 'concatenador -u' | grep $ImpUsuario | grep ${szCicloFact} |sed '/grep/d' | wc -l `
+echo `date "+%d/%m/%y %T"` "Concatenador en ejecucion:" $CantConcatenador
+done
+
+echo "Concatenador Termino:" `date "+%T"`
+
+echo " TERMINARON DE EJECUTARSE TODAS LAS INSTANCIAS DEL IMPRESOR Y CONCATENADOR"
+
+#RPL 06-08-2020 SE AGREGA KILL PARA EL PROCESO CARGA INICIAL CUANDO SE MUEREN TODOS LOS IMPRESORES Y QUEDAN REGISTROS PENDIENTES DE IMPRIMIR
+CargaIniPend=`${pathPsNew}ps auxww | grep 'carga_inicial_ImpScl -u' | grep $ImpUsuario | grep ${szCicloFact} |sed '/grep/d' | wc -l `
+if [ $CargaIniPend = "1" ]; then
+echo "SE BAJA PROCESO carga_inicial_ImpScl"
+${pathPsNew}ps auxww | grep 'carga_inicial_ImpScl -u' | grep $ImpUsuario | grep ${szCicloFact} | sed '/grep/d' | awk '{ print $2} ' | xargs -n1 kill -9
+fi
+
+IndBorrados=0
+echo `date "+%d/%m/%y %T"` "Entrando a funcion prBorraIndices " 
+prBorraIndices $CMB_FAD_IMPCONCEPTOS  
+prBorraIndices $CMB_FAD_IMPSERVCLIE   
+prBorraIndices $CMB_FA_CODESPACHO     
+prBorraIndices $CMB2_FA_CODESPACHO    
+prBorraIndices $CMB_FA_PARGENARCH     
+prBorraIndices $CMB_GE_CLIENTES       
+prBorraIndices $CMB2_FA_FACTABON      
+prBorraIndices $CMB3_FA_FACTDOCU      
+prBorraIndices $CMB7_FA_FACTDOCU      
+prBorraIndices $CMB_FA_FACTABON       
+prBorraIndices $CMB_FA_FACTDOCU        
+prBorraIndices $CMB_FA_CICLOCLI_COUR 
+prBorraIndices $CMB2_FA_FACTCONC     
+prBorraIndices $CMB2_FA_FACTDOCU     
+prBorraIndices $CMB5_FA_FACTDOCU     
+prBorraIndices $CMB_FA_FACTCONC      
+echo `date "+%d/%m/%y %T"` "Saliendo de funcion prBorraIndices " 
+echo `date "+%d/%m/%y %T"` "Indices borrados: " $IndBorrados
+#SI ES 16 QUIERE DECIR QUE SE DROPEARON TODOS LOS 16 INDICES
+if [ $IndBorrados = "16" ]; then
+#RPL 22-07-2020 TERMINO OK
+prUpdateTrazaIndex 0
+else
+#RPL 22-07-2020 TERMINO CON ERROR
+prUpdateTrazaIndex 1
+fi
+echo "SE TERMINA PROCESO" `date "+%d/%m/%y %T"`
+
+return

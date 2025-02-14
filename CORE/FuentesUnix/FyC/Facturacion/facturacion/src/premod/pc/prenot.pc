@@ -1,0 +1,1234 @@
+/*****************************************************************************/
+/* Funcion    : prenot.pc                                                    */
+/* Descripcion: Funciones que recoge de Fa_HistDocu y Fa_HistConc tanto la   */
+/*              cabecera, como los detalles de Conceptos del Documento (Fac- */
+/*              tura) a modificar (CodTipConce del Tipo Descuento y del Tipo */
+/*              Impuesto) para aplicarlos sobre los Conceptos ya modificados */
+/*              existentes en Fa_Presupuesto.                                */
+/* Fecha      : 23-04-1997                                                   */
+/* Autor      : Javier Garcia Paredes                                        */
+/*****************************************************************************/
+
+#define _PRENOT_PC_
+
+#include <prenot.h>
+
+EXEC SQL INCLUDE sqlca;
+EXEC SQL BEGIN DECLARE SECTION;
+     static char   szFormatoFec[17];    EXEC SQL VAR szFormatoFec          IS STRING(17) ;
+EXEC SQL END DECLARE SECTION  ;
+
+/*---------------------------------------------------------------------------*/
+/* QUITA LOS ESPACIOS EN BLANCO AL INICIO Y AL FINAL DE UNA CADENA DE 	     */
+/* CARACTERES					                             */
+/*---------------------------------------------------------------------------*/
+char * szfnTrim2(char * strin)
+{
+	int  i= 0,l=0;
+	char strtmps[8192];
+  
+	memset(strtmps, 0, 256);
+	
+	while (*(strin + i) == ' ') 
+	 	i++;
+	 
+	strcpy(strtmps,(strin + i));    
+	 
+	
+	l = strlen(strtmps) - 1;
+	while ((l >= 0) && ((*(strtmps + l ) == ' ')||(*(strtmps + l ) == '\n')))
+	{	 
+	 	*(strtmps + l ) = '\0';l--;
+	}
+	
+	strcpy(strin,strtmps);
+	return(strin);
+}
+
+/*****************************************************************************/
+/*                         funcion : bIFNotas                                */
+/* -Funcion que carga la Informacion del Documento (Factura) a modificar, so-*/
+/*  lo se recogen los Conceptos de Tipo Impuesto y Descuento.                */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bfnIFNotas (void)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+
+    static char   szhLetra          [2];    EXEC SQL VAR szhLetra          IS STRING(2) ;
+    static char   szhIndOrdenTotal [13];    EXEC SQL VAR szhIndOrdenTotal  IS STRING(13);
+    static char   szhFecEmision    [15];    EXEC SQL VAR szhFecEmision     IS STRING(15);
+    static char   sz25Ceros        [26];    EXEC SQL VAR sz25Ceros         IS STRING(26);      
+    EXEC SQL END DECLARE SECTION  ;
+
+    static BOOL         bOptProceso = FALSE ;
+    static ENLACEHIST   stEnlaceHist        ;
+
+    memset(&stEnlaceHist,0,sizeof(ENLACEHIST));
+
+
+    vDTrazasLog (szExeName,
+               "\n\t\t* Cargando Impuestos y Descuentos para NOTA"
+               "\n\t\t=> Num.Secuenci   [%ld]"
+               "\n\t\t=> Letra          [%s] "
+               "\n\t\t=> Cod.TipDocum   [%d] "
+               "\n\t\t=> Cod.VendedorAg.[%ld]"
+               "\n\t\t=> Cod.CentrEmi   [%ld]",LOG03,
+               stProceso.lNumSecuNot  , stProceso.szLetraNot           ,
+               stProceso.iCodTipDocNot, stProceso.lCodVendedorAgenteNot,
+               stProceso.iCodCentrNot);
+
+
+    /* EXEC SQL SELECT index (FA_HISTDOCU PK_FA_HISTDOCU)  */
+    strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+    vDTrazasLog ("","NMV:se buscaran datos en FA_HISTDOCU\n",LOG05); 
+    EXEC SQL SELECT NUM_SECUENCI                            ,
+                    LETRA                                   ,
+                    COD_TIPDOCUM                            ,
+                    COD_VENDEDOR_AGENTE                     ,
+                    COD_CENTREMI                            ,
+                    TO_CHAR (IND_ORDENTOTAL)                ,
+                    TO_CHAR (FEC_EMISION,:szFormatoFec),
+                    COD_CLIENTE                             ,
+                    PREF_PLAZA                              ,
+                    NUM_FOLIO                               ,
+                    COD_CATIMPOS                            ,
+                    COD_PLANCOM                             ,
+                    COD_CICLFACT			    ,
+                    COD_ZONAIMPO 			    ,
+                    COD_PLAZA				    ,
+                    COD_OPERADORA 			    ,
+                    nvl(COD_OFICINA,:stDatosGener.szCodOficCentral) /* Homologado por PGG 23-06-2003 12:56hrs. CH-160520030732 */
+            INTO    :stNota.lNumSecuenci      	,
+                    :szhLetra                 	,
+                    :stNota.iCodTipDocum      	,
+                    :stNota.lCodVendedorAgente	,
+                    :stNota.iCodCentrEmi      	,
+                    :szhIndOrdenTotal         	,
+                    :szhFecEmision            	,
+                    :stNota.lCodCliente       	,
+                    :stNota.szPrefPlaza         ,
+                    :stNota.lNumFolio         	,
+                    :stNota.iCodCatImpos      	,
+                    :stNota.lCodPlanCom       	,
+                    :stNota.lCodCiclFact		,
+                    :stNota.iCodZonaImpo	,
+                    :stNota.szCodPlaza		,
+                    :stNota.szCodOperadora	,
+                    :stNota.szCodOficina
+            FROM    FA_HISTDOCU
+            WHERE   NUM_SECUENCI        = :stProceso.lNumSecuNot
+            AND     LETRA               = :stProceso.szLetraNot
+            AND     COD_TIPDOCUM        = :stProceso.iCodTipDocNot
+            AND     COD_VENDEDOR_AGENTE = :stProceso.lCodVendedorAgenteNot
+            AND     COD_CENTREMI        = :stProceso.iCodCentrNot;
+	
+    strcpy(stNota.szCodOperadora, szfnTrim2(stNota.szCodOperadora));
+    strcpy(stNota.szPrefPlaza	, szfnTrim2(stNota.szPrefPlaza));
+    
+    
+
+    if ((SQLCODE != SQLOK) && (SQLCODE != SQLNOTFOUND))
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Select->Fa_HistDocu\n",szfnORAerror ());
+        return FALSE;
+    }
+    if (SQLCODE == SQLNOTFOUND)
+    {
+
+        strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+        strcpy(sz25Ceros,"0000000000000000000000000");
+
+        vDTrazasLog ("","NMV:se buscaran datos en FA_FACTDOCU_NOCICLO\n",LOG05);
+        EXEC SQL SELECT NUM_SECUENCI                            ,
+                        LETRA                                   ,
+                        COD_TIPDOCUM                            ,
+                        COD_VENDEDOR_AGENTE                     ,
+                        COD_CENTREMI                            ,
+                        TO_CHAR (IND_ORDENTOTAL)                ,
+                        TO_CHAR (FEC_EMISION,:szFormatoFec),
+                        COD_CLIENTE                             ,
+                        NVL(PREF_PLAZA,:sz25Ceros)   		,
+                        NUM_FOLIO                               ,
+                        COD_CATIMPOS                            ,
+                        COD_PLANCOM                             ,
+                        COD_CICLFACT				,
+                        COD_ZONAIMPO				,
+                        COD_PLAZA				,
+                        COD_OPERADORA				,
+                        COD_OFICINA
+                INTO    :stNota.lNumSecuenci      ,
+                        :szhLetra                 ,
+                        :stNota.iCodTipDocum      ,
+                        :stNota.lCodVendedorAgente,
+                        :stNota.iCodCentrEmi      ,
+                        :szhIndOrdenTotal         ,
+                        :szhFecEmision            ,
+                        :stNota.lCodCliente       ,
+                        :stNota.szPrefPlaza       ,
+                        :stNota.lNumFolio         ,
+                        :stNota.iCodCatImpos      ,
+                        :stNota.lCodPlanCom       ,
+                        :stNota.lCodCiclFact	  ,
+                        :stNota.iCodZonaImpo,
+                        :stNota.szCodPlaza,
+                        :stNota.szCodOperadora,
+                        :stNota.szCodOficina
+                FROM    FA_FACTDOCU_NOCICLO
+                WHERE   NUM_SECUENCI        = :stProceso.lNumSecuNot
+                AND     LETRA               = :stProceso.szLetraNot
+                AND     COD_TIPDOCUM        = :stProceso.iCodTipDocNot
+                AND     COD_VENDEDOR_AGENTE = :stProceso.lCodVendedorAgenteNot
+                AND     COD_CENTREMI        = :stProceso.iCodCentrNot;
+
+	strcpy(stNota.szCodOperadora	, szfnTrim2(stNota.szCodOperadora));
+	strcpy(stNota.szPrefPlaza	, szfnTrim2(stNota.szPrefPlaza));
+
+        if(SQLCODE!=SQLOK){
+            vDTrazasLog ("","NMV:ERROR:QRY FA_FACTDOCU_NOCICLO\n",LOG05);
+            iDError (szExeName,ERR000,vInsertarIncidencia,"Select->Fa_FactDocu_NoCiclo\n",szfnORAerror ());
+            return FALSE;
+        }
+        
+        vDTrazasLog ("","NMV:FOUNDED:QRY FA_FACTDOCU_NOCICLO(%s|%s|%s)\n",LOG05,stNota.szCodPlaza,stNota.szCodOperadora,stNota.szCodOficina);
+        
+        bOptProceso = TRUE;
+    }
+    vDTrazasLog ("","NMV:FOUNDED:QRY FA_HISTDOCU(%s|%s|%s)\n",LOG05,stNota.szCodPlaza,stNota.szCodOperadora,stNota.szCodOficina);
+
+    stEnlaceHist.lCodCiclFact = stNota.lCodCiclFact;
+    if (!bOptProceso) 
+        if (!bGetEnlaceHist(&stEnlaceHist))
+            return FALSE;
+
+    if (SQLCODE == SQLOK)
+    {
+        stCliente.lCodCliente = stNota.lCodCliente ;
+        stCliente.lCodPlanCom = stNota.lCodPlanCom ;
+        stCliente.iCodCatImpos= stNota.iCodCatImpos;
+
+        strcpy (stNota.szIndOrdenTotal, szhIndOrdenTotal);
+        strcpy (stNota.szLetra        , szhLetra        );
+        strcpy (stNota.szFecEmision   , szhFecEmision   );
+
+        /* Carga Los Impuestos y Descuentos */
+        if (stProceso.iIndNotaCredC == 0)
+        {
+            if (!bfnDBCargaHistConc (stNota.szIndOrdenTotal, &stNota, stEnlaceHist, bOptProceso))
+                 return FALSE;
+
+            vDTrazasLog (szExeName,
+                     "\n\t\t* Numero de Conceptos Descuentos e Impuestos [%d]",
+                     LOG03,stNota.iNumConceptos);
+        }
+        if (!bfnCargaConceptosNotas (stEnlaceHist, bOptProceso, stNota.szIndOrdenTotal))
+             return FALSE;
+        vDTrazasLog (szExeName,"\n\t\t* Fin Carga Conceptos Notas", LOG04);
+
+        if (!bfnCargaAbonoCli (stEnlaceHist, bOptProceso))
+             return FALSE;
+    }
+    return TRUE;
+}/**************************** Final bIFNotas ********************************/
+
+/*****************************************************************************/
+/*                           funcion : bfnDBCargaHistConc                    */
+/*****************************************************************************/
+static BOOL bfnDBCargaHistConc (char        *szIndOrdenTotal,
+                                NOTACD      *pstNota,
+                                ENLACEHIST  pstEnHist,
+                                BOOL        pbOptProc)
+{
+  static    int     i = 0           ;
+  static    char    szSql[4096]=""  ;
+  static    long    lhIndOrdenTotal ;
+  static    char    szNomTabla[50]  ;
+
+  EXEC SQL BEGIN DECLARE SECTION;
+  static char   szhIndOrdenTotal [13];  EXEC SQL VAR szhIndOrdenTotal  IS STRING(13);
+  static int    ihCodConcepto        ;
+  static long   lhColumna            ;
+  static char   szhCodMoneda      [4];  EXEC SQL VAR szhCodMoneda      IS STRING(4) ;
+  static int    ihCodProducto        ;
+  static int    ihCodTipConce        ;
+  static char   szhFecValor      [15];  EXEC SQL VAR szhFecValor       IS STRING(15);
+  static char   szhFecEfectividad[15];  EXEC SQL VAR szhFecEfectividad IS STRING(15);
+  static double dhImpConcepto        ;
+  static char   szhCodRegion      [4];  EXEC SQL VAR szhCodRegion      IS STRING(4) ;
+  static char   szhCodProvincia   [6];  EXEC SQL VAR szhCodProvincia   IS STRING(6) ;
+  static char   szhCodCiudad      [6];  EXEC SQL VAR szhCodCiudad      IS STRING(6) ;
+  static double dhImpMontoBase       ;
+  static short  shIndFactur          ;
+  static double dhImpFacturable      ;
+  static short  shIndSuperTel        ;
+  static long   lhNumAbonado         ;
+  static int    ihCodPortador        ;
+  static char   szhDesConcepto   [61];  EXEC SQL VAR szhDesConcepto    IS STRING(61);
+  static int    ihNumCuotas          ;
+  static int    ihOrdCuota           ;
+  static long   lhNumUnidades        ; /* Incorporado por PGonzaleg 4-03-2002 */
+  static char   szhNumSerieMec   [26];  EXEC SQL VAR szhNumSerieMec    IS STRING(26);
+  static char   szhNumSerieLe    [26];  EXEC SQL VAR szhNumSerieLe     IS STRING(26);
+  static float  fhPrcImpuesto        ;
+  static double dhValDto             ;
+  static int    ihTipDto             ;
+  static int    ihMesGarantia        ;
+  static char   szhNumGuia       [11];  EXEC SQL VAR szhNumGuia        IS STRING(11);
+  static short  shIndAlta            ;
+  static int    ihNumPaquete         ;
+  static short  shFlagImpues         ;
+  static short  shFlagDto            ;
+  static int    ihCodConceRel        ;
+  static long   lhColumnaRel         ;
+  static long   lhSeqCuotas          ;
+  
+  static short  i_shNumCuotas        ;
+  static short  i_shOrdCuota         ;
+  static short  i_shNumUnidades      ;
+  static short  i_shNumSerieMec      ;
+  static short  i_shNumSerieLe       ;
+  static short  i_shPrcImpuesto      ;
+  static short  i_shValDto           ;
+  static short  i_shTipDto           ;
+  static short  i_shMesGarantia      ;
+  static short  i_shNumGuia          ;
+  static short  i_shIndAlta          ;
+  static short  i_shNumPaquete       ;
+  static short  i_shFlagImpues       ;
+  static short  i_shFlagDto          ;
+  static short  i_shCodConceRel      ;
+  static short  i_shColumnaRel       ;
+  static short  i_shSeqCuotas        ;
+
+  static int    iTres=3;
+  EXEC SQL END DECLARE SECTION  ;
+
+    lhIndOrdenTotal = atol(szIndOrdenTotal);
+
+    vDTrazasLog (szExeName, "\n\t\t* Parametro de Entrada a Fa_HistConc"
+                            "\n\t\t=>Ind.OrdenTotal  [%ld]"
+                            "\n\t\t=>En Proceso      [%s]"
+                            ,LOG03,lhIndOrdenTotal,(pbOptProc?"NO":"SI"));
+
+    if (!pbOptProc)
+    {
+        strcpy(szNomTabla,pstEnHist.szDetConceptos);
+    }
+    else
+    {
+        strcpy(szNomTabla,"FA_FACTCONC_NOCICLO");
+    }
+
+    strcpy(szFormatoFec,"YYYYMMDDHH24MISS");
+
+    sprintf(szSql,
+        "SELECT COD_CONCEPTO     , "
+                "COLUMNA         , "
+                "COD_MONEDA      , "
+                "COD_PRODUCTO    , "
+                "COD_TIPCONCE    , "
+                "TO_CHAR (FEC_VALOR      , :szFormatoFec ), "
+                "TO_CHAR (FEC_EFECTIVIDAD, :szFormatoFec ), "
+                "IMP_CONCEPTO    , "
+                "COD_REGION      , "
+                "COD_PROVINCIA   , "
+                "COD_CIUDAD      , "
+                "IMP_MONTOBASE   , "
+                "IND_FACTUR      , "
+                "IMP_FACTURABLE  , "
+                "IND_SUPERTEL    , "
+                "NUM_ABONADO     , "
+                "COD_PORTADOR    , "
+                "DES_CONCEPTO    , "
+                "NUM_CUOTAS      , "
+                "ORD_CUOTA       , "
+                "NUM_UNIDADES    , "
+                "NUM_SERIEMEC    , "
+                "NUM_SERIELE     , "
+                "PRC_IMPUESTO    , "
+                "VAL_DTO         , "
+                "TIP_DTO         , "
+                "MES_GARANTIA    , "
+                "NUM_GUIA        , "
+                "IND_ALTA        , "
+                "NUM_PAQUETE     , "
+                "FLAG_IMPUES     , "
+                "FLAG_DTO        , "
+                "COD_CONCEREL    , "
+                "COLUMNA_REL     , "
+                "SEQ_CUOTAS        "
+       "FROM    %s "
+       "WHERE   IND_ORDENTOTAL = :lhIndOrdenTotal "
+       "AND     COD_TIPCONCE   < :iTres "             /* Descuentos e Impuestos */
+       ,szNomTabla);
+
+    EXEC SQL PREPARE sql_detfact_not FROM :szSql;
+    if (SQLCODE)
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"PREPARE sql_detfact_not",szfnORAerror ());
+        vDTrazasError(szExeName,"\n\t**  Error en SQL-PREPARE sql_detfact_not **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    EXEC SQL DECLARE Cur_HistConc CURSOR FOR sql_detfact_not;
+    if (SQLCODE)
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"DECLARE Cur_HistConc",szfnORAerror ());
+        vDTrazasError(szExeName,"\n\t**  Error en SQL-DECLARE Cur_HistConc **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    EXEC SQL OPEN Cur_HistConc USING :szFormatoFec, :szFormatoFec, :lhIndOrdenTotal, :iTres ;
+    if (SQLCODE)
+    {
+        iDError (szExeName,ERR000,vInsertarIncidencia,"OPEN Cur_HistConc",szfnORAerror ());
+        vDTrazasError(szExeName,"\n\t**  Error en SQL-OPEN CURSOR Cur_HistConc **"
+                                "\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+        return  (FALSE);
+    }
+
+    while (SQLCODE == SQLOK)
+    {
+        EXEC SQL FETCH Cur_HistConc INTO  :ihCodConcepto                 ,
+                                          :lhColumna                     ,
+                                          :szhCodMoneda                  ,
+                                          :ihCodProducto                 ,
+                                          :ihCodTipConce                 ,
+                                          :szhFecValor                   ,
+                                          :szhFecEfectividad             ,
+                                          :dhImpConcepto                 ,
+                                          :szhCodRegion                  ,
+                                          :szhCodProvincia               ,
+                                          :szhCodCiudad                  ,
+                                          :dhImpMontoBase                ,
+                                          :shIndFactur                   ,
+                                          :dhImpFacturable               ,
+                                          :shIndSuperTel                 ,
+                                          :lhNumAbonado                  ,
+                                          :ihCodPortador                 ,
+                                          :szhDesConcepto                ,
+                                          :ihNumCuotas   :i_shNumCuotas  ,
+                                          :ihOrdCuota    :i_shOrdCuota   ,
+                                          :lhNumUnidades :i_shNumUnidades, /* Incorporado por PGonzaleg 4-03-2002 */
+                                          :szhNumSerieMec:i_shNumSerieMec,
+                                          :szhNumSerieLe :i_shNumSerieLe ,
+                                          :fhPrcImpuesto :i_shPrcImpuesto,
+                                          :dhValDto      :i_shValDto     ,
+                                          :ihTipDto      :i_shTipDto     ,
+                                          :ihMesGarantia :i_shMesGarantia,
+                                          :szhNumGuia    :i_shNumGuia    ,
+                                          :shIndAlta     :i_shIndAlta    ,
+                                          :ihNumPaquete  :i_shNumPaquete ,
+                                          :shFlagImpues  :i_shFlagImpues ,
+                                          :shFlagDto     :i_shFlagDto    ,
+                                          :ihCodConceRel :i_shCodConceRel,
+                                          :lhColumnaRel  :i_shColumnaRel ,
+                                          :lhSeqCuotas   :i_shSeqCuotas  ;
+
+        if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+        {
+            iDError (szExeName,ERR000,vInsertarIncidencia,"Fetch=>Fa_HistConc", szfnORAerror ());
+        }
+        if (SQLCODE == SQLOK)
+        {
+            /*if (pstNota->iNumConceptos >= MAX_CONCFACTUR)
+            {
+                iDError (szExeName,ERR035,vInsertarIncidencia);
+                return   FALSE                                ;
+            }
+            else
+            {*/
+                i = pstNota->iNumConceptos;
+
+                pstNota->A_HistConc.iCodConcepto [i] = ihCodConcepto;
+                pstNota->A_HistConc.lColumna     [i] = lhColumna    ;
+                pstNota->A_HistConc.iCodProducto [i] = ihCodProducto;
+                pstNota->A_HistConc.iCodTipConce [i] = ihCodTipConce;
+                pstNota->A_HistConc.dImpConcepto [i] = dhImpConcepto;
+
+                strcpy (pstNota->A_HistConc.szCodMoneda      [i], szhCodMoneda);
+                strcpy (pstNota->A_HistConc.szFecValor       [i], szhFecValor) ;
+                strcpy (pstNota->A_HistConc.szFecEfectividad [i], szhFecEfectividad);
+
+                strcpy (pstNota->A_HistConc.szCodRegion   [i], szhCodRegion)   ;
+                strcpy (pstNota->A_HistConc.szCodProvincia[i], szhCodProvincia);
+                strcpy (pstNota->A_HistConc.szCodCiudad   [i], szhCodCiudad)   ;
+
+                pstNota->A_HistConc.dImpMontoBase [i] = dhImpMontoBase ;
+                pstNota->A_HistConc.iIndFactur    [i] = shIndFactur    ;
+                pstNota->A_HistConc.dImpFacturable[i] = dhImpFacturable;
+
+                /*pstNota->A_HistConc.dImpFacturable[i] =
+                        fnCnvDouble( pstNota->A_HistConc.dImpFacturable[i],USOFACT); PPV 08/10/2007 */
+
+                pstNota->A_HistConc.dImpFacturable[i] =
+                        fnCnvDouble( pstNota->A_HistConc.dImpFacturable[i],0);                        
+
+                pstNota->A_HistConc.iIndSuperTel  [i] = shIndSuperTel  ;
+                pstNota->A_HistConc.lNumAbonado   [i] = lhNumAbonado   ;
+                pstNota->A_HistConc.iCodPortador  [i] = ihCodPortador  ;
+
+                strcpy (pstNota->A_HistConc.szDesConcepto [i], szhDesConcepto);
+
+                pstNota->A_HistConc.iNumCuotas    [i] = (i_shNumCuotas  == -1)?-1:ihNumCuotas;
+                pstNota->A_HistConc.iOrdCuota     [i] = (i_shOrdCuota   == -1)?-1:ihOrdCuota ;
+                pstNota->A_HistConc.lNumUnidades  [i] = (i_shNumUnidades== -1)?-1:lhNumUnidades; /* Incorporado por PGonzaleg 4-03-2002 */
+
+                strcpy (pstNota->A_HistConc.szNumSerieMec[i],(i_shNumSerieMec == -1)?"":szhNumSerieMec);
+                strcpy (pstNota->A_HistConc.szNumSerieLe [i],(i_shNumSerieLe  == -1)?"":szhNumSerieLe );
+
+                pstNota->A_HistConc.fPrcImpuesto  [i] = (i_shPrcImpuesto == -1)?-1:fhPrcImpuesto;
+                pstNota->A_HistConc.dValDto       [i] = (i_shValDto      == -1)?-1:dhValDto     ;
+                pstNota->A_HistConc.iTipDto       [i] = (i_shTipDto      == -1)?-1:ihTipDto     ;
+                pstNota->A_HistConc.iMesGarantia  [i] = (i_shMesGarantia == -1)?-1:ihMesGarantia;
+
+                strcpy (pstNota->A_HistConc.szNumGuia [i],(i_shNumGuia == -1)?"":szhNumGuia);
+
+                pstNota->A_HistConc.iIndAlta      [i] =   (i_shIndAlta == -1)?-1:shIndAlta       ;
+                pstNota->A_HistConc.iNumPaquete   [i] =   (i_shNumPaquete == -1)?-1:ihNumPaquete ;
+                pstNota->A_HistConc.iFlagImpues   [i] =   (i_shFlagImpues == -1)?-1:shFlagImpues ;
+                pstNota->A_HistConc.iFlagDto      [i] =   (i_shFlagDto    == -1)?-1:shFlagDto    ;
+                pstNota->A_HistConc.iCodConceRel  [i] =   (i_shCodConceRel== -1)?-1:ihCodConceRel;
+                pstNota->A_HistConc.lColumnaRel   [i] =   (i_shColumnaRel == -1)?-1:lhColumnaRel ;
+                pstNota->A_HistConc.lSeqCuotas    [i] =   (i_shSeqCuotas  == -1)?-1:lhSeqCuotas  ;
+
+                pstNota->iNumConceptos++;
+
+            /*} fin else MAX_CONCFACTUR */
+        }/* fin if sqlcode == sqlok */
+    }/* fin while ... */
+
+    if (SQLCODE == SQLNOTFOUND)
+    {
+        EXEC SQL CLOSE Cur_HistConc;
+        if (SQLCODE)
+            iDError (szExeName,ERR000,vInsertarIncidencia,"Close=>Fa_HistConc",szfnORAerror ());
+    }
+    return (SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************** Final bfnDBCargaHistConc ************************/
+
+
+/*****************************************************************************/
+/*                            funcion : bCargaConceptosNotas                 */
+/* -Funcion que carga los Conceptos modificados de una factura que se encuen-*/
+/*  tran en Fa_Presupuesto, con el fin de Aplicarle los Impuestos y Descuen- */
+/*  tos. Solo aplicamos Impuestos o Descuentos a aquellos Conceptos que en su*/
+/*  factura Origen (Documento Modificado) se les hayan aplicado, esto nos    */
+/*  viene marcado por FlagImpues y FlagDto respectivamente. Para ello utili- */
+/*  zamos ls estructura stPreFactura                                         */
+/* -Valores Retorno : Error->FALSE, !Error->TRUE                             */
+/*****************************************************************************/
+BOOL bfnCargaConceptosNotas (ENLACEHIST  pstEnHist,	BOOL pbOptProc, char * pszIndOrdenTotal)
+{
+	static   int  i = 0  ;
+	CONCEPTO stConcepto  ;
+	
+	static    char    szSql[4096]=""  ;
+	static    char    szNomTabla[50];
+
+
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		       long   lhNumProcesoUno;
+		static long   lhNumProceso         ;
+		static long   lhCodCliente         ;
+		static int    ihCodConcepto        ;
+		static long   lhColumna            ;
+		static char   szhCodMoneda      [4];
+		                         EXEC SQL VAR szhCodMoneda      IS STRING(4) ;
+		static int    ihCodProducto        ;
+		static int    ihCodTipConce        ;
+		static char   szhFecValor      [15];
+		                         EXEC SQL VAR szhFecValor       IS STRING(15);
+		static char   szhFecEfectividad[15];
+		                         EXEC SQL VAR szhFecEfectividad IS STRING(15);
+		static double dhImpConcepto        ;
+		static char   szhCodRegion      [4];
+		                         EXEC SQL VAR szhCodRegion      IS STRING(4) ;
+		static char   szhCodProvincia   [6];
+		                         EXEC SQL VAR szhCodProvincia   IS STRING(6) ;
+		static char   szhCodCiudad      [6];
+		                         EXEC SQL VAR szhCodCiudad      IS STRING(6) ;
+		static double dhImpMontoBase       ;
+		static short  shIndFactur          ;
+		static double dhImpFacturable      ;
+		static char   szhCodModulo      [3];
+		                         EXEC SQL VAR szhCodModulo      IS STRING(3) ;
+		static long   lhCodPlanCom         ;
+		static int    ihCodCatImpos        ;
+		static short  shIndEstado          ;
+		static short  shIndSuperTel        ;
+		static long   lhNumAbonado         ;
+		static int    ihCodPortador        ;
+		static long   lhCodCiclFact        ;
+		static char   szhNumTerminal   [16];
+		                         EXEC SQL VAR szhNumTerminal    IS STRING(16);
+		static long   lhCapCode            ;
+		static int    ihNumCuotas          ;
+		static int    ihOrdCuota           ;
+		static long   lhNumUnidades        ; /* Incorporado por PGonzaleg 4-03-2002 */
+		static char   szhNumSerieMec   [26];
+		                         EXEC SQL VAR szhNumSerieMec    IS STRING(26);
+		static char   szhNumSerieLe    [26];
+		                         EXEC SQL VAR szhNumSerieLe     IS STRING(26);
+		static float  fhPrcImpuesto        ;
+		static double dhValDto             ;
+		static int    shTipDto             ;
+		static int    ihMesGarantia        ;
+		static char   szhNumGuia       [11];
+		                         EXEC SQL VAR szhNumGuia        IS STRING(11);
+		static long   lhNumVenta           ;
+		static long   lhNumTransaccion     ;
+		static short  shIndAlta            ;
+		static int    ihNumPaquete         ;
+		static short  shFlagImpues         ;
+		static short  shFlagDto            ;
+		static int    ihCodConceRel        ;
+		static long   lhColumnaRel         ;
+		static short  shIndCuota           ;
+		
+	        static char   szhCodMonedaImp   [4];EXEC SQL VAR szhCodMonedaImp IS STRING(8);/*Incorporado por JJFigueroa 18-02-2005*/ 
+	        static double dhImpConversion      ;                                          /*Incorporado por JJFigueroa 18-02-2005*/
+	        static short  dImpValunitario      ;                                          /*Incorporado por JJFigueroa 18-02-2005*/
+	        static char   szhGlsDescrip   [101];EXEC SQL VAR szhGlsDescrip IS STRING(8);  /*Incorporado por JJFigueroa 18-02-2005*/		
+	        static int    ihCodZonaAbon        ; 						/* INCIDENCIA XO-200508010265 By PGG 8-08-2005 */
+		
+		static short  i_shIndCuota         ;
+		static short  i_shNumCuotas        ;
+		static short  i_shOrdCuota         ;
+		static short  i_shNumUnidades      ;
+		static short  i_shNumSerieMec      ;
+		static short  i_shNumSerieLe       ;
+		static short  i_shPrcImpuesto      ;
+		static short  i_shValDto           ;
+		static short  i_shTipDto           ;
+		static short  i_shMesGarantia      ;
+		static short  i_shNumGuia          ;
+		static short  i_shIndAlta          ;
+		static short  i_shNumPaquete       ;
+		static short  i_shFlagImpues       ;
+		static short  i_shFlagDto          ;
+		static short  i_shCodConceRel      ;
+		static short  i_shColumnaRel       ;
+		static short  i_shIndEstado        ;
+		static short  i_shCodTipConce      ;
+		static short  i_shCodCiclFact      ;
+		static short  i_shNumTerminal      ;
+		static short  i_shCapCode          ;
+		static short  i_shNumVenta         ;
+		static short  i_shNumTransaccion   ;
+		static short  i_shNumAbonado       ;
+		static short  i_shIndSuperTel      ;
+
+		static short  i_szhCodMonedaImp	   ;/*Incorporado por JJFigueroa 18-02-2005*/ 
+		static short  i_dhImpConversion	   ;/*Incorporado por JJFigueroa 18-02-2005*/ 	
+		static short  i_dImpValunitario	   ;/*Incorporado por JJFigueroa 18-02-2005*/ 	
+		static short  i_szhGlsDescrip  	   ;/*Incorporado por JJFigueroa 18-02-2005*/ 	
+		
+		       long   lhIndOrdentotal;
+		
+	EXEC SQL END DECLARE SECTION  ;
+
+	vDTrazasLog (szExeName,"\n\t\t* Parametros de Entrada Carga Conceptos Notas"
+                         "\n\t\t=> Num.Proceso [%ld]",LOG03,
+                         stProceso.lNumProceso);
+
+
+	if (!pbOptProc)
+		strcpy(szNomTabla,pstEnHist.szDetAboCel);
+	else
+		strcpy(szNomTabla,"FA_FACTABON_NOCICLO");
+	
+
+	lhNumProcesoUno = stProceso.lNumProceso;
+	lhIndOrdentotal = atol(pszIndOrdenTotal);
+
+
+	sprintf(szSql,
+		"SELECT /*+ index (FA_PREFACTURA FK_FA_PREFACTURA) */ "
+		"A.NUM_PROCESO    , "
+		"A.COD_CLIENTE    , "
+		"A.COD_CONCEPTO   , "
+		"A.COLUMNA        , "
+		"A.COD_PRODUCTO   , "
+		"A.COD_MONEDA     , "
+		"TO_CHAR (A.FEC_VALOR,'YYYYMMDDHH24MISS')      , "
+		"TO_CHAR (A.FEC_EFECTIVIDAD,'YYYYMMDDHH24MISS'), "
+		"A.IMP_CONCEPTO   , "
+		"A.IMP_MONTOBASE  , "
+		"A.IMP_FACTURABLE , "
+		"A.COD_REGION     , "
+		"A.COD_PROVINCIA  , "
+		"A.COD_CIUDAD     , "
+		"A.COD_MODULO     , "
+		"A.COD_PLANCOM    , "
+		"A.IND_FACTUR     , "
+		"A.COD_CATIMPOS   , "
+		"A.IND_ESTADO     , "
+		"A.COD_TIPCONCE   , "
+		"A.NUM_UNIDADES   , "
+		"A.COD_CICLFACT   , "
+		"A.COD_CONCEREL   , "
+		"A.COLUMNA_REL    , "
+		"A.NUM_ABONADO    , "
+                "B.NUM_CELULAR    , "
+		"A.CAP_CODE       , "
+		"A.NUM_SERIEMEC   , "
+		"A.NUM_SERIELE    , "
+		"A.FLAG_IMPUES    , "
+		"A.FLAG_DTO       , "
+		"A.PRC_IMPUESTO   , "
+		"A.VAL_DTO        , "
+		"A.TIP_DTO        , "
+		"A.NUM_VENTA      , "
+		"A.NUM_TRANSACCION, "
+		"A.MES_GARANTIA   , "
+		"A.IND_ALTA       , "
+		"A.IND_SUPERTEL   , "
+		"A.NUM_PAQUETE    , "
+		"A.IND_CUOTA      , "
+		"A.NUM_CUOTAS     , "
+		"A.ORD_CUOTA      , "
+		"A.COD_MONEDAIMP  , "
+		"A.IMP_CONVERSION , "
+		"A.IMP_VALUNITARIO, "
+		"A.GLS_DESCRIP    , "
+		"NVL(B.COD_ZONAABON,-1) "
+		"FROM  FA_PREFACTURA A, %s B "
+		"WHERE A.NUM_PROCESO  = :lhNumProcesoUno "
+		"AND B.IND_ORDENTOTAL (+) = :lhIndOrdentotal "
+		"AND A.NUM_ABONADO = B.NUM_ABONADO(+) "
+		"AND A.COD_CLIENTE = B.COD_CLIENTE(+) " 
+		, szNomTabla);
+		
+		
+		
+	EXEC SQL PREPARE sql_factAbon FROM :szSql;
+	if (SQLCODE)
+	{
+		iDError (szExeName,ERR000,vInsertarIncidencia,"PREPARE sql_factAbon",szfnORAerror ());
+		vDTrazasError(szExeName,"\n\t**  Error en SQL-PREPARE sql_factAbon **"
+					"\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+		return  (FALSE);
+	}
+	
+	EXEC SQL DECLARE Cur_PreFactura CURSOR for sql_factAbon;
+	
+	if (SQLCODE)
+	{
+		iDError (szExeName,ERR000,vInsertarIncidencia,"DECLARE Cur_PreFactura",szfnORAerror ());
+		vDTrazasError(szExeName,"\n\t**  Error en SQL-DECLARE Cur_PreFactura **"
+					"\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+		return  (FALSE);
+	}
+	
+	EXEC SQL OPEN Cur_PreFactura USING :lhNumProcesoUno, :lhIndOrdentotal;
+	if (SQLCODE)
+	{	
+		iDError (szExeName,ERR000,vInsertarIncidencia,"OPEN Cur_PreFactura",szfnORAerror ());
+		vDTrazasError(szExeName,"\n\t**  Error en SQL-OPEN CURSOR Cur_PreFactura **"
+					"\n\t\t=> Error : [%d]  [%s] ",LOG01,SQLCODE,SQLERRM);
+		return  (FALSE);
+	}
+
+	EXEC SQL FETCH Cur_PreFactura
+		INTO :lhNumProceso     ,
+		    :lhCodCliente     ,
+		    :ihCodConcepto    ,
+		    :lhColumna        ,
+		    :ihCodProducto    ,
+		    :szhCodMoneda     ,
+		    :szhFecValor      ,
+		    :szhFecEfectividad,
+		    :dhImpConcepto    ,
+		    :dhImpMontoBase   ,
+		    :dhImpFacturable  ,
+		    :szhCodRegion     ,
+		    :szhCodProvincia  ,
+		    :szhCodCiudad     ,
+		    :szhCodModulo     ,
+		    :lhCodPlanCom     ,
+		    :shIndFactur      ,
+		    :ihCodCatImpos    ,
+		    :shIndEstado      :i_shIndEstado     ,
+		    :ihCodTipConce    :i_shCodTipConce   ,
+		    :lhNumUnidades    :i_shNumUnidades   , /* Incorporado por PGonzaleg 4-03-2002 */
+		    :lhCodCiclFact    :i_shCodCiclFact   ,
+		    :ihCodConceRel    :i_shCodConceRel   ,
+		    :lhColumnaRel     :i_shColumnaRel    ,
+		    :lhNumAbonado     :i_shNumAbonado    ,
+		    :szhNumTerminal   :i_shNumTerminal   ,
+		    :lhCapCode        :i_shCapCode       ,
+		    :szhNumSerieMec   :i_shNumSerieMec   ,
+		    :szhNumSerieLe    :i_shNumSerieLe    ,
+		    :shFlagImpues     :i_shFlagImpues    ,
+		    :shFlagDto        :i_shFlagDto       ,
+		    :fhPrcImpuesto    :i_shPrcImpuesto   ,
+		    :dhValDto         :i_shValDto        ,
+		    :shTipDto         :i_shTipDto        ,
+		    :lhNumVenta       :i_shNumVenta      ,
+		    :lhNumTransaccion :i_shNumTransaccion,
+		    :ihMesGarantia    :i_shMesGarantia   ,
+		    :shIndAlta        :i_shIndAlta       ,
+		    :shIndSuperTel    :i_shIndSuperTel   ,
+		    :ihNumPaquete     :i_shNumPaquete    ,
+		    :shIndCuota       :i_shIndCuota      ,
+		    :ihNumCuotas      :i_shNumCuotas     ,
+		    :ihOrdCuota       :i_shOrdCuota      ,
+                    :szhCodMonedaImp  :i_szhCodMonedaImp ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+                    :dhImpConversion  :i_dhImpConversion ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+                    :dImpValunitario  :i_dImpValunitario ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+                    :szhGlsDescrip    :i_szhGlsDescrip   ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+		    :ihCodZonaAbon    ;				/* INCIDENCIA XO-200508010265 By PGG 8-08-2005 */
+	if (SQLCODE == SQLNOTFOUND)
+	{
+		EXEC SQL CLOSE Cur_PreFactura;       
+		iDError (szExeName,ERR000,vInsertarIncidencia,"Close=>Fa_PreFactura",szfnORAerror ());
+		return (FALSE);
+	}
+	
+	if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+		iDError (szExeName,ERR000,vInsertarIncidencia,"Fetch=>Fa_PreFactura",szfnORAerror ());
+
+	while (SQLCODE == SQLOK)
+	{ 	
+		i = stPreFactura.iNumRegistros;
+		
+	         /*INICIO Incorporado por JJFigueroa 18-02-2005*/
+                 strcpy (stPreFactura.A_PFactura[i].szhCodMonedaImp , (i_szhCodMonedaImp == -1)?"":szhCodMonedaImp);                 
+
+                 stPreFactura.A_PFactura[i].dhImpConversion     = (i_dhImpConversion == -1)?1:dhImpConversion;
+		
+                 stPreFactura.A_PFactura[i].dImpValunitario     = (i_dImpValunitario == -1)?-1:dImpValunitario;                 
+                 
+                 strcpy (stPreFactura.A_PFactura[i].szhGlsDescrip , (i_szhGlsDescrip == -1)?"":szhGlsDescrip); 
+                 /*FIN    Incorporado por JJFigueroa 18-02-2005*/
+	
+		
+		stPreFactura.A_PFactura[i].lNumProceso  = lhNumProceso ;
+		stPreFactura.A_PFactura[i].lCodCliente  = lhCodCliente ;
+		stPreFactura.A_PFactura[i].iCodConcepto = ihCodConcepto;
+		stPreFactura.A_PFactura[i].lColumna     = lhColumna    ;
+		stPreFactura.A_PFactura[i].iCodProducto = ihCodProducto;
+		
+			 /* if (stCliente.lCodCliente <= 0)
+		{
+		stCliente.lCodCliente = lhCodCliente;
+		if (!bfnGetDatosCliente (stCliente.lCodCliente))  Modificacion hecha por Cdescouv 11/04/2002
+		{
+		 return FALSE;
+		}
+		}*/
+		memset (&stConcepto, 0, sizeof (CONCEPTO));
+		if (!bFindConcepto (ihCodConcepto, &stConcepto))
+		return FALSE;
+		
+		strcpy (stPreFactura.A_PFactura[i].szDesConcepto   ,
+		 stConcepto.szDesConcepto);
+		strcpy (stPreFactura.A_PFactura[i].szCodMoneda     ,
+		 szhCodMoneda)            ;
+		strcpy (stPreFactura.A_PFactura[i].szFecValor      ,
+		 szhFecValor )            ;
+		strcpy (stPreFactura.A_PFactura[i].szFecEfectividad,
+		 szhFecEfectividad)       ;
+		
+		stPreFactura.A_PFactura[i].dImpConcepto   = dhImpConcepto  ;
+		/*stPreFactura.A_PFactura.dImpFacturable[i] = dhImpFacturable; PPV 43878 08/10/2007 */
+		
+		stPreFactura.A_PFactura[i].dImpFacturable = fnCnvDouble( dhImpFacturable, 0 );
+		
+		stPreFactura.A_PFactura[i].dImpMontoBase  = dhImpMontoBase ;
+		
+		stPreFactura.A_PFactura[i].dImpFacturable =
+		 fnCnvDouble( stPreFactura.A_PFactura[i].dImpFacturable,
+		                           USOFACT);
+		
+		strcpy (stPreFactura.A_PFactura[i].szCodRegion   ,
+		 szhCodRegion   );
+		strcpy (stPreFactura.A_PFactura[i].szCodProvincia,
+		 szhCodProvincia);
+		strcpy (stPreFactura.A_PFactura[i].szCodCiudad   ,
+		 szhCodCiudad   );
+		strcpy (stPreFactura.A_PFactura[i].szCodModulo   ,
+		 szhCodModulo   );
+		
+		stPreFactura.A_PFactura[i].lCodPlanCom    = lhCodPlanCom ;
+		stPreFactura.A_PFactura[i].iIndFactur     = shIndFactur  ;
+		stPreFactura.A_PFactura[i].iCodCatImpos   = ihCodCatImpos;
+		stPreFactura.A_PFactura[i].iCodPortador   = ihCodPortador;
+		stPreFactura.A_PFactura[i].iIndEstado     =
+		           (i_shIndEstado  == -1)?-1:shIndEstado  ;
+		stPreFactura.A_PFactura[i].iCodTipConce   =
+		           (i_shCodTipConce== -1)?-1:ihCodTipConce;
+		stPreFactura.A_PFactura[i].lNumUnidades   =
+		           (i_shNumUnidades== -1)?-1:lhNumUnidades; /* Incorporado por PGonzaleg 4-03-2002 */
+		stPreFactura.A_PFactura[i].lCodCiclFact   =
+		           (i_shCodCiclFact== -1)?-1:lhCodCiclFact;
+		stPreFactura.A_PFactura[i].iCodConceRel   =
+		           (i_shCodConceRel== -1)?-1:ihCodConceRel;
+		stPreFactura.A_PFactura[i].lColumnaRel    =
+		           (i_shColumnaRel == -1)?-1:lhColumnaRel ;
+		stPreFactura.A_PFactura[i].lNumAbonado    =
+		           (i_shNumAbonado == -1)?-1:lhNumAbonado ;
+		
+		
+		stPreFactura.A_PFactura[i].iCodZonaAbon    = ihCodZonaAbon ; /* INCIDENCIA XO-200508010265 By PGG 8-08-2005 */
+		           
+		           
+		
+		strcpy (stPreFactura.A_PFactura[i].szNumTerminal ,
+		 (i_shNumTerminal == -1)?"":szhNumTerminal);
+		
+		stPreFactura.A_PFactura[i].lCapCode       =
+		 (i_shCapCode    == -1)?-1:lhCapCode       ;
+		
+		strcpy (stPreFactura.A_PFactura[i].szNumSerieMec ,
+		 (i_shNumSerieMec == -1)?"":szhNumSerieMec);
+		strcpy (stPreFactura.A_PFactura[i].szNumSerieLe  ,
+		 (i_shNumSerieLe  == -1)?"":szhNumSerieLe );
+		
+		stPreFactura.A_PFactura[i].iFlagImpues    =
+		 (i_shFlagImpues == -1)?-1:shFlagImpues    ;
+		stPreFactura.A_PFactura[i].iFlagDto       =
+		 (i_shFlagDto    == -1)?-1:shFlagDto       ;
+		stPreFactura.A_PFactura[i].fPrcImpuesto   =
+		 (i_shPrcImpuesto== -1)?-1:fhPrcImpuesto   ;
+		stPreFactura.A_PFactura[i].dValDto        =
+		 (i_shValDto     == -1)?-1:dhValDto        ;
+		stPreFactura.A_PFactura[i].iTipDto        =
+		 (i_shTipDto     == -1)?-1:shTipDto        ;
+		stPreFactura.A_PFactura[i].lNumVenta      =
+		 (i_shNumVenta   == -1)?-1:lhNumVenta      ;
+		
+		stPreFactura.A_PFactura[i].lNumTransaccion=
+		 (i_shNumTransaccion == -1)?-1:lhNumTransaccion;
+		
+		stPreFactura.A_PFactura[i].iMesGarantia   =
+		 (i_shMesGarantia== -1)?-1:ihMesGarantia   ;
+		
+		strcpy (stPreFactura.A_PFactura[i].szNumGuia ,
+		 (i_shNumGuia == -1)?"":szhNumGuia)        ;
+		
+		stPreFactura.A_PFactura[i].iIndAlta       =
+		 (i_shIndAlta == -1)?-1:shIndAlta          ;
+		stPreFactura.A_PFactura[i].iIndSuperTel   =
+		 (i_shIndSuperTel == -1)?-1:shIndSuperTel  ;
+		stPreFactura.A_PFactura[i].iNumPaquete    =
+		 (i_shNumPaquete  == -1)?-1:ihNumPaquete   ;
+		stPreFactura.A_PFactura[i].iIndCuota      =
+		 (i_shIndCuota    == -1)?-1:shIndCuota     ;
+		stPreFactura.A_PFactura[i].iNumCuotas     =
+		 (i_shNumCuotas   == -1)?-1:ihNumCuotas    ;
+		stPreFactura.A_PFactura[i].iOrdCuota      =
+		 (i_shOrdCuota    == -1)?-1:ihOrdCuota     ;
+		
+		/*** Agregado COH 15052007 ***/
+		stPreFactura.A_PFactura[i].lhCntLlamFact   = 0;
+		stPreFactura.A_PFactura[i].dhMtoDcto       = 0.0;
+		stPreFactura.A_PFactura[i].lhDurReal       = 0;
+		stPreFactura.A_PFactura[i].lhDurDcto       = 0;
+		stPreFactura.A_PFactura[i].lhCntLlamReal   = 0;
+		stPreFactura.A_PFactura[i].lhCntLlamDcto   = 0;
+		stPreFactura.A_PFactura[i].lSegConsumido   = 0;
+		stPreFactura.A_PFactura[i].lSeqCuotas      = 0;
+		stPreFactura.A_PFactura[i].dhMtoReal       = 0.0;
+		/*** Fin Agregago ***/
+
+		
+		/**********************************************************/
+		/* Recogemos Informacion para la Cabecera del Documento   */
+		/**********************************************************/
+		if (stPreFactura.A_PFactura[i].iIndSuperTel  == 1 &&
+		stCliente.iIndSuperTel                   <  1 )
+		{
+		stCliente.iIndSuperTel = 1;
+		}
+		if (stPreFactura.A_PFactura[i].iIndCuota  == 1 &&
+		stCliente.iIndCredito                 <  1)
+		{
+		stCliente.iIndCredito = 1;
+		}
+		
+		/* stPreFactura.iNumRegistros++; */
+         	if(bfnIncrementarIndicePreFactura()==FALSE)
+         	{
+         	    vDTrazasLog  (szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+         	    vDTrazasError(szExeName,">> ERROR: Al Intentar Aumentar memoria de stPreFactura  <<",LOG01);
+         	    return FALSE;
+         	}
+
+        
+		EXEC SQL FETCH Cur_PreFactura
+		       INTO :lhNumProceso     ,
+		            :lhCodCliente     ,
+		            :ihCodConcepto    ,
+		            :lhColumna        ,
+		            :ihCodProducto    ,
+		            :szhCodMoneda     ,
+		            :szhFecValor      ,
+		            :szhFecEfectividad,
+		            :dhImpConcepto    ,
+		            :dhImpMontoBase   ,
+		            :dhImpFacturable  ,
+		            :szhCodRegion     ,
+		            :szhCodProvincia  ,
+		            :szhCodCiudad     ,
+		            :szhCodModulo     ,
+		            :lhCodPlanCom     ,
+		            :shIndFactur      ,
+		            :ihCodCatImpos    ,
+		            :shIndEstado      :i_shIndEstado     ,
+		            :ihCodTipConce    :i_shCodTipConce   ,
+		            :lhNumUnidades    :i_shNumUnidades   , /* Incorporado por PGonzaleg 4-03-2002 */
+		            :lhCodCiclFact    :i_shCodCiclFact   ,
+		            :ihCodConceRel    :i_shCodConceRel   ,
+		            :lhColumnaRel     :i_shColumnaRel    ,
+		            :lhNumAbonado     :i_shNumAbonado    ,
+		            :szhNumTerminal   :i_shNumTerminal   ,
+		            :lhCapCode        :i_shCapCode       ,
+		            :szhNumSerieMec   :i_shNumSerieMec   ,
+		            :szhNumSerieLe    :i_shNumSerieLe    ,
+		            :shFlagImpues     :i_shFlagImpues    ,
+		            :shFlagDto        :i_shFlagDto       ,
+		            :fhPrcImpuesto    :i_shPrcImpuesto   ,
+		            :dhValDto         :i_shValDto        ,
+		            :shTipDto         :i_shTipDto        ,
+		            :lhNumVenta       :i_shNumVenta      ,
+		            :lhNumTransaccion :i_shNumTransaccion,
+		            :ihMesGarantia    :i_shMesGarantia   ,
+		            :shIndAlta        :i_shIndAlta       ,
+		            :shIndSuperTel    :i_shIndSuperTel   ,
+		            :ihNumPaquete     :i_shNumPaquete    ,
+		            :shIndCuota       :i_shIndCuota      ,
+		            :ihNumCuotas      :i_shNumCuotas     ,
+		            :ihOrdCuota       :i_shOrdCuota      ,
+                            :szhCodMonedaImp  :i_szhCodMonedaImp ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+                            :dhImpConversion  :i_dhImpConversion ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+                            :dImpValunitario  :i_dImpValunitario ,/*Incorporado por JJFigueroa 18-02-2005*/ 
+                            :szhGlsDescrip    :i_szhGlsDescrip   ;/*Incorporado por JJFigueroa 18-02-2005*/ 		            
+
+		if (SQLCODE != SQLOK && SQLCODE != SQLNOTFOUND)
+			iDError (szExeName,ERR000,vInsertarIncidencia,"Fetch=>Fa_PreFactura",szfnORAerror ());
+
+	}/* fin while ... */
+	
+	vDTrazasLog (szExeName,"\n\t\t* Conceptos de la Factura Modificados [%d]",LOG03, stPreFactura.iNumRegistros);
+	return (TRUE);
+}/*************************** Final bCargaConceptosNotas *********************/
+
+/*****************************************************************************/
+/*                        funcion : bfnDBUpdateAjustes                       */
+/* -stNota (tiene cargado el registro de Fa_HistDocu sobre el cual emitimos  */
+/*  la Nota Credito o Debito.                                                */
+/* -stHistDocu es el registro a Insertar en Fa_HistDocu correspondiente a la */
+/*  Nota Credito o Debito que emitimos sobre la Factura de stNota .          */
+/* # Ambas estructura son globales y estan definidas en GenFa.h              */
+/*****************************************************************************/
+BOOL bfnDBUpdateAjustes (void)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+         static char   szhPrefPlaza[25+1];
+         static long   lhNumFolio        ;
+         static long   lhCodCliente      ;
+         static long   ihCodTipDocum     ;
+         static double dhAcumNetoNoGrav  ;
+         static double dhAcumNetoGrav    ;
+         static double dhAcumIva         ;
+    EXEC SQL END DECLARE SECTION  ;
+
+    strcpy(szhPrefPlaza,stNota.szPrefPlaza);
+    lhNumFolio       = stNota.lNumFolio          ;
+    lhCodCliente     = stNota.lCodCliente        ;
+    ihCodTipDocum    = stNota.iCodTipDocum       ;
+    dhAcumNetoNoGrav = stHistDocu.dAcumNetoNoGrav;
+    dhAcumNetoGrav   = stHistDocu.dAcumNetoGrav  ;
+    dhAcumIva        = stHistDocu.dAcumIva       ;
+
+
+   vDTrazasLog (szExeName, "\n\t\t* Mas Parametros de Entrada a Update Fa_Ajustes"
+    			    "\n\t\t=> stNota.szPrefPlaza [%s] "                     
+                            ,LOG03, stNota.szPrefPlaza);
+
+	
+    vDTrazasLog (szExeName, "\n\t\t* Parametros de Entrada a Update Fa_Ajustes"
+    			    "\n\t\t=> Pref. Plaza [%s] "
+                            "\n\t\t=> Num.Folio   [%ld]"
+                            "\n\t\t=> Cod.Cliente [%ld]"
+                            "\n\t\t=> Cod.TipDocum[%d] "                            
+                            ,LOG03, szhPrefPlaza, lhNumFolio, lhCodCliente, ihCodTipDocum);
+
+    vDTrazasLog (szExeName, "\n\t\t* Valores de los if.... "
+                            "\n\t\t=> stProceso.iCodTipDocum	[%ld]"
+                            "\n\t\t=> stDatosGener.iCodNotaCre 	[%ld]"
+                            "\n\t\t=> stDatosGener.iCodNotaDeb	[%ld] "                            
+                            "\n\t\t=> stDatosGener.iCodNotaAbo	[%ld] "                            
+                          , LOG03, stProceso.iCodTipDocum
+                          , stDatosGener.iCodNotaCre
+                          , stDatosGener.iCodNotaDeb
+                          , stDatosGener.iCodNotaAbo);
+
+
+    if (stProceso.iCodTipDocum == stDatosGener.iCodNotaCre || stProceso.iCodTipDocum == stDatosGener.iCodNotaAbo)
+    {
+        EXEC SQL UPDATE
+                        FA_AJUSTES
+                 SET    ACUM_NETOGRAVNC   =
+                        ACUM_NETOGRAVNC   + :dhAcumNetoGrav  ,
+                        ACUM_NETONOGRAVNC =
+                        ACUM_NETONOGRAVNC + :dhAcumNetoNoGrav,
+                        ACUM_IVANC        =
+                        ACUM_IVANC        + :dhAcumIva
+        WHERE  PREF_PLAZA    = :szhPrefPlaza
+        AND NUM_FOLIO    = :lhNumFolio
+        AND    COD_CLIENTE  = :lhCodCliente
+        AND    COD_TIPDOCUM = :ihCodTipDocum;
+    }
+    else if (stProceso.iCodTipDocum == stDatosGener.iCodNotaDeb)
+    {
+        EXEC SQL UPDATE
+                        FA_AJUSTES
+                 SET    ACUM_NETOGRAVND   =
+                        ACUM_NETOGRAVND   + :dhAcumNetoGrav  ,
+                        ACUM_NETONOGRAVND =
+                        ACUM_NETONOGRAVND + :dhAcumNetoNoGrav,
+                        ACUM_IVAND        =
+                        ACUM_IVAND        + :dhAcumIva
+        WHERE
+        	PREF_PLAZA    = :szhPrefPlaza
+        AND	NUM_FOLIO    = :lhNumFolio
+        AND    COD_CLIENTE  = :lhCodCliente
+        AND    COD_TIPDOCUM = :ihCodTipDocum;
+    }
+    if (SQLCODE)
+        iDError (szExeName,ERR000,vInsertarIncidencia,"Update=>Fa_Ajustes",
+                 szfnORAerror ());
+
+    return (SQLCODE != SQLOK)?FALSE:TRUE;
+}/************************* Final bfnDBUpdateAjustes *************************/
+/******************************************************************************************/
+/** Información de Versionado *************************************************************/
+/******************************************************************************************/
+/** Pieza                                               : */
+/**  CORE/FUENTES_UNIX/FyC/Facturacion/facturacion/src/premod/pc/prenot.pc */
+/** Identificador en PVCS                               : */
+/**  SCL:A578.A-UNIX;des#2.8 */
+/** Producto                                            : */
+/**  SCL */
+/** Revisión                                            : */
+/**  des#2.8 */
+/** Autor de la Revisión                                : */
+/**  MWN70299 */
+/** Estado de la Revisión ($TO_BE_DEFINED es Check-Out) : */
+/**  CERTIFICADO */
+/** Fecha de Creación de la Revisión                    : */
+/**  13-ABR-2004 17:05:46 */
+/** Worksets ******************************************************************************/
+/** 1:																	*/
+/** 	Workset:     "$GENERIC:$GLOBAL"                                                                                                 */
+/** 	Description: Global workset for database                                                                                        */
+/**                                                                                                                                     */
+/** 2:                                                                                                                                  */
+/** 	Workset:     "SCL:WS/D"                                                                                                         */
+/** 	Description: Workset de Desarrollo                                                                                              */
+/**                                                                                                                                     */
+/** 3:                                                                                                                                  */
+/** 	Workset:     "SCL:WS/SOPORTE-TMM"                                                                                               */
+/** 	Description: Workset de Soporte de SCL para Operadora TMM.                                                                      */
+/**                                                                                                                                     */
+/** 4:                                                                                                                                  */
+/** 	Workset:     "SCL:WS/D-TMC"                                                                                                     */
+/** 	Description: Workset desarrollo TMC                                                                                             */
+/**                                                                                                                                     */
+/** 5:                                                                                                                                  */
+/** 	Workset:     "SCL:WS/LIBERACION-TMC"                                                                                            */
+/** 	Description: WS/LIBERACION-TMC.                                                                                                 */
+/**                                                                                                                                     */
+/** 6:                                                                                                                                  */
+/** 	Workset:     "SCL:WS/D-P-TMM-03075"                                                                                             */
+/** 	Description: P-TMM-03075 Evolución de Factura miscelánea (Facturación en Dólares e incorporación de unidad en los conceptos)    */
+/**                                                                                                                                     */
+/** Historia ******************************************************************************/                  
+/** Revision lib_tmc#1 (CERTIFICADO)                                                                                                    */
+/**   Created:  07-nov-2004 18:28:27      MWN70399                                                                                      */
+/**     Migracion Piezas Modif. WS/D-TMC a LIBERACION-TMC                                                                               */
+/**                                                                                                                                     */
+/** Revision sop_tmm#1 (PENDIENTE_INTEGRACION)                                                                                          */
+/**   Created:  16-jun-2004 15:48:29      MWN70334                                                                                      */
+/**     Actualizacion TM-200406020706                                                                                                   */
+/**                                                                                                                                     */
+/** Revision des#2.8 (CERTIFICADO)                                                                                                      */
+/**   Created:  13-abr-2004 16:56:48      MWN70299                                                                                      */
+/**                                                                                                                                     */
+/** Revision des#2.7 (CERTIFICADO)                                                                                                      */
+/**   Created:  13-abr-2004 11:34:15      MWN70299                                                                                      */
+/**     Modificadas en proyecto TMM_03083 Generacion de Folios                                                                          */
+/**                                                                                                                                     */
+/** Revision des_buc#2 (CERTIFICADO)                                                                                                    */
+/**   Created:  17-mar-2004 17:02:44      MWN70178                                                                                      */
+/**     Version Stamping                                                                                                                */
+/**                                                                                                                                     */
+/** Revision des_buc#1 (CERTIFICADO)                                                                                                    */
+/**   Created:  11-mar-2004 20:43:34      MWN70178                                                                                      */
+/**     Homologacisn IVA/Intercon Tecnologma/Apertura Tecnologma a                                                                      */
+/**     Piloto Bucermas TMC                                                                                                             */
+/**                                                                                                                                     */
+/** Revision lib#6 (CERTIFICADO)                                                                                                        */
+/**   Created:  29-oct-2003 11:12:14      MWN70294                                                                                      */
+/**     Sellado con Version Stamping                                                                                                    */
+/**                                                                                                                                     */
+/** Revision lib#5 (CERTIFICADO)                                                                                                        */
+/**   Created:  29-oct-2003 10:15:24      MWN70294                                                                                      */
+/**     Sellado con Version Stamping                                                                                                    */
+/**                                                                                                                                     */
+/** Revision des#2.6 (CERTIFICADO)                                                                                                      */
+/**   Created:  28-ene-2004 19:11:24      MWN70299                                                                                      */
+/**     Modificado por proyecto IVA                                                                                                     */
+/**                                                                                                                                     */
+/** Revision des#2.5 (CERTIFICADO)                                                                                                      */
+/**   Created:  23-oct-2003 11:44:14      MWN70059                                                                                      */
+/**     Item revision des#2.5 created from revision des#2.4 with status                                                                 */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision des#2.4 (CERTIFICADO)                                                                                                      */
+/**   Created:  27-jun-2003 18:32:03      MWN70252                                                                                      */
+/**                                                                                                                                     */
+/** Revision lib#4 (CERTIFICADO)                                                                                                        */
+/**   Created:  27-jun-2003 00:06:57      MWN70242                                                                                      */
+/**     Item revision lib#4 created from revision lib#2 with status                                                                     */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision lib#3 (CERTIFICADO)                                                                                                        */
+/**   Created:  03-jun-2003 00:02:26      MWN70240                                                                                      */
+/**     Item revision lib#3 created from revision lib#1 with status                                                                     */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision lib#2 (CERTIFICADO)                                                                                                        */
+/**   Created:  12-may-2003 20:33:05      MWN70246                                                                                      */
+/**     Item revision lib#2 created from revision des#2.3 with status                                                                   */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision des#2.3 (CERTIFICADO)                                                                                                      */
+/**   Created:  08-may-2003 17:17:10      MWN70252                                                                                      */
+/**     Item revision des#2.3 created from revision des#2.2 with status                                                                 */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision lib#1 (CERTIFICADO)                                                                                                        */
+/**   Created:  02-may-2003 19:47:15      MWN70243                                                                                      */
+/**     Item revision lib#1 created from revision des#2.1 with status                                                                   */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision des#2.2 (CERTIFICADO)                                                                                                      */
+/**   Created:  29-abr-2003 21:13:49      MWN70155                                                                                      */
+/**     TST_TMM2404-012                                                                                                                 */
+/**                                                                                                                                     */
+/** Revision des#2.1 (CERTIFICADO)                                                                                                      */
+/**   Created:  15-feb-2003 15:43:18      MWN70178                                                                                      */
+/**     Item revision des#2.1 created from revision des#2.0 with status                                                                 */
+/**     UNDER WORK                                                                                                                      */
+/**                                                                                                                                     */
+/** Revision des#2.0 (CERTIFICADO)                                                                                                      */
+/**   Created:  14-feb-2003 12:51:05      MWN70252                                                                                      */
+/**     Initial Revision                                                                                                                */
+/******************************************************************************************/

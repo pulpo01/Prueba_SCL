@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mx:Module xmlns:mx="http://www.adobe.com/2006/mxml" layout="absolute" width="1000" height="488" initialize="init();" xmlns:ns1="Cliente.*" alpha="1.0" backgroundAlpha="1.0">
+
+
+	<mx:Script>
+	<![CDATA[
+		import flash.net.navigateToURL;
+		import mx.events.DateChooserEvent;
+		import mx.formatters.NumberBase;
+		import mx.formatters.NumberFormatter;
+		import mx.formatters.Formatter;
+		import generated.webservices.orquestador.GetDetalleAbonadoResultEvent;
+		import generated.webservices.orquestador.GetDetalleClienteResultEvent;
+		import mx.messaging.channels.StreamingAMFChannel;
+		import mx.states.SetProperty;
+	
+		import mx.core.Application;
+		import mx.controls.Alert;
+		import mx.rpc.events.FaultEvent;
+		import mx.collections.ArrayCollection;
+		import mx.utils.ArrayUtil;
+		import mx.managers.PopUpManager;
+		import user.libreria.componentes.scrollbars.BarraDeProgreso2;
+		import mx.managers.PopUpManager;
+		import mx.core.IFlexDisplayObject;
+		import flash.display.DisplayObject;
+		import mx.events.MenuEvent;
+		
+		import generated.webservices.orquestador.*;
+		import user.libreria.clases.StringUtil;
+		
+		import mx.events.ModuleEvent;
+		import mx.events.CloseEvent;
+	    import mx.modules.ModuleManager;
+	   	import mx.modules.IModuleInfo;
+	
+		import user.libreria.componentes.scrollableMenu.controls.ScrollableArrowMenu;
+		import user.libreria.componentes.scrollableMenu.controls.ScrollableMenu;
+		import mx.core.ScrollPolicy;
+		import user.libreria.clases.UtilDataGrid;
+		import mx.formatters.CurrencyFormatter;
+		import generated.webservices.orquestador.DocCtaCteClienteDTO;
+		import generated.webservices.orquestador.GetDocsCtaCteClienteResultEvent;
+		import user.libreria.clases.StringUtil;
+		import mx.events.ItemClickEvent;
+		import mx.collections.SortField;
+		import mx.collections.Sort;
+		
+		public var searchingPopUpView:Class = BarraDeProgreso2;
+		public var popUpWindow:IFlexDisplayObject;
+		public var popUpParent:DisplayObject;
+
+		public var wsORQ1:WSSEGPortal = new WSSEGPortal();
+		public var wsORQ2:WSSEGPortal = new WSSEGPortal();
+		
+		public var flagCarga:Number = 0;
+
+		// Para la impresion en pdf
+		public var anchoColsGrid:Array = new Array();
+		public var fechaDesde:String = "";
+		public var fechaHasta:String = "";
+
+		// Datos para ejecutar los ws		
+		public var codCliente:Number = Application.application.clienteDTO.codCliente;
+		public var nomUsuario:String = Application.application.usuario.username;
+		public var codEvento:String = Application.application.codEvento; 
+
+		[Bindable]
+		public var dsGrid:Array = new Array();
+
+		[Embed(source="/recursosInterfaz/imagenes/iconos/alert/warning.png")]
+        public var iconWarning:Class; 		
+			
+		include "../../user/includes/cuentaCorrienteCliente/codigo.as";
+		
+		public var campoOrdenamiento:String = 'fecEmisionOrd';
+		public var tipoOrdenamiento:String = 'Asc';
+		
+		// ------------------------------------------------------------------------------------------
+		// Autor : Gabriel Moraga L
+		// Version : 1.0
+		// Fecha : 16/08/2010
+		// ------------------------------------------------------------------------------------------
+		
+		private function ordenarValores(event:ItemClickEvent):void {
+			
+            if (event.currentTarget.selectedValue == 'fecEmisionOrd') {
+            	campoOrdenamiento='fecEmisionOrd'; 
+            }else if(event.currentTarget.selectedValue == 'fecVencimientoOrd'){
+            	campoOrdenamiento='fecVencimientoOrd';	
+            } 
+
+	        if (event.currentTarget.selectedValue == "Asc") {
+	        	tipoOrdenamiento='Asc';
+	        }else if(event.currentTarget.selectedValue == "Desc"){
+	        	tipoOrdenamiento='Desc';
+	        }
+	              
+            var dataSortField:SortField = new SortField();
+            dataSortField.name = campoOrdenamiento;
+            dataSortField.numeric = false;
+            
+            var numericDataSort:Sort = new Sort();
+            
+            if (tipoOrdenamiento=="Desc"){
+	       		dataSortField.descending = true;
+	        }else{
+	        	dataSortField.descending = false;
+	        }
+			numericDataSort.fields = [dataSortField];	        	    
+		    ac.sort = numericDataSort;
+            ac.refresh();
+        }
+		
+		]]>
+	</mx:Script>
+	
+	<mx:Panel width="980" height="469.85" layout="absolute" title="&gt;&gt; Detalle Facturación" fontSize="12" borderColor="#84B6DC" backgroundColor="#FFFFFF" horizontalCenter="0" alpha="1.0" borderAlpha="1.0" verticalCenter="0">
+	
+		<mx:Button x="858" y="390.85" label="Cerrar" width="92" height="31" fontSize="10" click="cerrar()">
+			<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/libIcons/16x16/close.png')</mx:icon>
+		</mx:Button>
+	
+		<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="940" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="38" x="10" y="10" paddingRight="10" horizontalGap="10" paddingLeft="10">
+			<mx:Label text="Cliente" styleName="TituloCampo"/>
+			<mx:TextInput width="611" fontSize="10" editable="false" id="txtCliente"/>
+			<mx:Spacer/>
+			<mx:Label text="Deuda" styleName="TituloCampo" fontWeight="normal"/>
+			<mx:TextInput width="142" fontSize="10" editable="false" id="txtDeudaTotal" textAlign="right"/>
+		</mx:HBox>
+	
+		<mx:AdvancedDataGrid doubleClickEnabled="true" doubleClick="verFacturaEnPdf()" resizableColumns="true" dataProvider="{ac}" id="gridCtaCte" width="940" fontSize="10" textAlign="left" height="244.35"  alpha="0.51" themeColor="#0D8AE1" backgroundColor="#CBE5F9" selectionMode="multipleRows" x="10" y="140.5" horizontalScrollPolicy="on">
+			<mx:columns>
+				<mx:AdvancedDataGridColumn headerText="Folio" dataField="numFolio" paddingLeft="5" textAlign="right" width="70"/>			
+				<mx:AdvancedDataGridColumn headerText="Documento" dataField="desTipDocum" paddingLeft="5"  textAlign="left" width="110"/>
+				<mx:AdvancedDataGridColumn headerText="Observaciones" dataField="desObserva" paddingLeft="5" width="150"  textAlign="right"/>
+				<mx:AdvancedDataGridColumn headerText="Emisión" dataField="fecEmision" paddingLeft="5"  textAlign="center"  width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Vencimiento" dataField="fecVencimiento" paddingLeft="5"  textAlign="center"  width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Acum. Neto G." dataField="acumNetoGrav" formatter="{formato}" width="95"/>
+				<mx:AdvancedDataGridColumn headerText="Monto IVA" dataField="totalIVA" paddingLeft="5" textAlign="right"  formatter="{formato}"  width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Importe" dataField="importeDebe" paddingLeft="5" textAlign="right" formatter="{formato}"  width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Detalle" dataField="textoDetalle" width="80"/>
+				<mx:AdvancedDataGridColumn headerText="Emisión" dataField="fecEmisionOrd" paddingLeft="5"  textAlign="center"  width="0" visible="false"/>
+				<mx:AdvancedDataGridColumn headerText="Vencimiento" dataField="fecVencimientoOrd" paddingLeft="5"  textAlign="center"  width="0" visible="false"/>
+			</mx:columns>
+		</mx:AdvancedDataGrid>
+	
+		<mx:DateChooser x="29" y="85" width="210" height="180" id="dcDesde" visible="false" showToday="true" change="eligeFecha(1)" minYear="1990"/>
+		<mx:DateChooser x="29" y="85" width="210" height="180" id="dcHasta" visible="false" showToday="true" change="eligeFecha(2)" minYear="1990"/>
+	
+		<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="503" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="40" paddingRight="10" horizontalGap="10" x="10" y="47.5" paddingLeft="10">
+			<mx:Button label="Desde" id="btnDesde" click="showCalendar(1)" fontWeight="normal" fontSize="10">
+				<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkContextMenu.gif')</mx:icon>
+			</mx:Button>
+			<mx:Button label="Hasta" id="btnHasta" click="showCalendar(2)" fontWeight="normal" fontSize="10">
+				<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkContextMenu.gif')</mx:icon>
+			</mx:Button>
+			<mx:Button label="Buscar" fontWeight="normal" click="executeWS('documentos')">
+				<mx:icon>@Embed(source='../../recursosInterfaz/imagenes/botones/FwkAddItem.gif')</mx:icon>
+			</mx:Button>
+		</mx:HBox>
+
+		<mx:RadioButtonGroup id="grupo1" itemClick="ordenarValores(event);"/>
+		<mx:RadioButtonGroup id="grupo2" itemClick="ordenarValores(event);"/>
+		
+		<mx:HBox id="hRadio1" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" x="253" y="88" paddingRight="10" horizontalGap="10">
+			<mx:RadioButton  value="fecEmisionOrd" x="28" y="51" label="Emisión" width="115" height="18" selected="true" groupName="grupo1" id="rbtFecIngre" />
+			<mx:RadioButton  value ="Asc" x="179" y="51" label="Ascendente" width="115" height="18" selected="true" groupName="grupo2" id="rbtAsc" />
+		</mx:HBox>
+		<mx:HBox id="hRadio2" enabled="false" cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="260" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="24" paddingRight="10" horizontalGap="10" x="253" y="112">
+			<mx:RadioButton  value ="fecVencimientoOrd" x="28" y="69" label="Vencimiento" width="115" height="18" groupName="grupo1" id="rbtFecEsta" />
+			<mx:RadioButton  value ="Desc" x="179" y="69" label="Descendente" width="115" height="18" groupName="grupo2" id="rbtDesc" />
+		</mx:HBox>
+
+		<mx:HBox cornerRadius="5" backgroundAlpha="1.0" fontSize="10" borderStyle="solid" width="343" horizontalAlign="left" verticalAlign="middle" backgroundColor="#FFFFFF" height="40" paddingRight="10" horizontalGap="10" x="607" y="47.5" paddingLeft="10">
+			<mx:Image>
+				<mx:source>recursosInterfaz/imagenes/iconos/filtro.gif</mx:source>
+			</mx:Image>
+			<mx:TextInput fontSize="10" maxChars="20" id="txtFiltro" width="95" change="filtrar()" height="26" fontWeight="normal" fontStyle="normal" styleName="TextInput"/>
+			<mx:ComboBox labelField="label" id="cboFiltro" width="144" change="changeCombo(cboFiltro)" fontWeight="normal">
+			 <mx:ArrayCollection>
+			          <mx:Object icon="recursosInterfaz/imagenes/iconos/buscar.png" label="No aplicar filtro" data="0"/>
+			          <mx:Object label="Nro.Folio" data="1" />
+			          <mx:Object label="Emisión" data="2" />
+			          <mx:Object label="Vencimiento" data="3" />
+			      </mx:ArrayCollection>
+			</mx:ComboBox>
+		</mx:HBox>
+		<mx:Label x="536" y="56" id="lblTotal" />
+		
+	</mx:Panel>
+
+
+	<mx:ArrayCollection id="ac" source="{ArrayUtil.toArray(dsGrid)}" />
+
+	<mx:CurrencyFormatter id="formato" 
+		currencySymbol="{StringUtil.getValor('currencySymbol','VALOR')}" 
+		decimalSeparatorFrom="{StringUtil.getValor('decimalSeparatorFrom','VALOR')}"
+		decimalSeparatorTo="{StringUtil.getValor('decimalSeparatorTo','VALOR')}"
+		precision="{StringUtil.getValor('precision','VALOR')}"
+		thousandsSeparatorFrom="{StringUtil.getValor('thousandsSeparatorFrom','VALOR')}"
+		thousandsSeparatorTo="{StringUtil.getValor('thousandsSeparatorTo','VALOR')}"
+		useNegativeSign="{StringUtil.getValor('useNegativeSign','VALOR')}"
+		/>
+			
+</mx:Module>
